@@ -92,6 +92,18 @@ describe('SourceQueryPreviewService', () => {
     expect(result.approximate_hit_count).toBe(42)
   })
 
+  it('treats a network-level fetch failure (no recognizable timeout cause) as transient too', async () => {
+    let calls = 0
+    const service = new SourceQueryPreviewService(fakeDb([]), async () => {
+      calls += 1
+      if (calls === 1) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) })
+      return okResponse()
+    })
+    const result = await service.preview(identity, { provider_key: 'arxiv', query: { mode: 'search', search_query: 'agent memory' } })
+    expect(calls).toBe(2)
+    expect(result.approximate_hit_count).toBe(42)
+  })
+
   it('does not retry a non-transient client error', async () => {
     let calls = 0
     const service = new SourceQueryPreviewService(fakeDb([]), async () => {

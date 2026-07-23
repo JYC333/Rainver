@@ -244,6 +244,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         workspace_id: q.workspace_id ?? null,
         project_id: q.project_id ?? null,
         workflow_version_id: q.workflow_version_id ?? null,
+        capability_id: q.capability_id ?? null,
         run_role: q.run_role === "coordinator" ? "coordinator" : q.run_role === "execution" ? "execution" : null,
         limit: boundedInt(q.limit, 50, 1, 200),
         offset: boundedInt(q.offset, 0, 0, Number.MAX_SAFE_INTEGER),

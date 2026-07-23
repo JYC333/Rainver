@@ -43,6 +43,7 @@ function operationState(): ResearchOperationState {
     research_question_version: 1,
     report_depth: "full",
     question_refine_skipped: false,
+    research_scope: { in: [], out: [], sub_questions: [], must_have: [], nice_to_have: [] },
     channel_ids: [],
     project_source_binding_ids: [],
     source_post_processing_rule_ids: [],

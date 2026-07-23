@@ -26,6 +26,7 @@ import {
   dbPool,
   HttpError,
   jsonBody,
+  numberValue,
   optionalString,
   parsePage,
   params,
@@ -38,6 +39,7 @@ import { requireSpaceOwnerOrAdmin } from "../routeUtils/access";
 import { isSpaceOwnerOrAdmin } from "../access/roles";
 import { authRepositoryFromConfig } from "../auth/identity";
 import { PgKnowledgeRepository } from "./repository";
+import { parseNotesTreeReorder, persistNotesTreeReorder } from "./notesTreeReorder";
 import {
   RetrievalFeedbackService,
   RetrievalMaintenanceService,
@@ -1400,7 +1402,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(await repository().createNoteCollection(identity, jsonBody(request)));
+      const created = await withDbTransaction(dbPool(context.config), (client) =>
+        new PgKnowledgeRepository(client).createNoteCollection(identity, jsonBody(request)),
+      );
+      return reply.code(201).send(created);
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1453,6 +1458,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.patch("/api/v1/knowledge/notes/tree/reorder", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const plan = parseNotesTreeReorder(jsonBody(request));
+      const result = await withDbTransaction(dbPool(context.config), async (client) =>
+        persistNotesTreeReorder(client, identity, plan),
+      );
+      return reply.send(result);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/knowledge/notes/:noteId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -1482,6 +1501,35 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.send(await repository().deleteNote(identity, params(request).noteId ?? ""));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/knowledge/notes/:noteId/revisions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const limit = numberValue(query(request).limit) ?? undefined;
+      return reply.send(
+        await repository().listNoteRevisions(identity, params(request).noteId ?? "", limit),
+      );
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/knowledge/notes/:noteId/rollback", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const toVersion = numberValue(jsonBody(request).to_version);
+      if (toVersion === null || toVersion === undefined) {
+        return reply.code(422).send({ detail: "to_version is required" });
+      }
+      return reply.send(
+        await repository().rollbackNote(identity, params(request).noteId ?? "", toVersion),
+      );
     } catch (error) {
       return sendRouteError(reply, error);
     }

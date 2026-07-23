@@ -150,10 +150,37 @@ async function seedFailedSynthesisOperation(previousRunId: string | null): Promi
   );
 }
 
+async function seedRelevantCorpus(): Promise<void> {
+  const now = new Date().toISOString();
+  const sourceItemId = randomUUID();
+  const corpusItemId = randomUUID();
+  await pool!.query(
+    `INSERT INTO source_items (
+       id,space_id,owner_user_id,visibility,item_type,title,excerpt,
+       first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at
+     ) VALUES ($1,$2,$3,'space_shared','external_url','Relevant paper','Relevant evidence.',
+       $4,$4,'excerpt_saved','summary_only',$4,$4)`,
+    [sourceItemId, SPACE, OWNER, now],
+  );
+  await pool!.query(
+    `INSERT INTO project_corpus_items (
+       id,space_id,project_id,source_item_id,role,status,triage_status,
+       triage_confirmed_by_user,relevance,confidence,reason,created_at,updated_at
+     ) VALUES ($1,$2,$3,$4,'candidate','active','relevant',false,'relevant',0.9,'In scope',$5,$5)`,
+    [corpusItemId, SPACE, PROJECT, sourceItemId, now],
+  );
+  await pool!.query(
+    `INSERT INTO project_corpus_item_sources (id,corpus_item_id,space_id,project_id,source_item_id,created_at)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
+  );
+}
+
 describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real Postgres)", () => {
   it("retries in one transaction: the failed -> synthesis transition, the queued run, and its job all land together", async () => {
     if (!available || !pool) return;
     await seedSynthesisPrompt();
+    await seedRelevantCorpus();
     await seedFailedSynthesisOperation("prior-failed-run-id");
 
     await new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION);
@@ -185,6 +212,58 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
       [SPACE, runId],
     );
     expect(job.rows[0]?.status).toBe("pending");
+  });
+
+  it("treats concurrent synthesis retries as one idempotent command", async () => {
+    if (!available || !pool) return;
+    await seedSynthesisPrompt();
+    await seedRelevantCorpus();
+    await seedFailedSynthesisOperation("prior-failed-run-id");
+
+    const orchestrator = new ProjectResearchOrchestrator(pool!);
+    const [first, second] = await Promise.all([
+      orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
+      orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
+    ]);
+
+    expect("operation" in first ? first.operation.id : first.id).toBe(OPERATION);
+    expect("operation" in second ? second.operation.id : second.id).toBe(OPERATION);
+    const runs = await pool.query(
+      `SELECT id FROM runs
+        WHERE space_id=$1
+          AND contract_snapshot_json->'workflow_input_json'->'project_research'->>'operation_id'=$2`,
+      [SPACE, OPERATION],
+    );
+    const jobs = await pool.query(
+      `SELECT id FROM jobs WHERE space_id=$1 AND job_type='agent_run'`,
+      [SPACE],
+    );
+    expect(runs.rows).toHaveLength(1);
+    expect(jobs.rows).toHaveLength(1);
+  });
+
+  it("completes a retried synthesis without a report when its approved corpus is empty", async () => {
+    if (!available || !pool) return;
+    await seedSynthesisPrompt();
+    await seedFailedSynthesisOperation("prior-failed-run-id");
+
+    await new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION);
+
+    const operation = await pool.query<{
+      status: string;
+      progress_json: { current_stage?: string; empty_result?: { kind?: string; reason_code?: string } };
+    }>(`SELECT status, progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    expect(operation.rows[0]).toMatchObject({
+      status: "completed",
+      progress_json: {
+        current_stage: "complete",
+        empty_result: { kind: "no_relevant_sources", reason_code: "empty_approved_corpus" },
+      },
+    });
+    const runs = await pool.query(`SELECT id FROM runs WHERE space_id=$1`, [SPACE]);
+    const jobs = await pool.query(`SELECT id FROM jobs WHERE space_id=$1`, [SPACE]);
+    expect(runs.rows).toHaveLength(0);
+    expect(jobs.rows).toHaveLength(0);
   });
 
   it("changes nothing when queueing fails: the operation stays failed/retryable and no run or job is created", async () => {

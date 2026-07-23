@@ -2,25 +2,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
-import type { SourceChannel } from '../../types/api'
 import { ResearchSetupDialog } from './ResearchSetupDialog'
-import { projectResearchApi, researchEngineApi, sourcesApi } from '../../api/client'
+import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/client'
 
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-
-const channel = {
-  id: 'channel-1',
-  status: 'active',
-  name: 'Research feed',
-  source_name: 'Research source',
-  endpoint_url: null,
-  query: { search_query: 'agent tools' },
-  provider: { key: 'generic_rss', display_name: 'RSS' },
-} as unknown as SourceChannel
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 
 const initialDraft = {
   research_question: 'How should agent tools be evaluated?',
-  source_channel_ids: ['channel-1'],
+  research_context_version_id: '11111111-1111-4111-8111-111111111111',
+  query_strategy_id: '22222222-2222-4222-8222-222222222222',
   history_mode: 'bounded_range' as const,
   from: '2025-01-01',
   to: '2025-12-31',
@@ -41,6 +31,7 @@ describe('ResearchSetupDialog', () => {
   it('assesses an unanswerable question and lets the user adopt an actionable rewrite', async () => {
     const user = userEvent.setup()
     const onRefineQuestion = vi.fn().mockResolvedValue({
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
       assessment: { answerable: false, finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 }, issues: ['Too broad'] },
       suggested_questions: ['How do tool-using agents recover from failed calls?'],
       sub_questions: [],
@@ -51,7 +42,6 @@ describe('ResearchSetupDialog', () => {
       <ResearchSetupDialog
         open
         draft={{ ...initialDraft, research_question: 'agent' }}
-        sourceChannels={[channel]}
         busyAction={null}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
@@ -59,7 +49,6 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={onRefineQuestion}
         onStart={vi.fn()}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )
@@ -72,25 +61,29 @@ describe('ResearchSetupDialog', () => {
     }))
     await user.click(screen.getByRole('button', { name: 'How do tool-using agents recover from failed calls?' }))
     expect(screen.getByDisplayValue('How do tool-using agents recover from failed calls?')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'How do tool-using agents recover from failed calls?' })).toHaveAttribute('aria-pressed', 'true')
     expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenLastCalledWith('project-1', expect.objectContaining({
       research_question: 'How do tool-using agents recover from failed calls?',
-      question_refine_skipped: false,
+      question_refine_skipped: true,
     }))
-
-    // Clarifying options are clickable, support multi-select, and combine with the Other input.
+    // Adopting a rewrite must retain the current assessment as the context for
+    // its clarifying questions. Only the approved context/strategy is invalidated.
+    expect(screen.getByText('Which agent environment?')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Coding agents' }))
-    await user.click(screen.getByRole('button', { name: 'Assistant agents' }))
     expect(screen.getByRole('button', { name: 'Coding agents' })).toHaveAttribute('aria-pressed', 'true')
-    await user.type(screen.getByPlaceholderText('Other — add your own answer'), 'RL agents')
     await user.click(screen.getByRole('button', { name: 'Reassess with answers' }))
-    const history = onRefineQuestion.mock.calls[1]![0].history as Array<{ role: string; content: string }>
-    expect(history[history.length - 1]?.content).toContain('Coding agents; Assistant agents; RL agents')
+    expect(onRefineQuestion).toHaveBeenLastCalledWith(expect.objectContaining({
+      research_question: 'How do tool-using agents recover from failed calls?',
+      history: expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: expect.stringContaining('Coding agents') }),
+      ]),
+    }))
+    expect(toast.info).toHaveBeenCalled()
   })
 
   it('locks discovery and start until the question passes refinement, and unlocks after adoption', async () => {
     const user = userEvent.setup()
     const onRefineQuestion = vi.fn().mockResolvedValue({
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
       assessment: { answerable: false, finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 }, issues: ['Too broad'] },
       suggested_questions: ['How do tool-using agents recover from failed calls?'],
       sub_questions: [],
@@ -101,7 +94,6 @@ describe('ResearchSetupDialog', () => {
       <ResearchSetupDialog
         open
         draft={{ ...initialDraft, research_question: 'agent', question_refine_skipped: true }}
-        sourceChannels={[channel]}
         busyAction={null}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
@@ -109,14 +101,13 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={onRefineQuestion}
         onStart={vi.fn()}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )
 
     expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /Sources/ }))
-    expect(screen.getByRole('button', { name: 'Discover sources' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Evaluate search coverage' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /Question/ }))
     await user.click(screen.getByRole('button', { name: 'Assess question' }))
     // Still failing after assessment: the gate stays closed until a rewrite is adopted.
@@ -124,13 +115,14 @@ describe('ResearchSetupDialog', () => {
     expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'How do tool-using agents recover from failed calls?' }))
     await user.click(screen.getByRole('button', { name: /Sources/ }))
-    expect(screen.getByRole('button', { name: 'Discover sources' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Evaluate search coverage' })).toBeDisabled()
   })
 
-  it('interrupts start with a dedicated dialog when clarification answers were never reassessed', async () => {
+  it('keeps start locked when clarification answers invalidate the materialized strategy', async () => {
     const user = userEvent.setup()
     const onStart = vi.fn()
     const onRefineQuestion = vi.fn().mockResolvedValue({
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
       assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
       suggested_questions: ['How do tool-using agents recover from failed calls?'],
       sub_questions: [],
@@ -141,7 +133,6 @@ describe('ResearchSetupDialog', () => {
       <ResearchSetupDialog
         open
         draft={initialDraft}
-        sourceChannels={[channel]}
         busyAction={null}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
@@ -149,18 +140,48 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={onRefineQuestion}
         onStart={onStart}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )
 
     await user.click(screen.getByRole('button', { name: 'Assess question' }))
     await user.click(await screen.findByRole('button', { name: 'Coding agents' }))
-    await user.click(screen.getByRole('button', { name: /start initial research/i }))
-    expect(await screen.findByText('Unused clarification answers')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
     expect(onStart).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Start without them' }))
-    expect(onStart).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidates a persisted context and materialized strategy when clarification answers change', async () => {
+    const user = userEvent.setup()
+    render(
+      <ResearchSetupDialog
+        open
+        draft={{
+          ...initialDraft,
+          question_refinement: {
+            research_context_version_id: initialDraft.research_context_version_id,
+            assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
+            suggested_questions: [initialDraft.research_question],
+            sub_questions: [],
+            scope: { in: [], out: [] },
+            clarifying_questions: [{ question: 'Which agent environment?', options: ['Coding agents'], allow_multiple: false }],
+          },
+        }}
+        busyAction={null}
+        modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
+        canAct
+        onOpenChange={vi.fn()}
+        onSave={vi.fn().mockResolvedValue(true)}
+        onRefineQuestion={vi.fn()}
+        onStart={vi.fn()}
+        onEditQuestion={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /start initial research/i })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Coding agents' }))
+    expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: /Sources/ }))
+    expect(screen.getByRole('button', { name: 'Evaluate search coverage' })).toBeDisabled()
   })
 
   it('preselects the space default provider and its default model when the draft has none', async () => {
@@ -168,7 +189,6 @@ describe('ResearchSetupDialog', () => {
       <ResearchSetupDialog
         open
         draft={{ ...initialDraft, execution: { model_provider_id: '', model_name: '' } }}
-        sourceChannels={[channel]}
         busyAction={null}
         modelProviders={[
           { id: 'provider-1', name: 'First provider', provider_type: 'openai', enabled: true } as never,
@@ -179,7 +199,6 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={vi.fn()}
         onStart={vi.fn()}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )
@@ -196,7 +215,6 @@ describe('ResearchSetupDialog', () => {
       <ResearchSetupDialog
         open
         draft={initialDraft}
-        sourceChannels={[channel]}
         busyAction={null}
         modelProviders={[]}
         canAct
@@ -204,7 +222,6 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={vi.fn()}
         onStart={vi.fn()}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )
@@ -219,6 +236,7 @@ describe('ResearchSetupDialog', () => {
   it('keeps the refinement session when the dialog is closed and reopened', async () => {
     const user = userEvent.setup()
     const onRefineQuestion = vi.fn().mockResolvedValue({
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
       assessment: { answerable: false, finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 }, issues: ['Too broad'] },
       suggested_questions: ['How do tool-using agents recover from failed calls?'],
       sub_questions: [],
@@ -227,7 +245,6 @@ describe('ResearchSetupDialog', () => {
     })
     const props = {
       draft: { ...initialDraft, research_question: 'agent' },
-      sourceChannels: [channel],
       busyAction: null,
       modelProviders: [{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never],
       canAct: true,
@@ -235,26 +252,25 @@ describe('ResearchSetupDialog', () => {
       onSave: vi.fn().mockResolvedValue(true),
       onRefineQuestion,
       onStart: vi.fn(),
-      onSourceCreated: vi.fn(),
       onEditQuestion: vi.fn(),
     }
     const { rerender } = render(<ResearchSetupDialog open {...props} />)
     await user.click(screen.getByRole('button', { name: 'Assess question' }))
     expect(await screen.findByText('Not yet answerable')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'How do tool-using agents recover from failed calls?' }))
 
     rerender(<ResearchSetupDialog open={false} {...props} />)
     rerender(<ResearchSetupDialog open {...props} />)
 
     expect(await screen.findByText('Not yet answerable')).toBeInTheDocument()
     expect(screen.getByText('Too broad')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('How do tool-using agents recover from failed calls?')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('agent')).toBeInTheDocument()
     expect(onRefineQuestion).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the in-progress refinement when the parent draft changes while the dialog stays open', async () => {
     const user = userEvent.setup()
     const onRefineQuestion = vi.fn().mockResolvedValue({
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
       assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
       suggested_questions: ['How do tool-using agents recover from failed calls?'],
       sub_questions: [],
@@ -262,7 +278,6 @@ describe('ResearchSetupDialog', () => {
       clarifying_questions: [],
     })
     const props = {
-      sourceChannels: [channel],
       busyAction: null,
       modelProviders: [{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never],
       canAct: true,
@@ -270,35 +285,43 @@ describe('ResearchSetupDialog', () => {
       onSave: vi.fn().mockResolvedValue(true),
       onRefineQuestion,
       onStart: vi.fn(),
-      onSourceCreated: vi.fn(),
       onEditQuestion: vi.fn(),
     }
     const { rerender } = render(<ResearchSetupDialog open draft={{ ...initialDraft, research_question: 'agent', question_refine_skipped: true }} {...props} />)
     await user.click(screen.getByRole('button', { name: 'Assess question' }))
-    await user.click(await screen.findByRole('button', { name: 'How do tool-using agents recover from failed calls?' }))
+    expect(await screen.findByText('Answerable')).toBeInTheDocument()
 
     // A monitor confirmation refreshes the parent, which rebuilds the incoming
     // draft (different fingerprint) while the dialog is still open.
-    rerender(<ResearchSetupDialog open draft={{ ...initialDraft, source_channel_ids: ['channel-1', 'channel-2'] }} {...props} />)
+    rerender(<ResearchSetupDialog open draft={{ ...initialDraft, query_strategy_id: '33333333-3333-4333-8333-333333333333' }} {...props} />)
 
-    expect(screen.getByDisplayValue('How do tool-using agents recover from failed calls?')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('agent')).toBeInTheDocument()
     expect(screen.getByText('Answerable')).toBeInTheDocument()
   })
 
-  it('previews engine suggestions and confirms selected providers as project sources', async () => {
+  it('renders adaptive provider attempts and materializes selected queries', async () => {
     const user = userEvent.setup()
-    vi.spyOn(researchEngineApi, 'search').mockResolvedValue({
-      strategy: { id: 'strategy-1', status: 'completed', providers: [], hit_counts: { arxiv: 42 }, provider_errors: {}, result_count: 1 },
-      candidates: [{ candidate_id: 'candidate-1', kind: 'academic_paper', title: 'Agent paper', authors: ['Ada'], source_uri: 'https://arxiv.org/abs/1', occurred_at: null, excerpt: 'Summary', providers: ['arxiv'], trust_level: 'normal' }],
-      monitor_suggestions: [{ provider_key: 'arxiv', rationale: 'Recent preprints', approximate_hit_count: 42, samples: [{ title: 'Agent paper', source_uri: 'https://arxiv.org/abs/1', occurred_at: null }], create_body: {} }],
-    })
-    vi.spyOn(researchEngineApi, 'createMonitors').mockResolvedValue({ strategy_id: 'strategy-1', channels: [channel], bindings: [] })
-    const onSourceCreated = vi.fn()
+    vi.spyOn(researchDiscoveryApi, 'evaluate').mockResolvedValue({ strategy: {
+      id: '22222222-2222-4222-8222-222222222222', project_id: 'project-1', research_context_version_id: '11111111-1111-4111-8111-111111111111', question_snapshot: initialDraft.research_question, status: 'selected',
+      version: 1, parent_strategy_id: null, adaptation_direction: null,
+      provider_plans: [{ id: 'plan-1', provider_key: 'arxiv', status: 'selected', selected_attempt_id: 'attempt-1', terminal_decision: 'accept', decision_reason: 'Target range', coverage_warning: 'The accessible preview is smaller than the provider estimate.', attempts: [{ id: 'attempt-1', provider_plan_id: 'plan-1', round: 0, sequence: 1, direction: 'initial', semantic_query: { schema_version: 'research_semantic_query.v1', core: [{ value: 'coding agent memory', synonyms: ['agent memory module'], weight: 1 }], expansions: [], qualifiers: [{ value: 'recovery benchmark', synonyms: [], weight: 0.8 }], exclusions: [{ value: 'human-only studies', synonyms: [], weight: 1 }], time_window: null }, compiled_query: { schema_version: 'research_compiled_query.v1', provider_key: 'arxiv', query: { search_query: 'coding agent recovery' }, fingerprint: '1234567890abcdef' }, observation: { provider_hit_count: 42, accessible_hit_count: 42, relevance_rate: 0.8, relevance_lower_bound: 0.6, diversity_score: 0.7, duplicate_rate: 0, samples: [{ sample_id: 'sample-1', title: 'Agent paper', source_uri: null, occurred_at: null, excerpt: null, relevance: 'relevant', matched_core_concepts: ['coding agent'] }] }, score: 0.8, decision: 'accept', decision_reason: 'Target range', error_class: null }] }],
+    } })
+    vi.spyOn(researchDiscoveryApi, 'materialize').mockResolvedValue({ query_strategy_id: '22222222-2222-4222-8222-222222222222', project_id: 'project-1', status: 'materialized', sources: [{ provider_key: 'arxiv', research_query_attempt_id: 'attempt-1', source_channel_id: 'channel-1', project_source_binding_id: 'binding-1', query_fingerprint: '1234567890abcdef' }] })
     render(
       <ResearchSetupDialog
         open
-        draft={{ ...initialDraft, source_channel_ids: [] }}
-        sourceChannels={[]}
+        draft={{
+          ...initialDraft,
+          query_strategy_id: '',
+          question_refinement: {
+            research_context_version_id: '11111111-1111-4111-8111-111111111111',
+            assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 5 }, issues: [] },
+            suggested_questions: [initialDraft.research_question],
+            sub_questions: ['Which benchmarks measure recovery?'],
+            scope: { in: ['Tool-using coding agents'], out: ['Human-only studies'] },
+            clarifying_questions: [],
+          },
+        }}
         busyAction={null}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
@@ -306,17 +329,29 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={vi.fn()}
         onStart={vi.fn()}
-        onSourceCreated={onSourceCreated}
         onEditQuestion={vi.fn()}
       />,
     )
 
+    expect(screen.getByText('Tool-using coding agents')).toBeInTheDocument()
+    expect(screen.getByText('Human-only studies')).toBeInTheDocument()
+    expect(screen.getByText('Which benchmarks measure recovery?')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /Sources/ }))
-    await user.click(screen.getByRole('button', { name: 'Discover sources' }))
-    expect(await screen.findByText(/about 42 hits/)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Confirm suggested sources' }))
+    await user.click(screen.getByRole('button', { name: 'Evaluate search coverage' }))
+    expect(researchDiscoveryApi.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
+    }))
+    expect(await screen.findByText(/42 provider hits/)).toBeInTheDocument()
+    expect(screen.getAllByText('coding agent memory')).toHaveLength(2)
+    expect(screen.getAllByText('recovery benchmark')).toHaveLength(2)
+    expect(screen.getAllByText('human-only studies')).toHaveLength(2)
+    expect(screen.getAllByText(/agent memory module/)).toHaveLength(2)
+    expect(screen.getByText(/accessible preview is smaller/)).toBeInTheDocument()
+    expect(screen.getByText(/View 1 evaluation attempt/)).toBeInTheDocument()
+    expect(screen.getByText(/Provider counts are independent estimates and may overlap/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Confirm selected queries' }))
     expect(await screen.findByText(/Ready/)).toBeInTheDocument()
-    expect(onSourceCreated).toHaveBeenCalledWith(channel)
+    expect(researchDiscoveryApi.materialize).toHaveBeenCalled()
   })
 
   it('preserves edited values across equivalent parent refreshes and starts with them', () => {
@@ -325,7 +360,6 @@ describe('ResearchSetupDialog', () => {
       <ResearchSetupDialog
         open
         draft={initialDraft}
-        sourceChannels={[channel]}
         busyAction={null}
         modelProviders={[]}
         canAct
@@ -333,7 +367,6 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={vi.fn()}
         onStart={onStart}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )
@@ -343,8 +376,7 @@ describe('ResearchSetupDialog', () => {
     rerender(
       <ResearchSetupDialog
         open
-        draft={{ ...initialDraft, source_channel_ids: [...initialDraft.source_channel_ids], execution: { ...initialDraft.execution } }}
-        sourceChannels={[channel]}
+        draft={{ ...initialDraft, execution: { ...initialDraft.execution } }}
         busyAction={null}
         modelProviders={[]}
         canAct
@@ -352,7 +384,6 @@ describe('ResearchSetupDialog', () => {
         onSave={vi.fn().mockResolvedValue(true)}
         onRefineQuestion={vi.fn()}
         onStart={onStart}
-        onSourceCreated={vi.fn()}
         onEditQuestion={vi.fn()}
       />,
     )

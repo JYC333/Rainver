@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  __setNetworkRetryDelayForTests,
   __setProviderHttpClientForTests,
   completeProviderChat,
   completeProviderEmbedding,
@@ -14,8 +15,16 @@ import {
 } from "../src/modules/providers";
 import type { UsageObservation } from "../src/modules/usage";
 
+// Network-error retries add a real delay between attempts (see
+// NETWORK_ERROR_RETRY_DELAY_MS in invocation.ts) — skip it here so tests
+// that exhaust retries don't take multiple real seconds.
+beforeEach(() => {
+  __setNetworkRetryDelayForTests(async () => {});
+});
+
 afterEach(() => {
   __setProviderHttpClientForTests(null);
+  __setNetworkRetryDelayForTests(null);
 });
 
 function target(
@@ -314,7 +323,10 @@ describe("provider invocation resilience", () => {
           model: body.model ?? null,
           body,
         });
-        if (attempts.length <= 2) {
+        // A pure network failure gets a larger same-key retry budget than a
+        // provider-classified transient response (MAX_NETWORK_ERROR_RETRIES
+        // = 3 retries, so 4 attempts on k1 before falling back to p2).
+        if (attempts.length <= 4) {
           const error = new Error("fetch failed") as Error & { cause?: Error };
           error.cause = new Error("getaddrinfo ENOTFOUND api.p1.test");
           throw error;
@@ -337,8 +349,10 @@ describe("provider invocation resilience", () => {
     });
 
     expect(result.content).toBe("fallback ok");
-    expect(attempts.map((a) => a.key)).toEqual(["k1", "k1", "k2"]);
+    expect(attempts.map((a) => a.key)).toEqual(["k1", "k1", "k1", "k1", "k2"]);
     expect(attempts.map((a) => a.model)).toEqual([
+      "explicit-model-for-p1",
+      "explicit-model-for-p1",
       "explicit-model-for-p1",
       "explicit-model-for-p1",
       "default-of-p2",
@@ -353,6 +367,38 @@ describe("provider invocation resilience", () => {
       },
     });
     expect(outcomes[1]).toEqual({ member: "m2", outcome: { kind: "success" } });
+  });
+
+  it("waits an increasing delay between network-error retries instead of hammering the endpoint instantly", async () => {
+    // A connection reset that recurs is exactly as likely to hit the same
+    // narrow failure window again if retried instantly (see
+    // PROVIDER_KEEPALIVE_INITIAL_DELAY_MS's own note about MiniMax
+    // specifically) — each retry should wait longer than the last.
+    const delays: number[] = [];
+    __setNetworkRetryDelayForTests(async (ms) => {
+      delays.push(ms);
+    });
+    const store = makeStore({ p1: target("p1", [{ member: "m1", key: "k1" }]) }, []);
+    let calls = 0;
+    __setProviderHttpClientForTests({
+      async fetch() {
+        calls += 1;
+        if (calls <= 3) {
+          const error = new Error("fetch failed") as Error & { cause?: Error };
+          error.cause = new Error("read ECONNRESET");
+          throw error;
+        }
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "ok" } }], model: "m", usage: {} }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    const result = await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+
+    expect(result.content).toBe("ok");
+    expect(delays).toEqual([500, 1000, 1500]);
   });
 
   it("uses an anthropic provider's OpenAI-compatible URL and retries a transient network reset", async () => {

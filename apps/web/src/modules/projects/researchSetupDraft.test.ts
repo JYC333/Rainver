@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { researchSetupDraftFromWorkflow, serializeResearchSetupDraft } from './researchSetupDraft'
 
 describe('research setup draft', () => {
-  it('reads selected literature monitors from workflow state', () => {
+  it('reads the materialized query strategy from workflow state', () => {
     const draft = researchSetupDraftFromWorkflow({
       id: 'workflow-1',
       project_id: 'project-1',
@@ -12,7 +12,7 @@ describe('research setup draft', () => {
       mode: 'autonomous',
       state_json: {
         research_question: 'How should agents remember?',
-        source_channel_ids: ['channel-1', 'channel-2'],
+        query_strategy_id: '22222222-2222-4222-8222-222222222222',
         initial_intake: { history_mode: 'all_available', max_items: 10000 },
         execution: {},
       },
@@ -23,14 +23,14 @@ describe('research setup draft', () => {
     }, 'Fallback question')
 
     expect(draft.research_question).toBe('How should agents remember?')
-    expect(draft.source_channel_ids).toEqual(['channel-1', 'channel-2'])
+    expect(draft.query_strategy_id).toBe('22222222-2222-4222-8222-222222222222')
     expect(draft.history_mode).toBe('all_available')
   })
 
   it('serializes an initial intake without duplicating monitor query configuration', () => {
     const input = serializeResearchSetupDraft({
       research_question: 'How should agents remember?',
-      source_channel_ids: ['channel-1', 'channel-1'],
+      query_strategy_id: '22222222-2222-4222-8222-222222222222',
       history_mode: 'bounded_range',
       from: '2020-01-01',
       to: '2026-01-01',
@@ -46,7 +46,7 @@ describe('research setup draft', () => {
 
     expect(input).toMatchObject({
       research_question: 'How should agents remember?',
-      source_channel_ids: ['channel-1'],
+      query_strategy_id: '22222222-2222-4222-8222-222222222222',
       history_mode: 'bounded_range',
       from: '2020-01-01',
       to: '2026-01-01',
@@ -56,6 +56,7 @@ describe('research setup draft', () => {
 
   it('round-trips the refinement assessment through workflow state', () => {
     const refinement = {
+      research_context_version_id: '11111111-1111-4111-8111-111111111111',
       assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
       suggested_questions: ['q'], sub_questions: [], scope: { in: [], out: [] }, clarifying_questions: [],
     }

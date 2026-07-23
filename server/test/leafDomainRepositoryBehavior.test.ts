@@ -1257,6 +1257,10 @@ describe("Leaf domain repository behavior", () => {
         expect(params).toEqual(["note-1", "space-1"]);
         return [];
       }
+      if (sql.includes("SELECT COALESCE(MAX(sort_order), -1) + 1")) {
+        expect(params).toEqual(["space-1", "collection-1"]);
+        return [{ next_sort_order: 0 }];
+      }
       if (sql.includes("INSERT INTO note_collection_items")) {
         expect(sql).toContain("id, space_id, collection_id, note_id");
         expect(params.slice(1, 4)).toEqual(["space-1", "collection-1", "note-1"]);

@@ -766,6 +766,13 @@ export class ProjectResearchRepository {
         ...stringArray(progress.source_post_processing_rule_ids),
         optionalString(progress.source_post_processing_rule_id) ?? "",
       ]);
+      // A decided checkpoint's review must stay reproducible as of the
+      // decision, but a still-pending one is refreshed in place (same row,
+      // machine_result_json/updated_at rewritten on every reconcile tick) —
+      // anchoring on created_at would freeze classified/usage counts at
+      // whatever was true when the checkpoint first appeared, forever, no
+      // matter how many later reconciles or refreshes run.
+      const asOf = dateIso(checkpoint.decided_at) ?? dateIso(checkpoint.updated_at) ?? new Date().toISOString();
       const [items, corpusSummary, decisionCoverage, usage] = await Promise.all([
         sourceItemIds.length
           ? this.db.query<ScreeningReviewItemRow>(
@@ -824,10 +831,10 @@ export class ProjectResearchRepository {
                 WHERE d.space_id=$1 AND d.project_id=$2 AND d.source_item_id=ANY($3::text[])
                   AND d.created_at <= $4::timestamptz
                   AND d.research_question_version=$5`,
-              [spaceId, projectId, sourceItemIds, dateIso(checkpoint.created_at), Math.max(1, numberValue(progress.research_question_version))],
+              [spaceId, projectId, sourceItemIds, asOf, Math.max(1, numberValue(progress.research_question_version))],
             )
           : Promise.resolve({ rows: [{ classified: "0" }] }),
-        this.screeningReviewUsage(spaceId, projectId, ruleIds, sourceItemIds, dateIso(checkpoint.created_at) ?? new Date().toISOString()),
+        this.screeningReviewUsage(spaceId, projectId, ruleIds, sourceItemIds, asOf),
       ]);
       const machineTotal = numberValue(machineResult.total);
       const summaryRow = corpusSummary.rows[0];
@@ -1321,7 +1328,7 @@ export class ProjectResearchRepository {
 
   // --- Literature matrix / synthesis ---------------------------------------
   //
-  // Thin read model over the existing Project Corpus (included/maybe papers).
+  // Thin read model over the existing Project Corpus (relevant/included/maybe papers).
   // The route contract stays stable as the backing query gains richer academic
   // metadata, extracted evidence, and annotations.
 
@@ -1408,7 +1415,7 @@ export class ProjectResearchRepository {
           AND evidence_source.space_id = matrix_evidence.space_id
           AND evidence_source.deleted_at IS NULL
         WHERE pci.space_id = $1 AND pci.project_id = $2 AND pci.status = 'active'
-          AND pci.triage_status IN ('included', 'maybe')
+          AND pci.triage_status IN ('relevant', 'included', 'maybe')
           AND (
             pci.object_id IS NULL
             OR (

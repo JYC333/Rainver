@@ -1,126 +1,103 @@
 import { useRef, useState } from 'react'
-import { History, Save, Undo2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectResearchApi } from '../../../api/client'
-import type { ResearchNotebookRevision, ResearchNotebookSection } from '../../../types/api'
+import { notesApi, ApiRequestError } from '../../../api/client'
+import type { Note, NoteRevision } from '../../../types/api'
 import type { RichTextEditorHandle } from '../../../components/editor/types'
-import { RichTextEditor } from '../../../components/editor/RichTextEditor'
-import { Badge } from '../../../components/ui/badge'
-import { Button } from '../../../components/ui/button'
+import {
+  RichTextEditor,
+  AiEditBanner,
+  HistoryChip,
+  NoteRevisionHistory,
+  normalizeNoteDocument,
+  richTextSnapshotFromDocument,
+} from '../../../components/editor'
+import { SaveStatusIndicator } from '../../../components/SaveStatusIndicator'
+import { useAutosave } from '../../../hooks/useAutosave'
 import { Card } from '../../../components/ui/card'
-import { errMsg } from '../../../lib/utils'
 import { SpaceLink as Link } from '../../../core/spaceNav'
-import { SECTION_LABELS } from './constants'
+import { errMsg } from '../../../lib/utils'
 
-const SOURCE_LABELS: Record<ResearchNotebookRevision['source'], string> = {
-  user_edit: 'You',
-  ai_monitoring: 'AI · monitoring',
-  ai_adhoc: 'AI · assistant',
-  seed: 'Report seed',
-  rollback: 'Rollback',
-}
-
-/** Plain text of one top-level Tiptap block, list items on `- ` lines. */
-function blockText(block: unknown): string {
-  const node = (block ?? {}) as Record<string, unknown>
-  const inline = (value: unknown): string => {
-    const record = (value ?? {}) as Record<string, unknown>
-    if (typeof record.text === 'string') return record.text
-    return Array.isArray(record.content) ? record.content.map(inline).join('') : ''
-  }
-  if (node.type === 'bulletList' || node.type === 'orderedList') {
-    const items = Array.isArray(node.content) ? node.content : []
-    return items.map((item, index) => {
-      const text = inline(item).trim()
-      return text ? `${node.type === 'orderedList' ? `${index + 1}.` : '-'} ${text}` : ''
-    }).filter(Boolean).join('\n')
-  }
-  return inline(node).trim()
-}
-
-function docBlocks(doc: Record<string, unknown> | undefined): string[] {
-  return Array.isArray(doc?.content) ? doc.content.map(blockText) : []
-}
-
-function RevisionDiff({ revision, previous }: { revision: ResearchNotebookRevision; previous?: ResearchNotebookRevision }) {
-  const ops = revision.diff_json?.ops
-  if (revision.diff_json?.rolled_back_to_version) {
-    return <p className="text-xs text-muted-foreground">Restored the content of version {revision.diff_json.rolled_back_to_version}.</p>
-  }
-  if (!ops?.length) return <p className="text-xs text-muted-foreground">Manual edit — open this version below or restore it to inspect.</p>
-  const base = docBlocks(previous?.content_json)
-  return (
-    <div className="space-y-1.5">
-      {revision.diff_json?.conflict && <p className="text-xs font-medium text-warning">The section had changed under the AI; its update was appended instead of merged.</p>}
-      {ops.map((op, index) => (
-        <div key={index} className="space-y-1 text-xs">
-          {(op.op === 'replace' || op.op === 'delete') && base.slice(op.index, op.index + op.count).map((text, i) => (
-            <pre key={`del-${i}`} className="whitespace-pre-wrap rounded border border-destructive/30 bg-destructive/10 p-2 font-sans text-destructive line-through">{text || '(empty block)'}</pre>
-          ))}
-          {op.op !== 'delete' && (
-            <pre className="whitespace-pre-wrap rounded border border-success/40 bg-success/10 p-2 font-sans">{op.markdown}</pre>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-export function NotebookSectionCard({
-  projectId,
-  section,
+/**
+ * One card per project note in the Notebook tab. This is deliberately just
+ * the generic Notes save/history/AI-co-edit machinery (see NoteEditor.tsx,
+ * NoteRevisionHistory) pointed at a project-scoped note — a project's
+ * "notebook" is free-form Notes, not a fixed set of sections, so any number
+ * of these can exist and the user can add more via the panel below.
+ */
+export function ProjectNoteCard({
+  note,
   onSaved,
+  onDeleted,
 }: {
-  projectId: string
-  section: ResearchNotebookSection
-  onSaved: (value: ResearchNotebookSection) => void
+  note: Note
+  onSaved: (value: Note) => void
+  onDeleted: (id: string) => void
 }) {
   const editor = useRef<RichTextEditorHandle>(null)
-  const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [revisions, setRevisions] = useState<ResearchNotebookRevision[] | null>(null)
+  const [revisions, setRevisions] = useState<NoteRevision[] | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [expandedDiff, setExpandedDiff] = useState<number | null>(null)
+  const [title, setTitle] = useState(note.title)
 
-  const latestIsAi = Boolean(section.updated_by_run_id)
+  // Mirrors NoteEditor's editorDocument/revalidate split: our own save's
+  // response is a fresh round-tripped object, but the editor already shows
+  // exactly what was just typed, so nothing to reload there. Only an
+  // external change (AI chat edit, rollback) reconciles the live document.
+  const [editorContent, setEditorContent] = useState(() => normalizeNoteDocument(note))
+  const baseVersionRef = useRef(note.version)
+  const titleRef = useRef(note.title)
 
-  async function save() {
-    const content = editor.current?.getSnapshot().content_json
-    if (!content) return
-    setBusy(true)
+  const performSaveImpl = async () => {
+    const snapshot = editor.current?.getSnapshot() ?? richTextSnapshotFromDocument(editorContent)
+    const trimmedTitle = titleRef.current.trim()
     try {
-      const next = await projectResearchApi.updateNotebookSection(
-        projectId,
-        section.section_key,
-        { base_version: section.version, content_json: content },
-      )
-      onSaved(next)
-      setDirty(false)
+      const updated = await notesApi.update(note.id, {
+        ...(trimmedTitle ? { title: trimmedTitle } : {}),
+        ...snapshot,
+        expect_version: baseVersionRef.current,
+      })
+      baseVersionRef.current = updated.version
+      onSaved(updated)
       setRevisions(null)
-      toast.success('Notebook section saved')
     } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setBusy(false)
+      if (error instanceof ApiRequestError && error.status === 409) {
+        toast.error(`"${note.title}" changed elsewhere while you were editing. Your edit was not saved — check History, then retry.`)
+      } else {
+        toast.error(errMsg(error))
+      }
+      throw error
     }
   }
+
+  const { state: saveState, setState: setSaveState, scheduleSave, performSave } = useAutosave(performSaveImpl)
+  const dirty = saveState !== 'saved'
+  if (!dirty && note.version !== baseVersionRef.current) {
+    baseVersionRef.current = note.version
+    titleRef.current = note.title
+    setTitle(note.title)
+    const freshDoc = normalizeNoteDocument(note)
+    if (JSON.stringify(freshDoc) !== JSON.stringify(editorContent)) setEditorContent(freshDoc)
+  }
+
+  const latestIsAi = Boolean(note.updated_by_run_id)
 
   async function loadHistory(open = true) {
     setHistoryOpen(open)
     if (!open) return
     try {
-      setRevisions(await projectResearchApi.notebookRevisions(projectId, section.section_key))
+      setRevisions(await notesApi.revisions(note.id))
     } catch (error) {
       toast.error(errMsg(error))
     }
   }
 
   async function rollback(toVersion: number) {
+    if (dirty && !window.confirm('You have an unsaved edit in this note. Restoring a version will discard it. Continue?')) return
     setBusy(true)
     try {
-      const next = await projectResearchApi.rollbackNotebookSection(projectId, section.section_key, toVersion)
+      const next = await notesApi.rollback(note.id, toVersion)
       onSaved(next)
-      setDirty(false)
+      setSaveState('saved')
       setRevisions(null)
       setHistoryOpen(false)
       toast.success(`Restored version ${toVersion} as version ${next.version}`)
@@ -131,74 +108,61 @@ export function NotebookSectionCard({
     }
   }
 
+  async function deleteNote() {
+    if (!window.confirm(`Delete "${note.title}"? This can be undone from Knowledge > Notes.`)) return
+    try {
+      await notesApi.delete(note.id)
+      onDeleted(note.id)
+    } catch (error) {
+      toast.error(errMsg(error))
+    }
+  }
+
   return (
     <Card className="space-y-3 p-4">
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="font-semibold">{SECTION_LABELS[section.section_key]}</h2>
-          <p className="text-xs text-muted-foreground">
-            Version {section.version} · updated {new Date(section.updated_at).toLocaleString()}
-            {section.updated_by_run_id
-              ? <> by <Link className="hover:underline" to={`/runs/${section.updated_by_run_id}`}>AI</Link></>
-              : section.updated_by_user_id ? ' by a researcher' : ''}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={() => void loadHistory(!historyOpen)}>
-            <History className="size-3.5" />History
-          </Button>
-          <Button size="sm" onClick={() => void save()} disabled={!dirty || busy}>
-            <Save className="size-3.5" />
-            {busy ? 'Saving…' : 'Save'}
-          </Button>
+        <input
+          value={title}
+          onChange={e => { setTitle(e.target.value); titleRef.current = e.target.value; scheduleSave() }}
+          placeholder="Untitled note"
+          aria-label="Note title"
+          className="min-w-0 flex-1 bg-transparent text-lg font-semibold tracking-tight text-foreground outline-none placeholder:text-muted-foreground/60"
+        />
+        <div className="flex shrink-0 items-center gap-2">
+          <SaveStatusIndicator state={saveState} onRetry={() => { void performSave() }} />
+          <HistoryChip active={historyOpen} onClick={() => void loadHistory(!historyOpen)} />
+          <Link to={`/knowledge/notes/${note.id}`} className="text-xs text-muted-foreground hover:underline">Open in Notes</Link>
         </div>
       </div>
-      {latestIsAi && section.version > 1 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-primary/40 bg-primary/5 p-2.5 text-xs">
-          <span className="font-medium">AI edited this section (<Link className="underline" to={`/runs/${section.updated_by_run_id}`}>run</Link>). Review the change or roll it back.</span>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => void loadHistory(true)}>View change</Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void rollback(section.version - 1)}>
-              <Undo2 className="size-3.5" />Undo AI change
-            </Button>
-          </div>
-        </div>
+      <p className="text-xs text-muted-foreground">
+        Version {note.version} · updated {new Date(note.updated_at).toLocaleString()}
+        {note.updated_by_run_id
+          ? <> by <Link className="hover:underline" to={`/runs/${note.updated_by_run_id}`}>AI</Link></>
+          : note.updated_by_user_id ? ' by a researcher' : ''}
+      </p>
+      {latestIsAi && note.version > 1 && (
+        <AiEditBanner runId={note.updated_by_run_id!} busy={busy} onUndo={() => void rollback(note.version - 1)} />
       )}
       <RichTextEditor
         ref={editor}
-        key={`${section.id}:${section.version}`}
-        initialContent={section.content_json}
+        key={note.id}
+        initialContent={editorContent}
         variant="notes"
-        onChange={() => setDirty(true)}
+        onChange={scheduleSave}
       />
       {historyOpen && (
-        <div className="space-y-2 rounded border border-border/70 bg-muted/30 p-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Version history</h3>
-          {!revisions && <p className="text-xs text-muted-foreground">Loading…</p>}
-          {revisions?.map((revision, index) => (
-            <div key={revision.id} className="rounded border border-border/60 bg-background p-2.5">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="font-medium">v{revision.version}</span>
-                <Badge variant={revision.source.startsWith('ai_') ? 'default' : 'outline'}>{SOURCE_LABELS[revision.source]}</Badge>
-                <span className="text-muted-foreground">{new Date(revision.created_at).toLocaleString()}</span>
-                {revision.created_by_run_id && <Link className="text-muted-foreground hover:underline" to={`/runs/${revision.created_by_run_id}`}>run</Link>}
-                <span className="ml-auto flex gap-2">
-                  <Button size="sm" variant="ghost" onClick={() => setExpandedDiff(expandedDiff === revision.version ? null : revision.version)}>
-                    {expandedDiff === revision.version ? 'Hide' : 'Changes'}
-                  </Button>
-                  {revision.version !== section.version && (
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => void rollback(revision.version)}>Restore</Button>
-                  )}
-                </span>
-              </div>
-              {expandedDiff === revision.version && (
-                <div className="mt-2"><RevisionDiff revision={revision} previous={revisions[index + 1]} /></div>
-              )}
-            </div>
-          ))}
-          {revisions && revisions.length === 0 && <p className="text-xs text-muted-foreground">No history yet.</p>}
-        </div>
+        <NoteRevisionHistory
+          revisions={revisions}
+          currentVersion={note.version}
+          busy={busy}
+          onRollback={toVersion => void rollback(toVersion)}
+        />
       )}
+      <div className="flex justify-end border-t border-border/60 pt-2">
+        <button type="button" onClick={() => void deleteNote()} className="text-xs text-muted-foreground hover:text-destructive">
+          Delete note
+        </button>
+      </div>
     </Card>
   )
 }

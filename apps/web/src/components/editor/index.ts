@@ -1,4 +1,5 @@
 export { RichTextEditor } from './RichTextEditor'
+export { NoteRevisionHistory, AiEditBanner, HistoryChip } from './NoteRevisionHistory'
 export {
   emptyRichTextDocument,
   isRichTextDocument,

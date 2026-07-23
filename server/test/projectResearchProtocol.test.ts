@@ -13,22 +13,20 @@ describe("Project Research output protocol", () => {
     expect(() => ProjectResearchHistoryModeSchema.parse("implicit_default")).toThrow();
   });
 
-  it("uses selected source monitors for the initial literature intake contract", async () => {
+  it("uses a project-owned materialized query strategy for initial intake", async () => {
     const { ProjectResearchInitialIntakeRequestSchema } = await loadProtocol();
     const parsed = ProjectResearchInitialIntakeRequestSchema.parse({
-      research_question: "How do agents use memory?",
-      source_channel_ids: ["monitor-1"],
+      query_strategy_id: "11111111-1111-4111-8111-111111111111",
       history_mode: "all_available",
       max_items: 10000,
       report_depth: "quick",
       question_refine_skipped: false,
       execution: { model_provider_id: "provider-1" },
     });
-    expect(parsed.source_channel_ids).toEqual(["monitor-1"]);
+    expect(parsed.query_strategy_id).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.history_mode).toBe("all_available");
     expect(parsed.report_depth).toBe("quick");
     expect(ProjectResearchInitialIntakeRequestSchema.safeParse({
-      research_question: "How do agents use memory?",
       source_channel_ids: ["monitor-1"],
       execution: { model_provider_id: "provider-1" },
     }).success).toBe(false);
@@ -37,8 +35,7 @@ describe("Project Research output protocol", () => {
   it("does not expose CLI runtime configuration in the Research contract", async () => {
     const { ProjectResearchInitialIntakeRequestSchema } = await loadProtocol();
     const parsed = ProjectResearchInitialIntakeRequestSchema.parse({
-      research_question: "How do agents use memory?",
-      source_channel_ids: ["monitor-1"],
+      query_strategy_id: "11111111-1111-4111-8111-111111111111",
       report_depth: "full",
       question_refine_skipped: false,
       execution: { model_provider_id: "provider-1", model_name: "provider/path-to-model" },
@@ -47,13 +44,11 @@ describe("Project Research output protocol", () => {
     expect(parsed.execution).not.toHaveProperty("adapter_type");
     expect(parsed.execution).not.toHaveProperty("credential_profile_id");
     expect(ProjectResearchInitialIntakeRequestSchema.safeParse({
-      research_question: "How do agents use memory?",
-      source_channel_ids: ["monitor-1"],
+      query_strategy_id: "11111111-1111-4111-8111-111111111111",
       execution: { adapter_type: "opencode" },
     }).success).toBe(false);
     expect(ProjectResearchInitialIntakeRequestSchema.safeParse({
-      research_question: "How do agents use memory?",
-      source_channel_ids: ["monitor-1"],
+      query_strategy_id: "11111111-1111-4111-8111-111111111111",
       model_provider_id: "provider-1",
     }).success).toBe(false);
   });

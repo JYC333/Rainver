@@ -59,6 +59,7 @@ done
 local_compose_init "$MODE"
 local_compose_ensure_mode_env_file
 local_compose_ensure_server_database_env
+local_compose_generate_server_env
 trap 'local_compose_stop_postgres_if_started "migrate"' EXIT
 
 redacted_target() {

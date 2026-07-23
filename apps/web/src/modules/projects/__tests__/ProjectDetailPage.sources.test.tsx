@@ -4,7 +4,10 @@ import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { toast } from 'sonner'
 import ProjectDetailPage from '../ProjectDetailPage'
-import { automationsApi, sourcesApi, readerApi, projectsApi, workspacesApi, projectPresetsApi, projectResearchApi } from '../../../api/client'
+import {
+  automationsApi, sourcesApi, readerApi, projectsApi, workspacesApi, projectPresetsApi, projectResearchApi,
+  activityApi, artifactsApi, proposalsApi,
+} from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), dismiss: vi.fn() },
@@ -413,6 +416,49 @@ describe('ProjectDetailPage Source consumption', () => {
     expect(screen.getByText('Saved intake configuration')).toBeInTheDocument()
     expect(screen.getByLabelText('Research question')).toBeInTheDocument()
     expect(screen.getByText(/Engineering feed/)).toBeInTheDocument()
+  })
+
+  it('skips fetching data that only the non-academic sections render', async () => {
+    // This suite has no global mock-clearing between tests (other cases rely
+    // on accumulated call history), so the calls asserted "not called" below
+    // must be cleared of whatever earlier non-academic tests already left on
+    // these same shared spies.
+    vi.mocked(workspacesApi.list).mockClear()
+    vi.mocked(activityApi.list).mockClear()
+    vi.mocked(artifactsApi.list).mockClear()
+    vi.mocked(proposalsApi.list).mockClear()
+    vi.mocked(sourcesApi.evidence).mockClear()
+    vi.mocked(sourcesApi.postProcessingDecisions).mockClear()
+    vi.mocked(readerApi.listByProject).mockClear()
+    vi.mocked(projectResearchApi.screeningCriteria).mockClear()
+
+    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+    renderPage()
+
+    expect(await screen.findByText('Research status')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(projectResearchApi.workflows).toHaveBeenCalledWith('project-1')
+    })
+
+    // These four only feed the plain-project "Sources consumption"/"Project
+    // activity" sections and the non-academic ResearchWorkflowPanel, none of
+    // which render for an academic project — fetching them would be pure
+    // waste on this page.
+    expect(workspacesApi.list).not.toHaveBeenCalled()
+    expect(activityApi.list).not.toHaveBeenCalled()
+    expect(artifactsApi.list).not.toHaveBeenCalled()
+    expect(proposalsApi.list).not.toHaveBeenCalled()
+    expect(sourcesApi.evidence).not.toHaveBeenCalled()
+    expect(sourcesApi.postProcessingDecisions).not.toHaveBeenCalled()
+    expect(readerApi.listByProject).not.toHaveBeenCalled()
+    // Screening criteria was fetched into a prop no component ever read.
+    expect(projectResearchApi.screeningCriteria).not.toHaveBeenCalled()
+
+    // Still-needed data — consumed by AcademicResearchWorkbench itself or by
+    // sections shown regardless of project type — must still be fetched.
+    expect(sourcesApi.channels).toHaveBeenCalled()
+    expect(sourcesApi.projectSourceBindings).toHaveBeenCalledWith({ project_id: 'project-1' })
+    expect(automationsApi.list).toHaveBeenCalledWith({ project_id: 'project-1' })
   })
 
   it('does not flash the initial intake setup while research data is loading', async () => {

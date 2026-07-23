@@ -1,14 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../../config";
-import { HttpError, objectValue, optionalString, requiredString, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
+import { HttpError, objectValue, optionalString, requiredString, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../../routeUtils/common";
 import { normalizeSourceConnectionCreateGovernance } from "../sourceConsent";
 import { SourceProviderCatalogService, type ResolvedSourceProviderConnector } from "../catalog/sourceProviderCatalogService";
-import { SourceChannelQueryCompiler } from "../catalog/sourceChannelQueryCompiler";
 import { upsertSourceChannelScanTask } from "../sourceConnectionScheduler";
 import { computeNextRunAtFromScheduleRule, type SourceScheduleRule } from "../sourceScheduleInput";
 import { insertProposalRow } from "../../proposals/reviewPackets";
 import { PgProposalApplyService } from "../../proposals/applyService";
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService";
+import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { ResearchProviderCompiler } from "../../research/queryPlanning/providerCompiler";
 
 interface SourceChannelProposalActor {
   agentId?: string | null;
@@ -28,7 +29,7 @@ export interface SourceChannelRow {
   endpoint_url: string | null;
   query_json: unknown;
   provider_query_json: unknown;
-  query_fingerprint: string;
+  query_fingerprint: string | null;
   status: string;
   fetch_frequency: string;
   schedule_rule_json: unknown;
@@ -44,11 +45,22 @@ export interface SourceChannelRow {
   scan_metadata_json?: unknown;
   scan_next_run_at?: unknown;
   scan_last_run_at?: unknown;
+  search_spec_provider_query_json?: unknown;
+  search_spec_query_fingerprint?: string | null;
+  research_query_attempt_id?: string | null;
+}
+
+export interface SelectedResearchAttemptChannelInput {
+  attemptId: string;
+  providerKey: ResearchProviderKey;
+  compiledQuery: ResearchCompiledQuery;
+  credentialId?: string;
+  name?: string;
 }
 
 export class SourceChannelService {
   private readonly catalog: SourceProviderCatalogService;
-  private readonly compiler = new SourceChannelQueryCompiler();
+  private readonly researchCompiler = new ResearchProviderCompiler();
 
   constructor(private readonly db: Queryable, private readonly config: ServerConfig) {
     this.catalog = new SourceProviderCatalogService(db);
@@ -93,6 +105,11 @@ export class SourceChannelService {
   }
 
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, (db) =>
+      new SourceChannelService(db, this.config).createLocked(identity, body));
+  }
+
+  private async createLocked(identity: SpaceUserIdentity, body: Record<string, unknown>) {
     const providerKey = requiredString(body.provider_key, "provider_key");
     const provider = await this.catalog.resolve(providerKey);
     const credentialId = optionalString(body.credential_id);
@@ -105,8 +122,12 @@ export class SourceChannelService {
       endpoint_url: optionalString(body.endpoint_url) ?? optionalString(query.endpoint_url),
       query,
     };
-    const compiled = this.compiler.compile(provider.connector_key, input);
-    const fingerprint = this.compiler.fingerprint({ providerKey, connectorKey: provider.connector_key, compiled });
+    const researchProviderKey = researchProviderForConnector(provider.connector_key);
+    const compiledResearch = researchProviderKey ? this.researchCompiler.compileNative(researchProviderKey, input) : null;
+    const compiled = compiledResearch
+      ? { query: compiledResearch.query, providerQuery: compiledResearch.query, endpointUrl: null }
+      : normalizeNonSearchChannel(provider.connector_key, input);
+    const fingerprint = compiledResearch?.fingerprint ?? genericChannelFingerprint(providerKey, provider.connector_key, compiled.endpointUrl);
     const sourceName = optionalString(body.source_name) ?? provider.provider_display_name;
     const name = optionalString(body.name) ?? this.defaultName(providerKey, compiled.providerQuery);
     const frequency = optionalString(body.fetch_frequency) ?? "daily";
@@ -118,7 +139,9 @@ export class SourceChannelService {
     const existing = body._force_create === true
       ? { rows: [] as SourceChannelRow[] }
       : await this.db.query<SourceChannelRow>(
-      `${this.selectSql()} WHERE ch.space_id = $1 AND ch.created_by_user_id = $2 AND ch.query_fingerprint = $3 AND ch.status <> 'archived' LIMIT 1`,
+      `${this.selectSql()} WHERE ch.space_id = $1 AND ch.created_by_user_id = $2
+         AND CASE WHEN ch.channel_type='search' THEN ss.query_fingerprint ELSE ch.query_fingerprint END = $3
+         AND ch.status <> 'archived' LIMIT 1`,
       [identity.spaceId, identity.userId, fingerprint],
     );
     if (existing.rows[0]) return this.channelOut(existing.rows[0]);
@@ -142,11 +165,21 @@ export class SourceChannelService {
       [
         randomUUID(), identity.spaceId, connection.id, identity.userId, name.slice(0, 512),
         channelType(provider.connector_key), compiled.endpointUrl,
-        JSON.stringify(compiled.query), JSON.stringify(compiled.providerQuery), fingerprint,
+        compiledResearch ? null : JSON.stringify(compiled.query), compiledResearch ? null : JSON.stringify(compiled.providerQuery),
+        compiledResearch ? null : fingerprint,
         status, frequency, JSON.stringify(schedule.rule), now,
       ],
     );
     const channel = channelResult.rows[0]!;
+    if (compiledResearch) {
+      await this.db.query(
+        `INSERT INTO source_search_specs
+          (id,space_id,source_channel_id,provider_key,research_query_attempt_id,
+           compiled_provider_query_json,query_fingerprint,active_version,activated_at,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,NULL,$5::jsonb,$6,1,$7,$7,$7)`,
+        [randomUUID(), identity.spaceId, channel.id, researchProviderKey, JSON.stringify(compiledResearch.query), compiledResearch.fingerprint, now],
+      );
+    }
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
          id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
@@ -159,7 +192,95 @@ export class SourceChannelService {
       nextRunAt: schedule.nextRunAt,
       updatedAt: now,
     });
-    return this.channelOut({ ...channel, source_name: sourceName, provider_key: provider.provider_key, provider_display_name: provider.provider_display_name, connector_key: provider.connector_key, connector_mapping_id: provider.mapping_id, connection_status: connection.status, capture_policy: governance.capturePolicy });
+    return this.channelOut({
+      ...channel,
+      source_name: sourceName,
+      provider_key: provider.provider_key,
+      provider_display_name: provider.provider_display_name,
+      connector_key: provider.connector_key,
+      connector_mapping_id: provider.mapping_id,
+      connection_status: connection.status,
+      capture_policy: governance.capturePolicy,
+      search_spec_provider_query_json: compiledResearch?.query,
+      search_spec_query_fingerprint: compiledResearch?.fingerprint,
+    });
+  }
+
+  /** Materialize a selected research attempt without recompiling or rewriting its query. */
+  async createFromSelectedResearchAttempt(identity: SpaceUserIdentity, input: SelectedResearchAttemptChannelInput) {
+    return withQueryableTransaction(this.db, (db) =>
+      new SourceChannelService(db, this.config).createFromSelectedResearchAttemptLocked(identity, input));
+  }
+
+  private async createFromSelectedResearchAttemptLocked(identity: SpaceUserIdentity, input: SelectedResearchAttemptChannelInput) {
+    if (input.compiledQuery.provider_key !== input.providerKey) {
+      throw new HttpError(422, "Selected attempt provider does not match its compiled query");
+    }
+    const existing = await this.db.query<SourceChannelRow>(
+      `${this.selectSql()} WHERE ch.space_id=$1 AND ss.research_query_attempt_id=$2 LIMIT 1`,
+      [identity.spaceId, input.attemptId],
+    );
+    if (existing.rows[0]) return this.channelOut(existing.rows[0]);
+
+    const provider = await this.catalog.resolve(input.providerKey);
+    if (input.credentialId) {
+      await new CustomSourceCredentialService(this.db, this.config).requireOwnCredential(identity, input.credentialId);
+    }
+    const now = new Date().toISOString();
+    const sourceName = provider.provider_display_name;
+    const governance = normalizeSourceConnectionCreateGovernance(identity, {
+      connector_type: provider.connector_type,
+      policy: {},
+      consent: {},
+      capture_policy: "reference_only",
+    });
+    const connection = await this.ensureConnection(identity, provider, sourceName, governance, {
+      credential_id: input.credentialId,
+    });
+    const channelId = randomUUID();
+    const name = input.name ?? this.defaultName(input.providerKey, input.compiledQuery.query);
+    const schedule = resolveChannelSchedule({}, "daily", "active");
+    const channelResult = await this.db.query<SourceChannelRow>(
+      `INSERT INTO source_channels (
+         id,space_id,source_connection_id,created_by_user_id,name,channel_type,
+         endpoint_url,query_json,provider_query_json,query_fingerprint,status,
+         fetch_frequency,schedule_rule_json,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,$5,'search',NULL,NULL,NULL,NULL,'active','daily',$6::jsonb,$7,$7)
+       RETURNING *`,
+      [channelId, identity.spaceId, connection.id, identity.userId, name.slice(0, 512), JSON.stringify(schedule.rule), now],
+    );
+    await this.db.query(
+      `INSERT INTO source_search_specs (
+         id,space_id,source_channel_id,provider_key,research_query_attempt_id,
+         compiled_provider_query_json,query_fingerprint,active_version,activated_at,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,1,$8,$8,$8)`,
+      [randomUUID(), identity.spaceId, channelId, input.providerKey, input.attemptId, JSON.stringify(input.compiledQuery.query), input.compiledQuery.fingerprint, now],
+    );
+    await this.db.query(
+      `INSERT INTO source_channel_user_subscriptions (
+         id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
+       ON CONFLICT (space_id,source_channel_id,user_id) DO UPDATE SET status='subscribed',updated_at=EXCLUDED.updated_at`,
+      [randomUUID(), identity.spaceId, channelId, identity.userId, now],
+    );
+    await upsertSourceChannelScanTask(this.db, {
+      channel: { id: channelId, space_id: identity.spaceId, owner_user_id: identity.userId, status: "active", fetch_frequency: "daily" },
+      nextRunAt: schedule.nextRunAt,
+      updatedAt: now,
+    });
+    return this.channelOut({
+      ...channelResult.rows[0]!,
+      source_name: sourceName,
+      provider_key: provider.provider_key,
+      provider_display_name: provider.provider_display_name,
+      connector_key: provider.connector_key,
+      connector_mapping_id: provider.mapping_id,
+      connection_status: connection.status,
+      capture_policy: governance.capturePolicy,
+      search_spec_provider_query_json: input.compiledQuery.query,
+      search_spec_query_fingerprint: input.compiledQuery.fingerprint,
+      research_query_attempt_id: input.attemptId,
+    });
   }
 
   async proposeActivation(identity: SpaceUserIdentity, body: Record<string, unknown>, actor: SourceChannelProposalActor = {}) {
@@ -216,6 +337,9 @@ export class SourceChannelService {
     const status = optionalString(body.status) ?? current.status;
     if (!["active", "paused", "archived"].includes(status)) throw new HttpError(422, "Invalid channel status");
     const schedule = resolveChannelSchedule(body, frequency, status, current.schedule_rule_json);
+    if (current.search_spec_query_fingerprint && (body.query !== undefined || body.endpoint_url !== undefined)) {
+      throw new HttpError(409, "Search query configuration is versioned and cannot be edited in place; create a new monitor version");
+    }
     let queryJson = current.query_json;
     let providerQueryJson = current.provider_query_json;
     let endpointUrl = current.endpoint_url;
@@ -223,20 +347,18 @@ export class SourceChannelService {
     if (body.query !== undefined || body.endpoint_url !== undefined) {
       if (!current.connector_key || !current.provider_key) throw new HttpError(409, "Source channel provider mapping is unavailable");
       const query = objectValue(body.query ?? current.query_json);
-      const compiled = this.compiler.compile(current.connector_key, {
-        ...query,
-        endpoint_url: optionalString(body.endpoint_url) ?? current.endpoint_url ?? optionalString(query.endpoint_url),
-        query,
+      const compiled = normalizeNonSearchChannel(current.connector_key, {
+        ...query, endpoint_url: optionalString(body.endpoint_url) ?? current.endpoint_url ?? optionalString(query.endpoint_url), query,
       });
       queryJson = compiled.query;
       providerQueryJson = compiled.providerQuery;
       endpointUrl = compiled.endpointUrl;
-      fingerprint = this.compiler.fingerprint({ providerKey: current.provider_key, connectorKey: current.connector_key, compiled });
+      fingerprint = genericChannelFingerprint(current.provider_key, current.connector_key, compiled.endpointUrl);
     }
     const result = await this.db.query<SourceChannelRow>(
       `UPDATE source_channels SET name=COALESCE($3,name), endpoint_url=$4, query_json=$5::jsonb, provider_query_json=$6::jsonb, query_fingerprint=$7, status=$8, fetch_frequency=$9, schedule_rule_json=$10::jsonb, updated_at=$11
         WHERE space_id=$1 AND id=$2 RETURNING *`,
-      [identity.spaceId, channelId, optionalString(body.name), endpointUrl, JSON.stringify(queryJson), JSON.stringify(providerQueryJson), fingerprint, status, frequency, JSON.stringify(schedule.rule), new Date().toISOString()],
+      [identity.spaceId, channelId, optionalString(body.name), endpointUrl, jsonbParameter(queryJson), jsonbParameter(providerQueryJson), fingerprint, status, frequency, JSON.stringify(schedule.rule), new Date().toISOString()],
     );
     const row = result.rows[0]!;
     const sourceName = optionalString(body.source_name);
@@ -312,12 +434,16 @@ export class SourceChannelService {
     return `SELECT ch.*, p.provider_key, p.display_name AS provider_display_name, c.connector_key,
                    spc.id AS connector_mapping_id, sc.name AS source_name, sc.status AS connection_status, sc.capture_policy,
                    st.status AS scan_status, st.metadata_json AS scan_metadata_json,
-                   st.next_run_at AS scan_next_run_at, st.last_run_at AS scan_last_run_at
+                   st.next_run_at AS scan_next_run_at, st.last_run_at AS scan_last_run_at,
+                   ss.compiled_provider_query_json AS search_spec_provider_query_json,
+                   ss.query_fingerprint AS search_spec_query_fingerprint,
+                   ss.research_query_attempt_id
               FROM source_channels ch
               JOIN source_connections sc ON sc.id=ch.source_connection_id
               JOIN source_provider_connectors spc ON spc.id=sc.provider_connector_id
               JOIN source_providers p ON p.id=spc.provider_id
               JOIN source_connectors c ON c.id=spc.connector_id
+              LEFT JOIN source_search_specs ss ON ss.source_channel_id=ch.id AND ss.space_id=ch.space_id
               LEFT JOIN scheduler_tasks st
                 ON st.task_type='source_channel_scan' AND st.task_key=ch.id AND st.space_id=ch.space_id`;
   }
@@ -331,9 +457,16 @@ export class SourceChannelService {
       name: row.name,
       channel_type: row.channel_type,
       endpoint_url: row.endpoint_url,
-      query: row.query_json ?? {},
-      provider_query: row.provider_query_json ?? {},
-      query_fingerprint: row.query_fingerprint,
+      query: row.channel_type === "search"
+        ? objectValue(row.search_spec_provider_query_json)
+        : objectValue(row.query_json),
+      provider_query: row.channel_type === "search"
+        ? objectValue(row.search_spec_provider_query_json)
+        : objectValue(row.provider_query_json),
+      query_fingerprint: row.channel_type === "search"
+        ? row.search_spec_query_fingerprint
+        : row.query_fingerprint,
+      research_query_attempt_id: row.research_query_attempt_id ?? null,
       status: row.status,
       fetch_frequency: row.fetch_frequency,
       schedule_rule: row.schedule_rule_json ?? null,
@@ -356,13 +489,17 @@ export class SourceChannelService {
   private defaultName(providerKey: string, query: Record<string, unknown>) {
     if (providerKey === "arxiv") {
       if (query.mode === "all") return "All arXiv papers";
-      return String(query.search_query ?? query.categories ?? "search").slice(0, 180);
+      return String(query.search_query ?? query.categories ?? "search").slice(0, 180).trim();
     }
-    if (providerKey === "openalex") return String(query.search ?? "OpenAlex search").slice(0, 180);
-    if (providerKey === "semantic_scholar") return String(query.query ?? "Semantic Scholar search").slice(0, 180);
-    if (providerKey === "web_search") return String(query.q ?? "Web search").slice(0, 180);
+    if (providerKey === "openalex") return String(query.search ?? "OpenAlex search").slice(0, 180).trim();
+    if (providerKey === "semantic_scholar") return String(query.query ?? "Semantic Scholar search").slice(0, 180).trim();
+    if (providerKey === "web_search") return String(query.q ?? "Web search").slice(0, 180).trim();
     return "channel";
   }
+}
+
+function jsonbParameter(value: unknown): string | null {
+  return value === null || value === undefined ? null : JSON.stringify(value);
 }
 
 function channelType(connectorKey: string): string {
@@ -370,6 +507,27 @@ function channelType(connectorKey: string): string {
   if (connectorKey === "rss" || connectorKey === "atom") return "feed";
   if (connectorKey === "web_page") return "web_page";
   return "custom_source";
+}
+
+function researchProviderForConnector(connectorKey: string): ResearchProviderKey | null {
+  if (connectorKey === "arxiv_api") return "arxiv";
+  if (connectorKey === "openalex_api") return "openalex";
+  if (connectorKey === "semantic_scholar_api") return "semantic_scholar";
+  if (connectorKey === "brave_web_search_api") return "web_search";
+  return null;
+}
+
+function normalizeNonSearchChannel(connectorKey: string, input: Record<string, unknown>) {
+  const endpointUrl = optionalString(input.endpoint_url);
+  if (!endpointUrl) throw new HttpError(422, `${connectorKey} channel requires endpoint_url`);
+  try { new URL(endpointUrl); } catch { throw new HttpError(422, "endpoint_url must be a valid URL"); }
+  return { query: {}, providerQuery: {}, endpointUrl };
+}
+
+function genericChannelFingerprint(providerKey: string, connectorKey: string, endpointUrl: string | null): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ connector: connectorKey, endpoint: endpointUrl, provider: providerKey }))
+    .digest("hex");
 }
 
 function resolveChannelSchedule(body: Record<string, unknown>, frequency: string, status: string, existingRule?: unknown): { nextRunAt: string | null; rule: SourceScheduleRule | null } {

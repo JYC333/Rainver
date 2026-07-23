@@ -762,11 +762,14 @@ export const noteCollections = pgTable("note_collections", {
 	sortOrder: integer("sort_order").notNull(),
 	isSystem: boolean("is_system").notNull(),
 	isHidden: boolean("is_hidden").notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	uniqueIndex("ix_note_collections_one_archive_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`((system_role)::text = 'archive'::text)`),
 	uniqueIndex("ix_note_collections_one_inbox_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`((system_role)::text = 'inbox'::text)`),
+	uniqueIndex("ix_note_collections_one_projects_root_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`((system_role)::text = 'projects_root'::text)`),
+	uniqueIndex("ix_note_collections_one_per_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()).where(sql`(project_id IS NOT NULL)`),
 	index("ix_note_collections_parent_id").using("btree", table.parentId.asc().nullsLast()),
 	index("ix_note_collections_parent_sort").using("btree", table.spaceId.asc().nullsLast(), table.parentId.asc().nullsLast(), table.sortOrder.asc().nullsLast()),
 	index("ix_note_collections_space_id").using("btree", table.spaceId.asc().nullsLast()),
@@ -786,9 +789,15 @@ export const noteCollections = pgTable("note_collections", {
 			foreignColumns: [spaces.id],
 			name: "note_collections_space_id_fkey"
 		}),
+	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "note_collections_project_id_fkey"
+		}).onDelete("cascade"),
 	unique("note_collections_id_space_id_key").on(table.id, table.spaceId),
 	check("ck_note_collections_not_self_parent", sql`(parent_id IS NULL) OR ((parent_id)::text <> (id)::text)`),
-	check("ck_note_collections_system_role", sql`(system_role)::text = ANY (ARRAY[('normal'::character varying)::text, ('inbox'::character varying)::text, ('archive'::character varying)::text])`),
+	check("ck_note_collections_system_role", sql`(system_role)::text = ANY (ARRAY[('normal'::character varying)::text, ('inbox'::character varying)::text, ('archive'::character varying)::text, ('project'::character varying)::text, ('projects_root'::character varying)::text])`),
+	check("ck_note_collections_project_role", sql`(project_id IS NULL) OR (system_role = 'project')`),
 ]);
 
 export const noteCollectionItems = pgTable("note_collection_items", {
@@ -827,6 +836,11 @@ export const notes = pgTable("notes", {
 	contentSchemaVersion: integer("content_schema_version").notNull(),
 	plainText: text("plain_text"),
 	createdFromActivityId: varchar("created_from_activity_id", { length: 36 }),
+	version: integer().default(1).notNull(),
+	contentHash: varchar("content_hash", { length: 64 }),
+	updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
+	updatedByRunId: varchar("updated_by_run_id", { length: 36 }),
+	refsJson: jsonb("refs_json").default([]).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_notes_created_from_activity_id").using("btree", table.createdFromActivityId.asc().nullsLast()),
 	index("ix_notes_space_id").using("btree", table.spaceId.asc().nullsLast()),
@@ -845,8 +859,52 @@ export const notes = pgTable("notes", {
 			foreignColumns: [spaceObjects.id, spaceObjects.spaceId],
 			name: "notes_object_id_fkey"
 		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.updatedByUserId],
+			foreignColumns: [users.id],
+			name: "notes_updated_by_user_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.updatedByRunId],
+			foreignColumns: [runs.id],
+			name: "notes_updated_by_run_id_delete_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.updatedByRunId, table.spaceId],
+			foreignColumns: [runs.id, runs.spaceId],
+			name: "notes_updated_by_run_id_fkey"
+		}),
 	unique("notes_object_id_space_id_key").on(table.objectId, table.spaceId),
 	check("ck_notes_content_format", sql`(content_format)::text = ANY (ARRAY[('markdown'::character varying)::text, ('plain'::character varying)::text, ('prosemirror_json'::character varying)::text])`),
+	check("ck_notes_version", sql`version >= 1`),
+	check("ck_notes_refs_array", sql`jsonb_typeof(refs_json) = 'array'`),
+]);
+
+export const noteRevisions = pgTable("note_revisions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	noteId: varchar("note_id", { length: 36 }).notNull(),
+	version: integer().notNull(),
+	contentJson: jsonb("content_json").notNull(),
+	normalizedText: text("normalized_text").notNull(),
+	contentHash: varchar("content_hash", { length: 64 }).notNull(),
+	refsJson: jsonb("refs_json").default([]).notNull(),
+	source: varchar({ length: 24 }).notNull(),
+	diffJson: jsonb("diff_json"),
+	createdByUserId: varchar("created_by_user_id", { length: 36 }),
+	createdByRunId: varchar("created_by_run_id", { length: 36 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	unique("uq_note_revisions_version").on(table.noteId, table.version),
+	index("ix_note_revisions_note").on(table.spaceId, table.noteId, table.version),
+	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "note_revisions_space_fkey" }),
+	foreignKey({ columns: [table.noteId, table.spaceId], foreignColumns: [notes.objectId, notes.spaceId], name: "note_revisions_note_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.createdByUserId], foreignColumns: [users.id], name: "note_revisions_user_fkey" }).onDelete("set null"),
+	foreignKey({ columns: [table.createdByRunId], foreignColumns: [runs.id], name: "note_revisions_run_delete_fkey" }).onDelete("set null"),
+	foreignKey({ columns: [table.createdByRunId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "note_revisions_run_fkey" }),
+	check("ck_note_revisions_version", sql`version >= 1`),
+	check("ck_note_revisions_source", sql`source IN ('user_edit','ai_monitoring','ai_adhoc','seed','rollback')`),
+	check("ck_note_revisions_refs_array", sql`jsonb_typeof(refs_json) = 'array'`),
 ]);
 
 export const noteLinks = pgTable("note_links", {

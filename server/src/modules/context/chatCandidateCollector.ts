@@ -34,6 +34,7 @@ import {
 const ALL_SOURCES: readonly string[] = [
   "memory",
   "knowledge_item",
+  "note",
   "source",
   "activity_record",
   "project_public_summary",
@@ -90,7 +91,7 @@ export class ChatContextCandidateCollector {
     const promptGate = this.llmPromptGate(request);
 
     if (request.project_id && allowed.has("project")) {
-      const rows = await this.repo.selectResearchNotebookSections(request.space_id, request.project_id, maxItems);
+      const rows = await this.repo.selectProjectNotes(request.space_id, request.project_id, maxItems);
       pushItems(items, await promptGate("project", rows), "project", 0.9, "research_notebook");
     }
 
@@ -129,6 +130,15 @@ export class ChatContextCandidateCollector {
         0.7,
         "knowledge_item",
       );
+    }
+    if (!request.project_id&&allowed.has("note")) {
+      const rows = await this.repo.selectNotes(
+        request.space_id,
+        request.user_id,
+        message,
+        maxItems,
+      );
+      pushItems(items, await promptGate("note", rows), "note", 0.65, "note");
     }
     if (!request.project_id&&allowed.has("source")) {
       const rows = await this.repo.selectSources(request.space_id, maxItems);

@@ -9,7 +9,7 @@ export interface ResearchArtifactValidationFailure {
   diagnostics: Record<string, unknown>;
 }
 export type ResearchArtifactValidationResult =
-  | { ok: true; report: Record<string, unknown>; archive: ResearchArtifactRecord; normalized_content: string | null }
+  | { ok: true; report: Record<string, unknown>; archive: ResearchArtifactRecord }
   | { ok: false; failure: ResearchArtifactValidationFailure };
 
 export async function validateResearchArtifacts(artifacts: ResearchArtifactRecord[]): Promise<ResearchArtifactValidationResult> {
@@ -21,14 +21,12 @@ export async function validateResearchArtifacts(artifacts: ResearchArtifactRecor
   const protocol = await loadProtocol();
   const result = protocol.ResearchReportV1Schema.safeParse(parsed.value);
   if (!result.success) return failure("research_artifact_schema_invalid", `Research report failed schema validation: ${result.error.message}`, archive, result.error.message);
-  return { ok: true, report: result.data as Record<string, unknown>, archive, normalized_content: parsed.normalized };
+  return { ok: true, report: result.data as Record<string, unknown>, archive };
 }
 
-function parseJson(content: string): { ok: true; value: unknown; normalized: string | null } | { ok: false; error: string } {
-  try { return { ok: true, value: JSON.parse(content), normalized: null }; }
+function parseJson(content: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  try { return { ok: true, value: JSON.parse(content) }; }
   catch (error) {
-    const fenced = content.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1];
-    if (fenced) try { return { ok: true, value: JSON.parse(fenced), normalized: JSON.stringify(JSON.parse(fenced)) }; } catch { /* fall through */ }
     return { ok: false, error: error instanceof Error ? error.message : "invalid JSON" };
   }
 }

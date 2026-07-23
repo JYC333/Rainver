@@ -333,6 +333,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
 
   it("selects explicit artifact evidence packs as bounded context attachments", async () => {
     const db = new CapturingDb();
+    db.projectOwnerUserId = "user-1";
     db.sourceSnapshotRows = [
       {
         id: "source-1",
@@ -418,16 +419,40 @@ describe("PgRunContextRepository digest source revalidation", () => {
         workspace_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
+      {
+        id: "matrix-1",
+        artifact_type: "literature_matrix",
+        title: "Literature Matrix",
+        content: JSON.stringify({
+          project_id: "project-1",
+          rows: [{
+            title: "A relevant paper",
+            triage_status: "relevant",
+            relevance: "relevant",
+            confidence: 0.9,
+            reason: "Matches the agent-memory scope.",
+            evidence_excerpt: "Evaluates memory over long-horizon tasks.",
+            references: [{ source_item_id: "source-1" }],
+          }],
+        }),
+        metadata_json: { schema_version: "literature_matrix.v1" },
+        visibility: "private",
+        owner_user_id: "user-1",
+        project_id: "project-1",
+        workspace_id: null,
+        created_at: "2026-06-25T00:00:00.000Z",
+      },
     ];
 
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
       workspaceId: "ws-1",
-      artifactIds: ["brief-1", "missing-1", "generic-1", "explain-1"],
+      projectId: "project-1",
+      artifactIds: ["brief-1", "missing-1", "generic-1", "explain-1", "matrix-1"],
     });
 
-    expect(selections).toHaveLength(4);
+    expect(selections).toHaveLength(5);
     expect(selections[0].item).toMatchObject({
       attachment_type: "artifact_evidence_pack",
       artifact_id: "brief-1",
@@ -491,6 +516,14 @@ describe("PgRunContextRepository digest source revalidation", () => {
     expect(explainContent).not.toContain("secret-target-id");
     expect(explainContent).not.toContain("secret-match-id");
     expect(explainContent).not.toContain("nested_candidate_payload");
+    expect(selections[4].item).toMatchObject({
+      approved: true,
+      artifact_id: "matrix-1",
+      artifact_type: "literature_matrix",
+      domain_label: "project_research.literature_matrix",
+    });
+    expect(String(selections[4].item.resolved_content)).toContain("A relevant paper");
+    expect(String(selections[4].item.resolved_content)).toContain('"source_item_id":"source-1"');
     const artifactQuery = db.queries.find((query) => query.sql.includes("FROM artifacts"));
     expect(artifactQuery?.sql).toContain("visibility = 'space_shared'");
     expect(artifactQuery?.sql).toContain("content_access_grants");

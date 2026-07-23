@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import type { Queryable } from "../routeUtils/common";
 import { HttpError, objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common";
 import { ProjectOperationService } from "../projects/projectOperationService";
-import type { ResearchSynthesisRejection } from "./outputSchemas";
 
 /**
  * Single transition authority for Project Research operation state.
@@ -47,7 +46,6 @@ export interface ResearchOperationError {
   code: string;
   message: string;
   at: string;
-  rejection?: ResearchSynthesisRejection;
   diagnostics?: Record<string, unknown>;
 }
 
@@ -55,8 +53,16 @@ export interface ResearchOperationState {
   schema_version: "project_research_operation.v1";
   run_kind: RunKind;
   workflow_id: string;
+  query_strategy_id?: string | null;
   research_question: string;
   research_question_version: number;
+  research_scope: {
+    sub_questions: string[];
+    in: string[];
+    out: string[];
+    must_have: string[];
+    nice_to_have: string[];
+  };
   report_depth: ResearchReportDepth;
   question_refine_skipped: boolean;
   channel_ids: string[];
@@ -86,6 +92,33 @@ export interface ResearchOperationState {
   synthesis_run_id: string | null;
   comparison_run_id?: string | null;
   comparison_source_item_ids?: string[];
+  // Papers not yet submitted in a comparison batch. Comparing many papers in
+  // one structured-output call is unreliable (models drop, duplicate, or
+  // invent source_item_ids), so each batch covers only
+  // comparison_source_item_ids (BATCH_SIZE papers, or 1 once degraded); this
+  // holds the rest until their own batch runs.
+  comparison_pending_source_item_ids?: string[];
+  // Papers a batch response didn't produce a valid, matching entry for.
+  // Retried one at a time (never re-batched) once the pending pool is
+  // empty, so one bad paper in an otherwise-good batch doesn't cost the
+  // whole batch a retry. An id that still has no valid entry after its
+  // solo retry is simply left without a stance — it is not requeued again.
+  comparison_failed_source_item_ids?: string[];
+  // Set once a single batch response matches none of the papers sent to it
+  // (see MonitorComparison — a stronger signal than one bad entry that
+  // batching itself isn't working right now, e.g. a model returning
+  // fabricated content unrelated to any paper actually sent). From then on,
+  // every remaining paper for this operation — pending or failed — is sent
+  // one at a time instead of batched.
+  comparison_degraded?: boolean;
+  // Batches already validated, accumulated here until the pending and
+  // failed pools are both empty and they are persisted together in one write.
+  comparison_results_json?: Array<{
+    source_item_id: string;
+    stance: "supports" | "contradicts" | "new_direction";
+    detail: string;
+    affected_sections: Array<"understanding" | "questions" | "ideas" | "experiments">;
+  }>;
   synthesis_critique?: {
     status: "needs_queue" | "queued" | "revision_needed" | "completed";
     run_id: string | null;
@@ -117,10 +150,13 @@ export interface ResearchOperationState {
   pending_incremental_source_item_ids?: string[];
   post_processing_recovery_requested_at?: string;
   empty_result?: {
-    kind: "no_source_items";
-    source_item_count: 0;
+    kind: "no_source_items" | "no_relevant_sources" | "no_coherent_synthesis";
+    source_item_count: number;
+    relevant_source_count?: number;
     detected_at: string;
     message: string;
+    reason_code?: string;
+    suggestions?: string[];
   };
   screening_progress?: {
     phase: "preparing_batches" | "screening_batches" | "ready_for_review" | "completed" | "failed";
@@ -203,14 +239,16 @@ export interface ResearchOperationRow {
  * pipeline, the screening rescan loop, fail-from-anywhere, and retry.
  */
 export const RESEARCH_STAGE_TRANSITIONS: Record<ResearchStage, readonly ResearchStage[]> = {
-  monitor_setup: ["backfill", "failed"],
+  monitor_setup: ["backfill", "complete", "failed"],
   backfill: ["screening", "complete", "failed"],
   screening: ["comparison", "synthesis", "backfill", "complete", "failed"],
   comparison: ["complete", "failed"],
-  synthesis: ["idea_review", "failed"],
+  synthesis: ["idea_review", "complete", "failed"],
   idea_review: ["complete", "failed"],
   complete: ["backfill"],
-  failed: ["monitor_setup", "backfill", "screening", "comparison", "synthesis", "idea_review"],
+  // An empty corpus discovered during synthesis retry completes directly as a
+  // normal no-report outcome without queueing another model run.
+  failed: ["monitor_setup", "backfill", "screening", "comparison", "synthesis", "idea_review", "complete"],
 };
 
 export const RESEARCH_STAGES = Object.keys(RESEARCH_STAGE_TRANSITIONS) as ResearchStage[];
@@ -422,8 +460,8 @@ export function researchState(value: unknown): ResearchOperationState {
   const projectSourceBindingIds = stringArray(source.project_source_binding_ids);
   const sourcePostProcessingRuleIds = stringArray(source.source_post_processing_rule_ids);
   const sourceBackfillPlanIds = stringArray(source.source_backfill_plan_ids);
-  const synthesisProgress = objectValue(source.synthesis_progress);
-  const synthesisRunId = optionalString(source.synthesis_run_id) ?? optionalString(synthesisProgress.run_id);
+  const synthesisRunId = optionalString(source.synthesis_run_id);
+  const researchScope = objectValue(source.research_scope);
   return {
     ...source,
     schema_version: "project_research_operation.v1",
@@ -431,10 +469,18 @@ export function researchState(value: unknown): ResearchOperationState {
       ? source.run_kind
       : "baseline",
     workflow_id: optionalString(source.workflow_id) ?? "",
+    query_strategy_id: optionalString(source.query_strategy_id),
     research_question: optionalString(source.research_question) ?? "",
     research_question_version: typeof source.research_question_version === "number" && Number.isInteger(source.research_question_version)
       ? source.research_question_version
       : 1,
+    research_scope: {
+      sub_questions: stringArray(researchScope.sub_questions),
+      in: stringArray(researchScope.in),
+      out: stringArray(researchScope.out),
+      must_have: stringArray(researchScope.must_have),
+      nice_to_have: stringArray(researchScope.nice_to_have),
+    },
     report_depth: source.report_depth === "quick" ? "quick" : "full",
     question_refine_skipped: source.question_refine_skipped === true,
     channel_ids: stringArray(source.channel_ids),

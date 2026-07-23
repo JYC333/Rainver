@@ -25,6 +25,7 @@ export * from "./policy";
 export * from "./prompts";
 export * from "./projectCorpus";
 export * from "./projectResearch";
+export * from "./projectResearchContext";
 export * from "./research";
 export * from "./researchWorkspace";
 export * from "./projectSources";

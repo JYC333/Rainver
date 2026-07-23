@@ -75,7 +75,7 @@ export function normalizePmText(value: unknown): string {
   return pmBlocksText(value).filter(Boolean).join("\n\n");
 }
 
-export type NotebookOp =
+export type NoteOp =
   | { op: "append"; markdown: string }
   | { op: "insert"; index: number; markdown: string }
   | { op: "replace"; index: number; count: number; markdown: string }
@@ -84,13 +84,13 @@ export type NotebookOp =
 /**
  * Validate untrusted op input (structured AI output or API body) against a
  * document with `blockCount` top-level blocks. Throws on any malformed op so a
- * partially valid batch never mutates the section.
+ * partially valid batch never mutates the note.
  */
-export function parseNotebookOps(value: unknown, blockCount: number): NotebookOp[] {
+export function parseNoteOps(value: unknown, blockCount: number): NoteOp[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 50) {
-    throw new Error("notebook ops must be a non-empty array of at most 50 operations");
+    throw new Error("note ops must be a non-empty array of at most 50 operations");
   }
-  const ops: NotebookOp[] = [];
+  const ops: NoteOp[] = [];
   for (const raw of value) {
     const record = objectValue(raw);
     const op = optionalString(record.op);
@@ -108,7 +108,7 @@ export function parseNotebookOps(value: unknown, blockCount: number): NotebookOp
       ops.push({ op, index, markdown });
       continue;
     }
-    if (op !== "replace" && op !== "delete") throw new Error(`unsupported notebook op ${JSON.stringify(op)}`);
+    if (op !== "replace" && op !== "delete") throw new Error(`unsupported note op ${JSON.stringify(op)}`);
     if (!Number.isInteger(count) || count < 1 || index + count > blockCount) throw new Error(`${op} range is outside the document`);
     if (op === "replace" && !markdown) throw new Error("replace requires markdown");
     ops.push(op === "replace" ? { op, index, count, markdown } : { op, index, count });
@@ -121,7 +121,7 @@ export function parseNotebookOps(value: unknown, blockCount: number): NotebookOp
  * Apply block-level ops to a Tiptap doc. Untouched blocks are carried over
  * byte-identical, so user formatting outside the edited ranges is never lost.
  */
-export function applyNotebookOps(doc: unknown, ops: NotebookOp[]): PmNode {
+export function applyNoteOps(doc: unknown, ops: NoteOp[]): PmNode {
   const source = objectValue(doc);
   const blocks = Array.isArray(source.content) ? [...source.content] : [];
   const ordered = [...ops].sort((left, right) => anchorIndex(right, blocks.length) - anchorIndex(left, blocks.length));
@@ -144,20 +144,20 @@ function markdownBlocks(markdown: string): PmNode[] {
   return Array.isArray(content) ? content as PmNode[] : [];
 }
 
-function anchorIndex(op: NotebookOp, blockCount: number): number {
+function anchorIndex(op: NoteOp, blockCount: number): number {
   return op.op === "append" ? blockCount + 1 : op.index;
 }
 
-function assertNonOverlapping(ops: NotebookOp[], blockCount: number): void {
+function assertNonOverlapping(ops: NoteOp[], blockCount: number): void {
   const ranges = ops
-    .filter((op): op is Extract<NotebookOp, { index: number }> => op.op !== "append")
+    .filter((op): op is Extract<NoteOp, { index: number }> => op.op !== "append")
     .map((op) => ({ start: op.index, end: op.op === "insert" ? op.index : op.index + op.count }))
     .sort((left, right) => left.start - right.start || left.end - right.end);
   for (let i = 1; i < ranges.length; i += 1) {
     const prev = ranges[i - 1]!;
     const next = ranges[i]!;
     if (next.start < prev.end || next.start === prev.start) {
-      throw new Error("notebook ops must not overlap");
+      throw new Error("note ops must not overlap");
     }
   }
   if (ops.filter((op) => op.op === "append").length > 1) throw new Error("at most one append op is allowed");

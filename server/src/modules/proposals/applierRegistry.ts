@@ -24,6 +24,7 @@ import { registerWorkflowSaveProposalApplier } from "../evolution/workflowSavePr
 import { registerPlanProposalAppliers } from "../plans/proposalApplier";
 import { registerWorkflowExecutionProposalAppliers } from "../automations/workflowExecutionProposalApplier";
 import { registerEvolutionBundleProposalApplier } from "../evolution/bundleProposalApplier";
+import { registerResearchProposalAppliers } from "../research/proposalApplier";
 import {
   PgMemoryApplyRepository,
   type ApplyProposal,
@@ -129,6 +130,7 @@ export function createDefaultProposalApplierRegistry(
   registerPlanProposalAppliers(registry);
   registerWorkflowExecutionProposalAppliers(registry);
   registerEvolutionBundleProposalApplier(registry);
+  registerResearchProposalAppliers(registry);
   contributor?.applyProposalAppliers(registry);
   return registry;
 }

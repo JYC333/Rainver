@@ -113,6 +113,7 @@ export * from "./capabilities.js";
 export * from "./workflows.js";
 export * from "./skills.js";
 export * from "./projectResearch.js";
+export * from "./researchDiscovery.js";
 export * from "./reader.js";
 
 // Source provider / connector / search channel contracts

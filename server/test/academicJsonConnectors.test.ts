@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { BraveWebSearchConnectorHandler, OpenAlexConnectorHandler, SemanticScholarConnectorHandler } from "../src/modules/sources/connectors/academicJson";
+import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler";
 
 describe("academic and web JSON source connectors", () => {
+  const compiler = new ResearchProviderCompiler();
+
   it("compiles and normalizes an OpenAlex cursor response", () => {
     const handler = new OpenAlexConnectorHandler();
-    const compiled = handler.compileQuery({ query: { search: "agent memory", per_page: 20, from_publication_date: "2025-01-01" } });
-    expect(compiled.endpointUrl).toContain("api.openalex.org/works");
-    expect(new URL(compiled.endpointUrl!).searchParams.get("cursor")).toBe("*");
+    const compiled = compiler.compileNative("openalex", { query: { search: "agent memory", per_page: 20, from_publication_date: "2025-01-01" } });
+    const initial = handler.buildScanRequest({ endpoint_url: null, compiled_query: compiled.query }, {});
+    expect(initial.url).toContain("api.openalex.org/works");
+    expect(new URL(initial.url).searchParams.get("cursor")).toBe("*");
     const raw = JSON.stringify({ meta: { count: 12, next_cursor: "next-token" }, results: [{
       id: "https://openalex.org/W123", doi: "https://doi.org/10.1000/Example", title: "Agent Memory",
       publication_date: "2026-01-02", authorships: [{ author: { display_name: "Ada" } }],
@@ -16,15 +20,15 @@ describe("academic and web JSON source connectors", () => {
     }] });
     expect(handler.parseCursor(raw)).toEqual({ cursor: "next-token" });
     expect(handler.parseResponse(raw)[0]).toMatchObject({ externalId: "W123", title: "Agent Memory", metadata: { doi: "10.1000/example", arxiv_id: "2601.00001", openalex_id: "W123", authors: ["Ada"] } });
-    const backfill = handler.buildBackfillRequest({ provider_query_json: compiled.providerQuery }, { cursor: 2, from: "2024-01-01", to: "2024-12-31" }, {});
+    const backfill = handler.buildBackfillRequest({ endpoint_url: null, compiled_query: compiled.query }, { cursor: 2, from: "2024-01-01", to: "2024-12-31" }, {});
     expect(new URL(backfill.url).searchParams.get("page")).toBe("3");
     expect(new URL(backfill.url).searchParams.has("cursor")).toBe(false);
   });
 
   it("compiles and normalizes a Semantic Scholar offset response", () => {
     const handler = new SemanticScholarConnectorHandler();
-    const compiled = handler.compileQuery({ query: { query: "agent-memory", limit: 10 } });
-    expect(new URL(compiled.endpointUrl!).searchParams.get("query")).toBe("agent memory");
+    const compiled = compiler.compileNative("semantic_scholar", { query: { query: "agent-memory", limit: 10 } });
+    expect(new URL(handler.buildScanRequest({ endpoint_url: null, compiled_query: compiled.query }, {}).url).searchParams.get("query")).toBe("agent-memory");
     const raw = JSON.stringify({ total: 20, next: 10, data: [{ paperId: "s2-1", externalIds: { DOI: "10.1/X", ArXiv: "2601.1" }, url: "https://s2.test/1", title: "Paper", abstract: "Summary", authors: [{ name: "Lin" }], year: 2026, venue: "Conf", publicationTypes: ["Conference"], citationCount: 5, referenceCount: 8 }] });
     expect(handler.parseCursor(raw)).toEqual({ offset: 10 });
     expect(handler.parseResponse(raw)[0]).toMatchObject({ externalId: "s2-1", metadata: { semantic_scholar_id: "s2-1", doi: "10.1/x", paper_type: "conference_paper" } });

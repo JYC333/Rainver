@@ -509,16 +509,21 @@ export class PgReaderRepository {
     };
   }
 
-  private async resolveResearchNotebookSection(identity: SpaceUserIdentity, sectionId: string): Promise<ReaderDocumentOut | null> {
-    const result = await this.db.query<{ project_id: string; section_key: string; content_json: ReaderPmDoc; normalized_text: string; content_hash: string }>(
-      `SELECT n.project_id,s.section_key,s.content_json,s.normalized_text,s.content_hash FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id WHERE n.space_id=$1 AND s.id=$2`,
-      [identity.spaceId, sectionId],
+  // A project's notebook notes are ordinary Notes (tagged with
+  // primary_project_id); this resolver serves the "research_notebook"
+  // Reader document type against that table.
+  private async resolveResearchNotebookSection(identity: SpaceUserIdentity, noteId: string): Promise<ReaderDocumentOut | null> {
+    const result = await this.db.query<{ project_id: string | null; title: string; content_json: ReaderPmDoc; plain_text: string | null; content_hash: string | null }>(
+      `SELECT so.primary_project_id AS project_id, so.title, n.content_json, n.plain_text, n.content_hash
+         FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+        WHERE n.space_id=$1 AND n.object_id=$2 AND so.status='active'`,
+      [identity.spaceId, noteId],
     );
-    const section = result.rows[0];
-    if (!section || !(await canAccessProject(this.db, identity.spaceId, section.project_id, identity.userId))) return null;
-    return { document_type: "research_notebook", document_id: sectionId, space_id: identity.spaceId, title: `Research notebook · ${section.section_key}`,
-      plain_text: section.normalized_text, normalized_text: section.normalized_text, content_hash: section.content_hash,
-      content_format: "tiptap_json", content_schema_version: 1, content_json: section.content_json, source_item_id: null,
+    const note = result.rows[0];
+    if (!note?.project_id || !(await canAccessProject(this.db, identity.spaceId, note.project_id, identity.userId))) return null;
+    return { document_type: "research_notebook", document_id: noteId, space_id: identity.spaceId, title: `Research notebook · ${note.title}`,
+      plain_text: note.plain_text ?? "", normalized_text: note.plain_text ?? "", content_hash: note.content_hash ?? "",
+      content_format: "tiptap_json", content_schema_version: 1, content_json: note.content_json, source_item_id: null,
       artifact_id: null, source_snapshot_id: null, raw_artifact_id: null, extracted_artifact_id: null, source_uri: null,
       content_state: null, retention_policy: null, can_annotate: true };
   }
@@ -722,8 +727,11 @@ async function assertDocumentReadable(
     return;
   }
   if (documentType === "research_notebook") {
-    const r = await db.query<{ project_id: string }>(`SELECT n.project_id FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id WHERE n.space_id=$1 AND s.id=$2`, [identity.spaceId, documentId]);
-    if (!r.rows[0] || !(await canAccessProject(db, identity.spaceId, r.rows[0].project_id, identity.userId))) throw new HttpError(404, "Document not found");
+    const r = await db.query<{ project_id: string | null }>(
+      `SELECT so.primary_project_id AS project_id FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id WHERE n.space_id=$1 AND n.object_id=$2`,
+      [identity.spaceId, documentId],
+    );
+    if (!r.rows[0]?.project_id || !(await canAccessProject(db, identity.spaceId, r.rows[0].project_id, identity.userId))) throw new HttpError(404, "Document not found");
     return;
   }
   throw new HttpError(400, `Unsupported document type: ${documentType}`);
@@ -771,8 +779,8 @@ async function tryVerifyAnchorRange(
       );
       inlineText = r.rows[0]?.normalized_text ?? null;
     } else if (documentType === "research_notebook") {
-      const r = await db.query<{ normalized_text: string }>(`SELECT s.normalized_text FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id WHERE n.space_id=$1 AND s.id=$2`, [identity.spaceId, documentId]);
-      inlineText = r.rows[0]?.normalized_text ?? null;
+      const r = await db.query<{ plain_text: string | null }>(`SELECT plain_text FROM notes WHERE space_id=$1 AND object_id=$2`, [identity.spaceId, documentId]);
+      inlineText = r.rows[0]?.plain_text ?? null;
     }
 
     if (artifactId && !inlineText) {

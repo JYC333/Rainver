@@ -21,6 +21,7 @@ describe("capability framework built-ins", () => {
     expect(packs.map((pack) => pack.id)).toContain("research");
     expect(capabilities.map((capability) => capability.id).sort()).toEqual([
       "research.adhoc_analyze",
+      "research.ask",
       "research.brief_synthesize",
       "research.evidence_extract",
       "research.idea_generate",

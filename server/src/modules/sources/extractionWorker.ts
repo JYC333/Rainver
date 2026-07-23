@@ -36,7 +36,7 @@ import { PgCustomSourceHandlerRepository } from "./customSources/customSourceHan
 import { capturePolicyScanState } from "./capturePolicy";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
 import { sourceConnectorRegistry, type SourceConnectorHandler } from "./catalog/sourceConnectorRegistry";
-import { ProjectResearchOrchestrator } from "../projectResearch/orchestrator";
+import { ProjectResearchPipelineService } from "../projectResearch/pipeline/researchPipelineService";
 import { CustomSourceCredentialService } from "./customSources/customSourceCredentialService";
 import { upsertCanonicalEvidence } from "./evidenceIdentity";
 
@@ -76,6 +76,7 @@ const CONNECTION_SCAN_CHILD_JOB_LIMIT = 25;
 
 interface ConnectionWithConnectorRow extends SourceConnectionRow {
   connector_key: string;
+  channel_type: string | null;
   endpoint_url: string | null;
   fetch_frequency: string;
   schedule_rule_json: unknown;
@@ -277,7 +278,12 @@ export class SourceExtractionWorker {
     if (!job.connection_id) throw new HttpError(422, "connection_scan requires connection_id");
     const channelId = stringValue(record(job.metadata_json).source_channel_id);
     const connection = await this.getConnection(job.space_id, job.connection_id, channelId);
-    if (!connection.endpoint_url) throw new HttpError(422, "Source connection is missing endpoint_url");
+    if (connection.channel_type === "search" && !connection.provider_query_json) {
+      throw new HttpError(422, "Search channel is missing its executable Search Spec");
+    }
+    if (connection.channel_type !== "search" && !connection.endpoint_url) {
+      throw new HttpError(422, "Source connection is missing endpoint_url");
+    }
     const schedulerTask = connection.channel_id
       ? await getSourceChannelScanTask(this.db, connection.channel_id)
       : null;
@@ -287,9 +293,13 @@ export class SourceExtractionWorker {
     if (cursor.last_modified) headers["If-Modified-Since"] = cursor.last_modified;
 
     const handler = sourceConnectorRegistry.get(connection.connector_key);
+    const executableChannel = {
+      endpoint_url: connection.endpoint_url,
+      compiled_query: connection.provider_query_json,
+    };
     const request = isBackfillJob(job)
-      ? handler.buildBackfillRequest(connection, record(record(job.metadata_json).window), cursor as unknown as Record<string, unknown>)
-      : handler.buildScanRequest(connection, cursor as unknown as Record<string, unknown>);
+      ? handler.buildBackfillRequest(executableChannel, record(record(job.metadata_json).window), cursor as unknown as Record<string, unknown>)
+      : handler.buildScanRequest(executableChannel, cursor as unknown as Record<string, unknown>);
     await handler.prepareRequest?.();
     const credential = await new CustomSourceCredentialService(this.db, this.config)
       .resolveCredentialHeader(job.space_id, connection.credential_id);
@@ -357,7 +367,7 @@ export class SourceExtractionWorker {
     scanWindowStart: string | null,
     newItemCount: number,
   ): Promise<void> {
-    await new ProjectResearchOrchestrator(this.db, this.config).onSourceScanCompleted({
+    await new ProjectResearchPipelineService(this.db, this.config).onSourceScanCompleted({
       spaceId: job.space_id,
       sourceChannelId,
       scanJobId: job.id,
@@ -1205,8 +1215,12 @@ export class SourceExtractionWorker {
   private async getConnection(spaceId: string, connectionId: string, channelId: string | null = null): Promise<ConnectionWithConnectorRow> {
     const result = await this.db.query<ConnectionWithConnectorRow>(
       `SELECT sc.*, c.connector_key,
-              ch.id AS channel_id, ch.endpoint_url, ch.fetch_frequency,
-              ch.schedule_rule_json, ch.provider_query_json
+              ch.id AS channel_id, ch.channel_type, ch.endpoint_url, ch.fetch_frequency,
+              ch.schedule_rule_json,
+              CASE WHEN ch.channel_type='search'
+                THEN ss.compiled_provider_query_json
+                ELSE ch.provider_query_json
+              END AS provider_query_json
          FROM source_connections sc
          JOIN source_provider_connectors spc ON spc.id = sc.provider_connector_id
          JOIN source_connectors c ON c.id = spc.connector_id
@@ -1214,6 +1228,8 @@ export class SourceExtractionWorker {
            ON ch.source_connection_id = sc.id
           AND ch.status <> 'archived'
           AND ($3::varchar IS NULL OR ch.id = $3)
+         LEFT JOIN source_search_specs ss
+           ON ss.source_channel_id=ch.id AND ss.space_id=ch.space_id
         WHERE sc.space_id = $1
           AND sc.id = $2
           AND sc.deleted_at IS NULL

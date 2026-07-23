@@ -28,6 +28,19 @@ content:
     affected_sections may contain only understanding, questions, ideas, or experiments.
     Return exactly one comparison for every supplied paper and only the JSON object
     required by the output schema.
+
+    Valid JSON example (copy this complete structure, replace the example values, and
+    include one comparison object for every supplied source_item_id):
+    {
+      "comparisons": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "stance": "contradicts",
+          "detail": "This paper reports lower recovery success under long-horizon tasks, weakening the current claim that retries remain effective as task length increases.",
+          "affected_sections": ["understanding", "questions", "experiments"]
+        }
+      ]
+    }
   variables_schema:
     type: object
     required: [project_id, research_question, current_understanding, new_papers_json]

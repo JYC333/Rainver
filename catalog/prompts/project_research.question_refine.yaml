@@ -23,6 +23,40 @@ content:
     Return only the JSON object required by the output schema. Its top level must contain exactly the
     keys assessment, suggested_questions, sub_questions, scope, and clarifying_questions; never nest
     suggested_questions or any other sibling key inside assessment.
+
+    Valid JSON example (copy this complete structure and replace the example values):
+    {
+      "assessment": {
+        "answerable": true,
+        "finer": {
+          "feasible": 4,
+          "interesting": 4,
+          "novel": 3,
+          "ethical": 5,
+          "relevant": 4
+        },
+        "issues": ["The evidence window should be stated explicitly."]
+      },
+      "suggested_questions": [
+        "How do tool-using coding agents recover from failed tool calls in peer-reviewed evaluations published since 2022?",
+        "Which recovery strategies improve task completion after tool-call failures in coding-agent benchmarks?"
+      ],
+      "sub_questions": [
+        "Which benchmarks measure recovery after a failed tool call?",
+        "Which recovery strategies are compared?"
+      ],
+      "scope": {
+        "in": ["Tool-using coding agents", "Empirical evaluations published since 2022"],
+        "out": ["Human-only troubleshooting studies", "Agents without external tool use"]
+      },
+      "clarifying_questions": [
+        {
+          "question": "Which agent environments should be included?",
+          "options": ["Coding agents", "Browser agents", "Both"],
+          "allow_multiple": false
+        }
+      ]
+    }
   variables_schema:
     type: object
     required: [project_name, project_description, corpus_summary, research_question, conversation_history]

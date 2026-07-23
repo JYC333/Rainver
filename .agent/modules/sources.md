@@ -167,12 +167,14 @@ The provider catalog is exposed through `GET /api/v1/sources/providers`.
 Academic search providers are `arxiv`, `openalex`, and `semantic_scholar`;
 `web_search` is a credentialed, untrusted web tier. The arXiv entry includes
 the provider-owned setup schema and category taxonomy used
-by the shared Add Source dialog. Users create and edit monitors through
-`/api/v1/sources/channels`; the server resolves the active
-`arxiv`–`arxiv_api` mapping, creates or reuses the underlying Connection, and
-stores the normalized provider query and generated API URL on the Channel.
-Credentials and policy remain on the Connection, while query, schedule,
-watermark, and project bindings remain Channel-owned.
+by the shared Add Source dialog. Users can create a manual monitor through
+`/api/v1/sources/channels`; the server resolves the active provider mapping,
+compiles the request through the research provider compiler, and creates a
+one-to-one `source_search_specs` snapshot. Adaptive Project Research creates
+monitors only by materializing a selected query attempt. Credentials and policy
+remain on the Connection; immutable executable query state belongs to the
+Search Spec, while schedule, watermark, and project bindings remain
+Channel-owned.
 
 OpenAlex and Semantic Scholar use JSON connector handlers with provider-native
 cursor/offset state and normalize DOI, arXiv id, native id, authors, venue,
@@ -187,14 +189,16 @@ continuing link and Corpus reconciliation. Brave results remain external URL ite
 Connection is created with `trust_level=untrusted`; screening instructions
 require independent or scholarly corroboration before high confidence.
 
-`POST /api/v1/research/engine/search` plans a bounded per-provider query set,
-previews providers concurrently, merges candidates without writing corpus, and
-persists an immutable `research_search_strategies` record. Dedupe priority is
-DOI, arXiv id, provider-native id, then normalized title and first author. Web
-search additionally requires the Space external-egress switch and a managed
-Source credential. Confirming suggestions through
-`POST /api/v1/research/engine/monitors` creates ordinary Channels and Project
-bindings; only subsequent Sources scans and materialization may populate corpus.
+`POST /api/v1/research/query-strategies/evaluate` evaluates each selected
+provider independently for at most three attempts and persists the semantic
+intent, exact compiled query, preview observation, decision, and selected
+attempt in the normalized research-query tables. Web search additionally
+requires the Space external-egress switch and a managed Source credential.
+Confirming a strategy through
+`POST /api/v1/research/query-strategies/{id}/materialize` atomically creates Search
+Specs, ordinary Channels, and Project bindings; only subsequent Sources scans
+and materialization may populate corpus. Preview, initial backfill, and
+recurring scans execute the same selected compiled query snapshot.
 The arXiv setup schema supports topic search, category streams, and all-paper
 streams. Category streams compile to `cat:<category>` or an OR expression and
 use `submittedDate` descending by default, so daily scans behave like a new-

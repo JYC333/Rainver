@@ -96,9 +96,8 @@ export class ProjectResearchIntegrityMonitorService {
     const evidenceRefs = new Set<string>();
     const directDois = new Set<string>();
     const sections = await this.db.query<{ refs_json: unknown }>(
-      `SELECT s.refs_json FROM research_notebook_sections s
-        JOIN research_notebooks n ON n.id=s.notebook_id
-       WHERE n.space_id=$1 AND n.project_id=$2`,
+      `SELECT n.refs_json FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND so.status='active'`,
       [spaceId, projectId],
     );
     for (const row of sections.rows) {

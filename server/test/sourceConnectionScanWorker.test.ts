@@ -38,6 +38,8 @@ class ScanDb implements Queryable {
     manualScan?: boolean
     runFollowUpJobs?: boolean
     linkedProjectId?: string
+    compiledQuery?: Record<string, unknown>
+    searchSpecMissing?: boolean
   }) {
     this.schedulerTask = {
       id: "task-1",
@@ -244,7 +246,7 @@ class ScanDb implements Queryable {
       access_level: "full",
       credential_id: null,
       name: "Source",
-      endpoint_url: "https://example.test/feed.xml",
+      endpoint_url: this.input.connectorKey === "arxiv_api" ? null : "https://example.test/feed.xml",
       status: "active",
       fetch_frequency: "hourly",
       capture_policy: this.input.capturePolicy,
@@ -262,6 +264,12 @@ class ScanDb implements Queryable {
       created_at: "2026-06-30T00:00:00.000Z",
       updated_at: "2026-06-30T00:00:00.000Z",
       connector_key: this.input.connectorKey,
+      channel_type: this.input.connectorKey === "arxiv_api" ? "search" : "feed",
+      provider_query_json: this.input.connectorKey === "arxiv_api"
+        ? this.input.searchSpecMissing
+          ? null
+          : this.input.compiledQuery ?? { search_query: "all:*", max_results: 100 }
+        : {},
       channel_id: "conn-1",
       deleted_at: null,
     };
@@ -546,11 +554,17 @@ describe("SourceExtractionWorker connection_scan", () => {
       connectorKey: "arxiv_api",
       capturePolicy: "extract_text",
       policyRetention: "full_text",
+      compiledQuery: { search_query: 'all:"agent memory"', max_results: 17 },
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(arxivFeed(), { status: 200 }));
 
     await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
+
+    const [requestUrl] = vi.mocked(globalThis.fetch).mock.calls[0] ?? [];
+    const request = new URL(String(requestUrl));
+    expect(request.searchParams.get("search_query")).toBe('all:"agent memory"');
+    expect(request.searchParams.get("max_results")).toBe("17");
 
     const insert = db.calls.find(call => call.sql.includes("INSERT INTO source_items"));
     expect(insert?.params[3]).toBe("feed_entry");
@@ -581,6 +595,28 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     const stats = db.calls.find(call => call.sql.includes("items_seen"));
     expect(stats?.params.slice(2, 5)).toEqual([1, 1, 0]);
+  });
+
+  it("fails closed before fetch when a search channel has no executable Search Spec", async () => {
+    const db = new ScanDb({
+      connectorKey: "arxiv_api",
+      capturePolicy: "reference_only",
+      policyRetention: "metadata_only",
+      searchSpecMissing: true,
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+      .resolves.toMatchObject({ status: "failed" });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const failure = db.calls.find((call) => call.sql.includes("SET status = $3"));
+    expect(failure?.params.slice(2, 6)).toEqual([
+      "failed",
+      expect.any(String),
+      "422",
+      "Search channel is missing its executable Search Spec",
+    ]);
   });
 
   it("truncates arXiv author and excerpt values to their source_items column widths", async () => {

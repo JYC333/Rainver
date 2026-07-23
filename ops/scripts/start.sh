@@ -69,16 +69,6 @@ ensure_env() {
   fi
 }
 
-# ── Generate .server.env from .env (strips compose-only vars) ─────────────────
-# .server.env is loaded by the server container via env_file:. It must not
-# contain POSTGRES_* or DATABASE_URL — those are for compose and postgres only.
-generate_server_env() {
-  local server_env="$MODE_ROOT/.server.env"
-  grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL)[[:space:]]*=' \
-    "$ENV_FILE" > "$server_env"
-  chmod 600 "$server_env"
-}
-
 generate_schema_migrations() {
   echo "Generating Drizzle migration artifacts from TypeScript schema..."
   if ! command -v npm >/dev/null 2>&1; then
@@ -136,7 +126,7 @@ init_data_dirs
 ensure_env
 validate_prod_env
 local_compose_ensure_server_database_env
-generate_server_env
+local_compose_generate_server_env
 generate_schema_migrations
 
 export DOCKER_GID

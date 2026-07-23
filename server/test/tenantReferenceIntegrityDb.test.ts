@@ -17,7 +17,6 @@ const VERSION_B = "tenant-integrity-version-b";
 const SOURCE_A = "tenant-integrity-source-a";
 const SOURCE_B = "tenant-integrity-source-b";
 const OPERATION_B = "tenant-integrity-operation-b";
-const NOTEBOOK_B = "tenant-integrity-notebook-b";
 const RUN_A = "tenant-integrity-run-a";
 const RUN_B = "tenant-integrity-run-b";
 
@@ -119,11 +118,6 @@ beforeEach(async () => {
      ) VALUES ($1, $2, $3, 'research', 'Operation B', 'active', '{}'::jsonb, $4, $4)`,
     [OPERATION_B, SPACE_B, PROJECT_B, now],
   );
-  await pool.query(
-    `INSERT INTO research_notebooks (id, space_id, project_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $4)`,
-    [NOTEBOOK_B, SPACE_B, PROJECT_B, now],
-  );
   await insertRun(RUN_A, SPACE_A, AGENT_A, VERSION_A, now);
   await insertRun(RUN_B, SPACE_B, AGENT_B, VERSION_B, now);
 });
@@ -199,21 +193,17 @@ describe("tenant reference integrity", () => {
     if (!available || !pool) return ctx.skip();
     const now = new Date().toISOString();
 
+    // A project's notes are ordinary Notes tagged with primary_project_id;
+    // the same compound FK (space_objects.primary_project_id, space_id ->
+    // projects.id, space_id) that scopes every other space-owned object is
+    // what keeps Project Chat's note candidates from ever crossing spaces.
     await expect(pool.query(
-      `INSERT INTO research_search_strategies (
-         id, space_id, project_id, operation_id, created_by_user_id, question,
-         scope_json, providers_json, queries_json, filters_json, status, created_at
-       ) VALUES ('cross-space-strategy', $1, $2, $3, $4, 'Question', '{}'::jsonb,
-                 '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, 'running', $5)`,
-      [SPACE_A, PROJECT_A, OPERATION_B, USER, now],
-    )).rejects.toMatchObject({ code: "23503" });
-    await expect(pool.query(
-      `INSERT INTO research_notebook_sections (
-         id, space_id, notebook_id, section_key, content_json, normalized_text,
-         content_hash, refs_json, version, updated_at
-       ) VALUES ('cross-space-section', $1, $2, 'understanding', '{}'::jsonb,
-                 '', 'hash', '[]'::jsonb, 1, $3)`,
-      [SPACE_A, NOTEBOOK_B, now],
+      `INSERT INTO space_objects (
+         id, space_id, object_type, title, status, visibility, primary_project_id,
+         created_at, updated_at
+       ) VALUES ('cross-space-note', $1, 'note', 'Cross-space note', 'active',
+                 'space_shared', $2, $3, $3)`,
+      [SPACE_A, PROJECT_B, now],
     )).rejects.toMatchObject({ code: "23503" });
     await expect(pool.query(
       `INSERT INTO research_paper_cards (
@@ -271,19 +261,20 @@ describe("tenant reference integrity", () => {
   it("preserves tenant keys when optional Run and SourceItem targets are deleted", async (ctx) => {
     if (!available || !pool) return ctx.skip();
     const now = new Date().toISOString();
-    const notebook = "tenant-integrity-notebook-a";
     await pool.query(
-      `INSERT INTO research_notebooks (id, space_id, project_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $4)`,
-      [notebook, SPACE_A, PROJECT_A, now],
+      `INSERT INTO space_objects (
+         id, space_id, object_type, title, status, visibility, primary_project_id,
+         created_at, updated_at
+       ) VALUES ('run-delete-note', $1, 'note', 'Run-authored note', 'active',
+                 'space_shared', $2, $3, $3)`,
+      [SPACE_A, PROJECT_A, now],
     );
     await pool.query(
-      `INSERT INTO research_notebook_sections (
-         id, space_id, notebook_id, section_key, content_json, normalized_text,
-         content_hash, refs_json, version, updated_by_run_id, updated_at
-       ) VALUES ('run-delete-section', $1, $2, 'understanding', '{}'::jsonb,
-                 '', 'hash', '[]'::jsonb, 1, $3, $4)`,
-      [SPACE_A, notebook, RUN_A, now],
+      `INSERT INTO notes (
+         object_id, space_id, content_json, content_format, content_schema_version,
+         version, updated_by_run_id
+       ) VALUES ('run-delete-note', $1, '{}'::jsonb, 'prosemirror_json', 1, 1, $2)`,
+      [SPACE_A, RUN_A],
     );
     await pool.query(
       `INSERT INTO research_integrity_alerts (
@@ -297,10 +288,10 @@ describe("tenant reference integrity", () => {
     await pool.query(`DELETE FROM runs WHERE id = $1`, [RUN_A]);
     await pool.query(`DELETE FROM source_items WHERE id = $1`, [SOURCE_A]);
 
-    const section = await pool.query<{ space_id: string; updated_by_run_id: string | null }>(
-      `SELECT space_id, updated_by_run_id FROM research_notebook_sections WHERE id = 'run-delete-section'`,
+    const note = await pool.query<{ space_id: string; updated_by_run_id: string | null }>(
+      `SELECT space_id, updated_by_run_id FROM notes WHERE object_id = 'run-delete-note'`,
     );
-    expect(section.rows[0]).toEqual({ space_id: SPACE_A, updated_by_run_id: null });
+    expect(note.rows[0]).toEqual({ space_id: SPACE_A, updated_by_run_id: null });
     const alert = await pool.query<{ space_id: string; source_item_id: string | null }>(
       `SELECT space_id, source_item_id FROM research_integrity_alerts WHERE id = 'source-delete-alert'`,
     );

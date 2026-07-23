@@ -1,12 +1,13 @@
 import type { Queryable, SpaceUserIdentity } from '../routeUtils/common'
 import type { ServerConfig } from '../../config'
 import { HttpError, objectValue, optionalString, requiredString } from '../routeUtils/common'
-import { SourceChannelQueryCompiler } from './catalog/sourceChannelQueryCompiler'
 import { sourceConnectorRegistry, type SourceConnectorHandler } from './catalog/sourceConnectorRegistry'
 import { SourceProviderCatalogService } from './catalog/sourceProviderCatalogService'
 import { consumeConnectionQuota } from './sourceQuotaBucket'
 import { fetchSource, type SourceFetchResult } from './sourceFetch'
 import { CustomSourceCredentialService } from './customSources/customSourceCredentialService'
+import { ResearchProviderCompiler } from '../research/queryPlanning/providerCompiler'
+import type { ResearchProviderKey } from '@agent-space/protocol' with { 'resolution-mode': 'import' }
 
 type PreviewFetcher = (url: string, options: { headers?: Record<string, string>; maxDownloadBytes: number; timeoutMs?: number }) => Promise<SourceFetchResult>
 
@@ -18,7 +19,7 @@ const PREVIEW_UNAVAILABLE_MESSAGE =
   'The source provider is temporarily unavailable or rate limiting; this is not a problem with your query. Try again in a minute.'
 
 export class SourceQueryPreviewService {
-  private readonly compiler = new SourceChannelQueryCompiler()
+  private readonly compiler = new ResearchProviderCompiler()
   private readonly config: ServerConfig | null
   private readonly fetcher: PreviewFetcher
 
@@ -34,11 +35,12 @@ export class SourceQueryPreviewService {
       throw new HttpError(422, 'Query preview is available only for searchable providers')
     }
     const query = { ...objectValue(body.query), max_results: 3, per_page: 3, limit: 3, count: 3 }
-    const compiled = this.compiler.compile(provider.connector_key, { ...query, query })
+    const researchProviderKey = researchProviderForConnector(provider.connector_key)
+    const compiled = this.compiler.compileNative(researchProviderKey, { ...query, query })
     const handler = sourceConnectorRegistry.get(provider.connector_key)
     const request = handler.buildScanRequest({
-      endpoint_url: compiled.endpointUrl,
-      provider_query_json: compiled.providerQuery,
+      endpoint_url: null,
+      compiled_query: compiled.query,
     }, {})
     const quotaKey = await this.quotaKey(identity, optionalString(body.source_channel_id), provider.mapping_id)
     const quota = await consumeConnectionQuota(this.db, identity.spaceId, quotaKey, { window: 'minute', limit_count: 10 })
@@ -64,7 +66,7 @@ export class SourceQueryPreviewService {
     const items = handler.parseResponse(response.text).slice(0, 3)
     return {
       provider_key: providerKey,
-      compiled_query: String(compiled.providerQuery.search_query ?? compiled.providerQuery.search ?? compiled.providerQuery.query ?? ''),
+      compiled_query: String(compiled.query.search_query ?? compiled.query.search ?? compiled.query.query ?? compiled.query.q ?? ''),
       approximate_hit_count: providerTotalResults(provider.connector_key, response.text) ?? items.length,
       samples: items.map(item => ({ title: item.title, source_uri: item.sourceUri, occurred_at: item.occurredAt, author: item.author, excerpt: item.excerpt, metadata: item.metadata })),
     }
@@ -101,10 +103,23 @@ export class SourceQueryPreviewService {
   }
 }
 
+function researchProviderForConnector(connectorKey: string): ResearchProviderKey {
+  if (connectorKey === 'arxiv_api') return 'arxiv'
+  if (connectorKey === 'openalex_api') return 'openalex'
+  if (connectorKey === 'semantic_scholar_api') return 'semantic_scholar'
+  if (connectorKey === 'brave_web_search_api') return 'web_search'
+  throw new HttpError(422, 'Query preview is available only for searchable providers')
+}
+
 function isTimeoutError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const name = (error as { name?: unknown }).name
   if (name === 'TimeoutError' || name === 'AbortError') return true
+  // fetch() throws a bare TypeError (not an HTTP error response) for
+  // network-level failures — DNS, connection reset/refused, TLS. Those are
+  // exactly as transient as a timeout and deserve the same retry instead of
+  // leaking as an opaque "TypeError" attempt error class.
+  if (name === 'TypeError' && optionalString((error as { message?: unknown }).message)?.includes('fetch failed')) return true
   const cause = (error as { cause?: unknown }).cause
   return cause !== undefined && cause !== error && isTimeoutError(cause)
 }

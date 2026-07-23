@@ -172,12 +172,17 @@ export interface NoteRow {
   status: string;
   primary_project_id: string | null;
   collection_id: string | null;
+  collection_sort_order: number | string | null;
   created_from_activity_id: string | null;
   created_by_user_id: string | null;
   created_at: unknown;
   updated_at: unknown;
   archived_at: unknown;
   deleted_at: unknown;
+  version: unknown;
+  content_hash: string | null;
+  updated_by_user_id: string | null;
+  updated_by_run_id: string | null;
 }
 
 export interface NoteCollectionRow {
@@ -189,6 +194,7 @@ export interface NoteCollectionRow {
   sort_order: number | string;
   is_system: boolean;
   is_hidden: boolean;
+  project_id: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -287,7 +293,8 @@ export const NOTE_COLUMNS = `
   n.content_schema_version, n.plain_text, so.summary AS excerpt, so.status,
   so.primary_project_id, n.created_from_activity_id, so.created_by_user_id,
   so.created_at, so.updated_at, so.archived_at, so.deleted_at,
-  first_collection.collection_id
+  n.version, n.content_hash, n.updated_by_user_id, n.updated_by_run_id,
+  first_collection.collection_id, first_collection.sort_order AS collection_sort_order
 `;
 
 export const NOTE_FROM = `
@@ -300,7 +307,7 @@ export const NOTE_FROM = `
 
 export const NOTE_COLLECTION_COLUMNS = `
   id, space_id, parent_id, name, system_role, sort_order, is_system,
-  is_hidden, created_at, updated_at
+  is_hidden, project_id, created_at, updated_at
 `;
 
 export const KNOWLEDGE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "question", "answer", "summary"]);

@@ -392,13 +392,23 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       monitoring_field: "submittedDate",
       report_depth: "quick",
       question_refine_skipped: false,
-      question_refinement: { assessment: { answerable: true }, suggested_questions: ["q"] },
+      question_refinement: {
+        assessment: { answerable: true },
+        suggested_questions: ["q"],
+        sub_questions: ["Which benchmarks measure recovery?"],
+        scope: { in: ["Tool-using coding agents"], out: ["Human-only studies"] },
+      },
       execution: {},
     }) as { state_json: Record<string, unknown> };
     expect(workflow.state_json).toMatchObject({
       source_channel_ids: [],
       question_refine_skipped: false,
       question_refinement: { assessment: { answerable: true }, suggested_questions: ["q"] },
+      research_scope: {
+        sub_questions: ["Which benchmarks measure recovery?"],
+        in: ["Tool-using coding agents"],
+        out: ["Human-only studies"],
+      },
     });
   });
 
@@ -406,7 +416,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     if (!available || !pool) return;
     await expect(new ProjectResearchOrchestrator(pool!).startInitialIntake(identity, PROJECT, {
       research_question: "Unrefined question",
-      source_channel_ids: [CHANNEL],
+      query_strategy_id: "22222222-2222-4222-8222-222222222222",
       history_mode: "bounded_range",
       from: "2026-02-01",
       to: "2026-03-01",

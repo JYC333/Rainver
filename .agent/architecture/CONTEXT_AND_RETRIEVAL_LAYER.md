@@ -217,7 +217,10 @@ artifact, then the caller selects the artifact id for context attachment. The
 server resolves only artifacts visible to the current user and only currently
 attachable types: `retrieval_brief`, `retrieval_eval_report`,
 `retrieval_explain_report`, `retrieval_maintenance_report`, and
-`memory_maintenance_report`.
+`memory_maintenance_report`, plus the Project Research `literature_matrix`.
+Project Research automatically attaches its refreshed matrix to synthesis as a
+bounded evidence pack; matrix metadata carries the originating source connection
+ids so prepare-time source-policy and provider-egress checks still apply.
 workspace-scoped `space_shared` artifacts are not broad space-shared artifacts:
 `artifacts.workspace_id` is required by the baseline schema, and non-owner
 attachment/list/read/export paths require the caller's workspace context to

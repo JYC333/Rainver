@@ -51,7 +51,11 @@ const SYSTEM_MEMORY_SEEDS = [
 
 const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
   ["Inbox", "inbox", 0, true],
-  ["Projects", "normal", 100, false],
+  // Protected (is_system=true) like Inbox/Archive: every project's
+  // auto-created notes folder nests under this one by system_role lookup
+  // (see workspaceService.ts's resolveProjectsParentFolderId), so it must
+  // not be renameable-away-from or movable the way Areas/Resources are.
+  ["Projects", "projects_root", 100, true],
   ["Areas", "normal", 200, false],
   ["Resources", "normal", 300, false],
   ["Archive", "archive", 400, true],
@@ -97,7 +101,7 @@ async function seedNoteCollections(client: PoolClient, spaceId: string): Promise
   const seeds =
     existingCount === 0
       ? DEFAULT_NOTE_COLLECTIONS
-      : DEFAULT_NOTE_COLLECTIONS.filter(([, role]) => role === "inbox" || role === "archive");
+      : DEFAULT_NOTE_COLLECTIONS.filter(([, role]) => role === "inbox" || role === "archive" || role === "projects_root");
 
   for (const [name, role, sortOrder, isSystem] of seeds) {
     if (existingCount === 0 && role === "normal") {

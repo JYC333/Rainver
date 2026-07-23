@@ -65,8 +65,41 @@ function isEmptySearch(operation: ProjectOperation): boolean {
   return objectValue(operation.progress_json.empty_result).kind === 'no_source_items'
 }
 
+function completedWithoutReport(operation: ProjectOperation | null): Record<string, unknown> | null {
+  if (!operation) return null
+  const outcome = objectValue(operation.progress_json.empty_result)
+  return outcome.kind === 'no_relevant_sources' || outcome.kind === 'no_coherent_synthesis' ? outcome : null
+}
+
 function newest<T extends { created_at: string }>(rows: T[]): T | null {
   return [...rows].sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+}
+
+function workflowIdOf(operation: ProjectOperation): string {
+  const value = operation.progress_json.workflow_id
+  return typeof value === 'string' && value ? value : operation.id
+}
+
+/**
+ * The backend allows at most one active operation per workflow — a retry (or
+ * an auto-created incremental scan) creates a fresh operation for the same
+ * workflow rather than reusing the old one, leaving the superseded operation
+ * permanently "failed" in history. Without this, `failedOperations` still
+ * counted that stale operation as retriable — the panel showed "failed,
+ * Retry" pointing at it while a newer operation for the same workflow was
+ * actually running, and clicking Retry 409'd ("another operation is already
+ * active for this workflow") with no way to see or act on the real one. Only
+ * the newest operation per workflow is ever "current"; older ones for the
+ * same workflow are history, not something to retry or report as running.
+ */
+function currentOperations(operations: ProjectOperation[]): ProjectOperation[] {
+  const byWorkflow = new Map<string, ProjectOperation>()
+  for (const operation of operations) {
+    const key = workflowIdOf(operation)
+    const existing = byWorkflow.get(key)
+    if (!existing || operation.created_at.localeCompare(existing.created_at) > 0) byWorkflow.set(key, operation)
+  }
+  return [...byWorkflow.values()]
 }
 
 function workflowQuestion(workflow: ProjectResearchWorkflow | null): string {
@@ -181,21 +214,20 @@ export function savedSetupDiffersFromOperation(
     && (day(input.from) !== day(history.from) || day(input.to) !== day(history.to))) return true
   if (typeof history.max_items === 'number' && typeof input.max_items === 'number' && input.max_items !== history.max_items) return true
   if (typeof query.sort_by === 'string' && typeof input.monitoring_field === 'string' && input.monitoring_field !== query.sort_by) return true
-  const executedChannels = Array.isArray(operation.progress_json.channel_ids)
-    ? operation.progress_json.channel_ids.filter((value): value is string => typeof value === 'string').sort()
-    : []
-  return [...input.source_channel_ids].sort().join('\n') !== executedChannels.join('\n')
+  const executedStrategyId = typeof operation.progress_json.query_strategy_id === 'string'
+    ? operation.progress_json.query_strategy_id
+    : null
+  return Boolean(input.query_strategy_id) && input.query_strategy_id !== executedStrategyId
 }
 
 export function researchResultState(input: ResearchResultStateInput): ResearchResultState {
   const pendingCheckpoints = input.checkpoints.filter(checkpoint =>
     checkpoint.status === 'pending' && isResearchHumanReviewCheckpoint(checkpoint),
   )
-  const failedOperations = input.operations.filter(operation => operation.kind === 'research' && operation.status === 'failed')
-  const runningOperations = input.operations.filter(operation =>
-    operation.kind === 'research' && ['active', 'waiting_review'].includes(operation.status),
-  )
-  const latestOperation = newest(input.operations.filter(operation => operation.kind === 'research'))
+  const current = currentOperations(input.operations.filter(operation => operation.kind === 'research'))
+  const failedOperations = current.filter(operation => operation.status === 'failed')
+  const runningOperations = current.filter(operation => ['active', 'waiting_review'].includes(operation.status))
+  const latestOperation = newest(current)
   const failedOperation = newest(failedOperations)
   const runningOperation = newest(runningOperations)
   const checkpoint = newest(pendingCheckpoints)
@@ -203,6 +235,7 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
   const drift = Boolean(input.projectQuestion && workflowQuestion(input.workflow) && input.projectQuestion !== workflowQuestion(input.workflow))
   const monitoring = monitoringActive(input.workflow)
   const latestTodaySummary = todaySummary(input.scanSummaries)
+  const noReportOutcome = completedWithoutReport(latestOperation)
 
   const candidates: Array<{ active: boolean; notice: string }> = [
     { active: drift, notice: 'The research question changed; existing judgements and reports still use the previous question.' },
@@ -269,13 +302,31 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
     const scopeMetrics = operationScopeMetrics(latestOperation)
     return {
       kind: 'completed', eyebrow: 'Search complete',
-      conclusion: 'No papers matched the current monitors and history window.',
+      conclusion: 'No papers matched the selected query strategy and history window.',
       detail: input.savedSetupDiffers
         ? 'The saved setup changed after this search. Search again starts a new search with the updated dates, monitors, and limits.'
         : 'Search again re-runs the same history windows with the monitor queries as saved now. Adjust the setup first if the date range, monitors, or item limit need to change.',
       metrics: scopeMetrics.length > 0 ? scopeMetrics : corpusMetrics,
       primaryAction: { key: input.savedSetupDiffers ? 'start_search' : 'rescan', label: 'Search again' },
       secondaryAction: { key: 'configure', label: 'Review search settings' },
+      operation: latestOperation, checkpoint: null, latestReport, notices: monitoring ? noticesFor(-1) : [], failure: null,
+    }
+  }
+  if (latestOperation && noReportOutcome) {
+    const suggestions = Array.isArray(noReportOutcome.suggestions)
+      ? noReportOutcome.suggestions.filter((item): item is string => typeof item === 'string')
+      : []
+    const noRelevant = noReportOutcome.kind === 'no_relevant_sources'
+    return {
+      kind: 'completed', eyebrow: 'Research result',
+      conclusion: noRelevant
+        ? 'The search and screening completed, but no relevant evidence remained for a report.'
+        : 'The evidence did not support a coherent citation-backed report.',
+      detail: suggestions[0]
+        ?? (typeof noReportOutcome.message === 'string' ? noReportOutcome.message : 'Review the corpus and research scope before starting another search.'),
+      metrics: corpusMetrics,
+      primaryAction: { key: 'view_corpus', label: 'Review collected papers' },
+      secondaryAction: { key: 'configure', label: 'Adjust research scope' },
       operation: latestOperation, checkpoint: null, latestReport, notices: monitoring ? noticesFor(-1) : [], failure: null,
     }
   }

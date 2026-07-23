@@ -16,7 +16,7 @@ import type {
   SourceChannel, ProjectSourceBinding, SourceItem, ExtractedEvidence,
   ReaderAnnotation, AutomationOut, SourcePostProcessingItemDecision,
   ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem,
-  ProjectResearchScreeningCriteria, ProjectResearchQuestionRefinement, ProjectResearchWorkflow,
+  ProjectResearchQuestionRefinement, ProjectResearchWorkflow,
   ProjectOperation, ProjectResearchScanSummary,
 } from '../../types/api'
 import { Card } from '../../components/ui/card'
@@ -34,6 +34,7 @@ import { isResearchHumanReviewCheckpoint, researchCheckpointLabel } from './rese
 import { researchSetupDraftFromWorkflow } from './researchSetupDraft'
 import { researchWorkflowForDisplayFrom } from './researchWorkflowView'
 import { ProjectSourceLinkDialog } from './ProjectSourceLinkDialog'
+import { sourceQueryText } from '../sources/sourceQueryText'
 import {
   Dialog,
   DialogContent,
@@ -518,7 +519,6 @@ export default function ProjectDetailPage() {
   const [literatureMatrix, setLiteratureMatrix] = useState<ProjectResearchLiteratureMatrixItem[]>([])
   const [researchReports, setResearchReports] = useState<ProjectResearchReport[]>([])
   const [modelProviders, setModelProviders] = useState<Awaited<ReturnType<typeof providersApi.list>>>([])
-  const [screeningCriteria, setScreeningCriteria] = useState<ProjectResearchScreeningCriteria | null>(null)
   const [researchActionBusy, setResearchActionBusy] = useState<string | null>(null)
   const [researchDataLoading, setResearchDataLoading] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -535,7 +535,30 @@ export default function ProjectDetailPage() {
   const [removingBindingId, setRemovingBindingId] = useState<string | null>(null)
   const [archiving, setArchiving] = useState(false)
 
+  // React StrictMode (dev only) intentionally double-invokes this effect on
+  // mount, and the mount effect below has no cleanup to cancel the first
+  // call — without this guard every page load fires its ~25-call waterfall
+  // twice concurrently, which does nothing useful and doubles real load on
+  // the backend (worse: two copies of the heaviest query compete for the
+  // same CPU, making both run slower than either alone). Collapse a second
+  // call for the same project into the load already in flight instead of
+  // starting a redundant one; a call after the previous one finished (e.g.
+  // the explicit refresh after resolving a research question) still runs.
+  const loadAllInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null)
+
   const loadAll = useCallback(async () => {
+    const key = `${projectId ?? ''}:${activeSpaceId ?? ''}`
+    if (loadAllInFlightRef.current?.key === key) return loadAllInFlightRef.current.promise
+    const promise = loadAllImpl()
+    loadAllInFlightRef.current = { key, promise }
+    try {
+      await promise
+    } finally {
+      if (loadAllInFlightRef.current?.promise === promise) loadAllInFlightRef.current = null
+    }
+  }, [projectId, activeSpaceId])
+
+  const loadAllImpl = useCallback(async () => {
     if (!projectId || !activeSpaceId) {
       setResearchDataLoading(false)
       setLoading(false)
@@ -571,80 +594,83 @@ export default function ProjectDetailPage() {
     }
 
     setDetailsLoading(true)
-    try {
-      const [allWs, acts, arts, props, runs, mems, sourceChannels, sourceBindings, sourceItems, evidenceItems, recommendations, readerAnns, allAutomations, operationRows] = await Promise.all([
-        workspacesApi.list({ limit: '200' }),
-        activityApi.list({ project_id: projectId, limit: 5 }),
-        artifactsApi.list({ project_id: projectId, limit: 5 }),
-        proposalsApi.list({ project_id: projectId, status: 'pending', limit: 5 }),
-        runsApi.list({ project_id: projectId, limit: 5 }),
-        memoryApi.list({ project_id: projectId, limit: 5 }),
-        sourcesApi.channels(),
-        sourcesApi.projectSourceBindings({ project_id: projectId }),
-        sourcesApi.projectItems({ project_id: projectId, limit: 5 }),
-        sourcesApi.evidence({ project_id: projectId, status: 'active', limit: 5 }),
-        sourcesApi.postProcessingDecisions({ project_id: projectId, limit: 20 }).catch(() => ({ items: [] as SourcePostProcessingItemDecision[], total: 0, limit: 20, offset: 0 })),
-        readerApi.listByProject(projectId, 5).catch(() => ({ items: [] as ReaderAnnotation[] })),
-        automationsApi.list({ project_id: projectId }).catch(() => [] as AutomationOut[]),
-        projectsApi.operations ? projectsApi.operations(projectId).catch(() => [] as ProjectOperation[]) : Promise.resolve([] as ProjectOperation[]),
-      ])
-      const map: Record<string, Workspace> = {}
-      allWs.items.forEach(w => { map[w.id] = w })
-      setWorkspaceMap(map)
-      setRecentActivities(acts)
-      setRecentArtifacts(arts.items)
-      setPendingProposals(props.items)
-      setRecentRuns(runs)
-      setProjectMemory(mems.items)
-      setSourceChannels(sourceChannels)
-      setSourceBindings(sourceBindings)
-      setRecentSourceItems(sourceItems.items.map(projectItem => projectItem.item))
-      setRecentEvidence(evidenceItems.items)
-      setSourceRecommendations(recommendations.items.filter(item => item.relevance !== 'not_relevant').slice(0, 5))
-      setOperations(operationRows)
-      setReaderAnnotations(readerAnns.items)
-      setAutomations(allAutomations.filter(a => a.status !== 'archived'))
+    // Each fetch below feeds its own independent card/section — batching
+    // them behind one `Promise.all([...]).then(([a, b, c]) => ...)` made
+    // every fast one (most resolve in well under 100ms) sit on screen as
+    // "loading" until the single slowest call in that batch finished, even
+    // though the data was ready much earlier. Applying each result via its
+    // own `.then(setState)` lets a section render the moment its own
+    // request completes, independent of its siblings' speed. The outer
+    // `Promise.all` here is only for knowing when the whole stage is done
+    // (loading flags, error toast) — not for gating when any one piece of
+    // state updates.
+    // For academic projects, AcademicResearchWorkbench (rendered inline as
+    // the page's primary content) is the only consumer of this data, and it
+    // doesn't use these four — they only feed the plain-project "Sources
+    // consumption"/"Project activity" sections further down, which are
+    // themselves only rendered for non-academic projects. Skip fetching
+    // data that would just sit unused, and reset it to empty explicitly (not
+    // "leave whatever's there") so navigating from a non-academic project to
+    // an academic one doesn't leave stale data in state.
+    const isAcademic = resolvedPresetKey === ACADEMIC_PRESET_KEY
+    const genericLoad = Promise.all([
+      isAcademic ? Promise.resolve(setWorkspaceMap({})) : workspacesApi.list({ limit: '200' }).then(allWs => {
+        const map: Record<string, Workspace> = {}
+        allWs.items.forEach(w => { map[w.id] = w })
+        setWorkspaceMap(map)
+      }),
+      isAcademic ? Promise.resolve(setRecentActivities([])) : activityApi.list({ project_id: projectId, limit: 5 }).then(setRecentActivities),
+      isAcademic ? Promise.resolve(setRecentArtifacts([])) : artifactsApi.list({ project_id: projectId, limit: 5 }).then(arts => setRecentArtifacts(arts.items)),
+      isAcademic ? Promise.resolve(setPendingProposals([])) : proposalsApi.list({ project_id: projectId, status: 'pending', limit: 5 }).then(props => setPendingProposals(props.items)),
+      runsApi.list({ project_id: projectId, limit: 5 }).then(setRecentRuns),
+      memoryApi.list({ project_id: projectId, limit: 5 }).then(mems => setProjectMemory(mems.items)),
+      sourcesApi.channels().then(setSourceChannels),
+      sourcesApi.projectSourceBindings({ project_id: projectId }).then(setSourceBindings),
+      sourcesApi.projectItems({ project_id: projectId, limit: 5 }).then(sourceItems => setRecentSourceItems(sourceItems.items.map(projectItem => projectItem.item))),
+      isAcademic ? Promise.resolve(setRecentEvidence([])) : sourcesApi.evidence({ project_id: projectId, status: 'active', limit: 5 }).then(evidenceItems => setRecentEvidence(evidenceItems.items)),
+      isAcademic ? Promise.resolve(setSourceRecommendations([])) : sourcesApi.postProcessingDecisions({ project_id: projectId, limit: 20 }).catch(() => ({ items: [] as SourcePostProcessingItemDecision[], total: 0, limit: 20, offset: 0 }))
+        .then(recommendations => setSourceRecommendations(recommendations.items.filter(item => item.relevance !== 'not_relevant').slice(0, 5))),
+      isAcademic ? Promise.resolve(setReaderAnnotations([])) : readerApi.listByProject(projectId, 5).catch(() => ({ items: [] as ReaderAnnotation[] })).then(readerAnns => setReaderAnnotations(readerAnns.items)),
+      automationsApi.list({ project_id: projectId }).catch(() => [] as AutomationOut[]).then(allAutomations => setAutomations(allAutomations.filter(a => a.status !== 'archived'))),
+      (projectsApi.operations ? projectsApi.operations(projectId).catch(() => [] as ProjectOperation[]) : Promise.resolve([] as ProjectOperation[])).then(setOperations),
+    ])
 
-      if (resolvedPresetKey === ACADEMIC_PRESET_KEY) {
-        try {
-          const [workflows, criteria, matrix, reports, scanSummaries, providers] = await Promise.all([
-            projectResearchApi.workflows(projectId),
-            projectResearchApi.screeningCriteria(projectId),
-            projectResearchApi.literatureMatrix(projectId),
-            projectResearchApi.reports(projectId),
-            projectResearchApi.scanSummaries(projectId),
-            providersApi.list().catch(() => []),
-          ])
-          const activeWorkflow = activeResearchWorkflowFrom(workflows)
-          const checkpoints = activeWorkflow
-            ? await projectResearchApi.checkpoints(projectId, activeWorkflow.id)
-            : []
-          setResearchWorkflows(workflows)
-          setResearchScanSummaries(scanSummaries)
-          setResearchCheckpoints(checkpoints)
-          setScreeningCriteria(criteria)
-          setLiteratureMatrix(matrix)
-          setResearchReports(reports)
-          setModelProviders(providers)
-        } catch (researchError) {
+    const researchLoad = isAcademic
+      ? (async () => {
+          try {
+            let workflows: Awaited<ReturnType<typeof projectResearchApi.workflows>> = []
+            await Promise.all([
+              projectResearchApi.workflows(projectId).then(value => { workflows = value; setResearchWorkflows(value) }),
+              projectResearchApi.literatureMatrix(projectId).then(setLiteratureMatrix),
+              projectResearchApi.reports(projectId).then(setResearchReports),
+              projectResearchApi.scanSummaries(projectId).then(setResearchScanSummaries),
+              providersApi.list().catch(() => []).then(setModelProviders),
+            ])
+            const activeWorkflow = activeResearchWorkflowFrom(workflows)
+            setResearchCheckpoints(
+              activeWorkflow ? await projectResearchApi.checkpoints(projectId, activeWorkflow.id) : [],
+            )
+          } catch (researchError) {
+            setResearchWorkflows([])
+            setResearchScanSummaries([])
+            setResearchCheckpoints([])
+            setLiteratureMatrix([])
+            setResearchReports([])
+            setModelProviders([])
+            throw researchError
+          }
+        })()
+      : (async () => {
           setResearchWorkflows([])
           setResearchScanSummaries([])
           setResearchCheckpoints([])
-          setScreeningCriteria(null)
           setLiteratureMatrix([])
           setResearchReports([])
           setModelProviders([])
-          throw researchError
-        }
-      } else {
-        setResearchWorkflows([])
-        setResearchScanSummaries([])
-        setResearchCheckpoints([])
-        setScreeningCriteria(null)
-        setLiteratureMatrix([])
-        setResearchReports([])
-        setModelProviders([])
-      }
+        })()
+
+    try {
+      await Promise.all([genericLoad, researchLoad])
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -902,16 +928,6 @@ export default function ProjectDetailPage() {
     } finally {
       setRemovingBindingId(null)
     }
-  }
-
-  async function linkResearchSourceToProject(channel: SourceChannel) {
-    if (!projectId) return
-    const binding = await projectsApi.createSourceBinding(projectId, {
-      source_channel_id: channel.id,
-      backfill_history: false,
-    })
-    setSourceChannels(current => upsertById(current, channel))
-    setSourceBindings(current => upsertById(current, binding))
   }
 
   async function startInitialResearch(config: ProjectResearchInitialIntakeInput) {
@@ -1213,6 +1229,11 @@ export default function ProjectDetailPage() {
     project.current_focus?.trim() ?? '',
     sourceBindings.filter(binding => binding.status === 'active').map(binding => binding.source_channel_id),
   )
+  const researchMonitorLabels = linkedSourceChannels.length
+    ? linkedSourceChannels.map(channel => channel.name)
+    : researchSetupDraft.query_strategy_id
+      ? [`Adaptive strategy ${researchSetupDraft.query_strategy_id.slice(0, 8)}`]
+      : []
   const currentItemLimit = researchOperationForSettings
     ? numberValue(objectValue(researchOperationForSettings.progress_json.history).max_items) || null
     : Number(researchSetupDraft.max_items) || null
@@ -1357,8 +1378,8 @@ export default function ProjectDetailPage() {
       {isAcademicProject && (
         <AcademicResearchWorkbench
           project={project}
-          sourceBindings={sourceBindings}
           sourceChannels={sourceChannels}
+          sourceBindings={sourceBindings}
           recentSourceItems={recentSourceItems}
           recentEvidence={recentEvidence}
           readerAnnotations={readerAnnotations}
@@ -1371,7 +1392,6 @@ export default function ProjectDetailPage() {
           researchRunStatuses={Object.fromEntries(recentRuns.map(run => [run.id, run.status]))}
           researchDataLoading={researchDataLoading}
           modelProviders={modelProviders}
-          screeningCriteria={screeningCriteria}
           researchActionBusy={researchActionBusy}
           onSaveInitialIntake={saveInitialIntake}
           onRefineQuestion={refineResearchQuestion}
@@ -1388,7 +1408,6 @@ export default function ProjectDetailPage() {
           onRebuildMatrix={rebuildLiteratureMatrix}
           onRunIntegrity={runIntegrityGate}
           onEditQuestion={() => setEditOpen(true)}
-          onSourceCreated={linkResearchSourceToProject}
         />
       )}
 
@@ -1471,7 +1490,7 @@ export default function ProjectDetailPage() {
                     <div key={binding.id} className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{channel?.name ?? binding.source_channel_id}</p>
-                        <p className="text-xs text-muted-foreground truncate">{channel?.provider.display_name ?? channel?.provider.key ?? binding.binding_key} · {String(channel?.query.search_query ?? channel?.endpoint_url ?? 'Configured channel')}</p>
+                        <p className="text-xs text-muted-foreground truncate">{channel?.provider.display_name ?? channel?.provider.key ?? binding.binding_key} · {channel ? sourceQueryText(channel) : 'Configured channel'}</p>
                       </div>
                       <Button
                         type="button"
@@ -1854,7 +1873,7 @@ export default function ProjectDetailPage() {
           onUpdateItemLimit: updateResearchItemLimit,
           snapshot: {
             question: project.current_focus ?? '',
-            monitors: researchSetupDraft.source_channel_ids.map(id => sourceChannels.find(channel => channel.id === id)?.name ?? id),
+            monitors: researchMonitorLabels,
             history: researchSetupDraft.history_mode === 'all_available' ? 'All available history' : `${researchSetupDraft.from || '—'} to ${researchSetupDraft.to || '—'}`,
             maxItems: Number(researchSetupDraft.max_items) || null,
             monitoringField: researchSetupDraft.monitoring_field === 'lastUpdatedDate' ? 'Last update date' : 'Submission date',

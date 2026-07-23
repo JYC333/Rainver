@@ -1,24 +1,23 @@
 asset_key: project_research.synthesis
 display_name: Project Research Synthesis Prompt
 description: >
-  Registry-managed synthesis prompt for the Project Research workflow. The
-  semantic rejection envelope lets the model report an actionable input problem
-  without falling back to prose or markdown.
+  Registry-managed synthesis prompt for any non-empty approved Project Research
+  corpus. Empty-corpus result semantics are resolved before model invocation.
 content:
   schema_version: prompt_asset.v1
   prompt_type: workflow
   template: |-
     Project: {project_id}
     Research question: {research_question}
+    Research scope (in/out/sub-questions): {research_scope}
     Report depth: {report_depth}
     Critique to address: {critique_context}
     Use only the approved project corpus and its evidence. Do not invent citations.
-    Return exactly one JSON object using this envelope: status, artifacts, rejection. Do not return Markdown, XML/reasoning tags, or prose outside the JSON object.
-    For a successful synthesis, use status="succeeded", rejection=null, and include exactly one artifact.
-    Reject only as a last resort: if the research question is vague or meaningless, or the approved corpus contains nothing topically related to it at all, do not invent a theme and do not ask a follow-up question in prose. Use status="rejected", artifacts=[], and a rejection object with code, message, reason, and at least one concrete suggestions item.
-    Partial or indirect evidence is NOT a rejection reason. When approved items relate to the topic without answering the question directly, produce a succeeded report that synthesizes what the evidence does show, names each source's specific relevance gap in its relevance field, records the absence of direct evidence as an explicit research-gap finding, and lists what direct evidence would be needed in limitations.
-    Allowed rejection codes: research_question_not_actionable, insufficient_approved_corpus, no_coherent_synthesis_target.
-    Example for question `test` with a corpus containing unrelated papers: {"status":"rejected","artifacts":[],"rejection":{"code":"research_question_not_actionable","message":"The research question does not define an actionable synthesis target.","reason":"The value `test` is too vague to connect the approved papers into a defensible synthesis.","suggestions":["Provide a specific research question or thematic lens.","Select the source items that should be synthesized together.","Request per-paper summaries if a cross-paper synthesis is not intended."]}}
+    Treat scope.in as the reporting boundary, exclude scope.out, and answer the listed
+    sub-questions where the approved evidence permits; identify unsupported sub-questions
+    as gaps instead of broadening the report.
+    Return exactly one JSON object with status and artifacts. Do not return Markdown, XML/reasoning tags, or prose outside the JSON object.
+    The approved corpus supplied to this task is non-empty. Always use status="succeeded" and include exactly one artifact. A small, partial, indirect, or conflicting corpus is not an error: synthesize only what it supports, state evidence strength, record unanswered aspects as research gaps, and describe coverage limits explicitly.
     The required success artifact is research_report.archive.v1. It must contain title, artifact_type, mime_type, and content. Content must be one JSON object, never Markdown, a code fence, prose, or a JSON-encoded string.
     The content object must contain schema_version="research_report.v1", research_question, summary, findings (claim, support, references), sources (title, authors, year, relevance, summary, references), limitations, and ideas (title, problem, novelty, testability, references).
     Every finding, source row, and idea must include source_item_id/evidence_id/object_id/doi/arxiv_id references.
@@ -26,17 +25,75 @@ content:
     Disclose material evidence on both sides of a contradiction. In each finding's support, state the evidence strength as abstract-only, full-text, or multi-source. Record the retrieval strategy and evidence coverage window in limitations.
     For report_depth="quick", keep the summary concise, emit at most five findings, and allow ideas to be empty. For report_depth="full", produce the complete defensible synthesis.
     When critique_context is not "none", revise the report to address every listed issue without inventing new evidence.
+
+    Valid successful JSON example (copy this complete structure, replace the example values,
+    and copy every reference identifier verbatim from the supplied corpus):
+    {
+      "status": "succeeded",
+      "artifacts": [
+        {
+          "title": "Tool-call failure recovery in coding agents",
+          "artifact_type": "research_report.archive.v1",
+          "mime_type": "application/json",
+          "content": {
+            "schema_version": "research_report.v1",
+            "research_question": "How do tool-using coding agents recover from failed tool calls?",
+            "summary": "The approved evidence indicates that explicit state inspection and bounded retry policies can improve recovery, although coverage is limited to the evaluated benchmarks.",
+            "findings": [
+              {
+                "claim": "State-aware retry strategies improve recovery in the evaluated coding-agent setting.",
+                "support": "Full-text evidence from one approved source reports higher task recovery after the agent inspects failure state before retrying.",
+                "references": [
+                  {"source_item_id": "source-item-id-from-corpus"},
+                  {"evidence_id": "evidence-id-from-corpus"}
+                ]
+              }
+            ],
+            "limitations": [
+              "The approved corpus covers a limited set of coding-agent benchmarks.",
+              "The retrieval window and provider coverage may omit relevant unpublished evaluations."
+            ],
+            "sources": [
+              {
+                "title": "Example paper title copied from the corpus",
+                "authors": ["Example Author"],
+                "year": 2025,
+                "references": [
+                  {"source_item_id": "source-item-id-from-corpus"}
+                ],
+                "relevance": "relevant",
+                "summary": "This source directly evaluates recovery after injected tool-call failures."
+              }
+            ],
+            "ideas": [
+              {
+                "title": "Cross-benchmark recovery evaluation",
+                "problem": "Existing evidence may not generalize beyond the evaluated benchmark.",
+                "novelty": "Compare the same recovery policies across several agent environments under controlled failures.",
+                "testability": "Measure recovery rate, task completion, and additional tool cost under a preregistered failure protocol.",
+                "references": [
+                  {"source_item_id": "source-item-id-from-corpus"}
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
   variables_schema:
     type: object
     required:
       - project_id
       - research_question
+      - research_scope
       - report_depth
       - critique_context
     properties:
       project_id:
         type: string
       research_question:
+        type: string
+      research_scope:
         type: string
       report_depth:
         type: string

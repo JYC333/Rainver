@@ -34,6 +34,7 @@ export const projectOperations = pgTable("project_operations", {
 	foreignKey({ columns: [t.initiatingRunId, t.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "project_operations_run_fkey" }),
 	foreignKey({ columns: [t.planArtifactId, t.spaceId], foreignColumns: [artifacts.id, artifacts.spaceId], name: "project_operations_artifact_fkey" }),
 	unique("uq_project_operations_space_id_id").on(t.id, t.spaceId),
+	unique("uq_project_operations_id_project_space").on(t.id, t.projectId, t.spaceId),
 	check("ck_project_operations_kind", sql`kind IN ('source_setup','source_backfill','research','custom')`),
 	check("ck_project_operations_status", sql`status IN ('draft','active','waiting_review','completed','failed','cancelled')`),
 	check("ck_project_operations_version", sql`version >= 1`),

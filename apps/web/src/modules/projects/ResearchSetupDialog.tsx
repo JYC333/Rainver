@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Check, Edit2, Search } from 'lucide-react'
 import type { ModelProviderOut } from '../../api/client'
@@ -6,10 +6,13 @@ import type {
   CustomSourceCredentialDTO,
   ProjectResearchInitialIntakeInput,
   ProjectResearchQuestionRefinement,
-  SourceChannel,
-  ResearchEngineSearchResult,
+  MaterializedResearchStrategy,
+  ResearchProviderKey,
+  ResearchQueryAttempt,
+  ResearchQueryStrategy,
+  ResearchSemanticConcept,
 } from '../../types/api'
-import { projectResearchApi, researchEngineApi, sourcesApi } from '../../api/client'
+import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog'
@@ -31,7 +34,6 @@ interface ResearchSetupDialogProps {
   projectId?: string
   open: boolean
   draft: ResearchSetupDraft
-  sourceChannels: SourceChannel[]
   busyAction: string | null
   modelProviders: ModelProviderOut[]
   canAct: boolean
@@ -39,14 +41,12 @@ interface ResearchSetupDialogProps {
   onSave: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
   onRefineQuestion: (input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }) => Promise<ProjectResearchQuestionRefinement>
   onStart: (config: ProjectResearchInitialIntakeInput) => void | Promise<void>
-  onSourceCreated: (channel: SourceChannel) => Promise<void> | void
   onEditQuestion: () => void
 }
 
 function copyDraft(draft: ResearchSetupDraft): ResearchSetupDraft {
   return {
     ...draft,
-    source_channel_ids: [...draft.source_channel_ids],
     execution: { ...draft.execution },
   }
 }
@@ -112,11 +112,48 @@ function FinerRadar({ scores }: { scores: ProjectResearchQuestionRefinement['ass
   )
 }
 
+// Every provider compiles the same semantic_query into its own boolean-query
+// dialect (arxiv's `all:"..." AND (... OR ...)`, plain keyword strings for
+// openalex/semantic_scholar, ...). Rendering the shared semantic_query
+// structure instead of the compiled string avoids one fragile parser per
+// provider syntax and reads the same regardless of which provider ran it.
+function SemanticQueryColumns({ query }: { query: ResearchQueryAttempt['semantic_query'] }) {
+  // core and qualifiers combine with different boolean operators (core is
+  // OR'd into one topic clause, qualifiers are AND'd on top of it — see
+  // providers/arxiv.ts) and must stay visually separate: merging them under
+  // one "must match" label hides that dropping the one AND'd qualifier (not
+  // any of the OR'd topic terms) is what swings the hit count the most.
+  const columns: Array<{ key: string; title: string; concepts: ResearchSemanticConcept[] }> = [
+    { key: 'topic', title: 'Topic (any of)', concepts: query.core },
+    { key: 'broaden', title: 'Broadens with (any of)', concepts: query.expansions },
+    { key: 'required', title: 'Required (all of)', concepts: query.qualifiers },
+    { key: 'exclude', title: 'Excludes (none of)', concepts: query.exclusions },
+  ].filter(column => column.concepts.length > 0)
+  if (columns.length === 0) return null
+  return (
+    <div className="mt-1.5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      {columns.map(column => (
+        <div key={column.key} className="space-y-1">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{column.title}</p>
+          <ul className="space-y-1">
+            {column.concepts.map((concept, index) => (
+              <li key={`${column.key}-${index}`} className="rounded border border-border bg-background/60 px-1.5 py-1 font-mono text-xs">
+                {concept.value}
+                {concept.synonyms.length > 0 && <span className="block text-[11px] text-muted-foreground">or: {concept.synonyms.join(', ')}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
   const maxItems = Number(draft.max_items)
   return Boolean(
     draft.research_question.trim()
-      && draft.source_channel_ids.length > 0
+      && Boolean(draft.query_strategy_id)
       && (draft.history_mode === 'all_available' || (draft.from && draft.to))
       && Number.isInteger(maxItems) && maxItems >= 1 && maxItems <= 10000
       && Boolean(draft.execution.model_provider_id),
@@ -127,7 +164,6 @@ export function ResearchSetupDialog({
   projectId = 'project-1',
   open,
   draft: initialDraft,
-  sourceChannels,
   busyAction,
   modelProviders,
   canAct,
@@ -135,45 +171,30 @@ export function ResearchSetupDialog({
   onSave,
   onRefineQuestion,
   onStart,
-  onSourceCreated,
   onEditQuestion,
 }: ResearchSetupDialogProps) {
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(initialDraft))
-  const [createdChannels, setCreatedChannels] = useState<SourceChannel[]>([])
   const [refinement, setRefinement] = useState<ProjectResearchQuestionRefinement | null>(null)
   const [refinementHistory, setRefinementHistory] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   const [clarifyingAnswers, setClarifyingAnswers] = useState<Record<number, ResearchClarifyingAnswer>>({})
   const [refining, setRefining] = useState(false)
   const [refineError, setRefineError] = useState<string | null>(null)
-  const [engineResult, setEngineResult] = useState<ResearchEngineSearchResult | null>(null)
-  const [selectedProviders, setSelectedProviders] = useState<string[]>([])
+  const [engineResult, setEngineResult] = useState<ResearchQueryStrategy | null>(null)
+  const [materializedResult, setMaterializedResult] = useState<MaterializedResearchStrategy | null>(null)
+  const [selectedProviders, setSelectedProviders] = useState<ResearchProviderKey[]>([])
   const [engineBusy, setEngineBusy] = useState<'search' | 'create' | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
+  const [retryingProvider, setRetryingProvider] = useState<ResearchProviderKey | null>(null)
   const [sourceCredentials, setSourceCredentials] = useState<CustomSourceCredentialDTO[]>([])
   const [webCredentialId, setWebCredentialId] = useState('')
-  const [pendingAnswersOpen, setPendingAnswersOpen] = useState(false)
   const [step, setStep] = useState(0)
   const initialDraftFingerprint = draftFingerprint(initialDraft)
 
-  const channels = useMemo(() => {
-    const byId = new Map(sourceChannels.map(channel => [channel.id, channel]))
-    for (const channel of createdChannels) byId.set(channel.id, channel)
-    return [...byId.values()].filter(channel => channel.status !== 'archived')
-  }, [createdChannels, sourceChannels])
-  const selectedChannels = useMemo(
-    () => channels.filter(channel => draft.source_channel_ids.includes(channel.id)),
-    [channels, draft.source_channel_ids],
-  )
-  const ready = researchSetupDraftIsReady(draft) && selectedChannels.length === draft.source_channel_ids.length
-  // Answers typed after the last assessment are only consumed by a reassess
-  // round; surface them in a dedicated modal before starting instead of
-  // silently dropping them.
-  const hasPendingClarifyingAnswers = Boolean(refinement) && refinementHistory.length < 4
-    && clarifyingQuestionItems(refinement!).some((_, index) => clarifyingAnswerText(normalizeClarifyingAnswer(clarifyingAnswers[index])) !== '')
+  const ready = researchSetupDraftIsReady(draft)
   const maxItemsValue = Number(draft.max_items)
   const stepComplete = [
     Boolean(draft.research_question.trim()) && !draft.question_refine_skipped,
-    draft.source_channel_ids.length > 0 && selectedChannels.length === draft.source_channel_ids.length,
+    Boolean(draft.query_strategy_id),
     (draft.history_mode === 'all_available' || Boolean(draft.from && draft.to)) && Number.isInteger(maxItemsValue) && maxItemsValue >= 1 && maxItemsValue <= 10000,
     Boolean(draft.execution.model_provider_id),
   ]
@@ -209,6 +230,7 @@ export function ResearchSetupDialog({
     }
     setRefineError(null)
     setEngineResult(null)
+    setMaterializedResult(null)
     setSelectedProviders([])
     setEngineError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,15 +281,6 @@ export function ResearchSetupDialog({
 
   function startResearch() {
     if (!ready || !canAct || busyAction !== null || draft.question_refine_skipped) return
-    if (hasPendingClarifyingAnswers) {
-      setPendingAnswersOpen(true)
-      return
-    }
-    startResearchNow()
-  }
-
-  function startResearchNow() {
-    setPendingAnswersOpen(false)
     clearResearchSetupSession(projectId)
     onOpenChange(false)
     onStart(serializeResearchSetupDraft(draft))
@@ -304,7 +317,13 @@ export function ResearchSetupDialog({
       })
       const scores = Object.values(result.assessment.finer)
       const acceptable = result.assessment.answerable && scores.reduce((sum, score) => sum + score, 0) / scores.length >= 3
-      const next = { ...draft, question_refine_skipped: !acceptable, question_refinement: result }
+      const next = {
+        ...draft,
+        question_refine_skipped: !acceptable,
+        question_refinement: result,
+        research_context_version_id: result.research_context_version_id,
+        query_strategy_id: '',
+      }
       setDraft(next)
       setRefinement(result)
       setRefinementHistory(history)
@@ -330,35 +349,80 @@ export function ResearchSetupDialog({
   }
 
   function adoptQuestion(question: string) {
-    const next = { ...draft, research_question: question, question_refine_skipped: false, search_strategy_id: '', question_refinement: refinement }
+    const next = {
+      ...draft,
+      research_question: question,
+      question_refine_skipped: true,
+      research_context_version_id: '',
+      query_strategy_id: '',
+      question_refinement: null,
+    }
     setDraft(next)
     setEngineResult(null)
+    setMaterializedResult(null)
     autoPersistDraft(next)
+    toast.info('Suggested question adopted. Answer any clarifying questions, then reassess it.')
+  }
+
+  function updateClarifyingAnswer(index: number, answer: ResearchClarifyingAnswer) {
+    setClarifyingAnswers(current => ({ ...current, [index]: answer }))
+    setDraft(current => ({
+      ...current,
+      question_refine_skipped: true,
+      research_context_version_id: '',
+      query_strategy_id: '',
+    }))
+    setEngineResult(null)
+    setMaterializedResult(null)
   }
 
   async function discoverSources() {
-    if (!draft.research_question.trim() || engineBusy) return
+    if (!draft.research_context_version_id || engineBusy) return
     setEngineBusy('search'); setEngineError(null)
     try {
-      const result = await researchEngineApi.search({
-        question: draft.research_question.trim(), project_id: projectId, scope: {},
+      const providers: ResearchProviderKey[] = ['arxiv', 'openalex', 'semantic_scholar', ...(webCredentialId ? ['web_search' as const] : [])]
+      const result = await researchDiscoveryApi.evaluate({
+        project_id: projectId,
+        research_context_version_id: draft.research_context_version_id,
+        providers,
+        candidate_budget: Math.max(50, Math.min(1000, Number(draft.max_items) || 1000)),
         execution: { model_provider_id: draft.execution.model_provider_id || undefined, model_name: draft.execution.model_name.trim() || undefined },
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
-      setEngineResult(result)
-      setSelectedProviders(result.monitor_suggestions.map(item => item.provider_key))
-      setDraft(current => ({ ...current, search_strategy_id: result.strategy.id, source_channel_ids: [] }))
+      setEngineResult(result.strategy)
+      setMaterializedResult(null)
+      setSelectedProviders(result.strategy.provider_plans.filter(plan => plan.status === 'selected').map(plan => plan.provider_key))
+      setDraft(current => ({ ...current, query_strategy_id: '' }))
     } catch (error) { setEngineError(errMsg(error)) } finally { setEngineBusy(null) }
+  }
+
+  async function retryProvider(providerKey: ResearchProviderKey) {
+    if (!engineResult || retryingProvider || engineBusy) return
+    setRetryingProvider(providerKey); setEngineError(null)
+    try {
+      const result = await researchDiscoveryApi.retryProvider(engineResult.id, providerKey, {
+        project_id: projectId,
+        execution: { model_provider_id: draft.execution.model_provider_id || undefined, model_name: draft.execution.model_name.trim() || undefined },
+        ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
+      })
+      setEngineResult(result.strategy)
+      setSelectedProviders(current => {
+        const stillSelected = result.strategy.provider_plans.find(plan => plan.provider_key === providerKey)?.status === 'selected'
+        return stillSelected ? [...new Set([...current, providerKey])] : current.filter(key => key !== providerKey)
+      })
+    } catch (error) { setEngineError(errMsg(error)) } finally { setRetryingProvider(null) }
   }
 
   async function createSuggestedMonitors() {
     if (!engineResult || selectedProviders.length === 0 || engineBusy) return
     setEngineBusy('create'); setEngineError(null)
     try {
-      const result = await researchEngineApi.createMonitors({ strategy_id: engineResult.strategy.id, project_id: projectId, provider_keys: selectedProviders, ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}) })
-      for (const channel of result.channels) await onSourceCreated(channel)
-      setCreatedChannels(current => [...current.filter(channel => !result.channels.some(created => created.id === channel.id)), ...result.channels])
-      setDraft(current => ({ ...current, source_channel_ids: result.channels.map(channel => channel.id), search_strategy_id: engineResult.strategy.id }))
+      const result = await researchDiscoveryApi.materialize(engineResult.id, {
+        provider_keys: selectedProviders,
+        ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
+      })
+      setMaterializedResult(result)
+      setDraft(current => ({ ...current, query_strategy_id: result.query_strategy_id }))
     } catch (error) { setEngineError(errMsg(error)) } finally { setEngineBusy(null) }
   }
 
@@ -368,7 +432,7 @@ export function ResearchSetupDialog({
             <DialogHeader>
               <DialogTitle>Set up initial literature intake</DialogTitle>
               <DialogDescription>
-                Let the research engine discover and deduplicate evidence sources, then confirm its suggested monitors and configure the one-time historical import.
+                Assess the research definition, evaluate provider-specific queries, then confirm the selected strategy and configure the one-time historical import.
               </DialogDescription>
             </DialogHeader>
 
@@ -396,7 +460,7 @@ export function ResearchSetupDialog({
                   <p className="mt-1 text-xs text-muted-foreground">Assess answerability and FINER quality before spending the intake budget. Starting requires a passing question: reassess with your answers or adopt a suggested rewrite.</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(10rem,1fr)_minmax(12rem,1fr)]">
-                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Candidate question</span><Input value={draft.research_question} onChange={event => { setDraft(current => ({ ...current, research_question: event.target.value, question_refine_skipped: true, search_strategy_id: '', source_channel_ids: [] })); setRefinement(null); setRefinementHistory([]); setClarifyingAnswers({}); setEngineResult(null) }} /></label>
+                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Candidate question</span><Input value={draft.research_question} onChange={event => { setDraft(current => ({ ...current, research_question: event.target.value, question_refine_skipped: true, research_context_version_id: '', query_strategy_id: '' })); setRefinement(null); setRefinementHistory([]); setClarifyingAnswers({}); setEngineResult(null); setMaterializedResult(null) }} /></label>
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Report depth</span><Select options={[{ value: 'quick', label: 'Quick brief' }, { value: 'full', label: 'Full report' }]} value={draft.report_depth} onChange={value => setDraft(current => ({ ...current, report_depth: value as ResearchSetupDraft['report_depth'] }))} ariaLabel="Report depth" /></label>
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Assessment provider</span><Select options={[{ value: '', label: selectableProviders.length ? 'Select provider' : 'No structured-output provider available' }, ...selectableProviders.map(provider => ({ value: provider.id, label: `${provider.name}${provider.is_default ? ' (default)' : ''}` }))]} value={draft.execution.model_provider_id} onChange={value => setDraft(current => ({ ...current, execution: { model_provider_id: value, model_name: selectableProviders.find(provider => provider.id === value)?.default_model ?? '' } }))} ariaLabel="Assessment provider" /></label>
                 </div>
@@ -428,16 +492,23 @@ export function ResearchSetupDialog({
                         )
                       })}
                     </div>
+                    {(refinement.scope.in.length > 0 || refinement.scope.out.length > 0 || refinement.sub_questions.length > 0) && (
+                      <div className="grid gap-2 rounded border border-border bg-muted/20 p-3 text-xs md:grid-cols-3">
+                        <div><p className="font-medium">Include</p><p className="mt-1 text-muted-foreground">{refinement.scope.in.join(' · ') || 'No additional inclusion boundary'}</p></div>
+                        <div><p className="font-medium">Exclude</p><p className="mt-1 text-muted-foreground">{refinement.scope.out.join(' · ') || 'No explicit exclusions'}</p></div>
+                        <div><p className="font-medium">Sub-questions</p><p className="mt-1 text-muted-foreground">{refinement.sub_questions.join(' · ') || 'No separate sub-questions'}</p></div>
+                      </div>
+                    )}
                     {refinement.clarifying_questions.length > 0 && refinementHistory.length < 4 && <div className="space-y-3">
                       {clarifyingQuestionItems(refinement).map((item, index) => {
                         const answer = normalizeClarifyingAnswer(clarifyingAnswers[index])
-                        const toggleOption = (option: string) => setClarifyingAnswers(current => {
-                          const value = normalizeClarifyingAnswer(current[index])
+                        const toggleOption = (option: string) => {
+                          const value = normalizeClarifyingAnswer(clarifyingAnswers[index])
                           const selected = value.selected.includes(option)
                             ? value.selected.filter(entry => entry !== option)
                             : item.allow_multiple ? [...value.selected, option] : [option]
-                          return { ...current, [index]: { ...value, selected } }
-                        })
+                          updateClarifyingAnswer(index, { ...value, selected })
+                        }
                         return (
                           <div key={item.question} className="space-y-1.5 text-xs">
                             <p>{item.question}{item.allow_multiple && <span className="ml-1 text-muted-foreground">(select all that apply)</span>}</p>
@@ -450,7 +521,7 @@ export function ResearchSetupDialog({
                             <Input
                               value={answer.other}
                               placeholder={item.options.length ? 'Other — add your own answer' : 'Type your answer'}
-                              onChange={event => setClarifyingAnswers(current => ({ ...current, [index]: { ...normalizeClarifyingAnswer(current[index]), other: event.target.value } }))}
+                              onChange={event => updateClarifyingAnswer(index, { ...answer, other: event.target.value })}
                             />
                           </div>
                         )
@@ -462,27 +533,58 @@ export function ResearchSetupDialog({
               {step === 1 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold">2. Discover research sources</h3>
-                    <p className="mt-1 text-xs text-muted-foreground">The research engine plans bounded searches across scholarly providers, previews each source, merges duplicate papers, and records the reproducible strategy.</p>
+                    <h3 className="text-sm font-semibold">2. Evaluate provider queries</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">Each provider starts with a recall-oriented query, then independently broadens or narrows it up to two times. The selected query is reused unchanged for import and ongoing monitoring.</p>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={() => void discoverSources()} disabled={Boolean(engineBusy) || draft.question_refine_skipped || !draft.research_question.trim() || !draft.execution.model_provider_id}>{engineBusy === 'search' ? 'Searching…' : engineResult ? 'Search again' : 'Discover sources'}</Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void discoverSources()} disabled={Boolean(engineBusy) || draft.question_refine_skipped || !draft.research_context_version_id || !draft.execution.model_provider_id}>{engineBusy === 'search' ? 'Evaluating…' : engineResult ? 'Evaluate again' : 'Evaluate search coverage'}</Button>
                 </div>
                 <label className="block max-w-md space-y-1 text-xs"><span className="text-muted-foreground">Web search credential (optional)</span><Select options={[{ value: '', label: sourceCredentials.length ? 'Academic sources only unless web is available' : 'No managed web credential available' }, ...sourceCredentials.map(credential => ({ value: credential.id, label: credential.name }))]} value={webCredentialId} onChange={setWebCredentialId} ariaLabel="Web search credential" /><span className="block text-muted-foreground">When the planner selects current or general web evidence, this credential is injected only by the trusted fetch layer.</span></label>
                 {engineError && <p className="text-sm text-destructive">{engineError}</p>}
-                {!engineResult && <div className="rounded-md border border-dashed border-border px-4 py-5 text-center"><Search className="mx-auto size-5 text-muted-foreground" /><p className="mt-2 text-sm font-medium">No source preview yet</p><p className="mt-1 text-xs text-muted-foreground">Run discovery after refining the question. Each provider is capped to a small preview budget.</p></div>}
+                {!engineResult && <div className="rounded-md border border-dashed border-border px-4 py-5 text-center"><Search className="mx-auto size-5 text-muted-foreground" /><p className="mt-2 text-sm font-medium">No query evaluation yet</p><p className="mt-1 text-xs text-muted-foreground">Run evaluation after the question passes reassessment. Preview samples guide query width but are not imported yet.</p></div>}
                 {engineResult && <div className="space-y-3">
-                  {engineResult.monitor_suggestions.map(suggestion => {
-                    const selected = selectedProviders.includes(suggestion.provider_key)
-                    return <button key={suggestion.provider_key} type="button" className={`block w-full rounded-md border px-3 py-3 text-left ${selected ? 'border-primary bg-primary/5' : 'border-border'}`} onClick={() => setSelectedProviders(current => selected ? current.filter(key => key !== suggestion.provider_key) : [...current, suggestion.provider_key])}>
-                      <span className="flex items-center justify-between gap-3"><span className="font-medium capitalize">{suggestion.provider_key.replace(/_/g, ' ')}</span><Badge variant={selected ? 'success' : 'outline'}>{selected ? 'Selected' : 'Not selected'}</Badge></span>
-                      <span className="mt-1 block text-xs text-muted-foreground">{suggestion.rationale} · about {suggestion.approximate_hit_count.toLocaleString()} hits</span>
-                      <span className="mt-2 block truncate text-xs">{suggestion.samples.map(sample => sample.title).join(' · ') || 'No samples returned'}</span>
-                    </button>
+                  {engineResult.provider_plans.map(plan => {
+                    const selectable = plan.status === 'selected' && Boolean(plan.selected_attempt_id)
+                    const selected = selectedProviders.includes(plan.provider_key)
+                    const selectedAttempt = plan.attempts.find(attempt => attempt.id === plan.selected_attempt_id)
+                    return <div key={plan.provider_key} className={`rounded-md border px-3 py-3 ${selected ? 'border-primary bg-primary/5' : 'border-border'}`}>
+                      <div className="flex w-full items-center justify-between gap-3">
+                        <button type="button" disabled={!selectable} className="flex flex-1 items-center justify-between gap-3 text-left disabled:cursor-default" onClick={() => setSelectedProviders(current => selected ? current.filter(key => key !== plan.provider_key) : [...current, plan.provider_key])}>
+                          <span className="font-medium capitalize">{plan.provider_key.replace(/_/g, ' ')}</span>
+                          <Badge variant={selected ? 'success' : plan.status === 'failed' ? 'destructive' : plan.status === 'unavailable' ? 'warning' : 'outline'}>{selected ? 'Selected' : plan.status.replace(/_/g, ' ')}</Badge>
+                        </button>
+                        {(plan.status === 'unavailable' || plan.status === 'selected') && !draft.query_strategy_id && (
+                          <Button type="button" size="sm" variant="outline" disabled={retryingProvider !== null || Boolean(engineBusy)} onClick={() => void retryProvider(plan.provider_key)} title={plan.status === 'selected' ? 'Keep adjusting from the selected query' : 'Retry this provider'}>
+                            {retryingProvider === plan.provider_key ? 'Retrying…' : plan.status === 'selected' ? 'Retry / iterate' : 'Retry'}
+                          </Button>
+                        )}
+                      </div>
+                      {plan.coverage_warning && <p className="mt-2 rounded border border-warning/40 bg-warning/5 px-2 py-1.5 text-xs text-warning">Coverage warning: {plan.coverage_warning}</p>}
+                      {selectedAttempt && <div className="mt-2 text-xs">
+                        <span className="text-muted-foreground">Selected query</span>
+                        <SemanticQueryColumns query={selectedAttempt.semantic_query} />
+                      </div>}
+                      <details className="mt-2 text-xs">
+                        <summary className="cursor-pointer text-muted-foreground">View {plan.attempts.length} evaluation attempt{plan.attempts.length === 1 ? '' : 's'}</summary>
+                        <div className="mt-2 space-y-1.5">
+                        {plan.attempts.map(attempt => <div key={attempt.id} className={`rounded border px-2 py-1.5 text-xs ${attempt.id === plan.selected_attempt_id ? 'border-success/50 bg-success/5' : 'border-border bg-background/40'}`}>
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant={attempt.id === plan.selected_attempt_id ? 'success' : 'outline'}>{attempt.round > 0 ? `Retry ${attempt.round} · ` : ''}L{attempt.sequence} · {attempt.direction}</Badge>
+                            {attempt.id === plan.selected_attempt_id && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success"><Check className="size-3" />Selected</span>}
+                          </div>
+                          <SemanticQueryColumns query={attempt.semantic_query} />
+                          <p className="mt-1 text-muted-foreground">{attempt.observation ? `${attempt.observation.provider_hit_count.toLocaleString()} provider hits · ${Math.round(attempt.observation.relevance_rate * 100)}% preview relevance · ${attempt.decision ?? 'observed'}` : `No observation · ${attempt.error_class ?? 'provider unavailable'}`}</p>
+                          {attempt.decision_reason && <p className="mt-1 text-muted-foreground">{attempt.decision_reason}</p>}
+                          {attempt.observation?.samples.length ? <p className="mt-1 truncate text-muted-foreground">Samples: {attempt.observation.samples.slice(0, 3).map(sample => sample.title).join(' · ')}</p> : null}
+                        </div>)}
+                        </div>
+                      </details>
+                      {selectedAttempt && <p className="mt-2 text-xs text-muted-foreground">Selected fingerprint {selectedAttempt.compiled_query.fingerprint.slice(0, 12)}…</p>}
+                    </div>
                   })}
-                  {Object.keys(engineResult.strategy.provider_errors).length > 0 && <div className="rounded border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-muted-foreground">Unavailable providers: {Object.entries(engineResult.strategy.provider_errors).map(([provider, message]) => `${provider}: ${message}`).join(' · ')}</div>}
-                  <div className="flex items-center justify-between gap-3"><p className="text-xs text-muted-foreground">{engineResult.candidates.length} deduplicated preview candidates · strategy {engineResult.strategy.id.slice(0, 8)}</p><Button type="button" size="sm" onClick={() => void createSuggestedMonitors()} disabled={Boolean(engineBusy) || selectedProviders.length === 0}>{engineBusy === 'create' ? 'Creating…' : 'Confirm suggested sources'}</Button></div>
+                  <div className="flex items-center justify-between gap-3"><p className="text-xs text-muted-foreground">Provider counts are independent estimates and may overlap · strategy {engineResult.id.slice(0, 8)}</p><Button type="button" size="sm" onClick={() => void createSuggestedMonitors()} disabled={Boolean(engineBusy) || selectedProviders.length === 0 || Boolean(draft.query_strategy_id)}>{engineBusy === 'create' ? 'Creating…' : draft.query_strategy_id ? 'Sources ready' : 'Confirm selected queries'}</Button></div>
                 </div>}
-                {selectedChannels.length > 0 && <div className="space-y-2">{selectedChannels.map(channel => <div key={channel.id} className="flex items-center gap-2 rounded-md border border-success/40 bg-success/5 px-3 py-2 text-sm"><Badge variant="success">Ready</Badge><span className="truncate">{channel.provider.display_name ?? channel.provider.key}: {channel.name}</span></div>)}</div>}
+                {materializedResult && <div className="space-y-2">{materializedResult.sources.map(source => <div key={source.source_channel_id} className="flex items-center gap-2 rounded-md border border-success/40 bg-success/5 px-3 py-2 text-sm"><Badge variant="success">Ready</Badge><span className="truncate capitalize">{source.provider_key.replace(/_/g, ' ')} · query {source.query_fingerprint.slice(0, 12)}…</span></div>)}</div>}
+                {!materializedResult && draft.query_strategy_id && <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/5 px-3 py-2 text-sm"><Badge variant="success">Ready</Badge><span>Materialized query strategy {draft.query_strategy_id.slice(0, 8)}</span></div>}
               </section>}
 
               {step === 2 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
@@ -528,21 +630,6 @@ export function ResearchSetupDialog({
               </Button>
             </DialogFooter>
       </DialogContent>
-      <Dialog open={pendingAnswersOpen} onOpenChange={setPendingAnswersOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Unused clarification answers</DialogTitle>
-            <DialogDescription>
-              You answered clarifying questions but have not reassessed with them. Starting now ignores those answers entirely.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setPendingAnswersOpen(false)}>Back</Button>
-            <Button type="button" variant="outline" onClick={() => startResearchNow()}>Start without them</Button>
-            <Button type="button" onClick={() => { setPendingAnswersOpen(false); void refineQuestion() }}>Reassess with answers</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </Dialog>
   )
 }

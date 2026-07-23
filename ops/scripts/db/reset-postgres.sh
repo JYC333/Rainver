@@ -29,6 +29,7 @@ done
 local_compose_init "$MODE"
 local_compose_ensure_mode_env_file
 local_compose_ensure_server_database_env
+local_compose_generate_server_env
 
 PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
 PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"

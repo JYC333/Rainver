@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+import { validateProposalPayload } from "../src/modules/proposals/payloadSchemas";
 
 class FakeApplyDb {
   readonly dirtyUpdates: Array<{ kind: string; params: readonly unknown[] }> = [];
@@ -130,6 +131,19 @@ describe("proposal applier registry", () => {
     expect(createDefaultProposalApplierRegistry().registeredTypes()).toContain(
       "evolution_bundle_rollback",
     );
+  });
+
+  it("registers and validates monitored research query activation proposals", () => {
+    expect(createDefaultProposalApplierRegistry().registeredTypes()).toContain("research_query_strategy_activation");
+    expect(() => validateProposalPayload("research_query_strategy_activation", {
+      proposal_type: "research_query_strategy_activation",
+      project_id: "55555555-5555-4555-8555-555555555555",
+      source_strategy_id: "11111111-1111-4111-8111-111111111111",
+      candidate_strategy_id: "22222222-2222-4222-8222-222222222222",
+      direction: "broaden",
+      observation_count: 3,
+      metrics: { average_new_candidates: 2 },
+    })).not.toThrow();
   });
 
   it("registers capability lifecycle proposal appliers", () => {

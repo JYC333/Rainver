@@ -13,6 +13,7 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { EmptyState } from '../../components/ui/empty-state'
+import { sourceQueryText } from '../sources/sourceQueryText'
 import {
   Dialog,
   DialogContent,
@@ -458,7 +459,7 @@ export default function ProjectSourcesPage() {
                       <StatusBadge status={rowHealth?.status ?? binding.status} />
                       <Badge variant="outline">{binding.delivery_scope.replace('_', ' ')}</Badge>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground truncate">{channel?.provider.display_name ?? channel?.provider.key ?? binding.binding_key} · Monitor: {channel?.name ?? 'Configured monitor'} · {String(channel?.query.search_query ?? channel?.endpoint_url ?? '')}</p>
+                    <p className="mt-1 text-xs text-muted-foreground truncate">{channel?.provider.display_name ?? channel?.provider.key ?? binding.binding_key} · Monitor: {channel?.name ?? 'Configured monitor'} · {channel ? sourceQueryText(channel) : ''}</p>
                     {rowHealth && (
                       <p className="mt-2 text-xs text-muted-foreground">
                         Last success {fmt(rowHealth.last_success_at)} · next run {fmt(rowHealth.next_run_at)}

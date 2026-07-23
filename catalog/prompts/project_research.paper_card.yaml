@@ -15,6 +15,38 @@ content:
     Each section must be at most 80 words. Derive every statement from the supplied
     excerpt or extracted text. Preserve the source_item_id and return the enclosing
     source-post-processing JSON contract exactly; do not add prose outside JSON.
+
+    Valid JSON example (copy this complete structure, replace the example values, and
+    include corresponding entries for every supplied paper):
+    {
+      "schema": "source_post_processing.result.v1",
+      "digest_markdown": "A concise cross-paper digest grounded in the supplied content.",
+      "item_summaries": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "summary_markdown": "WHY: This paper tests recovery after tool failure.\n\nHOW: It evaluates coding agents on controlled benchmark tasks with injected failures.\n\nWHAT: Retry with state inspection improves recovery in the reported setting."
+        }
+      ],
+      "item_decisions": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "relevance": "relevant",
+          "confidence": 0.9,
+          "reason": "The paper directly evaluates the project's target phenomenon.",
+          "matched_context_refs": [{"ref": "project-research-question"}]
+        }
+      ],
+      "evidence_candidates": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "title": "Recovery improves after state inspection",
+          "content_excerpt": "A verbatim or faithful bounded excerpt from the supplied paper content.",
+          "confidence": 0.85,
+          "matched_context_refs": [{"ref": "project-research-question"}]
+        }
+      ],
+      "proposal_markdown": ""
+    }
   variables_schema:
     type: object
     required: [project_id]

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, FileCheck2, Lightbulb, ShieldCheck } from 'lucide-react'
+import { ExternalLink, FileCheck2, Lightbulb, RefreshCw, ShieldCheck } from 'lucide-react'
 import type { ProjectResearchCheckpoint, ProjectResearchCheckpointReview } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -7,6 +7,8 @@ import { Button } from '../../components/ui/button'
 interface ResearchCheckpointReviewProps {
   checkpoint: ProjectResearchCheckpoint
   onDecide: (decision: 'approved' | 'rejected') => void
+  onRefresh?: () => void
+  refreshing?: boolean
 }
 
 function numberValue(value: unknown): number {
@@ -119,7 +121,7 @@ function ReviewImpactSummary({ review }: { review: ProjectResearchCheckpointRevi
   )
 }
 
-function ScreeningReview({ review }: { review: ProjectResearchCheckpointReview }) {
+function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectResearchCheckpointReview; onRefresh?: () => void; refreshing?: boolean }) {
   const [showAll, setShowAll] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
   const visibleItems = showAll ? review.items : review.items.slice(0, 8)
@@ -142,8 +144,14 @@ function ScreeningReview({ review }: { review: ProjectResearchCheckpointReview }
         {summary.partial === true && <Badge variant="warning">Partial intake</Badge>}
       </div>
       {summary.processing_status === 'incomplete' && (
-        <div className="rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
-          AI screening is still in progress. Approval will be enabled after all {summary.total ?? review.item_count} papers have a classification.
+        <div className="flex items-center justify-between gap-3 rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
+          <span>AI screening is still in progress. Approval will be enabled after all {summary.total ?? review.item_count} papers have a classification.</span>
+          {onRefresh && (
+            <Button size="sm" variant="outline" disabled={refreshing} onClick={onRefresh} className="shrink-0">
+              <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Refreshing…' : 'Refresh progress'}
+            </Button>
+          )}
         </div>
       )}
       {summary.processing_status === 'empty' && (
@@ -261,7 +269,7 @@ function IdeaReview({ review }: { review: ProjectResearchCheckpointReview }) {
   )
 }
 
-export function ResearchCheckpointReview({ checkpoint, onDecide }: ResearchCheckpointReviewProps) {
+export function ResearchCheckpointReview({ checkpoint, onDecide, onRefresh, refreshing }: ResearchCheckpointReviewProps) {
   const review = checkpoint.review ?? fallbackReview(checkpoint)
   const screening = review.type === 'screening'
   const screeningIncomplete = screening && review.summary.processing_status === 'incomplete'
@@ -284,7 +292,7 @@ export function ResearchCheckpointReview({ checkpoint, onDecide }: ResearchCheck
         <ShieldCheck className="size-4 shrink-0 text-warning" />
       </div>
       <ReviewImpactSummary review={review} />
-      {screening ? <ScreeningReview review={review} /> : <IdeaReview review={review} />}
+      {screening ? <ScreeningReview review={review} onRefresh={onRefresh} refreshing={refreshing} /> : <IdeaReview review={review} />}
       <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-3">
         <Button size="sm" variant="outline" onClick={() => onDecide('rejected')}>Reject and revise</Button>
         <Button

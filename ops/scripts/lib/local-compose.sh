@@ -344,3 +344,13 @@ local_compose_ensure_server_database_env() {
     local_compose_set_env_value SERVER_DATABASE_URL "$desired_url"
   fi
 }
+
+# Compose loads application-only variables from a generated file. Database
+# helpers must be independently runnable on a fresh mode root, not depend on
+# start.sh having generated this file first.
+local_compose_generate_server_env() {
+  local server_env="$MODE_ROOT/.server.env"
+  grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL)[[:space:]]*=' \
+    "$ENV_FILE" > "$server_env"
+  chmod 600 "$server_env"
+}

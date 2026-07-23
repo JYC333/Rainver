@@ -7,21 +7,44 @@ content:
   template: |-
     Project: {project_id}
     Research question: {research_question}
+    Research scope (in/out/sub-questions): {research_scope}
     Report depth: {report_depth}
     Report JSON: {report_json}
     Corpus summary: {corpus_summary}
+    Check that the report respects scope.in, does not drift into scope.out, and either
+    addresses each supported sub-question or identifies the evidence gap.
 
     Act as a devil's advocate. Check for cherry-picking, missing contradictory evidence,
     unsupported claims, plausible alternative explanations, and overreach. References in
     affected_refs must use the report's ref-N labels exactly. Use verdict="revise" only when
     at least one issue materially changes the report; otherwise use verdict="pass". Return only
     the JSON object required by the output schema.
+
+    Valid JSON example (copy this complete structure and replace the example values):
+    {
+      "verdict": "revise",
+      "issues": [
+        {
+          "severity": "major",
+          "kind": "missing_contradiction",
+          "detail": "The report cites ref-2 but does not explain that its result conflicts with the main claim.",
+          "affected_refs": ["ref-1", "ref-2"]
+        },
+        {
+          "severity": "minor",
+          "kind": "overreach",
+          "detail": "The conclusion generalizes beyond the coding-agent benchmarks represented in the corpus.",
+          "affected_refs": ["ref-1"]
+        }
+      ]
+    }
   variables_schema:
     type: object
-    required: [project_id, research_question, report_depth, report_json, corpus_summary]
+    required: [project_id, research_question, research_scope, report_depth, report_json, corpus_summary]
     properties:
       project_id: { type: string }
       research_question: { type: string }
+      research_scope: { type: string }
       report_depth: { type: string }
       report_json: { type: string }
       corpus_summary: { type: string }

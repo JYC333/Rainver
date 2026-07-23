@@ -102,6 +102,12 @@ export const RESEARCH_CAPABILITIES: CapabilityDefinition[] = [
     [],
   ),
   researchCapability(
+    "research.ask",
+    "Ask AI",
+    "Hold a multi-turn conversation grounded in the notebook and selected papers, optionally proposing a reviewable notebook edit.",
+    [],
+  ),
+  researchCapability(
     "research.monitor_compare",
     "Monitoring Evidence Comparison",
     "Compare newly screened evidence with the project's current research understanding.",

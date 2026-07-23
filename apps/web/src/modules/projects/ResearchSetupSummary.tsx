@@ -27,9 +27,7 @@ function executionLabel(draft: ResearchSetupDraft): string {
 }
 
 export function ResearchSetupSummary({ draft, sourceChannels, saved, busyAction, canAct, onEdit, onStart }: ResearchSetupSummaryProps) {
-  const channelNames = sourceChannels
-    .filter(channel => draft.source_channel_ids.includes(channel.id))
-    .map(channel => channel.name)
+  void sourceChannels
   return (
     <section className="rounded-lg border border-border bg-card p-4 lg:p-5" aria-label="Initial literature intake setup">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -57,8 +55,8 @@ export function ResearchSetupSummary({ draft, sourceChannels, saved, busyAction,
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         <div className="rounded-md border border-border bg-muted/10 p-3">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Search className="size-3.5" />Literature monitors</div>
-          <p className="mt-2 line-clamp-2 text-sm font-medium">{saved ? (channelNames.length ? channelNames.join(', ') : 'Monitors unavailable') : 'Select or create monitors'}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{saved ? `${draft.source_channel_ids.length} selected` : 'No monitor selected'}</p>
+          <p className="mt-2 line-clamp-2 text-sm font-medium">{saved ? (draft.query_strategy_id ? `Adaptive strategy ${draft.query_strategy_id.slice(0, 8)}` : 'Search strategy not ready') : 'Evaluate provider coverage'}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{saved && draft.query_strategy_id ? 'Materialized provider queries' : 'No query strategy selected'}</p>
         </div>
         <div className="rounded-md border border-border bg-muted/10 p-3">
           <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><History className="size-3.5" />Initial history</div>

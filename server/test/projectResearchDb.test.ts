@@ -132,7 +132,10 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     expect(operation.rows[0]?.progress_json).toMatchObject({ current_stage: "complete", awaiting_source_scan: false });
     const scans = await repo().listScanSummaries(identity, PROJECT);
     expect(scans).toHaveLength(1);
-    expect(scans[0]).toMatchObject({ scan_date: "2026-07-18", new_item_count: 0, relevant_count: 0, scan_count: 1 });
+    // scan_date reflects when the scan actually ran (now), not the
+    // publication-date watermark ("2026-07-17") the operation carried.
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    expect(scans[0]).toMatchObject({ scan_date: todayUtc, new_item_count: 0, relevant_count: 0, scan_count: 1 });
   });
 
   it("collapses repeated same-day zero-result scans into one refreshed daily row", async () => {

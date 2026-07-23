@@ -141,6 +141,22 @@ CREATE TABLE public.source_channels (
     CONSTRAINT uq_source_channels_id_space UNIQUE (id, space_id)
 );
 
+CREATE TABLE public.source_search_specs (
+    id character varying(36) NOT NULL,
+    space_id character varying(36) NOT NULL,
+    source_channel_id character varying(36) NOT NULL,
+    provider_key character varying(32) NOT NULL,
+    research_query_attempt_id character varying(36),
+    compiled_provider_query_json jsonb NOT NULL,
+    query_fingerprint character varying(128) NOT NULL,
+    active_version integer DEFAULT 1 NOT NULL,
+    activated_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT source_search_specs_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_source_search_specs_channel UNIQUE (source_channel_id)
+);
+
 -- Source Channel creation auto-subscribes the creator, and channel-scoped
 -- reads may LEFT JOIN this table, so it must exist even though these tests
 -- don't exercise

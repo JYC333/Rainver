@@ -30,8 +30,7 @@ export const ProjectResearchExecutionConfigSchema = z.object({
 export type ProjectResearchExecutionConfig = z.infer<typeof ProjectResearchExecutionConfigSchema>;
 
 export const ProjectResearchInitialIntakeRequestSchema = z.object({
-  research_question: z.string().trim().min(1),
-  source_channel_ids: z.array(z.string().trim().min(1)).min(1),
+  query_strategy_id: z.string().uuid(),
   history_mode: ProjectResearchHistoryModeSchema.default("bounded_range"),
   from: z.string().nullable().optional(),
   to: z.string().nullable().optional(),
@@ -58,10 +57,10 @@ export const ProjectResearchQuestionRefinementSchema = z.object({
     issues: z.array(z.string()),
   }).strict(),
   suggested_questions: z.array(z.string().min(1)).min(1).max(3),
-  sub_questions: z.array(z.string().min(1)),
+  sub_questions: z.array(z.string().min(1).max(200)).max(10),
   scope: z.object({
-    in: z.array(z.string()),
-    out: z.array(z.string()),
+    in: z.array(z.string().min(1).max(200)).max(10),
+    out: z.array(z.string().min(1).max(200)).max(10),
   }).strict(),
   clarifying_questions: z.array(z.object({
     question: z.string().min(1),

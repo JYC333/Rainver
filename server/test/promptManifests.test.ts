@@ -23,6 +23,7 @@ const EXPECTED_ASSET_KEYS = [
   "project_research.synthesis",
   "project_research.synthesis_critique",
   "research_engine.query_plan",
+  "research_query.intent_plan",
   "retrieval.query_rewrite",
   "retrieval.rerank",
   "retrieval.synthesis",
@@ -49,6 +50,28 @@ describe("loadPromptManifests (real catalog/prompts)", () => {
     for (const manifest of manifests) {
       expect(manifest.content.schema_version).toBe("prompt_asset.v1");
       expect(manifest.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it("keeps a complete parseable JSON example at the end of every structured research prompt", async () => {
+    const manifests = await loadPromptManifests(REAL_CATALOG_ROOT);
+    const expectedTopLevelKeys: Record<string, string[]> = {
+      "project_research.paper_card": ["schema", "digest_markdown", "item_summaries", "item_decisions", "evidence_candidates", "proposal_markdown"],
+      "project_research.monitor_compare": ["comparisons"],
+      "project_research.question_refine": ["assessment", "suggested_questions", "sub_questions", "scope", "clarifying_questions"],
+      "project_research.synthesis": ["status", "artifacts"],
+      "project_research.synthesis_critique": ["verdict", "issues"],
+      "research_engine.query_plan": ["providers", "filters", "time_window"],
+      "research_query.intent_plan": ["core", "expansions", "qualifiers", "exclusions"],
+    };
+    for (const [assetKey, keys] of Object.entries(expectedTopLevelKeys)) {
+      const template = manifests.find((manifest) => manifest.assetKey === assetKey)?.content.template ?? "";
+      const marker = template.lastIndexOf("Valid ");
+      const jsonStart = template.indexOf("{", marker);
+      expect(marker, `${assetKey} must end with a valid JSON example`).toBeGreaterThanOrEqual(0);
+      expect(jsonStart, `${assetKey} JSON example must contain an object`).toBeGreaterThan(marker);
+      const example = JSON.parse(template.slice(jsonStart).trim()) as Record<string, unknown>;
+      expect(Object.keys(example), `${assetKey} example top-level structure`).toEqual(keys);
     }
   });
 

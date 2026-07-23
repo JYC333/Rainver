@@ -9,6 +9,7 @@ import { completeProviderMessages } from "../providers/invocation/invocation";
 import { ProjectResearchExecutionProfileService, type ResearchExecutionSelection } from "./executionProfileService";
 import { RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT } from "./outputSchemas";
 import { PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY } from "./promptRegistry";
+import { ResearchContextRepository } from "./question/researchContextRepository";
 
 export interface QuestionRefinementClarifyingQuestion {
   question: string;
@@ -17,6 +18,7 @@ export interface QuestionRefinementClarifyingQuestion {
 }
 
 export interface QuestionRefinementResult {
+  research_context_version_id: string;
   assessment: {
     answerable: boolean;
     finer: { feasible: number; interesting: number; novel: number; ethical: number; relevant: number };
@@ -127,7 +129,25 @@ export class ProjectResearchQuestionRefineService {
       model: execution.modelName,
       instruction: resolved.rendered_text,
     });
-    return normalizeResult(output);
+    const result = normalizeResult(output);
+    const contextVersion = await new ResearchContextRepository(this.db).create(identity, projectId, {
+      schema_version: "research_context.v1",
+      objective: question,
+      sub_questions: result.sub_questions,
+      in_scope: result.scope.in,
+      out_of_scope: result.scope.out,
+      must_have: [],
+      nice_to_have: [],
+      time_window: null,
+      source_scope: {
+        providers: ["arxiv", "openalex", "semantic_scholar", "web_search"],
+        include_web: true,
+      },
+    }, {
+      assessment: result.assessment,
+      provenance: { source: "question_refinement", prompt_asset_key: PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY },
+    });
+    return { ...result, research_context_version_id: contextVersion.id };
   }
 }
 
@@ -142,18 +162,18 @@ function normalizeHistory(value: unknown): Array<{ role: "user" | "assistant"; c
   });
 }
 
-function normalizeResult(value: Record<string, unknown>): QuestionRefinementResult {
+function normalizeResult(value: Record<string, unknown>): Omit<QuestionRefinementResult, "research_context_version_id"> {
   const assessment = objectValue(value.assessment);
   const finer = objectValue(assessment.finer);
   const scores = ["feasible", "interesting", "novel", "ethical", "relevant"] as const;
-  const normalizedScores = Object.fromEntries(scores.map((key) => [key, score(finer[key])])) as QuestionRefinementResult["assessment"]["finer"];
+  const normalizedScores = Object.fromEntries(scores.map((key) => [key, score(finer[key])])) as Omit<QuestionRefinementResult, "research_context_version_id">["assessment"]["finer"];
   const suggested = strings(value.suggested_questions).slice(0, 3);
   if (typeof assessment.answerable !== "boolean" || suggested.length === 0) throw new HttpError(502, "Question refinement output is invalid");
   return {
     assessment: { answerable: assessment.answerable, finer: normalizedScores, issues: strings(assessment.issues) },
     suggested_questions: suggested,
-    sub_questions: strings(value.sub_questions),
-    scope: { in: strings(objectValue(value.scope).in), out: strings(objectValue(value.scope).out) },
+    sub_questions: strings(value.sub_questions).slice(0, 10),
+    scope: { in: boundedCriteria(objectValue(value.scope).in), out: boundedCriteria(objectValue(value.scope).out) },
     clarifying_questions: clarifyingQuestions(value.clarifying_questions),
   };
 }
@@ -175,4 +195,8 @@ function score(value: unknown): number {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+}
+
+function boundedCriteria(value: unknown): string[] {
+  return strings(value).map((item) => item.length <= 200 ? item : `${item.slice(0, 199).trimEnd()}…`).slice(0, 10);
 }

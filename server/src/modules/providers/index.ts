@@ -40,6 +40,7 @@ export {
   type RotationStrategy,
 } from "./commands/store";
 export {
+  __setNetworkRetryDelayForTests,
   __setProviderHttpClientForTests,
   buildProviderModelName,
   completeProviderChat,

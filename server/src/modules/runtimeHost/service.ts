@@ -77,10 +77,11 @@ function failureResponse(
   errorCode: string,
   errorText: string,
   diagnostics?: Record<string, unknown>,
+  attempts = 1,
 ): RuntimeHostExecuteResponse {
   const completedAt = nowIso();
   const structuredFailure = input.output_format
-    ? `Structured output failed: stage=${input.output_format.stage ?? "managed_api"} schema=${input.output_format.schema_id} provider=${input.model_provider_id} model=${input.model ?? "provider-default"} attempt=1 reason=${errorText}`
+    ? `Structured output failed: stage=${input.output_format.stage ?? "managed_api"} schema=${input.output_format.schema_id} provider=${input.model_provider_id} model=${input.model ?? "provider-default"} attempt=${attempts} reason=${errorText}`
     : errorText;
   return {
     success: false,
@@ -92,7 +93,7 @@ function failureResponse(
       run_id: input.run_id,
       model_provider_id: input.model_provider_id,
       model: input.model ?? null,
-      attempt: 1,
+      attempt: attempts,
       ...(input.output_format ? {
         structured_output_schema_id: input.output_format.schema_id,
         structured_output_stage: input.output_format.stage ?? "managed_api",
@@ -120,7 +121,7 @@ function failureResponse(
       run_id: input.run_id,
       model_provider_id: input.model_provider_id,
       model: input.model ?? null,
-      attempt: 1,
+      attempt: attempts,
       ...(input.output_format ? {
         structured_output_schema_id: input.output_format.schema_id,
         structured_output_stage: input.output_format.stage ?? "managed_api",
@@ -276,6 +277,7 @@ export async function executeRuntimeHost(
         error.code ?? "provider_invocation_failed",
         error.message,
         error.diagnostics,
+        error.attempts ?? 1,
       );
     }
     return failureResponse(

@@ -30,10 +30,21 @@ export const RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT: StructuredOutputContr
         additionalProperties: false,
       },
       suggested_questions: { type: "array", minItems: 1, maxItems: 3, items: { type: "string", minLength: 1 } },
-      sub_questions: { type: "array", items: { type: "string", minLength: 1 } },
+      // sub_questions are full questions (unbounded length, like the top-level
+      // research question); truncating one would leave a broken question.
+      sub_questions: { type: "array", maxItems: 10, items: { type: "string", minLength: 1 } },
+      // scope.in/out are short screening criteria. No maxLength here either:
+      // over-length items are truncated app-side in
+      // questionRefineService.boundedCriteria / researchContext.boundedUniqueStrings.
+      // Enforcing the cap in the strict schema too makes an over-length model
+      // response (observed with MiniMax-M3) a permanent, non-retryable failure
+      // instead of a value the app can safely bound.
       scope: {
         type: "object",
-        properties: { in: { type: "array", items: { type: "string" } }, out: { type: "array", items: { type: "string" } } },
+        properties: {
+          in: { type: "array", maxItems: 10, items: { type: "string", minLength: 1 } },
+          out: { type: "array", maxItems: 10, items: { type: "string", minLength: 1 } },
+        },
         required: ["in", "out"],
         additionalProperties: false,
       },
@@ -85,21 +96,6 @@ export const RESEARCH_SYNTHESIS_CRITIQUE_OUTPUT_CONTRACT: StructuredOutputContra
     additionalProperties: false,
   },
 };
-
-export const RESEARCH_SYNTHESIS_REJECTION_CODES = [
-  "research_question_not_actionable",
-  "insufficient_approved_corpus",
-  "no_coherent_synthesis_target",
-] as const;
-
-export type ResearchSynthesisRejectionCode = typeof RESEARCH_SYNTHESIS_REJECTION_CODES[number];
-
-export interface ResearchSynthesisRejection {
-  code: ResearchSynthesisRejectionCode;
-  message: string;
-  reason: string;
-  suggestions: string[];
-}
 
 const citationRef = {
   type: "object",
@@ -256,10 +252,10 @@ export const RESEARCH_SYNTHESIS_OUTPUT_CONTRACT: StructuredOutputContract = {
   schema: {
     type: "object",
     properties: {
-      status: { enum: ["succeeded", "rejected"] },
+      status: { enum: ["succeeded"] },
       artifacts: {
         type: "array",
-        minItems: 0,
+        minItems: 1,
         maxItems: 1,
         items: {
           type: "object",
@@ -273,24 +269,8 @@ export const RESEARCH_SYNTHESIS_OUTPUT_CONTRACT: StructuredOutputContract = {
           additionalProperties: false,
         },
       },
-      rejection: {
-        anyOf: [
-          { type: "null" },
-          {
-            type: "object",
-            properties: {
-              code: { enum: [...RESEARCH_SYNTHESIS_REJECTION_CODES] },
-              message: { type: "string", minLength: 1 },
-              reason: { type: "string", minLength: 1 },
-              suggestions: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
-            },
-            required: ["code", "message", "reason", "suggestions"],
-            additionalProperties: false,
-          },
-        ],
-      },
     },
-    required: ["status", "artifacts", "rejection"],
+    required: ["status", "artifacts"],
     additionalProperties: false,
   },
 };

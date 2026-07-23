@@ -7,6 +7,23 @@ import { providerSupportsStructuredOutput } from "../providers/structuredOutputC
 const RESEARCH_AGENT_KIND = "system_research";
 const RESEARCH_AGENT_NAME = "Auto Research";
 const RESEARCH_ADAPTER = "model_api" as const;
+// Every research.* capability a stage of this workflow can require at
+// routing time (screening/synthesis use the first five; ad-hoc notebook
+// analysis and incremental monitoring comparison need the other two). Keep
+// this the single list new stages draw from — a capability missing here
+// fails routing with "No runtime candidate passed routing hard filters" for
+// every existing space's agent, since capabilities_json is otherwise fixed
+// at first provisioning.
+const RESEARCH_AGENT_CAPABILITY_IDS = [
+  "research.source_collect",
+  "research.source_summarize",
+  "research.evidence_extract",
+  "research.brief_synthesize",
+  "research.idea_generate",
+  "research.adhoc_analyze",
+  "research.ask",
+  "research.monitor_compare",
+];
 export interface ResearchExecutionSelection {
   modelProviderId?: string | null;
   modelName?: string | null;
@@ -62,7 +79,10 @@ export class ProjectResearchExecutionProfileService {
         ORDER BY created_at ASC, id ASC LIMIT 1`,
       [identity.spaceId, RESEARCH_AGENT_KIND],
     );
-    if (existing.rows[0]) return existing.rows[0];
+    if (existing.rows[0]) {
+      await this.ensureManagedAgentCapabilities(identity.spaceId, existing.rows[0].id);
+      return existing.rows[0];
+    }
 
     try {
       const agent = await PgAgentRepository.fromConfig(this.config).create({
@@ -79,13 +99,7 @@ export class ProjectResearchExecutionProfileService {
         adapterType: RESEARCH_ADAPTER,
         runtimeConfigJson: { purpose: "project_research" },
         agentKind: RESEARCH_AGENT_KIND,
-        capabilitiesJson: [
-          "research.source_collect",
-          "research.source_summarize",
-          "research.evidence_extract",
-          "research.brief_synthesize",
-          "research.idea_generate",
-        ],
+        capabilitiesJson: RESEARCH_AGENT_CAPABILITY_IDS,
         outputSchemaJson: {
           required_artifact_schemas: [
             "research_report.archive.v1",
@@ -103,6 +117,34 @@ export class ProjectResearchExecutionProfileService {
       if (raced.rows[0]) return raced.rows[0];
       throw error;
     }
+  }
+
+  /**
+   * The agent's capabilities snapshot is fixed on its current agent_versions
+   * row at creation time, with no versioned-edit path for this
+   * system-managed agent. Backfill it in place when a stage adds a new
+   * required capability, so spaces provisioned before that stage existed
+   * don't fail routing forever.
+   */
+  private async ensureManagedAgentCapabilities(spaceId: string, agentId: string): Promise<void> {
+    const current = await this.db.query<{ version_id: string; capabilities_json: unknown }>(
+      `SELECT av.id AS version_id, av.capabilities_json
+         FROM agents a
+         JOIN agent_versions av ON av.id = a.current_version_id AND av.space_id = a.space_id
+        WHERE a.space_id=$1 AND a.id=$2`,
+      [spaceId, agentId],
+    );
+    const row = current.rows[0];
+    if (!row) return;
+    const existingCapabilities = Array.isArray(row.capabilities_json)
+      ? row.capabilities_json.filter((value): value is string => typeof value === "string")
+      : [];
+    const missing = RESEARCH_AGENT_CAPABILITY_IDS.filter((id) => !existingCapabilities.includes(id));
+    if (missing.length === 0) return;
+    await this.db.query(
+      `UPDATE agent_versions SET capabilities_json=$3::jsonb WHERE id=$1 AND space_id=$2`,
+      [row.version_id, spaceId, JSON.stringify([...existingCapabilities, ...missing])],
+    );
   }
 
   private async ensureProfile(

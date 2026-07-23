@@ -13,25 +13,19 @@ export interface CustomSourceCredentialDTO {
   updated_at: string
 }
 
-export interface ResearchNotebookSection {
-  id: string; section_key: 'understanding' | 'questions' | 'ideas' | 'experiments'; content_json: Record<string, unknown>
-  normalized_text: string; content_hash: string; refs_json: string[]; version: number; updated_by_user_id: string | null; updated_by_run_id: string | null; updated_at: string
-}
-export type ResearchNotebookOp =
-  | { op: 'append'; markdown: string }
-  | { op: 'insert'; index: number; markdown: string }
-  | { op: 'replace'; index: number; count: number; markdown: string }
-  | { op: 'delete'; index: number; count: number }
-export interface ResearchNotebookRevision {
-  id: string; version: number; content_json: Record<string, unknown>; normalized_text: string; refs_json: string[]
-  source: 'user_edit' | 'ai_monitoring' | 'ai_adhoc' | 'seed' | 'rollback'
-  diff_json: { ops?: ResearchNotebookOp[]; base_version?: number; conflict?: boolean; rolled_back_to_version?: number } | null
-  created_by_user_id: string | null; created_by_run_id: string | null; created_at: string
-}
 export interface ResearchChecklistItem { id: string; text: string; status: 'open' | 'done' | 'dismissed'; sort_order: number; origin: 'user' | 'agent'; origin_run_id: string | null; created_at: string; updated_at: string }
 export interface ResearchPaperCard { id: string; source_item_id: string; object_id: string | null; why_md: string; how_md: string; what_md: string; edited_by_user: boolean; stance: 'supports' | 'contradicts' | 'new_direction' | null; comparison_detail: string | null }
+/**
+ * A project's "notebook" is ordinary Notes filed under its auto-created
+ * Knowledge Notes folder (see notebookNotes.ts / workspaceService.ts on the
+ * server) — free-form, not a fixed set of sections. `notes` here is the
+ * light listing shape used for the workspace overview and AI prompt
+ * grounding; the Notebook tab fetches full `Note` objects via `notesApi`
+ * for editing.
+ */
 export interface ResearchWorkspace {
-  notebook: { id: string; project_id: string; sections: ResearchNotebookSection[] }
+  notes_collection_id: string
+  notes: Array<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>
   checklist: ResearchChecklistItem[]
   reports: Array<{ id: string; research_question: string; research_question_version: number; status: string; run_kind: string; created_at: string }>
 }
@@ -1039,7 +1033,8 @@ export interface SourceChannel {
   endpoint_url: string | null
   query: Record<string, unknown>
   provider_query: Record<string, unknown>
-  query_fingerprint: string
+  query_fingerprint: string | null
+  research_query_attempt_id?: string | null
   status: 'active' | 'paused' | 'archived'
   fetch_frequency: 'manual' | 'hourly' | 'daily' | 'weekly'
   schedule_rule: SourceScheduleRule | Record<string, unknown> | null
@@ -1059,8 +1054,9 @@ export interface SourceChannel {
 }
 
 export interface ProjectResearchInitialIntakeInput {
+  research_context_version_id?: string
+  query_strategy_id?: string
   research_question: string
-  source_channel_ids: string[]
   history_mode: 'bounded_range' | 'all_available'
   from?: string
   to?: string
@@ -1068,7 +1064,6 @@ export interface ProjectResearchInitialIntakeInput {
   monitoring_field: 'submittedDate' | 'lastUpdatedDate'
   report_depth: 'quick' | 'full'
   question_refine_skipped: boolean
-  search_strategy_id?: string
   question_refinement?: ProjectResearchQuestionRefinement | null
   execution: {
     model_provider_id?: string
@@ -1076,42 +1071,74 @@ export interface ProjectResearchInitialIntakeInput {
   }
 }
 
-export interface ResearchEngineSearchResult {
-  strategy: {
-    id: string
-    status: 'completed' | 'partial' | 'failed'
-    providers: Array<{ provider_key: 'arxiv' | 'openalex' | 'semantic_scholar' | 'web_search'; query: Record<string, unknown>; rationale: string }>
-    hit_counts: Record<string, number>
-    provider_errors: Record<string, string>
-    result_count: number
+export type ResearchProviderKey = 'arxiv' | 'openalex' | 'semantic_scholar' | 'web_search'
+
+export interface ResearchSemanticConcept {
+  value: string
+  synonyms: string[]
+  weight: number
+}
+
+export interface ResearchQueryAttempt {
+  id: string
+  provider_plan_id: string
+  round: number
+  sequence: number
+  direction: 'initial' | 'broaden' | 'narrow'
+  semantic_query: {
+    schema_version: 'research_semantic_query.v1'
+    core: ResearchSemanticConcept[]
+    expansions: ResearchSemanticConcept[]
+    qualifiers: ResearchSemanticConcept[]
+    exclusions: ResearchSemanticConcept[]
+    time_window: { from: string | null; to: string | null } | null
   }
-  candidates: Array<{
-    candidate_id: string
-    kind: 'academic_paper' | 'web_page'
-    title: string
-    authors: string[]
-    source_uri: string | null
-    occurred_at: string | null
-    excerpt: string | null
-    providers: string[]
-    trust_level: 'normal' | 'untrusted'
-  }>
-  monitor_suggestions: Array<{
-    provider_key: string
-    rationale: string
-    approximate_hit_count: number
-    samples: SourceQueryPreview['samples']
-    create_body: Record<string, unknown>
+  compiled_query: { schema_version: 'research_compiled_query.v1'; provider_key: ResearchProviderKey; query: Record<string, unknown>; fingerprint: string }
+  observation: null | {
+    provider_hit_count: number
+    accessible_hit_count: number
+    relevance_rate: number
+    relevance_lower_bound: number
+    diversity_score: number
+    duplicate_rate: number
+    samples: Array<{ sample_id: string; title: string; source_uri: string | null; occurred_at: string | null; excerpt: string | null; relevance: 'relevant' | 'maybe' | 'not_relevant'; matched_core_concepts: string[] }>
+  }
+  score: number | null
+  decision: 'accept' | 'broaden' | 'narrow' | 'stop' | null
+  decision_reason: string | null
+  error_class: string | null
+}
+
+export interface ResearchQueryStrategy {
+  id: string
+  project_id: string
+  research_context_version_id: string
+  question_snapshot: string
+  status: 'planning' | 'evaluating' | 'selected' | 'materialized' | 'failed'
+  version: number
+  parent_strategy_id: string | null
+  adaptation_direction: 'broaden' | 'narrow' | 'rollback' | null
+  provider_plans: Array<{
+    id: string
+    provider_key: ResearchProviderKey
+    status: 'pending' | 'evaluating' | 'selected' | 'unavailable' | 'failed'
+    attempts: ResearchQueryAttempt[]
+    selected_attempt_id: string | null
+    terminal_decision: 'accept' | 'broaden' | 'narrow' | 'stop' | null
+    decision_reason: string | null
+    coverage_warning: string | null
   }>
 }
 
-export interface ResearchEngineMonitorResult {
-  strategy_id: string
-  channels: SourceChannel[]
-  bindings: ProjectSourceBinding[]
+export interface MaterializedResearchStrategy {
+  query_strategy_id: string
+  project_id: string
+  status: 'materialized'
+  sources: Array<{ provider_key: ResearchProviderKey; research_query_attempt_id: string; source_channel_id: string; project_source_binding_id: string; query_fingerprint: string }>
 }
 
 export interface ProjectResearchQuestionRefinement {
+  research_context_version_id: string
   assessment: {
     answerable: boolean
     finer: { feasible: number; interesting: number; novel: number; ethical: number; relevant: number }
@@ -2068,7 +2095,7 @@ export interface KnowledgeRelationProposalBody {
 // ── Notes (working knowledge; direct CRUD) ─────────────────────────────────
 export type NoteStatus = 'active' | 'archived' | 'deleted'
 export type NoteContentFormat = 'markdown' | 'plain' | 'prosemirror_json'
-export type NoteCollectionSystemRole = 'normal' | 'inbox' | 'archive'
+export type NoteCollectionSystemRole = 'normal' | 'inbox' | 'archive' | 'project' | 'projects_root'
 
 export interface NoteCollection {
   id: string
@@ -2079,12 +2106,17 @@ export interface NoteCollection {
   sort_order: number
   is_system: boolean
   is_hidden: boolean
+  /** Set only for the one auto-created folder backing a Project's notes (system_role='project'). */
+  project_id?: string | null
   created_at: string
   updated_at: string
   deleted_at?: string | null
 }
 
 export interface NoteCollectionCreateBody {
+  /** Client-generated so optimistic tree mutations can reference the folder
+   * before the create request has finished. */
+  id?: string
   name: string
   parent_id?: string | null
   sort_order?: number | null
@@ -2107,6 +2139,13 @@ export interface NoteSummary {
   primary_project_id: string | null
   /** Folder this note belongs to (first membership); null/absent if uncategorized. */
   collection_id?: string | null
+  /** Position within collection_id's folder; null if uncategorized. */
+  sort_order?: number | null
+  /** Optimistic-concurrency version; bumped by every save (user or AI). */
+  version: number
+  content_hash: string | null
+  updated_by_user_id: string | null
+  updated_by_run_id: string | null
   created_at: string
   updated_at: string
 }
@@ -2141,6 +2180,46 @@ export interface NoteUpdateBody {
   content_schema_version?: number
   status?: NoteStatus
   primary_project_id?: string | null
+  /** Moves the note into this folder (replaces its current folder). */
+  collection_id?: string
+  /** Optimistic-concurrency check for content_json writes; omit to skip the check. */
+  expect_version?: number
+}
+
+export interface NotesTreeNoteOrderUpdate {
+  id: string
+  collection_id: string
+  sort_order: number
+}
+
+export interface NotesTreeCollectionOrderUpdate {
+  id: string
+  parent_id: string | null
+  sort_order: number
+}
+
+export type NotesTreeReorderBody =
+  | { kind: 'notes'; updates: NotesTreeNoteOrderUpdate[] }
+  | { kind: 'collections'; updates: NotesTreeCollectionOrderUpdate[] }
+
+export interface NotesTreeReorderResult {
+  kind: NotesTreeReorderBody['kind']
+  updated: number
+}
+
+export type NoteRevisionSource = 'user_edit' | 'ai_monitoring' | 'ai_adhoc' | 'seed' | 'rollback'
+
+export interface NoteRevision {
+  id: string
+  version: number
+  content_json: Record<string, unknown>
+  normalized_text: string
+  refs_json: string[]
+  source: NoteRevisionSource
+  diff_json: { ops?: Array<{ op: string; index?: number; count?: number; markdown?: string | null }>; rolled_back_to_version?: number; conflict?: boolean; run_id?: string } | null
+  created_by_user_id: string | null
+  created_by_run_id: string | null
+  created_at: string
 }
 
 // ── Entity links (generic cross-object relation layer) ─────────────────────

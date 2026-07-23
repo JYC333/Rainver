@@ -31,6 +31,10 @@ function makeNote(overrides: Partial<NoteSummary> = {}): NoteSummary {
     content_format: 'prosemirror_json',
     primary_project_id: null,
     collection_id: 'col-1',
+    version: 1,
+    content_hash: null,
+    updated_by_user_id: null,
+    updated_by_run_id: null,
     created_at: '',
     updated_at: '',
     ...overrides,
@@ -61,13 +65,15 @@ function renderTree({
   onMove = vi.fn(),
   onHide = vi.fn(),
   onDeleteCollection = vi.fn(),
+  onDropCollections = vi.fn(),
+  onDropNotes = vi.fn(),
 }: Partial<ComponentProps<typeof NotesTree>> = {}) {
-  render(
+  const tree = (nextActiveNoteId = activeNoteId) => (
     <NotesTree
       collections={collections}
       notes={notes}
       selectedCollectionId={selectedCollectionId}
-      activeNoteId={activeNoteId}
+      activeNoteId={nextActiveNoteId}
       collapsedCollectionIds={collapsedCollectionIds}
       resolveNoteTitle={resolveNoteTitle}
       onToggleCollection={onToggleCollection}
@@ -83,8 +89,11 @@ function renderTree({
       onMove={onMove}
       onHide={onHide}
       onDeleteCollection={onDeleteCollection}
-    />,
+      onDropCollections={onDropCollections}
+      onDropNotes={onDropNotes}
+    />
   )
+  const rendered = render(tree())
 
   return {
     onToggleCollection,
@@ -100,6 +109,9 @@ function renderTree({
     onMove,
     onHide,
     onDeleteCollection,
+    onDropCollections,
+    onDropNotes,
+    rerenderWithActiveNote: (nextActiveNoteId?: string) => rendered.rerender(tree(nextActiveNoteId)),
   }
 }
 
@@ -210,6 +222,24 @@ describe('NotesTree', () => {
     expect(noteItem).not.toHaveClass('bg-accent')
   })
 
+  it('clears the previous tree selection when the active note changes outside the tree', () => {
+    const notes = [
+      makeNote({ id: 'note-alpha', title: 'Alpha note', updated_at: '2025-02-01T00:00:00Z' }),
+      makeNote({ id: 'note-beta', title: 'Beta note', updated_at: '2025-01-01T00:00:00Z' }),
+    ]
+    const { rerenderWithActiveNote } = renderTree({ notes, activeNoteId: 'note-alpha' })
+    const alpha = screen.getByRole('button', { name: 'Alpha note' })
+    const beta = screen.getByRole('button', { name: 'Beta note' })
+
+    fireEvent.click(alpha)
+    expect(alpha).toHaveAttribute('aria-pressed', 'true')
+
+    rerenderWithActiveNote('note-beta')
+
+    expect(alpha).not.toHaveClass('bg-accent')
+    expect(beta).toHaveClass('bg-primary/10')
+  })
+
   it('selects a visible note range with Shift and deletes the selected notes as a batch', async () => {
     const notes = [
       makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-1', updated_at: '2025-04-01T00:00:00Z' }),
@@ -279,5 +309,21 @@ describe('NotesTree', () => {
       expect.objectContaining({ id: 'note-beta' }),
       expect.objectContaining({ id: 'note-gamma' }),
     ])
+  })
+
+  it('keeps fixed roots immovable while allowing ordinary and project folders to drag', () => {
+    renderTree({
+      collections: [
+        makeCollection({ id: 'col-inbox', name: 'Inbox', system_role: 'inbox', is_system: true }),
+        makeCollection({ id: 'col-projects', name: 'Projects', system_role: 'projects_root', is_system: true }),
+        makeCollection({ id: 'col-project', name: 'Project Alpha', system_role: 'project', is_system: true }),
+        makeCollection({ id: 'col-normal', name: 'Research', system_role: 'normal', is_system: false }),
+      ],
+    })
+
+    expect(screen.getByRole('button', { name: 'Inbox' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: 'Projects' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: 'Project Alpha' })).toHaveAttribute('aria-disabled', 'false')
+    expect(screen.getByRole('button', { name: 'Research' })).toHaveAttribute('aria-disabled', 'false')
   })
 })

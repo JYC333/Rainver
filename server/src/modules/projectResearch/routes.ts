@@ -3,7 +3,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry";
 import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
 import { ProjectResearchRepository } from "./repository";
 import { ProjectExperimentRepository } from "./experimentRepository";
-import { ProjectResearchOrchestrator } from "./orchestrator";
+import { ProjectResearchPipelineService } from "./pipeline/researchPipelineService";
 import { enforceSources } from "../sources/enforceSources";
 import { ProjectResearchReportRepository } from "./reportRepository";
 import { ProjectResearchQuestionRefineService } from "./questionRefineService";
@@ -11,7 +11,7 @@ import { registerProjectResearchWorkspaceRoutes } from "./workspaceRoutes";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => ProjectResearchRepository) | null = null;
 let experimentRepositoryFactoryOverride: ((context: ModuleContext) => ProjectExperimentRepository) | null = null;
-let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchOrchestrator) | null = null;
+let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchPipelineService) | null = null;
 
 export function __setProjectResearchRepositoryFactoryForTests(
   factory: ((context: ModuleContext) => ProjectResearchRepository) | null,
@@ -26,7 +26,7 @@ export function __setProjectExperimentRepositoryFactoryForTests(
 }
 
 export function __setProjectResearchOrchestratorFactoryForTests(
-  factory: ((context: ModuleContext) => ProjectResearchOrchestrator) | null,
+  factory: ((context: ModuleContext) => ProjectResearchPipelineService) | null,
 ): void {
   orchestratorFactoryOverride = factory;
 }
@@ -41,9 +41,9 @@ function experimentRepository(context: ModuleContext): ProjectExperimentReposito
   return new ProjectExperimentRepository(dbPool(context.config));
 }
 
-function orchestrator(context: ModuleContext): ProjectResearchOrchestrator {
+function orchestrator(context: ModuleContext): ProjectResearchPipelineService {
   if (orchestratorFactoryOverride) return orchestratorFactoryOverride(context);
-  return new ProjectResearchOrchestrator(dbPool(context.config), context.config);
+  return new ProjectResearchPipelineService(dbPool(context.config), context.config);
 }
 
 function requireParam(request: Parameters<typeof params>[0], name: string): string {

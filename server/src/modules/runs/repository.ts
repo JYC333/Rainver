@@ -858,6 +858,7 @@ export class PgRunRepository {
     addOptionalFilter(clauses, params, "workspace_id", filters.workspace_id);
     addOptionalFilter(clauses, params, "project_id", filters.project_id);
     addOptionalFilter(clauses, params, "workflow_version_id", filters.workflow_version_id);
+    addOptionalFilter(clauses, params, "capability_id", filters.capability_id);
     if (filters.run_role) addOptionalFilter(clauses, params, "run_role", filters.run_role);
     else clauses.push("run_role = 'execution'");
     params.push(filters.limit, filters.offset);

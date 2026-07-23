@@ -93,7 +93,7 @@ export function ResearchResultCard({ state, projectId, busy, running, onAction }
           <div className="mt-3 grid gap-2 md:grid-cols-5" aria-label="Research progress steps">
             {running.steps.map((step, index) => (
               <div key={`${index}:${step.title}`} className="flex items-center gap-2 text-xs leading-5">
-                <span className={`flex size-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold ${step.status === 'done' ? 'border-success/50 bg-success/10 text-success' : step.status === 'failed' ? 'border-destructive/50 bg-destructive/10 text-destructive' : step.status === 'blocked' ? 'border-warning/50 bg-warning/10 text-warning-foreground' : step.status === 'active' ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
+                <span className={`flex size-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold ${step.status === 'done' ? 'border-success/50 bg-success/10 text-success' : step.status === 'failed' ? 'border-destructive/50 bg-destructive/10 text-destructive' : step.status === 'blocked' ? 'border-warning/50 bg-warning/10 text-warning' : step.status === 'active' ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>
                   {step.status === 'done' ? '✓' : step.status === 'failed' ? '×' : index + 1}
                 </span>
                 <span className={['active', 'blocked', 'failed'].includes(step.status) ? 'font-medium text-foreground' : 'text-muted-foreground'}>{step.title}</span>

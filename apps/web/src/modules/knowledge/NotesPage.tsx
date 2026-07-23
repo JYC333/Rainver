@@ -4,7 +4,7 @@ import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
 import { stripSpacePrefix } from '../../core/navigation'
 import { FolderPlus, Plus, Search, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { notesApi, notesCollectionsApi } from '../../api/client'
+import { notesApi, notesCollectionsApi, notesTreeApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
 import type { Note, NoteCollection, NoteSummary } from '../../types/api'
@@ -20,7 +20,18 @@ import {
 import KnowledgeSectionHeader from './KnowledgeSectionHeader'
 import { NotesListPane } from './NotesListPane'
 import NotesTree from './notes-tree/NotesTree'
-import { collectionPath } from './notes-tree/model'
+import {
+  applyCollectionMoves,
+  applyNoteMoves,
+  collectionPath,
+  nextCollectionSortOrder,
+  planCollectionMove,
+  removeCollection,
+  upsertCollection,
+  type CollectionMove,
+  type NoteMove,
+} from './notes-tree/model'
+import { createOptimisticTreeMutationQueue } from './notes-tree/treeMutationQueue'
 import {
   ROOT_PARENT,
   activeNoteIdFromPath,
@@ -80,6 +91,9 @@ export default function NotesPage() {
 
   const [openIds, setOpenIds] = useState<string[]>(() => readTabs(activeSpaceId))
   const prevSpace = useRef(activeSpaceId)
+  const [treeMutationQueue] = useState(() =>
+    createOptimisticTreeMutationQueue(error => toast.error(errMsg(error))),
+  )
 
   const [creating, setCreating] = useState(false)
 
@@ -88,7 +102,6 @@ export default function NotesPage() {
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [collectionName, setCollectionName] = useState('')
   const [collectionParentId, setCollectionParentId] = useState(ROOT_PARENT)
-  const [collectionBusy, setCollectionBusy] = useState(false)
 
   const visibleCollections = useMemo(() => collections.filter(c => !c.is_hidden), [collections])
   const collectionById = useMemo(() => new Map(collections.map(c => [c.id, c])), [collections])
@@ -106,21 +119,21 @@ export default function NotesPage() {
     ]
   }, [collectionById, collectionDialog, visibleCollections])
 
-  const loadCollections = useCallback(async () => {
+  const loadCollections = useCallback(async (options: { silent?: boolean } = {}) => {
     if (!activeSpaceId) {
       setCollections([])
       setCollectionsLoading(false)
       return
     }
-    setCollectionsLoading(true)
+    if (!options.silent) setCollectionsLoading(true)
     try {
       const rows = await notesCollectionsApi.list()
       setCollections(rows)
     } catch (e) {
       toast.error(errMsg(e))
-      setCollections([])
+      if (!options.silent) setCollections([])
     } finally {
-      setCollectionsLoading(false)
+      if (!options.silent) setCollectionsLoading(false)
     }
   }, [activeSpaceId])
 
@@ -435,54 +448,159 @@ export default function NotesPage() {
     setCollectionParentId(collection.parent_id ?? ROOT_PARENT)
   }
 
-  async function submitCollectionDialog() {
+  function enqueueCollectionReorder(
+    updates: CollectionMove[],
+    afterSuccess?: () => void,
+  ) {
+    treeMutationQueue.enqueue({
+      key: 'collections',
+      apply: () => setCollections(current => applyCollectionMoves(current, updates)),
+      persist: async () => {
+        await notesTreeApi.reorder({
+          kind: 'collections',
+          updates: updates.map(update => ({
+            id: update.id,
+            parent_id: update.parentId,
+            sort_order: update.sortOrder,
+          })),
+        })
+      },
+      reconcile: async () => { await loadCollections({ silent: true }) },
+      afterSuccess,
+    })
+  }
+
+  function submitCollectionDialog() {
     if (!collectionDialog) return
     if (collectionDialog.mode !== 'move' && !collectionName.trim()) {
       toast.error('Folder name is required')
       return
     }
     const parent_id = collectionParentId === ROOT_PARENT ? null : collectionParentId
-    setCollectionBusy(true)
-    try {
-      if (collectionDialog.mode === 'create-root' || collectionDialog.mode === 'create-child') {
-        await notesCollectionsApi.create({ name: collectionName.trim(), parent_id })
-        toast.success('Folder created')
-      } else if (collectionDialog.mode === 'rename') {
-        await notesCollectionsApi.update(collectionDialog.collection.id, { name: collectionName.trim() })
-        toast.success('Folder renamed')
-      } else {
-        await notesCollectionsApi.update(collectionDialog.collection.id, { parent_id })
-        toast.success('Folder moved')
+    if (collectionDialog.mode === 'create-root' || collectionDialog.mode === 'create-child') {
+      if (!activeSpaceId) return
+      const id = crypto.randomUUID()
+      const now = new Date().toISOString()
+      const optimisticCollection: NoteCollection = {
+        id,
+        space_id: activeSpaceId,
+        parent_id,
+        name: collectionName.trim(),
+        system_role: 'normal',
+        sort_order: nextCollectionSortOrder(collections, parent_id),
+        is_system: false,
+        is_hidden: false,
+        created_at: now,
+        updated_at: now,
       }
-      setCollectionDialog(null)
-      await loadCollections()
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setCollectionBusy(false)
+      treeMutationQueue.enqueue({
+        key: 'collections',
+        apply: () => setCollections(current => upsertCollection(current, optimisticCollection)),
+        persist: async () => {
+          await notesCollectionsApi.create({
+            id,
+            name: optimisticCollection.name,
+            parent_id,
+            sort_order: optimisticCollection.sort_order,
+          })
+        },
+        reconcile: async () => { await loadCollections({ silent: true }) },
+        afterSuccess: () => {
+          toast.success('Folder created')
+        },
+      })
+    } else if (collectionDialog.mode === 'rename') {
+      const collection = collectionDialog.collection
+      const name = collectionName.trim()
+      treeMutationQueue.enqueue({
+        key: 'collections',
+        apply: () => setCollections(current => current.map(item => (
+          item.id === collection.id ? { ...item, name } : item
+        ))),
+        persist: async () => {
+          await notesCollectionsApi.update(collection.id, { name })
+        },
+        reconcile: async () => { await loadCollections({ silent: true }) },
+        afterSuccess: () => {
+          toast.success('Folder renamed')
+        },
+      })
+    } else {
+      const updates = planCollectionMove(
+        collectionDialog.collection.id,
+        parent_id,
+        null,
+        collections,
+      )
+      if (updates.length > 0) {
+        enqueueCollectionReorder(updates, () => toast.success('Folder moved'))
+      }
     }
+    setCollectionDialog(null)
   }
 
-  async function hideCollection(collection: NoteCollection) {
-    try {
-      await notesCollectionsApi.update(collection.id, { is_hidden: true })
-      toast.success('Folder hidden')
-      if (selectedCollectionId === collection.id) setSelectedCollectionId(null)
-      await loadCollections()
-    } catch (e) {
-      toast.error(errMsg(e))
-    }
+  function hideCollection(collection: NoteCollection) {
+    treeMutationQueue.enqueue({
+      key: 'collections',
+      apply: () => setCollections(current => current.map(item => (
+        item.id === collection.id ? { ...item, is_hidden: true } : item
+      ))),
+      persist: async () => {
+        await notesCollectionsApi.update(collection.id, { is_hidden: true })
+      },
+      reconcile: async () => { await loadCollections({ silent: true }) },
+      afterSuccess: () => toast.success('Folder hidden'),
+    })
+    if (selectedCollectionId === collection.id) setSelectedCollectionId(null)
   }
 
-  async function deleteCollection(collection: NoteCollection) {
-    try {
-      await notesCollectionsApi.delete(collection.id)
-      toast.success('Folder deleted')
-      if (selectedCollectionId === collection.id) setSelectedCollectionId(null)
-      await loadCollections()
-    } catch (e) {
-      toast.error(errMsg(e))
-    }
+  function deleteCollection(collection: NoteCollection) {
+    treeMutationQueue.enqueue({
+      key: 'collections',
+      apply: () => setCollections(current => removeCollection(current, collection.id)),
+      persist: async () => { await notesCollectionsApi.delete(collection.id) },
+      reconcile: async () => { await loadCollections({ silent: true }) },
+      afterSuccess: () => toast.success('Folder deleted'),
+    })
+    if (selectedCollectionId === collection.id) setSelectedCollectionId(null)
+  }
+
+  function dropCollections(updates: CollectionMove[]) {
+    enqueueCollectionReorder(updates)
+  }
+
+  function dropNotes(updates: NoteMove[]) {
+    const optimisticAllNotes = applyNoteMoves(allNotes, updates)
+    const normalizedQuery = query.trim().toLocaleLowerCase()
+    const optimisticVisibleNotes = selectedCollectionId
+      ? optimisticAllNotes.filter(note => (
+        note.collection_id === selectedCollectionId
+        && (selectedCollection?.system_role === 'archive' ? note.status === 'archived' : note.status === 'active')
+        && (!normalizedQuery || `${note.title} ${note.excerpt ?? ''}`.toLocaleLowerCase().includes(normalizedQuery))
+      ))
+      : []
+    treeMutationQueue.enqueue({
+      key: 'notes',
+      apply: () => {
+        setNotes(optimisticVisibleNotes)
+        setAllNotes(optimisticAllNotes)
+      },
+      persist: async () => {
+        await notesTreeApi.reorder({
+          kind: 'notes',
+          updates: updates.map(update => ({
+            id: update.id,
+            collection_id: update.collectionId,
+            sort_order: update.sortOrder,
+          })),
+        })
+      },
+      reconcile: async () => { await Promise.all([loadNotes(), loadAllNotes()]) },
+      // Full-text queries can match note content that is not present in a
+      // NoteSummary. Reconcile that exceptional view in the background
+      // without blocking the already-updated tree.
+      afterSuccess: normalizedQuery ? () => { void loadNotes() } : undefined,
+    })
   }
 
   const headerActions = (
@@ -548,6 +666,8 @@ export default function NotesPage() {
               onMove={openMove}
               onHide={hideCollection}
               onDeleteCollection={deleteCollection}
+              onDropCollections={dropCollections}
+              onDropNotes={dropNotes}
             />
           )}
           <Button size="sm" variant="outline" className="mt-2 justify-start" onClick={openCreateRoot} disabled={!activeSpaceId}>
@@ -728,10 +848,8 @@ export default function NotesPage() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setCollectionDialog(null)} disabled={collectionBusy}>Cancel</Button>
-            <Button size="sm" onClick={submitCollectionDialog} disabled={collectionBusy}>
-              {collectionBusy ? 'Saving...' : 'Save'}
-            </Button>
+            <Button variant="outline" size="sm" onClick={() => setCollectionDialog(null)}>Cancel</Button>
+            <Button size="sm" onClick={submitCollectionDialog}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

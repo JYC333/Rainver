@@ -10,19 +10,52 @@ content:
 
     Build a concise multi-source search plan. Use arxiv, openalex, and semantic_scholar
     for scholarly questions. Add web_search for general, current, industry, policy, or
-    other non-academic evidence. Queries must preserve the question's core concepts while
-    using each provider's plain-text syntax. Keep preview limits small (20 academic, 10 web),
-    do not invent credentials. Query objects must use exactly these shapes:
-    arxiv {"search_query": string, "max_results": 20, "sort_by": "relevance",
-    "sort_order": "descending"}; openalex {"search": string, "per_page": 20,
-    "sort": "publication_date:desc"}; semantic_scholar {"query": string,
-    "limit": 20}; web_search {"q": string, "count": 10}. Return only the
+    other non-academic evidence. Treat scope.in and sub_questions as positive query-planning
+    context and scope.out as concepts to avoid; do not copy the scope JSON literally into a
+    query. For each provider, select 3-4 discriminative query_terms. Every item must be one
+    keyword or hyphenated term, not a sentence or multi-word research question. Prefer the
+    smallest set that preserves the topic: usually a system/population term, a mechanism or
+    phenomenon, and an outcome/evaluation term. Avoid both one generic term and a long list
+    of every detail. The server's query generator will compile these concepts into each
+    provider's native syntax and limits; do not emit provider query objects or credentials.
+    Return only the
     required JSON object with exactly these top-level keys: providers, filters,
     time_window. providers is an array whose items have exactly the keys
-    provider_key, query, rationale. filters is one shared object and
+    provider_key, query_terms, rationale. filters is one shared object and
     time_window is one shared {"from": string|null, "to": string|null}; never
     place filters, time_window, or any other extra key inside a provider item,
     and never rename providers or provider_key.
+
+    Valid JSON example (copy this complete structure and replace the example values):
+    {
+      "providers": [
+        {
+          "provider_key": "arxiv",
+          "query_terms": ["coding-agent", "tool-call", "failure", "recovery"],
+          "rationale": "Searches recent preprints for the core technical concepts."
+        },
+        {
+          "provider_key": "openalex",
+          "query_terms": ["coding-agent", "tool-call", "recovery", "evaluation"],
+          "rationale": "Broadens coverage across indexed scholarly publications."
+        },
+        {
+          "provider_key": "semantic_scholar",
+          "query_terms": ["coding-agent", "failure", "recovery", "benchmark"],
+          "rationale": "Finds semantically related evaluations and benchmark studies."
+        },
+        {
+          "provider_key": "web_search",
+          "query_terms": ["coding-agent", "tool-call", "recovery", "evaluation"],
+          "rationale": "Adds current technical reports not yet indexed academically."
+        }
+      ],
+      "filters": {},
+      "time_window": {
+        "from": "2022-01-01",
+        "to": null
+      }
+    }
   variables_schema:
     type: object
     required: [research_question, research_scope]

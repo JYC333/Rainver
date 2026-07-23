@@ -3,7 +3,7 @@ import { getDbPool } from "../../../db/pool";
 import type { JobEnvelopeForHandler, JobHandlerRegistry } from "../../jobs/handlerRegistry";
 import type { JobHandlerResult } from "../../jobs/handlerRegistry";
 import { SourcePostProcessingService } from "./service";
-import { ProjectResearchOrchestrator } from "../../projectResearch";
+import { ProjectResearchPipelineService } from "../../projectResearch";
 import {
   isRetryableSourcePostProcessingFailure,
   sourcePostProcessingFailureCode,
@@ -34,7 +34,7 @@ async function handleSourcePostProcessingJob(
   const triggerType = stringValue(job.payload.trigger_type) as SourcePostProcessingTriggerType | null;
   const ruleId = stringValue(job.payload.rule_id);
   if (phase === "research_recovery" && ruleId) {
-    const orchestrator = new ProjectResearchOrchestrator(db, config);
+    const orchestrator = new ProjectResearchPipelineService(db, config);
     const operationId = stringValue(job.payload.recovery_for_operation_id);
     try {
       if (operationId) {
@@ -108,7 +108,7 @@ async function handleSourcePostProcessingJob(
     if (!rule) throw new Error("source_post_processing_event schedule payload references missing rule");
     const run = await service.fireScheduledRule(rule);
     if (run.status === "succeeded") {
-      await new ProjectResearchOrchestrator(db, config).onPostProcessingSucceeded({
+      await new ProjectResearchPipelineService(db, config).onPostProcessingSucceeded({
         spaceId: job.space_id,
         projectId: run.project_id,
         sourcePostProcessingRunId: run.id,
@@ -131,7 +131,7 @@ async function handleSourcePostProcessingJob(
     newItemCount: numberValue(job.payload.new_item_count) ?? 0,
   });
   for (const run of result.successful_runs) {
-    await new ProjectResearchOrchestrator(db, config).onPostProcessingSucceeded({
+    await new ProjectResearchPipelineService(db, config).onPostProcessingSucceeded({
       spaceId: job.space_id,
       projectId: run.project_id,
       sourcePostProcessingRunId: run.run_id,

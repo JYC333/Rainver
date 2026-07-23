@@ -6,7 +6,8 @@ import type {
 
 export interface ResearchSetupDraft {
   research_question: string
-  source_channel_ids: string[]
+  research_context_version_id?: string
+  query_strategy_id?: string
   history_mode: 'bounded_range' | 'all_available'
   from: string
   to: string
@@ -14,7 +15,6 @@ export interface ResearchSetupDraft {
   monitoring_field: 'submittedDate' | 'lastUpdatedDate'
   report_depth: 'quick' | 'full'
   question_refine_skipped: boolean
-  search_strategy_id?: string
   /** Latest refinement assessment; persisted with the server-side draft so it survives devices and sessions. */
   question_refinement?: ProjectResearchQuestionRefinement | null
   execution: {
@@ -33,26 +33,19 @@ function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? [...new Set(value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim()))]
-    : []
-}
-
 export function researchSetupDraftFromWorkflow(
   workflow: ProjectResearchWorkflow | null,
   researchQuestion: string,
-  defaultChannelIds: string[] = [],
+  _defaultChannelIds: string[] = [],
   corpusItemCount = 0,
 ): ResearchSetupDraft {
   const state = objectValue(workflow?.state_json)
   const initialIntake = objectValue(state.initial_intake)
   const execution = objectValue(state.execution)
-  const persistedChannelIds = stringArray(state.source_channel_ids ?? state.channel_ids)
-
   return {
     research_question: stringValue(state.research_question) ?? researchQuestion,
-    source_channel_ids: persistedChannelIds.length > 0 ? persistedChannelIds : stringArray(defaultChannelIds),
+    research_context_version_id: stringValue(state.research_context_version_id) ?? '',
+    query_strategy_id: stringValue(state.query_strategy_id) ?? '',
     history_mode: initialIntake.history_mode === 'all_available' ? 'all_available' : 'bounded_range',
     from: stringValue(initialIntake.from)?.slice(0, 10) ?? '',
     to: stringValue(initialIntake.to)?.slice(0, 10) ?? '',
@@ -62,7 +55,6 @@ export function researchSetupDraftFromWorkflow(
     monitoring_field: initialIntake.monitoring_field === 'lastUpdatedDate' ? 'lastUpdatedDate' : 'submittedDate',
     report_depth: initialIntake.report_depth === 'quick' ? 'quick' : initialIntake.report_depth === 'full' ? 'full' : corpusItemCount < 15 ? 'quick' : 'full',
     question_refine_skipped: state.question_refine_skipped !== false,
-    search_strategy_id: stringValue(state.search_strategy_id) ?? '',
     question_refinement: state.question_refinement && typeof state.question_refinement === 'object' && !Array.isArray(state.question_refinement)
       ? state.question_refinement as ProjectResearchQuestionRefinement
       : null,
@@ -128,15 +120,15 @@ export function clearResearchSetupSession(projectId: string): void {
 
 export function serializeResearchSetupDraft(draft: ResearchSetupDraft): ProjectResearchInitialIntakeInput {
   return {
+    ...(draft.research_context_version_id ? { research_context_version_id: draft.research_context_version_id } : {}),
+    ...(draft.query_strategy_id ? { query_strategy_id: draft.query_strategy_id } : {}),
     research_question: draft.research_question.trim(),
-    source_channel_ids: [...new Set(draft.source_channel_ids)],
     history_mode: draft.history_mode,
     ...(draft.history_mode === 'bounded_range' ? { from: draft.from, to: draft.to } : {}),
     max_items: Math.max(1, Math.min(10000, Number(draft.max_items) || 10000)),
     monitoring_field: draft.monitoring_field,
     report_depth: draft.report_depth,
     question_refine_skipped: draft.question_refine_skipped,
-    ...(draft.search_strategy_id ? { search_strategy_id: draft.search_strategy_id } : {}),
     question_refinement: draft.question_refinement ?? null,
     execution: {
       ...(draft.execution.model_provider_id ? { model_provider_id: draft.execution.model_provider_id } : {}),

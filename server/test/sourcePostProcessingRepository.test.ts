@@ -13,6 +13,8 @@ import {
 } from "../src/modules/sources/postProcessing/repository";
 import { withQueryableTransaction } from "../src/modules/routeUtils/common";
 import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows";
+import type { ServerConfig } from "../src/config";
+import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -270,6 +272,48 @@ describe("source post-processing repository queue helpers", () => {
 });
 
 describe("source post-processing repository (real Postgres)", () => {
+  it("reuses an Auto Research rule when a legacy channel name has trailing whitespace", async () => {
+    if (!available || !pool) return;
+    const monitorName = `${"memory augmented research ".repeat(12).slice(0, 179)} `;
+    const ruleName = `Auto Research: ${monitorName}`.trim();
+    await pool.query(`UPDATE source_channels SET name=$3 WHERE id=$1 AND space_id=$2`, [CONNECTION, SPACE, monitorName]);
+    const existing = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      name: ruleName,
+      triggerType: "items_materialized",
+      triggerConfig: normalizeTriggerConfig({ min_new_items: 1 }, "items_materialized"),
+      inputConfig: normalizeInputConfig({ item_limit: 10 }),
+      actions: normalizeActions({ batch_digest: true }),
+      createdByUserId: OWNER,
+    });
+
+    const reused = await withQueryableTransaction(pool, (db) =>
+      new ProjectResearchInitialIntakeCoordinator(db, {} as ServerConfig).ensurePostProcessingRule(
+        { spaceId: SPACE, userId: OWNER },
+        PROJECT,
+        CONNECTION,
+        {
+          researchQuestion: "How should agents remember?",
+          agentId: AGENT,
+          runtimeProfileId: "runtime-profile",
+          researchScope: { sub_questions: [], in: [], out: [], must_have: [], nice_to_have: [] },
+        },
+        monitorName,
+        "arxiv",
+      ));
+
+    expect(reused).toMatchObject({ id: existing.id, name: ruleName });
+    const count = await pool.query<{ count: string }>(
+      `SELECT count(*) FROM source_post_processing_rules
+        WHERE space_id=$1 AND project_id=$2 AND source_channel_id=$3 AND status <> 'archived'`,
+      [SPACE, PROJECT, CONNECTION],
+    );
+    expect(Number(count.rows[0]!.count)).toBe(1);
+  });
+
   it("joins a caller-owned transaction when creating a rule", async () => {
     if (!available || !pool) return;
     const created = await withQueryableTransaction(pool, (db) =>

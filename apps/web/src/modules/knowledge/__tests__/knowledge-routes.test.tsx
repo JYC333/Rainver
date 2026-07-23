@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // ── Mocks (hoisted by vitest above the imports below) ──────────────────────
@@ -62,6 +63,9 @@ vi.mock('../../../api/client', () => {
       update: vi.fn(),
       delete: vi.fn(),
     },
+    notesTreeApi: {
+      reorder: vi.fn().mockResolvedValue({ kind: 'notes', updated: 0 }),
+    },
     notesApi: {
       list: vi.fn().mockResolvedValue(emptyPage),
       get: vi.fn().mockResolvedValue(null),
@@ -123,6 +127,11 @@ vi.mock('../../../components/editor', async () => {
       content_format: 'prosemirror_json',
       content_schema_version: 1,
     })),
+    HistoryChip: ({ onClick }: { active: boolean; onClick: () => void }) =>
+      React.createElement('button', { type: 'button', onClick }, 'History'),
+    AiEditBanner: ({ onUndo }: { runId: string; onUndo: () => void }) =>
+      React.createElement('button', { type: 'button', onClick: onUndo }, 'Undo AI change'),
+    NoteRevisionHistory: () => React.createElement('div', { 'data-testid': 'note-revision-history' }),
   }
 })
 
@@ -165,6 +174,10 @@ function makeNote(overrides: Partial<Note> = {}): Note {
     content_schema_version: 1,
     plain_text: null,
     primary_project_id: null,
+    version: 1,
+    content_hash: null,
+    updated_by_user_id: null,
+    updated_by_run_id: null,
     created_from_activity_id: null,
     created_by_user_id: null,
     created_at: '',
@@ -274,6 +287,18 @@ describe('Knowledge routing', () => {
   })
 
   it('creates a normal folder without exposing system metadata in the request', async () => {
+    vi.mocked(notesCollectionsApi.create).mockImplementationOnce(async body => ({
+      id: body.id!,
+      space_id: 'personal-1',
+      parent_id: body.parent_id ?? null,
+      name: body.name,
+      system_role: 'normal',
+      sort_order: body.sort_order!,
+      is_system: false,
+      is_hidden: false,
+      created_at: '',
+      updated_at: '',
+    }))
     renderAt('/spaces/personal-1/knowledge/notes')
     const tree = await screen.findByLabelText('Notes organization')
     expect(within(tree).getByText('Client Research')).toBeInTheDocument()
@@ -282,8 +307,29 @@ describe('Knowledge routing', () => {
     fireEvent.change(screen.getByPlaceholderText('Folder name'), { target: { value: 'Ideas' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() =>
-      expect(notesCollectionsApi.create).toHaveBeenCalledWith({ name: 'Ideas', parent_id: null }))
+    expect(within(tree).getByText('Ideas')).toBeInTheDocument()
+    await waitFor(() => expect(notesCollectionsApi.create).toHaveBeenCalledWith({
+      id: expect.any(String),
+      name: 'Ideas',
+      parent_id: null,
+      sort_order: 201,
+    }))
+    expect(notesCollectionsApi.list).toHaveBeenCalledTimes(1)
+  })
+
+  it('removes a folder optimistically without reloading the tree', async () => {
+    const user = userEvent.setup()
+    renderAt('/spaces/personal-1/knowledge/notes')
+    const tree = await screen.findByLabelText('Notes organization')
+    expect(within(tree).getByText('Client Research')).toBeInTheDocument()
+
+    await user.click(within(tree).getByRole('button', { name: 'Folder actions for Client Research' }))
+    const menu = await screen.findByRole('menu')
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete' }))
+
+    expect(within(tree).queryByText('Client Research')).not.toBeInTheDocument()
+    await waitFor(() => expect(notesCollectionsApi.delete).toHaveBeenCalledWith('col-custom'))
+    expect(notesCollectionsApi.list).toHaveBeenCalledTimes(1)
   })
 
   it('reloads notes for the selected backend collection', async () => {

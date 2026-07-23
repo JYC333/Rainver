@@ -20,8 +20,14 @@ as code and seed changes; there is no runtime connector upload surface:
 - `source_provider_connectors` is the many-to-many capability mapping.
 - `source_connections` owns per-space credentials, consent, policy, trust, and
   transport configuration.
-- `source_channels` owns query, endpoint, fingerprint, and schedule. A single
-  connection may back multiple channels.
+- `source_channels` owns channel lifecycle and schedule. A single connection may
+  back multiple channels. For search channels, `source_search_specs` is the
+  executable, versioned query authority and may reference a selected research
+  query attempt. Feed, page, and custom-source channels retain endpoint data on
+  the channel because they do not carry a semantic search query.
+- Search query meaning and provider compilation are owned by the Research query
+  planning module. Connector handlers only build requests from an already
+  compiled `source_search_specs` contract and normalize provider responses.
 - `source_items`, `source_snapshots`, and `extracted_evidence` carry imported
   objects and derived evidence.
 

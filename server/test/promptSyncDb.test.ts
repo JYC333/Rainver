@@ -369,11 +369,18 @@ describe("resolvePrompt (real Postgres)", () => {
       userId: OWNER,
       projectId: PROJECT,
       assetKey: "project_research.synthesis",
-      variables: { project_id: PROJECT, research_question: "test", report_depth: "full", critique_context: "none" },
+      variables: {
+        project_id: PROJECT,
+        research_question: "test",
+        research_scope: JSON.stringify({ sub_questions: [], in: [], out: [] }),
+        report_depth: "full",
+        critique_context: "none",
+      },
     });
     expect(synthesis.validation_errors).toEqual([]);
     expect(synthesis.rendered_text).toContain("Research question: test");
-    expect(synthesis.rendered_text).toContain('"status":"rejected"');
+    expect(synthesis.rendered_text).toContain('"status": "succeeded"');
+    expect(synthesis.rendered_text).not.toContain('"status": "rejected"');
     expect(synthesis.content_hash).toBeTruthy();
   });
 

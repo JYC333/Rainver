@@ -1,6 +1,5 @@
 import { HttpError, objectValue } from "../../routeUtils/common";
 import type {
-  CompiledSourceQuery,
   NormalizedSourceItem,
   RequestSpec,
   SourceConnectorCapabilities,
@@ -13,35 +12,12 @@ const S2_FIELDS = "paperId,externalIds,url,title,abstract,authors,publicationDat
 export class OpenAlexConnectorHandler implements SourceConnectorHandler {
   readonly connectorKey = "openalex_api";
 
-  validateChannelConfig(input: Record<string, unknown>): void {
-    const query = queryOf(input);
-    if (!stringValue(query.search)) throw new HttpError(422, "OpenAlex channel requires query.search");
+  buildScanRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, cursor: Record<string, unknown>): RequestSpec {
+    return { url: openAlexUrl(objectValue(channel.compiled_query), stringValue(cursor.cursor) ?? "*") };
   }
 
-  compileQuery(input: Record<string, unknown>): CompiledSourceQuery {
-    this.validateChannelConfig(input);
-    const query = queryOf(input);
-    const providerQuery = {
-      search: stringValue(query.search),
-      per_page: boundedInt(query.per_page, 100, 1, 100),
-      sort: query.sort === "cited_by_count:desc" ? query.sort : "publication_date:desc",
-      from_publication_date: isoDate(query.from_publication_date),
-      to_publication_date: isoDate(query.to_publication_date),
-    };
-    return {
-      query: { ...query },
-      providerQuery,
-      endpointUrl: openAlexUrl(providerQuery, "*"),
-      fingerprintInput: { endpoint: this.connectorKey, ...providerQuery },
-    };
-  }
-
-  buildScanRequest(channel: { provider_query_json: unknown }, cursor: Record<string, unknown>): RequestSpec {
-    return { url: openAlexUrl(objectValue(channel.provider_query_json), stringValue(cursor.cursor) ?? "*") };
-  }
-
-  buildBackfillRequest(channel: { provider_query_json: unknown }, window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
-    const query = { ...objectValue(channel.provider_query_json) };
+  buildBackfillRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
+    const query = { ...objectValue(channel.compiled_query) };
     query.from_publication_date = isoDate(window.from) ?? query.from_publication_date;
     query.to_publication_date = isoDate(window.to) ?? query.to_publication_date;
     query.per_page = boundedInt(window.page_size ?? window.max_items ?? query.per_page, 100, 1, 100);
@@ -67,32 +43,12 @@ export class OpenAlexConnectorHandler implements SourceConnectorHandler {
 export class SemanticScholarConnectorHandler implements SourceConnectorHandler {
   readonly connectorKey = "semantic_scholar_api";
 
-  validateChannelConfig(input: Record<string, unknown>): void {
-    const query = queryOf(input);
-    if (!stringValue(query.query)) throw new HttpError(422, "Semantic Scholar channel requires query.query");
+  buildScanRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, cursor: Record<string, unknown>): RequestSpec {
+    return { url: semanticScholarUrl(objectValue(channel.compiled_query), boundedInt(cursor.offset, 0, 0, 900)) };
   }
 
-  compileQuery(input: Record<string, unknown>): CompiledSourceQuery {
-    this.validateChannelConfig(input);
-    const query = queryOf(input);
-    const providerQuery = {
-      query: stringValue(query.query)!.replace(/-/g, " "),
-      limit: boundedInt(query.limit, 100, 1, 100),
-      publication_date_or_year: dateRange(query.from_publication_date, query.to_publication_date),
-    };
-    return {
-      query: { ...query }, providerQuery,
-      endpointUrl: semanticScholarUrl(providerQuery, 0),
-      fingerprintInput: { endpoint: this.connectorKey, ...providerQuery },
-    };
-  }
-
-  buildScanRequest(channel: { provider_query_json: unknown }, cursor: Record<string, unknown>): RequestSpec {
-    return { url: semanticScholarUrl(objectValue(channel.provider_query_json), boundedInt(cursor.offset, 0, 0, 900)) };
-  }
-
-  buildBackfillRequest(channel: { provider_query_json: unknown }, window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
-    const query = { ...objectValue(channel.provider_query_json) };
+  buildBackfillRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
+    const query = { ...objectValue(channel.compiled_query) };
     query.publication_date_or_year = dateRange(window.from, window.to) ?? query.publication_date_or_year;
     query.limit = boundedInt(window.page_size ?? window.max_items ?? query.limit, 100, 1, 100);
     return { url: semanticScholarUrl(query, boundedInt(window.offset ?? window.cursor ?? cursor.offset, 0, 0, 900)) };
@@ -116,19 +72,10 @@ export class SemanticScholarConnectorHandler implements SourceConnectorHandler {
 
 export class BraveWebSearchConnectorHandler implements SourceConnectorHandler {
   readonly connectorKey = "brave_web_search_api";
-  validateChannelConfig(input: Record<string, unknown>): void {
-    if (!stringValue(queryOf(input).q)) throw new HttpError(422, "Web search channel requires query.q");
+  buildScanRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, cursor: Record<string, unknown>): RequestSpec {
+    return { url: braveUrl(objectValue(channel.compiled_query), boundedInt(cursor.offset, 0, 0, 9)), headers: { Accept: "application/json" } };
   }
-  compileQuery(input: Record<string, unknown>): CompiledSourceQuery {
-    this.validateChannelConfig(input);
-    const query = queryOf(input);
-    const providerQuery = { q: stringValue(query.q), count: boundedInt(query.count, 20, 1, 20), freshness: stringValue(query.freshness) };
-    return { query: { ...query }, providerQuery, endpointUrl: braveUrl(providerQuery, 0), fingerprintInput: { endpoint: this.connectorKey, ...providerQuery } };
-  }
-  buildScanRequest(channel: { provider_query_json: unknown }, cursor: Record<string, unknown>): RequestSpec {
-    return { url: braveUrl(objectValue(channel.provider_query_json), boundedInt(cursor.offset, 0, 0, 9)), headers: { Accept: "application/json" } };
-  }
-  buildBackfillRequest(channel: { provider_query_json: unknown }, _window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
+  buildBackfillRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, _window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
     return this.buildScanRequest(channel, cursor);
   }
   parseResponse(response: string): NormalizedSourceItem[] {
@@ -237,9 +184,6 @@ function semanticScholarItem(value: unknown): NormalizedSourceItem | null {
   };
 }
 
-function queryOf(input: Record<string, unknown>): Record<string, unknown> {
-  return input.query && typeof input.query === "object" && !Array.isArray(input.query) ? objectValue(input.query) : input;
-}
 function parseJson(raw: string, provider: string): Record<string, unknown> {
   try { return objectValue(JSON.parse(raw)); } catch { throw new HttpError(502, `${provider} returned invalid JSON`); }
 }

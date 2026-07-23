@@ -29,10 +29,10 @@ export function registerProjectResearchWorkspaceRoutes(
   app.get(`${base}/workspace`, route((identity, request) => workspace().getWorkspace(identity, requireParam(request, "projectId"))));
   app.post(`${base}/workspace`, route((identity, request) => workspace().initializeWorkspace(identity, requireParam(request, "projectId")), 201));
   app.get(`${base}/reading-list`, route((identity, request) => workspace().readingList(identity, requireParam(request, "projectId"), query(request))));
-  app.put(`${base}/notebook/sections/:sectionKey`, route((identity, request) => workspace().updateSection(identity, requireParam(request, "projectId"), requireParam(request, "sectionKey"), jsonBody(request))));
-  app.get(`${base}/notebook/sections/:sectionKey/revisions`, route((identity, request) => workspace().sectionRevisions(identity, requireParam(request, "projectId"), requireParam(request, "sectionKey"), query(request))));
-  app.post(`${base}/notebook/sections/:sectionKey/rollback`, route((identity, request) => workspace().rollbackSection(identity, requireParam(request, "projectId"), requireParam(request, "sectionKey"), jsonBody(request)), 201));
+  // Per-note editing/revisions/rollback now go through the generic
+  // /api/v1/knowledge/notes/:noteId endpoints — see workspaceService.ts.
   app.post(`${base}/ask-ai`, route((identity, request) => workspace().askAi(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
+  app.post(`${base}/notebook-chat`, route((identity, request) => workspace().notebookChat(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
   app.put(`${base}/reading-list/:sourceItemId/card`, route((identity, request) => workspace().upsertPaperCard(identity, requireParam(request, "projectId"), requireParam(request, "sourceItemId"), jsonBody(request))));
   app.post(`${base}/checklist`, route((identity, request) => workspace().createChecklistItem(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
   app.patch(`${base}/checklist/:itemId`, route((identity, request) => workspace().updateChecklistItem(identity, requireParam(request, "projectId"), requireParam(request, "itemId"), jsonBody(request))));

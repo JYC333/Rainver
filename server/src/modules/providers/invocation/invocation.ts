@@ -109,6 +109,12 @@ export interface ProviderStructuredOutput {
 export type ProviderMeteringContext = Partial<UsageObservation>;
 
 export class ProviderInvocationError extends Error {
+  /** How many real network attempts (initial + same-key retries) were made
+   * for the request that ultimately threw this error. Set by
+   * invokeProviderWithPool after construction — callers that report a
+   * fixed "attempt=1" in error text should use this instead. */
+  attempts?: number;
+
   constructor(
     readonly statusCode: number,
     message: string,
@@ -1183,6 +1189,40 @@ async function recordFailure(
   });
 }
 
+// A transient/rate-limit failure on a given key gets this many same-key
+// retries before moving on (rotate to the next key, or hand off to the
+// provider fallback layer for "transient"). Keep this at 1: callers rely on
+// a single same-key retry before rotation/fallback kicks in (see
+// providersResilience.test.ts), so raising it delays failover by an extra
+// round-trip per key.
+const MAX_SAME_KEY_RETRIES = 1;
+// A pure network failure (no response ever received — DNS, ECONNRESET,
+// timeout; see the "provider_network_error" throw in fetchProviderResponse)
+// is unrelated to which key or account is used and often clears up within a
+// couple of attempts, unlike a provider-classified transient *response*
+// (e.g. 503) where hammering the same key is less likely to help. Give it a
+// larger same-key budget before handing off to the fallback layer.
+const MAX_NETWORK_ERROR_RETRIES = 3;
+// Base delay before a network-error retry, doubling per attempt (500ms,
+// 1s, 1.5s for the 3 retries). Retrying a connection reset instantly
+// guarantees hitting the same narrow failure window again if it recurs
+// (see PROVIDER_KEEPALIVE_INITIAL_DELAY_MS above) — a short, increasing gap
+// gives whatever caused it (a brief network blip, or the provider still
+// working through a load spike) a real chance to clear before the next try.
+const NETWORK_ERROR_RETRY_DELAY_MS = 500;
+
+let networkRetryDelayOverride: ((ms: number) => Promise<void>) | null = null;
+
+/** Test-only: replace the real delay with something synchronous/instant. */
+export function __setNetworkRetryDelayForTests(fn: ((ms: number) => Promise<void>) | null): void {
+  networkRetryDelayOverride = fn;
+}
+
+function networkRetryDelay(ms: number): Promise<void> {
+  if (networkRetryDelayOverride) return networkRetryDelayOverride(ms);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Run one provider through its key pool, applying the per-key error taxonomy.
  * Throws the last error when every candidate is exhausted; the caller decides
@@ -1202,9 +1242,11 @@ async function invokeProviderWithPool(
   }
 
   let lastError: unknown = null;
+  let attempts = 0;
   for (const candidate of target.candidates) {
-    let retriedSameKey = false;
+    let sameKeyRetries = 0;
     for (;;) {
+      attempts += 1;
       try {
         const result = await attemptOnce(target, candidate.api_key, body);
         if (candidate.member_id) {
@@ -1221,6 +1263,7 @@ async function invokeProviderWithPool(
         return result;
       } catch (error) {
         lastError = error;
+        if (error instanceof ProviderInvocationError) error.attempts = attempts;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
           // Permanent request-shaped errors (and non-taxonomy errors) do not
           // rotate: another key would fail the same way.
@@ -1231,11 +1274,14 @@ async function invokeProviderWithPool(
           await recordFailure(store, candidate, decision);
           throw error;
         }
+        const isNetworkError = error.code === "provider_network_error";
+        const retryLimit = isNetworkError ? MAX_NETWORK_ERROR_RETRIES : MAX_SAME_KEY_RETRIES;
         if (
           (decision.failure_class === "rate_limit" || decision.failure_class === "transient") &&
-          !retriedSameKey
+          sameKeyRetries < retryLimit
         ) {
-          retriedSameKey = true;
+          sameKeyRetries += 1;
+          if (isNetworkError) await networkRetryDelay(NETWORK_ERROR_RETRY_DELAY_MS * sameKeyRetries);
           continue;
         }
         await recordFailure(store, candidate, decision);

@@ -191,6 +191,7 @@ const CONTEXT_ATTACHABLE_ARTIFACT_TYPES = new Set([
   "retrieval_explain_report",
   "retrieval_maintenance_report",
   "memory_maintenance_report",
+  "literature_matrix",
 ]);
 
 const MAX_CONTEXT_ARTIFACT_ATTACHMENTS = 8;
@@ -1735,6 +1736,30 @@ function renderArtifactEvidencePack(row: ContextArtifactRow, metadata: Record<st
     return lines.join("\n");
   }
 
+  if (row.artifact_type === "literature_matrix") {
+    const matrix = parseJsonObject(row.content);
+    const matrixRows = arrayValue(matrix?.rows);
+    const rows = matrixRows.slice(0, 40);
+    lines.push(`Project: ${stringValue(matrix?.project_id) ?? row.project_id ?? "unknown"}`);
+    lines.push(`Approved corpus rows: ${matrixRows.length}`);
+    if (rows.length > 0) {
+      lines.push("Corpus entries:");
+      for (const item of rows) {
+        const entry = recordValue(item);
+        lines.push(JSON.stringify({
+          title: stringValue(entry.title) ?? "Untitled source",
+          triage_status: stringValue(entry.triage_status),
+          relevance: stringValue(entry.relevance),
+          confidence: numberValue(entry.confidence),
+          reason: stringValue(entry.reason),
+          evidence_excerpt: stringValue(entry.evidence_excerpt),
+          references: arrayValue(entry.references),
+        }));
+      }
+    }
+    return lines.join("\n");
+  }
+
   const parsedContent = parseJsonObject(row.content);
   if (parsedContent) lines.push(`Summary: ${JSON.stringify(parsedContent).slice(0, 2000)}`);
   return lines.join("\n");
@@ -1771,6 +1796,7 @@ function artifactDomainLabel(type: string, metadata: Record<string, unknown>): s
   }
   if (type === "retrieval_explain_report") return "knowledge.retrieval.explain";
   if (type === "retrieval_brief") return stringValue(metadata.surface) ?? "retrieval.brief";
+  if (type === "literature_matrix") return "project_research.literature_matrix";
   return type;
 }
 

@@ -146,7 +146,7 @@ key, and `academic_citation_v1` graph lens id. Its advertised sections are
 represented through the core relation/object model and surfaced through the
 project corpus and graph lens, not through a second project hierarchy. Academic
 projects render a compact Academic Research workflow/status surface with
-research-engine discovery, provider monitors, and an entry to the dedicated
+adaptive query discovery, provider monitors, and an entry to the dedicated
 Research Workspace. Paper triage, reading state, living documents, and report
 snapshots no longer share the Project overview surface.
 
@@ -174,6 +174,28 @@ state, Artifact-per-stage links, project screening criteria, and a
 literature-matrix read model. The general workflow-start endpoint may require
 an approved profile, while the Auto Research initial-intake endpoint collects
 its own research question and execution selection in one explicit setup action.
+Question refinement persists a versioned bounded research context and returns
+its `research_context_version_id`: `scope.in` and
+`sub_questions` guide provider-specific query planning and become short
+post-processing inclusion criteria, while `scope.out` guides query planning and
+becomes exclusion criteria. Canonical `must_have` and `nice_to_have` criteria
+also cross the materialization boundary into screening and synthesis; they are
+never reconstructed from the executable provider query. The complete research
+question remains the screening objective. The same normalized context is persisted in workflow/operation state
+and supplied explicitly to synthesis and critique, so discovery, screening, and
+reporting use one scope without copying a potentially long question into a
+200-character criterion field. Discovery creates a project-owned
+`research_query_strategy` from that immutable context version. Provider plans
+are evaluated independently for at most three attempts; every attempt stores
+its semantic query, exact compiled provider query, preview observation,
+decision, and fingerprint. Selected attempts are materialized atomically into
+`source_search_specs`, Source Channels, and Project Source bindings. Initial
+intake accepts only the materialized `query_strategy_id`; it never adopts or
+mutates a free-floating strategy. `server/src/modules/research/queryPlanning/`
+owns semantic planning, the adaptive ladder, and provider compilation. Preview,
+scheduled scans, and history backfill all execute the selected spec's same
+`compiled_provider_query_json`; no later stage recompiles it or substitutes the
+complete research question.
 Editing an approved research profile returns it to `draft` for general
 workflow consumers. The module dispatches through existing Runs/Artifacts
 rather than a parallel execution system. Its integrity gate writes an
@@ -244,39 +266,71 @@ the gate is still outstanding. Saving or starting intake makes the submitted res
 cannot diverge immediately after a rewrite is adopted.
 
 Source discovery is owned by the `research` module. `POST
-/api/v1/research/engine/search` resolves a bounded LLM query plan, previews the
-supported academic providers and optionally policy-gated web search, merges
-duplicate candidates, and persists the completed strategy in
-`research_search_strategies`. `POST /api/v1/research/engine/monitors` is the
-explicit confirmation boundary that transactionally creates the selected
-Source Monitors and Project Source bindings. Web candidates and monitors are
-marked untrusted and require a managed Source credential; secrets remain in the
-trusted fetch channel. The attached strategy id follows the initial-intake
-operation and its provider queries, hit counts, and failures are emitted in the
-report limitations for reproducibility.
+/api/v1/research/query-strategies/evaluate` plans and evaluates provider-specific
+queries from a persisted context version. The planner stores a bounded semantic
+intent, builds at most three provider-specific attempts, and uses observed hit
+count, sampled relevance, diversity, and duplicate rate to accept, broaden, or
+narrow the next attempt. Provider compilation is centralized in
+`ResearchProviderCompiler`; source connectors execute compiled queries and do
+not reinterpret research questions. `POST
+/api/v1/research/query-strategies/{id}/materialize` is the explicit confirmation
+boundary that atomically creates the selected Source Monitors and Project Source
+bindings. Provider failures are independent; a surviving selected provider can
+still be materialized. Secrets remain in the trusted fetch channel. The
+project-owned strategy id follows initial intake for reproducibility. The setup
+surface exposes the assessment, selected provider queries, attempt observations,
+and coverage warnings; raw model reasoning remains an internal implementation
+detail.
+
+Monitoring records immutable performance observations against the active query
+version. A rolling window may propose one broader or narrower successor only
+after the minimum sample count, hysteresis threshold, and cooldown are met. The
+successor is evaluated from the stored semantic intent, never from a new LLM
+reinterpretation. Activation remains proposal-gated, archives the replaced
+Source channel/binding/scheduler task atomically, and retains activation history
+for rollback.
 
 Automatic research uses a long-lived workflow plus a managed
 `project_operations` execution. Baseline and incremental executions reuse the
 same operation/step/link tables; progress JSON carries the run kind, query
 fingerprint, source binding/rule/plan ids, watermark before/after, current
-stage, checkpoint ids, and idempotency key. The orchestrator owns lifecycle and
-recovery, while Sources owns fetching, pagination, post-processing cursors,
-evidence materialization, and source policy.
+stage, checkpoint ids, and idempotency key. Production callers enter through
+the logic-free `pipeline/researchPipelineService.ts` command façade; the
+internal orchestrator is its composition root and delegates stage behavior
+to the purpose-specific services. `pipeline/operationStateWriter.ts` is the
+single persistence adapter for operation-state transitions. The pipeline's purpose-specific
+services own lifecycle decisions: `pipeline/retryService.ts` routes failed
+stages and preserves idempotent retry behavior behind explicit state-machine
+ports; `pipeline/synthesisCoordinator.ts` owns synthesis/critique/revision
+queueing, completed-draft validation, critique artifacts and report
+materialization, empty approved-corpus completion, and synthesis-stage recovery.
+`pipeline/initialIntakeCoordinator.ts` resolves the
+project-owned discovery strategy and owns Source-channel validation, project
+bindings, research post-processing-rule configuration, and user-authorized
+initial backfill provisioning. The
+`pipeline/screeningCoordinator.ts` owns screening progress, corpus counts, the
+human review gate, and valid zero-source completion.
+`pipeline/monitoringCoordinator.ts` owns durable incremental scan summaries,
+zero-result scan convergence, post-processing completion routing into baseline,
+historical, or incremental operations, monitoring comparison run lifecycle and
+materialization, and the handoff into adaptive
+query-performance feedback. The compatibility composition root coordinates the
+remaining command families. Sources owns fetching, pagination,
+post-processing cursors, evidence materialization, and source policy.
 
 Initial literature intake is saved independently as a `not_started` workflow
-draft. Saving a draft persists the research question, attached search strategy, selected Source Monitors,
+draft. Saving a draft persists the context/strategy selection,
 history scope, monitoring field, and execution selection without creating a
-backfill plan or execution operation. A Source Monitor is the reusable query
-configuration; intake discovery proposes monitors and the user explicitly
-confirms which suggestions are created and bound. The project UI shows a compact intake summary and opens the full setup
+backfill plan or execution operation. Materialized Source Monitors are derived
+from the strategy rather than accepted as client-selected channel ids. The project UI shows a compact intake summary and opens the full setup
 editor only on request. A saved draft keeps explicit Edit setup and Start
 research actions visible. Once the initial intake operation is created, the
 setup summary is removed; runtime progress is shown by the operation, stage
 status, artifacts, monitor state, and human-review checkpoints. Saving a draft
 applies the returned workflow to the project page's local research state, so
 unrelated project data is not reloaded. Initial intake execution resolves the
-selected monitors and creates/reuses their project bindings; it does not create
-an implicit query or duplicate monitor. Its history mode is either an explicit
+strategy's materialized monitors and existing project bindings; it does not
+create an implicit query, attach a strategy to an operation, or duplicate a monitor. Its history mode is either an explicit
 bounded arXiv `from`/`to` range or an explicit `all_available` choice.
 The latter freezes the current time as `to` and walks back to the arXiv safety
 floor (`1991-01-01T00:00:00Z`); a max-item cap is partial rather than complete
@@ -297,6 +351,14 @@ authorizes the history import for this Project Research operation; Auto Research
 does not create a second `source_backfill_start` proposal. Generic Source and
 agent-triggered history plans remain proposal-gated. After the history window
 and post-processing drain, a `screening_gate` must be approved before synthesis.
+The resulting `literature_matrix` includes `relevant`, `included`, and `maybe`
+corpus rows, is refreshed on retries, and is attached explicitly to the managed
+synthesis run as a bounded evidence pack. Its source-connection metadata keeps
+the normal source-consent and provider-egress checks in force. Synthesis is not
+queued when that matrix is empty. Zero search items, zero relevant screened
+items, and a corpus that cannot support a coherent cited report are completed
+research outcomes with review/adjust-scope actions; they are not failed
+operations. A small non-empty matrix is still synthesized as-is.
 The synthesis instruction is resolved through the Prompt Library asset
 `project_research.synthesis` and its resolved version/hash are captured in the
 Run contract. Synthesis output is schema-validated and must carry
@@ -312,13 +374,18 @@ result, is retained in report limitations with an unresolved marker. Only the
 post-critique report is materialized into `project_research_reports` and moved
 to `idea_review`. The periodic reconciler can recover an unqueued critique or
 revision from operation state, preserving the level-triggered lifecycle.
-it uses a standard result envelope: successful synthesis returns the required
-artifacts, while an unactionable question or incoherent approved corpus returns
-`status=rejected` with a machine-readable reason and user-facing suggestions;
-that rejection is projected into the operation progress JSON so the caller can
-correct the input and retry. Successful artifact `content` should be emitted as
-a JSON object; the server still accepts legacy JSON-encoded strings and safely
-normalizes a standalone JSON code fence before writing the text-backed artifact.
+It uses a success-only result envelope for every non-empty approved corpus.
+The model must synthesize the evidence that exists and state weak coverage,
+conflicts, and unsupported aspects in the report limitations; corpus size alone
+is never a rejection condition. Empty search results and an empty approved
+corpus are resolved deterministically before model invocation and projected as
+completed no-report outcomes with review and scope-adjustment actions. The setup
+UI keeps the reassessed research definition and selected provider queries
+concise and editable, shows coverage warnings alongside the selected query, and
+places the full adaptive-attempt history in optional detail. Successful artifact
+`content` must be emitted as the contract's JSON object. The materializer stores
+that object as JSON text and rejects prose, JSON-encoded strings, and Markdown
+code fences instead of normalizing them after the run.
 If inner artifact JSON or its protocol shape is invalid, the operation stores a
 stable error code plus safe diagnostics (artifact id/type, length, SHA-256,
 preview/tail, parser error and position where available), the run is marked
@@ -331,7 +398,10 @@ the source schedule is activated.
 
 When a failed synthesis operation is retried, the retry clears the old
 `synthesis_progress` snapshot and writes the new run id and queued/started
-timestamps immediately. The workbench therefore does not have to wait for a
+timestamps immediately. If that retry deterministically finds an empty approved
+matrix, the operation transitions directly to the completed no-relevant-sources
+outcome instead of reporting a stale-state conflict.
+The workbench therefore does not have to wait for a
 later reconciliation tick before showing the new attempt's age. While the run
 is active, that read model also projects the linked `agent_run` job status,
 attempt count, worker heartbeat/update timestamps, and latest run-event type.
@@ -345,8 +415,9 @@ retain a stale `running` badge after the run detail has reached a terminal
 state. If the scheduler projection is still stale, the workbench offers a
 repair-only reconcile action; it observes the terminal run and advances or
 fails the operation without queuing a second run.
-The state reader also recovers `synthesis_run_id` from the legacy
-`synthesis_progress.run_id` location, so older projections remain repairable.
+`synthesis_run_id` is the authoritative run binding;
+`synthesis_progress.run_id` is telemetry only and is never used as a
+compatibility source of identity.
 
 During screening, the operation's progress JSON also exposes a durable
 `screening_progress` read model: total/classified/unclassified papers, batch
@@ -388,6 +459,27 @@ Consequently the project timeline can distinguish "scanned, no updates" from
 an absent day, which means no scan was recorded. Workflow and operation rows
 remain mutable projections, while scan summaries are stable across later
 question re-screening.
+
+Each incremental scan also appends a query-performance observation for the
+strategy that produced it. The feedback policy evaluates at most the latest
+five comparable observations and requires at least three before acting. It uses
+new candidates, screening acceptance (relevant plus maybe), duplicate rate,
+optional screening-queue latency, and optional core-concept coverage. Separate
+broadening and narrowing bands provide hysteresis, and a 14-day cooldown starts
+after either activation or proposal creation. Stable zero/low-volume,
+high-relevance scans may propose broadening; only overloaded scans with weak
+conservative acceptance or sustained queue pressure may propose narrowing.
+
+A feedback decision evaluates a fresh, maximum-three-attempt strategy from the
+active strategy's stored semantic intent. It never recompiles the long research
+question as a provider query and never edits an active Source Channel in place.
+The evaluated replacement is presented as a
+`research_query_strategy_activation` proposal. Approval materializes its exact
+selected compiled queries and atomically archives the previous version's
+channels/bindings, activates the replacement, updates the workflow projection,
+and appends an activation-history row. Strategy versions and activation history
+remain listable for audit; explicit manual activation of an earlier materialized
+version records a rollback activation instead of rewriting history.
 
 A separate daily `project_research_integrity_monitor` job checks DOI references
 from accepted Notebook sections and non-rejected reports against the production

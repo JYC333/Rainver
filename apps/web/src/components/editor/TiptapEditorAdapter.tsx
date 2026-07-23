@@ -56,12 +56,32 @@ export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEdit
       },
     })
 
+    // `initialContent` is a fresh object reference on every parent re-render
+    // (each API response rebuilds it), even when the actual content hasn't
+    // changed. Depending on it directly here reset the live document — and
+    // silently discarded whatever the user was mid-typing — on any unrelated
+    // re-render, not just a genuine content change. `initialContentKey` is
+    // the value-stable signal for "the content actually changed."
+    //
+    // Even with that guard, a caller that re-confirms "what's already on
+    // screen" after its own save (e.g. re-deriving `initialContent` from the
+    // document it just captured via `getSnapshot`) still produces a new
+    // `initialContentKey` — same content, but a real value change. Calling
+    // `setContent` in that case is a no-op content-wise but still resets the
+    // cursor/selection to the document start, which reads as "every save
+    // knocks me to the bottom of the note." So compare against what the
+    // editor is *actually* showing right now and skip the reset entirely
+    // when it already matches — `setContent` should only ever run for a
+    // genuinely different document (an external edit landing, or switching
+    // documents).
     useEffect(() => {
       if (!editor) return
+      if (JSON.stringify(editor.getJSON()) === initialContentKey) return
       applyingExternal.current = true
       editor.commands.setContent(initialContent)
       applyingExternal.current = false
-    }, [editor, initialContentKey, initialContent])
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editor, initialContentKey])
 
     useImperativeHandle(
       ref,

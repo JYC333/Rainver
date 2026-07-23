@@ -4,8 +4,9 @@ import { objectValue, optionalString, withQueryableTransaction } from "../routeU
 import { PgRunRepository } from "../runs/repository";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { writeNotebookSection } from "./notebookWriteService";
-import type { NotebookOp } from "./notebookDocument";
+import { writeNote } from "../knowledge/noteRevisionService";
+import type { NoteOp } from "../knowledge/noteDocument";
+import { resolveNotebookNote } from "./notebookNotes";
 import {
   PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
   resolveProjectResearchMonitorComparePrompt,
@@ -50,6 +51,12 @@ export type MonitorComparison = {
   affected_sections: Array<"understanding" | "questions" | "ideas" | "experiments">;
 };
 
+// Asking a model to classify every paper in one structured-output call gets
+// less reliable as the paper count grows (dropped or invented
+// source_item_ids); comparing in small batches keeps each call's output
+// small enough to validate exactly.
+export const COMPARISON_BATCH_SIZE = 6;
+
 export class ProjectResearchMonitorComparisonService {
   constructor(private readonly db: Queryable) {}
 
@@ -66,19 +73,14 @@ export class ProjectResearchMonitorComparisonService {
   }): Promise<{ runId: string; jobId: string; sourceItemIds: string[] } | null> {
     const papers = await this.eligiblePapers(input.spaceId, input.projectId, input.sourceItemIds);
     if (papers.length === 0) return null;
-    const understanding = await this.db.query<{ normalized_text: string }>(
-      `SELECT s.normalized_text FROM research_notebook_sections s
-        JOIN research_notebooks n ON n.id=s.notebook_id
-       WHERE n.space_id=$1 AND n.project_id=$2 AND s.section_key='understanding'`,
-      [input.spaceId, input.projectId],
-    );
+    const understanding = await resolveNotebookNote(this.db, input.spaceId, input.projectId, "understanding");
     const resolved = await resolveProjectResearchMonitorComparePrompt(this.db, {
       spaceId: input.spaceId,
       userId: input.userId,
       projectId: input.projectId,
       agentId: input.agentId,
       researchQuestion: input.researchQuestion,
-      currentUnderstanding: understanding.rows[0]?.normalized_text ?? "",
+      currentUnderstanding: understanding?.plain_text ?? "",
       newPapers: papers,
     });
     const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
@@ -124,34 +126,30 @@ export class ProjectResearchMonitorComparisonService {
     return { runId: run.id, jobId: job.id, sourceItemIds: papers.map((paper) => paper.source_item_id) };
   }
 
-  async materialize(input: {
+  /**
+   * Writes the full set of comparisons accumulated across every batch of a
+   * comparison stage. Called exactly once, when the last batch's run
+   * completes — the state machine (comparison_pending_source_item_ids
+   * reaching empty) is what guarantees "exactly once", not this method.
+   */
+  async persistComparisons(input: {
     spaceId: string;
     projectId: string;
     workflowId: string;
     operationId: string;
     runId: string;
-    output: unknown;
-    expectedSourceItemIds: string[];
+    comparisons: MonitorComparison[];
   }): Promise<{ comparisons: MonitorComparison[]; notebookVersion: number | null }> {
-    const comparisons = parseMonitorComparisons(input.output, input.expectedSourceItemIds);
+    const comparisons = input.comparisons;
     return withQueryableTransaction(this.db, async (db) => {
       const now = new Date().toISOString();
-      const scan = await db.query<{ comparisons_json: unknown }>(
-        `SELECT comparisons_json FROM research_scan_summaries
+      const scan = await db.query<{ id: string }>(
+        `SELECT id FROM research_scan_summaries
           WHERE space_id=$1 AND project_id=$2 AND workflow_id=$3 AND operation_id=$4
           FOR UPDATE`,
         [input.spaceId, input.projectId, input.workflowId, input.operationId],
       );
       if (!scan.rows[0]) throw new Error("Monitoring comparison has no scan summary to update");
-      if (Array.isArray(scan.rows[0].comparisons_json) && scan.rows[0].comparisons_json.length > 0) {
-        const existing = await db.query<{ version: number }>(
-          `SELECT r.version FROM research_notebook_section_revisions r
-            WHERE r.created_by_run_id=$1 OR r.diff_json->>'run_id'=$1
-            ORDER BY r.version DESC LIMIT 1`,
-          [input.runId],
-        );
-        return { comparisons: parseMonitorComparisons({ comparisons: scan.rows[0].comparisons_json }, input.expectedSourceItemIds), notebookVersion: existing.rows[0]?.version ?? null };
-      }
       for (const comparison of comparisons) {
         await db.query(
           `INSERT INTO research_paper_cards (
@@ -181,31 +179,26 @@ export class ProjectResearchMonitorComparisonService {
       );
       const disruptive = comparisons.filter((item) => item.stance !== "supports");
       if (disruptive.length === 0) return { comparisons, notebookVersion: null };
-      const section = await db.query(
-        `SELECT 1 FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id
-          WHERE n.space_id=$1 AND n.project_id=$2 AND s.section_key='understanding'`,
-        [input.spaceId, input.projectId],
-      );
-      if (!section.rows[0]) return { comparisons, notebookVersion: null };
+      const understandingNote = await resolveNotebookNote(db, input.spaceId, input.projectId, "understanding");
+      if (!understandingNote) return { comparisons, notebookVersion: null };
       const additions = disruptive.map((item) =>
         `- **${item.stance === "contradicts" ? "Contradiction" : "New direction"}** (${item.source_item_id}): ${item.detail}`,
       ).join("\n");
       // Direct co-edit (revised D2): monitoring appends a labeled block to the
-      // understanding section; existing blocks stay untouched and the write is
+      // understanding note; existing blocks stay untouched and the write is
       // recorded as a revision the user can roll back.
-      const ops: NotebookOp[] = [{ op: "append", markdown: `## Monitoring update — ${now.slice(0, 10)}\n\n${additions}` }];
+      const ops: NoteOp[] = [{ op: "append", markdown: `## Monitoring update — ${now.slice(0, 10)}\n\n${additions}` }];
       const run = await db.query(`SELECT 1 FROM runs WHERE id=$1 AND space_id=$2`, [input.runId, input.spaceId]);
-      const written = await writeNotebookSection(db, {
+      const written = await writeNote(db, {
         spaceId: input.spaceId,
-        projectId: input.projectId,
-        sectionKey: "understanding",
+        noteId: understandingNote.id,
         content: { kind: "ops", ops },
         source: "ai_monitoring",
         runId: run.rows[0] ? input.runId : null,
         refs: disruptive.map((item) => item.source_item_id),
         diff: { ops, run_id: input.runId },
       });
-      return { comparisons, notebookVersion: written.outcome === "written" ? written.section.version : null };
+      return { comparisons, notebookVersion: written.outcome === "written" ? written.note.version : null };
     });
   }
 
@@ -230,28 +223,59 @@ export class ProjectResearchMonitorComparisonService {
   }
 }
 
+/**
+ * Extracts whatever valid, matching comparisons the model actually produced
+ * — it never throws for content problems. A model occasionally drops,
+ * duplicates, or invents a source_item_id (observed: a run fabricating 8
+ * comparisons for papers that were never sent and don't exist); discarding
+ * an entire batch's worth of otherwise-good analysis over one bad entry, or
+ * failing the whole monitoring operation over it, is worse than the
+ * problem. The caller (see ProjectResearchMonitoringCoordinator) is
+ * responsible for noticing which of `expectedSourceItemIds` didn't get a
+ * match and routing those to a one-at-a-time retry.
+ */
+function parseComparisonFields(raw: unknown): Omit<MonitorComparison, "source_item_id"> | null {
+  const value = objectValue(raw);
+  const stance = optionalString(value.stance);
+  const detail = optionalString(value.detail);
+  const rawAffected = value.affected_sections;
+  const affected = Array.isArray(rawAffected)
+    ? [...new Set(rawAffected.filter((item: unknown): item is MonitorComparison["affected_sections"][number] =>
+      typeof item === "string" && ["understanding", "questions", "ideas", "experiments"].includes(item)))]
+    : [];
+  if (!detail || detail.length > 4000 || !["supports", "contradicts", "new_direction"].includes(stance ?? "")
+    || !Array.isArray(rawAffected) || affected.length !== rawAffected.length) return null;
+  return { stance: stance as MonitorComparison["stance"], detail, affected_sections: affected };
+}
+
 export function parseMonitorComparisons(output: unknown, expectedSourceItemIds: string[]): MonitorComparison[] {
-  const expected = new Set(expectedSourceItemIds);
   const values = objectValue(output).comparisons;
-  if (!Array.isArray(values)) throw new Error("Monitoring comparison output is missing comparisons");
+  if (!Array.isArray(values)) return [];
+
+  // With exactly one candidate there's nothing to disambiguate — matching
+  // source_item_id only ever cost a solo retry over the model relabeling or
+  // omitting an id it didn't need to get right in the first place. Accept
+  // the first structurally valid entry and attach it to the one paper
+  // actually asked about, regardless of what id (if any) it echoed back.
+  if (expectedSourceItemIds.length === 1) {
+    for (const raw of values) {
+      const fields = parseComparisonFields(raw);
+      if (fields) return [{ source_item_id: expectedSourceItemIds[0], ...fields }];
+    }
+    return [];
+  }
+
+  const expected = new Set(expectedSourceItemIds);
   const result: MonitorComparison[] = [];
   const seen = new Set<string>();
   for (const raw of values) {
-    const value = objectValue(raw);
-    const sourceItemId = optionalString(value.source_item_id);
-    const stance = optionalString(value.stance);
-    const detail = optionalString(value.detail);
-    const rawAffected = value.affected_sections;
-    const affected = Array.isArray(rawAffected)
-      ? [...new Set(rawAffected.filter((item: unknown): item is MonitorComparison["affected_sections"][number] =>
-        typeof item === "string" && ["understanding", "questions", "ideas", "experiments"].includes(item)))]
-      : [];
-    if (!sourceItemId || !expected.has(sourceItemId) || seen.has(sourceItemId)) throw new Error("Monitoring comparison returned an unexpected or duplicate source_item_id");
-    if (!detail || detail.length > 4000 || !["supports", "contradicts", "new_direction"].includes(stance ?? "") || !Array.isArray(rawAffected) || affected.length !== rawAffected.length) throw new Error(`Monitoring comparison for ${sourceItemId} is invalid`);
+    const sourceItemId = optionalString(objectValue(raw).source_item_id);
+    if (!sourceItemId || !expected.has(sourceItemId) || seen.has(sourceItemId)) continue;
+    const fields = parseComparisonFields(raw);
+    if (!fields) continue;
     seen.add(sourceItemId);
-    result.push({ source_item_id: sourceItemId, stance: stance as MonitorComparison["stance"], detail, affected_sections: affected });
+    result.push({ source_item_id: sourceItemId, ...fields });
   }
-  if (seen.size !== expected.size) throw new Error("Monitoring comparison did not classify every supplied paper");
   return result;
 }
 

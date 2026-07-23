@@ -313,6 +313,16 @@ const projectSourceBind = z.object({
 }).passthrough();
 const sourceBackfillStart = z.object({ proposal_type:z.literal("source_backfill_start"),action_id:z.literal("source.backfill.propose_start"),source_channel_id:z.string().min(1),source_backfill_plan_id:z.string().min(1),strategy_json:z.record(z.unknown()),quota_policy_json:z.record(z.unknown()) }).passthrough();
 
+const researchQueryStrategyActivation = z.object({
+  proposal_type: z.literal("research_query_strategy_activation"),
+  project_id: z.string().uuid(),
+  source_strategy_id: z.string().uuid(),
+  candidate_strategy_id: z.string().uuid(),
+  direction: z.enum(["broaden", "narrow"]),
+  observation_count: z.number().int().min(3),
+  metrics: z.record(z.unknown()),
+}).passthrough();
+
 const evolvableAssetVersionPromote = z
   .object({
     proposal_type: z.literal("evolvable_asset_version_promote"),
@@ -385,6 +395,7 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   sourceChannelActivation,
   projectSourceBind,
   sourceBackfillStart,
+  researchQueryStrategyActivation,
   sourceRecipeActivation,
   evolvableAssetVersionPromote,
   workflowSave,

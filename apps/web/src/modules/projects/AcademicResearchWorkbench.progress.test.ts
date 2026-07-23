@@ -115,6 +115,40 @@ describe('AcademicResearchWorkbench operation progress', () => {
     expect(researchOperationPercent(value)).toBeGreaterThan(40)
   })
 
+  it('reports comparison batches remaining and papers compared', () => {
+    const value = operation({
+      current_stage: 'comparison',
+      comparison_run_id: 'run-1',
+      comparison_source_item_ids: ['paper-7'],
+      comparison_pending_source_item_ids: ['paper-8', 'paper-9', 'paper-10', 'paper-11', 'paper-12', 'paper-13'],
+      comparison_failed_source_item_ids: ['paper-14'],
+      comparison_results_json: [
+        { source_item_id: 'paper-1', stance: 'supports', detail: 'x', affected_sections: [] },
+        { source_item_id: 'paper-2', stance: 'supports', detail: 'x', affected_sections: [] },
+      ],
+    })
+    value.steps = [
+      { id: 's0', operation_id: 'operation-1', seq: 0, title: '', status: 'done' },
+      { id: 's1', operation_id: 'operation-1', seq: 1, title: '', status: 'done' },
+      { id: 's2', operation_id: 'operation-1', seq: 2, title: '', status: 'done' },
+      { id: 's3', operation_id: 'operation-1', seq: 3, title: '', status: 'active', detail_json: { run_id: 'run-1', remaining_batches: 2 } },
+      { id: 's4', operation_id: 'operation-1', seq: 4, title: '', status: 'pending' },
+    ]
+    // 2 done + 1 in flight + 6 pending + 1 failed = 10 total papers.
+    expect(researchOperationDetail(value)).toBe('2 batches remaining · 2/10 papers compared')
+    expect(researchOperationPercent(value)).toBeGreaterThan(40)
+  })
+
+  it('shows a preparing state for comparison before the first batch has been dispatched', () => {
+    const value = operation({
+      current_stage: 'comparison',
+      comparison_pending_source_item_ids: ['paper-1', 'paper-2'],
+      comparison_failed_source_item_ids: [],
+      comparison_results_json: [],
+    })
+    expect(researchOperationDetail(value)).toBe('Preparing comparison batches · 0/2 papers compared')
+  })
+
   it('stops at setup when the source search completed with no papers', () => {
     const value = operation({
       current_stage: 'complete',

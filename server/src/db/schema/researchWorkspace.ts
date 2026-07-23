@@ -4,62 +4,6 @@ import { projects } from "./projects";
 import { runs } from "./runs";
 import { sourceItems } from "./sources";
 import { spaceObjects } from "./knowledge";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-
-export const researchNotebooks = pgTable("research_notebooks", {
-  id: varchar({ length: 36 }).primaryKey().notNull(), spaceId: varchar("space_id", { length: 36 }).notNull(),
-  projectId: varchar("project_id", { length: 36 }).notNull(), createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-  unique("uq_research_notebooks_project").on(table.projectId, table.spaceId),
-  unique("uq_research_notebooks_id_space").on(table.id, table.spaceId),
-  foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "research_notebooks_project_fkey" }).onDelete("cascade"),
-]);
-
-export const researchNotebookSections = pgTable("research_notebook_sections", {
-  id: varchar({ length: 36 }).primaryKey().notNull(), spaceId: varchar("space_id", { length: 36 }).notNull(),
-  notebookId: varchar("notebook_id", { length: 36 }).notNull(),
-  sectionKey: varchar("section_key", { length: 32 }).notNull(), contentJson: jsonb("content_json").notNull(),
-  normalizedText: text("normalized_text").notNull(), contentHash: varchar("content_hash", { length: 64 }).notNull(),
-  refsJson: jsonb("refs_json").default([]).notNull(),
-  version: integer().default(1).notNull(), updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
-  updatedByRunId: varchar("updated_by_run_id", { length: 36 }), updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-  unique("uq_research_notebook_sections_key").on(table.notebookId, table.sectionKey),
-  unique("uq_research_notebook_sections_id_space").on(table.id, table.spaceId),
-  index("ix_research_notebook_sections_notebook").on(table.spaceId, table.notebookId),
-  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "research_notebook_sections_space_fkey" }),
-  foreignKey({ columns: [table.notebookId, table.spaceId], foreignColumns: [researchNotebooks.id, researchNotebooks.spaceId], name: "research_notebook_sections_notebook_fkey" }).onDelete("cascade"),
-  foreignKey({ columns: [table.updatedByUserId], foreignColumns: [users.id], name: "research_notebook_sections_user_fkey" }).onDelete("set null"),
-  foreignKey({ columns: [table.updatedByRunId], foreignColumns: [runs.id], name: "research_notebook_sections_run_delete_fkey" }).onDelete("set null"),
-  foreignKey({ columns: [table.updatedByRunId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "research_notebook_sections_run_fkey" }),
-  check("ck_research_notebook_sections_key", sql`section_key IN ('understanding','questions','ideas','experiments')`),
-  check("ck_research_notebook_sections_version", sql`version >= 1`),
-  check("ck_research_notebook_sections_refs_array", sql`jsonb_typeof(refs_json) = 'array'`),
-]);
-
-export const researchNotebookSectionRevisions = pgTable("research_notebook_section_revisions", {
-  id: varchar({ length: 36 }).primaryKey().notNull(), spaceId: varchar("space_id", { length: 36 }).notNull(),
-  sectionId: varchar("section_id", { length: 36 }).notNull(),
-  version: integer().notNull(), contentJson: jsonb("content_json").notNull(),
-  normalizedText: text("normalized_text").notNull(), contentHash: varchar("content_hash", { length: 64 }).notNull(),
-  refsJson: jsonb("refs_json").default([]).notNull(), source: varchar({ length: 24 }).notNull(),
-  diffJson: jsonb("diff_json"), createdByUserId: varchar("created_by_user_id", { length: 36 }),
-  createdByRunId: varchar("created_by_run_id", { length: 36 }),
-  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-  unique("uq_research_notebook_section_revisions_version").on(table.sectionId, table.version),
-  index("ix_research_notebook_section_revisions_section").on(table.spaceId, table.sectionId, table.version),
-  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "research_notebook_section_revisions_space_fkey" }),
-  foreignKey({ columns: [table.sectionId, table.spaceId], foreignColumns: [researchNotebookSections.id, researchNotebookSections.spaceId], name: "research_notebook_section_revisions_section_fkey" }).onDelete("cascade"),
-  foreignKey({ columns: [table.createdByUserId], foreignColumns: [users.id], name: "research_notebook_section_revisions_user_fkey" }).onDelete("set null"),
-  foreignKey({ columns: [table.createdByRunId], foreignColumns: [runs.id], name: "research_notebook_section_revisions_run_delete_fkey" }).onDelete("set null"),
-  foreignKey({ columns: [table.createdByRunId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "research_notebook_section_revisions_run_fkey" }),
-  check("ck_research_notebook_section_revisions_version", sql`version >= 1`),
-  check("ck_research_notebook_section_revisions_source", sql`source IN ('user_edit','ai_monitoring','ai_adhoc','seed','rollback')`),
-  check("ck_research_notebook_section_revisions_refs_array", sql`jsonb_typeof(refs_json) = 'array'`),
-]);
 
 export const researchIntegrityAlerts = pgTable("research_integrity_alerts", {
   id: varchar({ length: 36 }).primaryKey().notNull(), spaceId: varchar("space_id", { length: 36 }).notNull(),

@@ -11,6 +11,7 @@ export { ProjectResearchRepository } from "./repository";
 export { ProjectResearchReportRepository } from "./reportRepository";
 export { ProjectExperimentRepository } from "./experimentRepository";
 export { ProjectResearchOrchestrator, registerProjectResearchHandler } from "./orchestrator";
+export { ProjectResearchPipelineService } from "./pipeline/researchPipelineService";
 export { ProjectResearchExecutionProfileService } from "./executionProfileService";
 export {
   PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY,

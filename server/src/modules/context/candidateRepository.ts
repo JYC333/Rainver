@@ -279,12 +279,45 @@ export class PgChatCandidateRepository {
     }));
   }
 
-  async selectResearchNotebookSections(spaceId: string, projectId: string, limit: number): Promise<CandidateRow[]> {
-    const result = await this.db.query<{ id: string; section_key: string; normalized_text: string }>(
-      `SELECT s.id,s.section_key,s.normalized_text FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id WHERE n.space_id=$1 AND n.project_id=$2 AND s.normalized_text<>'' ORDER BY CASE s.section_key WHEN 'understanding' THEN 1 WHEN 'questions' THEN 2 WHEN 'ideas' THEN 3 ELSE 4 END LIMIT ${clampLimit(limit)}`,
+  /**
+   * A project's notes (its auto-created Knowledge Notes folder, see
+   * workspaceService.ts), most recently updated first. Scoped by
+   * `primary_project_id` at the SQL level — this is what
+   * ChatContextCandidateCollector relies on to keep Project Chat isolated
+   * to the requesting project's own notes (never another project's, never
+   * space-wide notes).
+   */
+  async selectProjectNotes(spaceId: string, projectId: string, limit: number): Promise<CandidateRow[]> {
+    const result = await this.db.query<{ id: string; title: string | null; plain_text: string | null }>(
+      `SELECT n.object_id AS id, so.title, n.plain_text
+         FROM notes n JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
+        WHERE so.space_id = $1 AND so.primary_project_id = $2 AND so.status = 'active' AND COALESCE(n.plain_text, '') <> ''
+        ORDER BY so.updated_at DESC
+        LIMIT ${clampLimit(limit)}`,
       [spaceId, projectId],
     );
-    return result.rows.map((row) => ({ item_id: row.id, title: `Research notebook · ${row.section_key}`, text: row.normalized_text, source_connection_ids: [] }));
+    return result.rows.map((row) => ({ item_id: row.id, title: row.title, text: row.plain_text ?? "", source_connection_ids: [] }));
+  }
+
+  /** Space-wide notes (Knowledge > Notes), most recently updated first, optionally keyword-filtered. */
+  async selectNotes(spaceId: string, userId: string, message: string, limit: number): Promise<CandidateRow[]> {
+    const where = [`n.space_id = $1`, `so.status = 'active'`];
+    const params: unknown[] = [spaceId];
+    if (message) {
+      params.push(`%${message.slice(0, 40)}%`);
+      where.push(`(so.title ILIKE $${params.length} OR n.plain_text ILIKE $${params.length})`);
+    }
+    params.push(userId);
+    where.push(contentReadSql("space_object", "so", `$${params.length}`));
+    const result = await this.db.query<{ id: string; title: string | null; plain_text: string | null }>(
+      `SELECT n.object_id AS id, so.title, n.plain_text
+         FROM notes n JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
+        WHERE ${where.join(" AND ")}
+        ORDER BY so.updated_at DESC
+        LIMIT ${clampLimit(limit)}`,
+      params,
+    );
+    return result.rows.map((row) => ({ item_id: row.id, title: row.title, text: row.plain_text ?? "", source_connection_ids: [] }));
   }
 
   /** Recent activity records readable by the given user. */

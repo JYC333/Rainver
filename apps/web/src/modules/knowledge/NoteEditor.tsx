@@ -1,23 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useOutletContext, useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { Check, CornerDownLeft, Link2, Trash2, X } from 'lucide-react'
+import { CornerDownLeft, Link2, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { knowledgeApi, notesApi } from '../../api/client'
+import { knowledgeApi, notesApi, ApiRequestError } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg, isNotFoundError } from '../../lib/utils'
-import type { EntityLink, EntityLinkType, KnowledgeItemSummary, Note, NoteSummary } from '../../types/api'
+import type { EntityLink, EntityLinkType, KnowledgeItemSummary, Note, NoteRevision, NoteSummary } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
-import { Spinner } from '../../components/ui/spinner'
+import { SaveStatusIndicator } from '../../components/SaveStatusIndicator'
+import { useAutosave } from '../../hooks/useAutosave'
 import {
   RichTextEditor,
   emptyRichTextDocument,
   normalizeNoteDocument,
   richTextSnapshotFromDocument,
+  AiEditBanner,
+  HistoryChip,
+  NoteRevisionHistory,
   type RichTextDocument,
   type RichTextEditorHandle,
 } from '../../components/editor'
@@ -36,11 +40,7 @@ const TARGET_KIND_OPTIONS = [
   { value: 'knowledge_item', label: 'Wiki' },
 ]
 
-type StatusPanel = 'links' | 'backlinks' | null
-type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
-
-/** Debounce window between the last edit and the auto-save request. */
-const AUTOSAVE_DELAY_MS = 800
+type StatusPanel = 'links' | 'backlinks' | 'history' | null
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -66,19 +66,15 @@ export default function NoteEditor() {
   const [notFound, setNotFound] = useState(false)
   const [title, setTitle] = useState('')
   const [editorDocument, setEditorDocument] = useState<RichTextDocument>(() => emptyRichTextDocument())
-  const [saveState, setSaveState] = useState<SaveState>('saved')
   const editorRef = useRef<RichTextEditorHandle>(null)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Refs mirror the latest editable values so the debounced flush — which may
   // run after a re-render or while navigating away — reads fresh data.
   const noteRef = useRef<Note | null>(null)
   const titleRef = useRef(title)
-  const saveStateRef = useRef(saveState)
   const editorDocumentRef = useRef(editorDocument)
   noteRef.current = note
   titleRef.current = title
-  saveStateRef.current = saveState
   editorDocumentRef.current = editorDocument
 
   // Cache of fully-loaded notes (the list/tree only carry summaries without the
@@ -96,6 +92,9 @@ export default function NoteEditor() {
 
   const [panel, setPanel] = useState<StatusPanel>(null)
   const statusBarRef = useRef<HTMLDivElement>(null)
+
+  const [revisions, setRevisions] = useState<NoteRevision[] | null>(null)
+  const [historyBusy, setHistoryBusy] = useState(false)
 
   const titleById = useMemo(() => {
     const map = new Map<string, { title: string; to: string }>()
@@ -115,6 +114,51 @@ export default function NoteEditor() {
     }
   }, [])
 
+  // Persist the current editor state. Reads the latest values from refs so it
+  // is safe to call from a debounce timer or a flush-on-leave cleanup. A
+  // blank title is omitted (the backend rejects empty titles) rather than
+  // failing the save. `expect_version` makes every save go through the
+  // same optimistic-concurrency + revision-history writer AI edits use —
+  // on a real conflict (someone/something else changed the note since it
+  // loaded) the save is refused rather than silently overwriting it; the
+  // user's in-progress edit stays on screen and the History panel shows
+  // what changed underneath them.
+  const performSaveImpl = useCallback(async () => {
+    const current = noteRef.current
+    if (!current) return
+    const snapshot = editorRef.current?.getSnapshot() ?? richTextSnapshotFromDocument(editorDocumentRef.current)
+    const trimmedTitle = titleRef.current.trim()
+    try {
+      const updated = await notesApi.update(current.id, {
+        ...(trimmedTitle ? { title: trimmedTitle } : {}),
+        ...snapshot,
+        expect_version: current.version,
+      })
+      onNoteResolved(updated)
+      noteCacheRef.current.set(updated.id, updated)
+      // Don't clobber the view if we've since navigated to a different note.
+      if (noteRef.current?.id === current.id) {
+        noteRef.current = updated
+        setNote(updated)
+      }
+      setRevisions(null)
+    } catch (e) {
+      if (e instanceof ApiRequestError && e.status === 409) {
+        toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
+      } else {
+        toast.error(errMsg(e))
+      }
+      throw e
+    }
+  }, [onNoteResolved])
+
+  // `flushKey: noteId` flushes a pending save when switching to a different
+  // note (this component stays mounted across the switch), not only on
+  // unmount.
+  const { state: saveState, setState: setSaveState, scheduleSave, performSave } = useAutosave(performSaveImpl, { flushKey: noteId })
+  const saveStateRef = useRef(saveState)
+  saveStateRef.current = saveState
+
   // Apply a fully-loaded note to the editor (the clean, "saved" baseline).
   const seedFromNote = useCallback((n: Note) => {
     noteRef.current = n
@@ -123,7 +167,35 @@ export default function NoteEditor() {
     setEditorDocument(normalizeNoteDocument(n))
     setSaveState('saved')
     setNotFound(false)
+    setRevisions(null)
+  }, [setSaveState])
+
+  const loadHistory = useCallback(async (id: string) => {
+    try {
+      setRevisions(await notesApi.revisions(id))
+    } catch (e) {
+      toast.error(errMsg(e))
+    }
   }, [])
+
+  const rollback = useCallback(async (toVersion: number) => {
+    const current = noteRef.current
+    if (!current) return
+    if (saveStateRef.current !== 'saved' && !window.confirm('You have an unsaved edit. Restoring a version will discard it. Continue?')) return
+    setHistoryBusy(true)
+    try {
+      const restored = await notesApi.rollback(current.id, toVersion)
+      onNoteResolved(restored)
+      noteCacheRef.current.set(restored.id, restored)
+      seedFromNote(restored)
+      await loadHistory(restored.id)
+      toast.success(`Restored version ${toVersion} as version ${restored.version}`)
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setHistoryBusy(false)
+    }
+  }, [onNoteResolved, seedFromNote, loadHistory])
 
   // Refresh a note shown from cache, in the background. Only applies the result
   // when it's safe — same note, no pending local edits — and only touches the
@@ -212,66 +284,6 @@ export default function NoteEditor() {
     }
   }, [panel])
 
-  // Persist the current editor state. Reads the latest values from refs so it is
-  // safe to call from a debounce timer or a flush-on-leave cleanup. A blank title
-  // is omitted (the backend rejects empty titles) rather than failing the save.
-  const performSave = useCallback(async () => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-    }
-    const current = noteRef.current
-    if (!current) return
-    const snapshot = editorRef.current?.getSnapshot() ?? richTextSnapshotFromDocument(editorDocumentRef.current)
-    const trimmedTitle = titleRef.current.trim()
-    setSaveState('saving')
-    try {
-      const updated = await notesApi.update(current.id, {
-        ...(trimmedTitle ? { title: trimmedTitle } : {}),
-        ...snapshot,
-      })
-      onNoteResolved(updated)
-      noteCacheRef.current.set(updated.id, updated)
-      // Don't clobber the view if we've since navigated to a different note.
-      if (noteRef.current?.id === current.id) {
-        noteRef.current = updated
-        setNote(updated)
-        setSaveState(prev => (prev === 'saving' ? 'saved' : prev))
-      }
-    } catch (e) {
-      if (noteRef.current?.id === current.id) setSaveState('error')
-      toast.error(errMsg(e))
-    }
-  }, [onNoteResolved])
-
-  const scheduleSave = useCallback(() => {
-    setSaveState('dirty')
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => { void performSave() }, AUTOSAVE_DELAY_MS)
-  }, [performSave])
-
-  // Flush a pending save when leaving this note (switching notes or unmounting),
-  // so debounced edits are never lost.
-  useEffect(() => () => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-      void performSave()
-    }
-  }, [noteId, performSave])
-
-  // Cmd/Ctrl+S forces an immediate save (and suppresses the browser dialog).
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault()
-        void performSave()
-      }
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [performSave])
-
   async function addLink() {
     if (!note || !linkTargetId) {
       toast.error('Pick something to link to')
@@ -315,7 +327,11 @@ export default function NoteEditor() {
     : wikiOptions.map(w => ({ value: w.id, label: w.title }))
 
   function togglePanel(next: Exclude<StatusPanel, null>) {
-    setPanel(cur => (cur === next ? null : next))
+    setPanel(cur => {
+      const opening = cur !== next
+      if (opening && next === 'history' && note) void loadHistory(note.id)
+      return opening ? next : null
+    })
   }
 
   // Keep the editor mounted across note switches: only fall back to the skeleton
@@ -356,6 +372,11 @@ export default function NoteEditor() {
             aria-label="Note title"
             className="w-full bg-transparent text-3xl font-semibold tracking-tight text-foreground outline-none placeholder:text-muted-foreground/60"
           />
+          {note.updated_by_run_id && note.version > 1 && saveState === 'saved' && (
+            <div className="mt-4">
+              <AiEditBanner runId={note.updated_by_run_id} busy={historyBusy} onUndo={() => void rollback(note.version - 1)} />
+            </div>
+          )}
           <RichTextEditor
             ref={editorRef}
             initialContent={editorDocument}
@@ -437,6 +458,19 @@ export default function NoteEditor() {
           </StatusPanelShell>
         )}
 
+        {panel === 'history' && (
+          <StatusPanelShell title="History" onClose={() => setPanel(null)}>
+            <div className="max-h-[50vh] overflow-y-auto">
+              <NoteRevisionHistory
+                revisions={revisions}
+                currentVersion={note.version}
+                busy={historyBusy}
+                onRollback={toVersion => void rollback(toVersion)}
+              />
+            </div>
+          </StatusPanelShell>
+        )}
+
         <div className="flex h-10 items-center justify-between gap-3 px-3 text-xs sm:px-4">
           <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
             <span className="hidden truncate sm:inline">Updated {fmt(note.updated_at)}</span>
@@ -456,45 +490,13 @@ export default function NoteEditor() {
               label="Backlinks"
               count={backlinks.length}
             />
+            <HistoryChip active={panel === 'history'} onClick={() => togglePanel('history')} />
             <div className="mx-1 h-5 w-px bg-border" />
-            <SaveIndicator state={saveState} onRetry={() => { void performSave() }} />
+            <SaveStatusIndicator state={saveState} onRetry={() => { void performSave() }} />
           </div>
         </div>
       </div>
     </div>
-  )
-}
-
-/** Auto-save status shown in the footer where the manual Save button used to be. */
-function SaveIndicator({ state, onRetry }: { state: SaveState; onRetry: () => void }) {
-  if (state === 'saving') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-        <Spinner size="sm" /> Saving…
-      </span>
-    )
-  }
-  if (state === 'error') {
-    return (
-      <span className="inline-flex items-center gap-1 text-destructive">
-        Save failed
-        <Button size="sm" variant="ghost" className="h-6 px-1.5 text-destructive hover:text-destructive" onClick={onRetry}>
-          Retry
-        </Button>
-      </span>
-    )
-  }
-  if (state === 'dirty') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-warning" /> Unsaved…
-      </span>
-    )
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-      <Check className="size-3.5 text-success" /> Saved
-    </span>
   )
 }
 

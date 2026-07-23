@@ -7,18 +7,19 @@ import type { ServerConfig } from "../../config";
 import { ProjectResearchExecutionProfileService } from "./executionProfileService";
 import { PgRunRepository } from "../runs/repository";
 import { PgJobQueueRepository } from "../jobs/repository";
+import { RunOrchestrationService } from "../runs/orchestrationService";
+import { PgSessionRepository } from "../sessions/repository";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { markdownToPm, parseNotebookOps, pmBlocksText, type NotebookOp } from "./notebookDocument";
+import { markdownToPm, normalizePmText, pmBlocksText } from "../knowledge/noteDocument";
 import {
-  insertInitialRevision,
-  listNotebookRevisions,
-  rollbackNotebookSection,
+  applyNoteOpsWithConflictFallback,
+  insertInitialNoteRevision,
   sha256,
-  writeNotebookSection,
-} from "./notebookWriteService";
+  writeNote,
+} from "../knowledge/noteRevisionService";
+import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveProjectNoteByTitle, type SectionKey } from "./notebookNotes";
 
-export const NOTEBOOK_SECTION_KEYS = ["understanding", "questions", "ideas", "experiments"] as const;
-type SectionKey = typeof NOTEBOOK_SECTION_KEYS[number];
+export { NOTEBOOK_SECTION_KEYS, SECTION_LABELS };
 
 /**
  * D6: ad-hoc analysis has its own small budget lane, independent of the
@@ -26,9 +27,27 @@ type SectionKey = typeof NOTEBOOK_SECTION_KEYS[number];
  */
 export const RESEARCH_ADHOC_DAILY_RUN_LIMIT = 20;
 
+// `type: [X, "null"]` is valid JSON Schema, but not every provider's
+// structured-output validator accepts a type array (MiniMax's rejects it
+// outright with a 400 "mismatched type" parse error) — `anyOf` is the
+// portable way to express a nullable field across providers.
+const NOTEBOOK_OP_ITEM_SCHEMA = {
+  type: "object",
+  properties: {
+    op: { enum: ["append", "insert", "replace", "delete"] },
+    index: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
+    count: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
+    markdown: { anyOf: [{ type: "string", maxLength: 20_000 }, { type: "null" }] },
+  },
+  required: ["op", "index", "count", "markdown"],
+  additionalProperties: false,
+} as const;
+
+// Target is pinned by the run's own contract_snapshot (one note per ad-hoc
+// run), so the model only needs to describe the edit, not restate the target.
 const ADHOC_OUTPUT_CONTRACT = {
   type: "json_schema",
-  schema_id: "research.adhoc_analyze.v2",
+  schema_id: "research.adhoc_analyze.v3",
   strict: true,
   stage: "research_adhoc",
   schema: {
@@ -37,30 +56,52 @@ const ADHOC_OUTPUT_CONTRACT = {
       notebook_update: {
         type: "object",
         properties: {
-          section_key: { enum: NOTEBOOK_SECTION_KEYS },
           ops: {
             type: "array",
             minItems: 1,
             maxItems: 20,
-            items: {
-              type: "object",
-              properties: {
-                op: { enum: ["append", "insert", "replace", "delete"] },
-                index: { type: ["integer", "null"], minimum: 0 },
-                count: { type: ["integer", "null"], minimum: 1 },
-                markdown: { type: ["string", "null"], maxLength: 20_000 },
-              },
-              required: ["op", "index", "count", "markdown"],
-              additionalProperties: false,
-            },
+            items: NOTEBOOK_OP_ITEM_SCHEMA,
           },
           refs: { type: "array", items: { type: "string" } },
         },
-        required: ["section_key", "ops", "refs"],
+        required: ["ops", "refs"],
         additionalProperties: false,
       },
     },
     required: ["notebook_update"],
+    additionalProperties: false,
+  },
+} as const;
+
+// Freeform note targeting: the model picks an existing note by id from the
+// list given in the prompt, or leaves note_id null and names a new note.
+const NOTEBOOK_CHAT_OUTPUT_CONTRACT = {
+  type: "json_schema",
+  schema_id: "research.notebook_chat.v2",
+  strict: true,
+  stage: "research_notebook_chat",
+  schema: {
+    type: "object",
+    properties: {
+      answer: { type: "string", maxLength: 8_000 },
+      notebook_update: {
+        type: "object",
+        properties: {
+          note_id: { anyOf: [{ type: "string", maxLength: 36 }, { type: "null" }] },
+          new_note_title: { anyOf: [{ type: "string", maxLength: 200 }, { type: "null" }] },
+          ops: {
+            type: "array",
+            minItems: 0,
+            maxItems: 20,
+            items: NOTEBOOK_OP_ITEM_SCHEMA,
+          },
+          refs: { type: "array", items: { type: "string" } },
+        },
+        required: ["note_id", "new_note_title", "ops", "refs"],
+        additionalProperties: false,
+      },
+    },
+    required: ["answer", "notebook_update"],
     additionalProperties: false,
   },
 } as const;
@@ -70,19 +111,19 @@ export class ProjectResearchWorkspaceService {
 
   async getWorkspace(identity: SpaceUserIdentity, projectId: string) {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const found = await this.db.query<any>(`SELECT * FROM research_notebooks WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
-    const notebook = found.rows[0]; if (!notebook) throw new HttpError(404, "Research workspace not initialized");
-    const [sections, checklist, reports] = await Promise.all([
-      this.db.query(`SELECT id,section_key,content_json,normalized_text,content_hash,refs_json,version,updated_by_user_id,updated_by_run_id,updated_at FROM research_notebook_sections WHERE notebook_id=$1 ORDER BY CASE section_key WHEN 'understanding' THEN 1 WHEN 'questions' THEN 2 WHEN 'ideas' THEN 3 ELSE 4 END`, [notebook.id]),
+    const folder = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
+    if (!folder.rows[0]) throw new HttpError(404, "Research workspace not initialized");
+    const [notes, checklist, reports] = await Promise.all([
+      this.listProjectNotes(identity.spaceId, projectId),
       this.db.query(`SELECT * FROM research_checklist_items WHERE space_id=$1 AND project_id=$2 ORDER BY sort_order,id`, [identity.spaceId, projectId]),
       this.db.query(`SELECT id,research_question,research_question_version,status,run_kind,created_at,updated_at FROM project_research_reports WHERE space_id=$1 AND project_id=$2 ORDER BY created_at DESC`, [identity.spaceId, projectId]),
     ]);
-    return { notebook: { ...notebook, sections: sections.rows }, checklist: checklist.rows, reports: reports.rows };
+    return { notes_collection_id: folder.rows[0].id, notes, checklist: checklist.rows, reports: reports.rows };
   }
 
   async initializeWorkspace(identity: SpaceUserIdentity, projectId: string) {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const existing = await this.db.query(`SELECT id FROM research_notebooks WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
+    const existing = await this.db.query(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
     if (existing.rows[0]) return this.getWorkspace(identity, projectId);
     if (!await canWriteProject(this.db, identity.spaceId, projectId, identity.userId)) {
       // Readers must not fail the page; they see the uninitialized state.
@@ -92,9 +133,9 @@ export class ProjectResearchWorkspaceService {
       await assertProjectWriter(db, identity.spaceId, projectId, identity.userId);
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const service = new ProjectResearchWorkspaceService(db, this.config);
-      await service.ensureNotebook(identity.spaceId, projectId);
+      await service.ensureWorkspace(identity.spaceId, projectId);
       // Projects with reports from before the living workspace existed get
-      // their notebook seeded from the latest completed report once.
+      // their notes seeded from the latest completed report once.
       const report = await db.query<{ synthesis_run_id: string; content_json: unknown }>(
         `SELECT synthesis_run_id,content_json FROM project_research_reports
           WHERE space_id=$1 AND project_id=$2 AND status <> 'rejected'
@@ -125,37 +166,10 @@ export class ProjectResearchWorkspaceService {
     return { ...corpus, items: items.map((row) => ({ ...row, paper_card: bySource.get(String(row.source_item_id)) ?? null })) };
   }
 
-  async updateSection(identity: SpaceUserIdentity, projectId: string, sectionKey: string, body: Record<string, unknown>) {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    assertSectionKey(sectionKey);
-    const baseVersion = Number(body.base_version); const contentJson = objectValue(body.content_json);
-    if (!Number.isInteger(baseVersion) || baseVersion < 1 || contentJson.type !== "doc") throw new HttpError(422, "base_version and Tiptap content_json are required");
-    const result = await withQueryableTransaction(this.db, (db) => writeNotebookSection(db, {
-      spaceId: identity.spaceId, projectId, sectionKey,
-      expectVersion: baseVersion,
-      content: { kind: "doc", doc: contentJson },
-      source: "user_edit",
-      userId: identity.userId,
-    }));
-    if (result.outcome !== "written") throw new HttpError(409, "Notebook section changed; reload before saving");
-    return result.section;
-  }
-
-  async sectionRevisions(identity: SpaceUserIdentity, projectId: string, sectionKey: string, filters: Record<string, unknown>) {
-    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    assertSectionKey(sectionKey);
-    return listNotebookRevisions(this.db, { spaceId: identity.spaceId, projectId, sectionKey, limit: Number(filters.limit) || undefined });
-  }
-
-  async rollbackSection(identity: SpaceUserIdentity, projectId: string, sectionKey: string, body: Record<string, unknown>) {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    assertSectionKey(sectionKey);
-    const toVersion = Number(body.to_version);
-    if (!Number.isInteger(toVersion) || toVersion < 1) throw new HttpError(422, "to_version is required");
-    return withQueryableTransaction(this.db, (db) => rollbackNotebookSection(db, {
-      spaceId: identity.spaceId, projectId, sectionKey, toVersion, userId: identity.userId,
-    }));
-  }
+  // Per-note editing, revision history, and rollback are no longer
+  // workspace-specific: the frontend calls the generic
+  // /api/v1/knowledge/notes/:noteId (+/revisions, +/rollback) endpoints
+  // directly, since a project's notes are ordinary Notes.
 
   async upsertPaperCard(identity: SpaceUserIdentity, projectId: string, sourceItemId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
@@ -203,16 +217,31 @@ export class ProjectResearchWorkspaceService {
   async askAi(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     if (!this.config) throw new HttpError(500, "Research execution is unavailable");
-    const prompt = text(body.prompt, 4000); const sectionKey = optionalString(body.section_key) ?? "understanding"; assertSectionKey(sectionKey);
+    const prompt = text(body.prompt, 4000);
     if (!prompt) throw new HttpError(422, "prompt is required");
+    // `section_key` is a legacy field name (kept for the existing Reading
+    // List "compare selected papers" caller): a known starter-note key maps
+    // to its title; any other value is used as a literal note title,
+    // created if it doesn't exist yet.
+    const requested = optionalString(body.section_key) ?? "understanding";
+    const title = (SECTION_LABELS as Record<string, string>)[requested] ?? requested;
     const used = await this.adhocRunsUsedToday(identity.spaceId, projectId);
     if (used >= RESEARCH_ADHOC_DAILY_RUN_LIMIT) {
       throw new HttpError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
     }
-    const notebook = await this.ensureNotebook(identity.spaceId, projectId);
-    const section = await this.db.query<{ version: number; content_json: Record<string, unknown> }>(`SELECT version,content_json FROM research_notebook_sections WHERE notebook_id=$1 AND section_key=$2`, [notebook.id, sectionKey]);
-    const baseVersion = section.rows[0]?.version ?? 1;
-    const blocks = pmBlocksText(section.rows[0]?.content_json ?? { type: "doc", content: [] });
+    const { folderId } = await withQueryableTransaction(this.db, (db) =>
+      new ProjectResearchWorkspaceService(db, this.config).ensureWorkspace(identity.spaceId, projectId));
+    let note = await resolveProjectNoteByTitle(this.db, identity.spaceId, projectId, title);
+    if (!note) {
+      const now = new Date().toISOString();
+      const created = await withQueryableTransaction(this.db, (db) =>
+        new ProjectResearchWorkspaceService(db, this.config).createProjectNote({
+          spaceId: identity.spaceId, projectId, folderId, title, doc: markdownToPm(""), createdByUserId: identity.userId, at: now,
+        }));
+      note = { id: created.id, version: created.version, content_json: markdownToPm(""), plain_text: "" };
+    }
+    const baseVersion = note.version;
+    const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
     const paperIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
     const papers = paperIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
       `SELECT si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
@@ -226,9 +255,9 @@ export class ProjectResearchWorkspaceService {
     ) : { rows: [] };
     const execution = objectValue(body.execution); const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
     const instruction = [
-      "Perform the requested bounded research analysis using only the supplied notebook and paper context.",
-      `User request: ${prompt}`, `Target section: ${sectionKey}`, `Section base version: ${baseVersion}`,
-      `Current section as indexed blocks (edit by block index; the document has ${blocks.length} blocks):\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`,
+      "Perform the requested bounded research analysis using only the supplied note and paper context.",
+      `User request: ${prompt}`, `Target note: ${title}`, `Note base version: ${baseVersion}`,
+      `Current note as indexed blocks (edit by block index; the document has ${blocks.length} blocks):\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`,
       `Selected papers:\n${papers.rows.map((p) => JSON.stringify(p)).join("\n")}`,
       "Return JSON only with a top-level notebook_update. Express the change as minimal block operations against the indexed blocks:",
       `- {"op":"append","index":null,"count":null,"markdown":"..."} adds blocks at the end`,
@@ -236,16 +265,139 @@ export class ProjectResearchWorkspaceService {
       `- {"op":"replace","index":N,"count":C,"markdown":"..."} replaces blocks N..N+C-1`,
       `- {"op":"delete","index":N,"count":C,"markdown":null} removes blocks`,
       "Never rewrite blocks you are not changing. Use refs for source_item ids you relied on.",
-      `notebook_update.section_key must be "${sectionKey}".`,
     ].join("\n\n");
     const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
       agent_id: resolved.agentId, space_id: identity.spaceId, user_id: identity.userId, project_id: projectId,
       mode: "live", run_type: "agent", trigger_origin: "manual", runtime_profile_id: resolved.runtimeProfileId,
       prompt, instruction, capability_id: "research.adhoc_analyze", capabilities_json: ["research.adhoc_analyze"],
-      contract_snapshot: { source: { kind: "direct", id: notebook.id }, project_id: projectId, policy_context_json: createManagedExecutionPolicy("project_research", true), workflow_input_json: { research_adhoc: { notebook_id: notebook.id, section_key: sectionKey, base_version: baseVersion, source_item_ids: paperIds } }, structured_output_json: ADHOC_OUTPUT_CONTRACT },
+      contract_snapshot: { source: { kind: "direct", id: note.id }, project_id: projectId, policy_context_json: createManagedExecutionPolicy("project_research", true), workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: paperIds } }, structured_output_json: ADHOC_OUTPUT_CONTRACT },
     });
     const job = await new PgJobQueueRepository(this.db).enqueue({ job_type: "agent_run", space_id: identity.spaceId, user_id: identity.userId, agent_id: resolved.agentId, payload: { run_id: run.id } });
     return { run_id: run.id, job_id: job.id, status: run.status, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
+  }
+
+  /**
+   * Synchronous multi-turn conversation grounded in the whole notebook +
+   * selected papers. Reuses the generic sessions store (project_id-scoped)
+   * for history; when the model's reply includes a notebook_update it is
+   * applied immediately (same ai_adhoc direct-write + revision model as
+   * askAi), and the applied/attempted edit is attached to the assistant
+   * message so the client can render an inline undo affordance and reload
+   * it from session history later.
+   */
+  async notebookChat(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
+    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    if (!this.config) throw new HttpError(500, "Research execution is unavailable");
+    const message = text(body.message, 4000);
+    if (!message) throw new HttpError(422, "message is required");
+    const used = await this.adhocRunsUsedToday(identity.spaceId, projectId);
+    if (used >= RESEARCH_ADHOC_DAILY_RUN_LIMIT) {
+      throw new HttpError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
+    }
+    const { folderId } = await withQueryableTransaction(this.db, (db) =>
+      new ProjectResearchWorkspaceService(db, this.config).ensureWorkspace(identity.spaceId, projectId));
+    const sessions = new PgSessionRepository(this.db);
+    const requestedSessionId = optionalString(body.session_id);
+    const session = requestedSessionId
+      ? await sessions.getSession(identity.spaceId, identity.userId, requestedSessionId)
+      : await sessions.createSession(identity.spaceId, identity.userId, { projectId, title: "Research notebook chat" });
+    if (!session) throw new HttpError(404, "session not found in this space");
+    if ((session.project_id ?? null) !== projectId) throw new HttpError(409, "session belongs to a different project");
+    const userMessage = await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "user", content: message });
+    if (!userMessage) throw new HttpError(404, "session not found in this space");
+
+    const history = (await sessions.listRecentMessagesForContext(identity.spaceId, identity.userId, session.id, 20)) ?? [];
+    const historyBlock = history.length > 1
+      ? `Conversation so far:\n${history.slice(0, -1).map((m) => `${m.role}: ${m.content}`).join("\n")}`
+      : "";
+
+    const paperIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
+    const papers = paperIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
+      `SELECT si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
+         FROM project_corpus_items pci
+         JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
+         JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
+         LEFT JOIN research_paper_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
+        WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
+          AND pci.status='active' AND ${sourceItemReadableClause("si", "$4", false)}`,
+      [identity.spaceId, projectId, paperIds, identity.userId],
+    ) : { rows: [] };
+    const execution = objectValue(body.execution);
+    const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
+
+    const notes = await this.listProjectNotes(identity.spaceId, projectId);
+    const notebookText = notes.map((note) => {
+      const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
+      return `## [${note.id}] ${note.title} (base version ${note.version}, ${blocks.length} blocks)\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`;
+    }).join("\n\n");
+
+    const instruction = [
+      "You are discussing this project's notes with the user. Answer their latest message, grounded only in the supplied notes and paper context.",
+      "notebook_update is always present in your JSON reply. Only if the user is asking you to update a note: set note_id to an existing note's id (from the list below) to edit it, referencing that note's base version; or leave note_id null and set new_note_title to create a new note instead. Otherwise leave ops as an empty array — that means no edit.",
+      historyBlock,
+      `Latest message: ${message}`,
+      `Current notes:\n${notebookText || "(no notes yet)"}`,
+      `Selected papers:\n${papers.rows.map((p) => JSON.stringify(p)).join("\n")}`,
+      "If proposing notebook_update, express it as minimal block operations against the target note's indexed blocks:",
+      `- {"op":"append","index":null,"count":null,"markdown":"..."} adds blocks at the end`,
+      `- {"op":"insert","index":N,"count":null,"markdown":"..."} inserts before block N`,
+      `- {"op":"replace","index":N,"count":C,"markdown":"..."} replaces blocks N..N+C-1`,
+      `- {"op":"delete","index":N,"count":C,"markdown":null} removes blocks`,
+      "Never rewrite blocks you are not changing. Use refs for source_item ids you relied on.",
+    ].filter(Boolean).join("\n\n");
+
+    const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
+      agent_id: resolved.agentId, space_id: identity.spaceId, user_id: identity.userId, project_id: projectId,
+      mode: "live", run_type: "agent", trigger_origin: "manual", runtime_profile_id: resolved.runtimeProfileId,
+      prompt: message, instruction, capability_id: "research.ask", capabilities_json: ["research.ask"],
+      contract_snapshot: {
+        source: { kind: "direct", id: folderId }, project_id: projectId,
+        policy_context_json: createManagedExecutionPolicy("project_research", true),
+        workflow_input_json: {},
+        structured_output_json: NOTEBOOK_CHAT_OUTPUT_CONTRACT,
+      },
+    });
+    await new RunOrchestrationService(this.config, new PgRunRepository(this.db)).executeRun({
+      run_id: run.id, space_id: identity.spaceId, worker_id: `notebook-chat:${randomUUID()}`, command_source: "http",
+    });
+    const finished = await new PgRunRepository(this.db).getRun(identity.spaceId, run.id);
+    if (!finished || !["succeeded", "degraded"].includes(finished.status)) {
+      const errorText = finished?.error_message ?? "The notebook chat run did not complete successfully.";
+      await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "assistant", content: errorText, metadata: { run_id: run.id, error: true } });
+      return { session_id: session.id, run_id: run.id, ok: false, error: errorText, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
+    }
+
+    const output = objectValue(finished.output_json);
+    const answer = text(output.answer, 8000) || "(no answer returned)";
+    const notebookUpdate = objectValue(output.notebook_update);
+    let notebookEdit: { note_id: string; version: number; conflict: boolean } | null = null;
+    const rawOps: unknown[] = Array.isArray(notebookUpdate.ops) ? notebookUpdate.ops : [];
+    if (rawOps.length) {
+      const refs = Array.isArray(notebookUpdate.refs) ? notebookUpdate.refs.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
+      const requestedNoteId = optionalString(notebookUpdate.note_id);
+      const targetNote = requestedNoteId ? notes.find((n) => n.id === requestedNoteId) : undefined;
+      if (targetNote) {
+        const applied = await withQueryableTransaction(this.db, (db) => applyNoteOpsWithConflictFallback(db, {
+          spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
+        }));
+        if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+      } else {
+        const newTitle = text(notebookUpdate.new_note_title, 200) || "Untitled";
+        const now = new Date().toISOString();
+        const created = await withQueryableTransaction(this.db, (db) =>
+          new ProjectResearchWorkspaceService(db, this.config).createProjectNote({
+            spaceId: identity.spaceId, projectId, folderId, title: newTitle, doc: markdownToPm(""), createdByUserId: null, at: now,
+          }));
+        const applied = await withQueryableTransaction(this.db, (db) => applyNoteOpsWithConflictFallback(db, {
+          spaceId: identity.spaceId, noteId: created.id, baseVersion: created.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
+        }));
+        if (applied) notebookEdit = { note_id: created.id, version: applied.note.version, conflict: applied.conflict };
+      }
+    }
+    await sessions.addMessage(identity.spaceId, identity.userId, session.id, {
+      role: "assistant", content: answer, metadata: { run_id: run.id, notebook_edit: notebookEdit },
+    });
+    return { session_id: session.id, run_id: run.id, ok: true, reply: answer, notebook_edit: notebookEdit, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
   }
 
   /**
@@ -262,53 +414,25 @@ export class ProjectResearchWorkspaceService {
     const row = run.rows[0];
     if (!row?.project_id || !["succeeded", "degraded"].includes(row.status)) return;
     const contract = objectValue(objectValue(objectValue(row.contract_snapshot_json).workflow_input_json).research_adhoc);
-    const sectionKey = optionalString(contract.section_key); const baseVersion = Number(contract.base_version);
-    if (!sectionKey || !NOTEBOOK_SECTION_KEYS.includes(sectionKey as SectionKey) || !Number.isInteger(baseVersion)) return;
-    const applied = await this.db.query(`SELECT 1 FROM research_notebook_section_revisions WHERE created_by_run_id=$1 LIMIT 1`, [runId]);
+    const noteId = optionalString(contract.note_id); const baseVersion = Number(contract.base_version);
+    if (!noteId || !Number.isInteger(baseVersion)) return;
+    const applied = await this.db.query(`SELECT 1 FROM note_revisions WHERE note_id=$1 AND created_by_run_id=$2 LIMIT 1`, [noteId, runId]);
     if (applied.rows[0]) return;
     const update = objectValue(objectValue(row.output_json).notebook_update);
     const rawOps: unknown[] = Array.isArray(update.ops) ? update.ops : [];
-    if (optionalString(update.section_key) !== sectionKey || rawOps.length === 0) {
-      throw new Error("Ad-hoc research run output does not contain a valid notebook_update for the contracted section");
+    if (rawOps.length === 0) {
+      throw new Error("Ad-hoc research run output does not contain a valid notebook_update");
     }
     const refs = Array.isArray(update.refs) ? update.refs.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
-    const projectId = row.project_id;
-    await withQueryableTransaction(this.db, async (db) => {
-      const section = await db.query<{ version: number; content_json: Record<string, unknown> }>(
-        `SELECT s.version,s.content_json FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id
-          WHERE n.space_id=$1 AND n.project_id=$2 AND s.section_key=$3 FOR UPDATE OF s`,
-        [spaceId, projectId, sectionKey],
-      );
-      if (!section.rows[0]) return;
-      if (section.rows[0].version === baseVersion) {
-        const ops = parseNotebookOps(rawOps, pmBlocksText(section.rows[0].content_json).length);
-        await writeNotebookSection(db, {
-          spaceId, projectId, sectionKey,
-          expectVersion: baseVersion,
-          content: { kind: "ops", ops },
-          source: "ai_adhoc", runId, refs,
-          diff: { ops, base_version: baseVersion },
-        });
-        return;
-      }
-      const markdown = rawOps
-        .map((value) => optionalString(objectValue(value).markdown))
-        .filter((value): value is string => Boolean(value))
-        .join("\n\n");
-      if (!markdown) return;
-      const fallback: NotebookOp[] = [{ op: "append", markdown: `## AI update (section changed since v${baseVersion})\n\n${markdown}` }];
-      await writeNotebookSection(db, {
-        spaceId, projectId, sectionKey,
-        content: { kind: "ops", ops: fallback },
-        source: "ai_adhoc", runId, refs,
-        diff: { ops: fallback, base_version: baseVersion, conflict: true },
-      });
-    });
+    await withQueryableTransaction(this.db, (db) => applyNoteOpsWithConflictFallback(db, {
+      spaceId, noteId, baseVersion, rawOps, source: "ai_adhoc", runId, refs,
+    }));
   }
 
   async seedFromReport(input: { spaceId: string; projectId: string; runId: string; report: Record<string, unknown> }) {
     return withQueryableTransaction(this.db, async (db) => {
-      const service = new ProjectResearchWorkspaceService(db); const notebook = await service.ensureNotebook(input.spaceId, input.projectId);
+      const service = new ProjectResearchWorkspaceService(db, this.config);
+      await service.ensureWorkspace(input.spaceId, input.projectId);
       const sections: Record<SectionKey, string> = {
         understanding: [text(input.report.summary, 20_000), ...arrayObjects(input.report.findings).map((v) => `- ${text(v.title, 1000) || text(v.claim, 1000)} ${text(v.detail, 4000)}`)].filter(Boolean).join("\n\n"),
         questions: arrayStrings(input.report.limitations).map((v) => `- ${v}`).join("\n"),
@@ -316,11 +440,17 @@ export class ProjectResearchWorkspaceService {
       };
       const reportRefs = collectSourceItemRefs(input.report);
       for (const key of NOTEBOOK_SECTION_KEYS) {
-        const current = await db.query<{ version: number; normalized_text: string }>(`SELECT version,normalized_text FROM research_notebook_sections WHERE notebook_id=$1 AND section_key=$2`, [notebook.id, key]);
-        if (current.rows[0]?.version !== 1 || current.rows[0].normalized_text !== "") continue;
         const markdown = sections[key]; if (!markdown) continue;
-        await writeNotebookSection(db, {
-          spaceId: input.spaceId, projectId: input.projectId, sectionKey: key,
+        const current = await db.query<{ object_id: string; version: number; plain_text: string | null }>(
+          `SELECT n.object_id, n.version, n.plain_text FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+            WHERE so.space_id=$1 AND so.primary_project_id=$2 AND so.status='active' AND so.title=$3 LIMIT 1`,
+          [input.spaceId, input.projectId, SECTION_LABELS[key]],
+        );
+        const row = current.rows[0];
+        // Only seed a starter note that's never been touched (still v1, still empty).
+        if (!row || row.version !== 1 || (row.plain_text ?? "") !== "") continue;
+        await writeNote(db, {
+          spaceId: input.spaceId, noteId: row.object_id,
           expectVersion: 1,
           content: { kind: "doc", doc: markdownToPm(markdown) },
           source: "seed", runId: input.runId, refs: reportRefs,
@@ -343,7 +473,6 @@ export class ProjectResearchWorkspaceService {
           }
         }
       }
-      return notebook;
     });
   }
 
@@ -377,29 +506,106 @@ export class ProjectResearchWorkspaceService {
   private async adhocRunsUsedToday(spaceId: string, projectId: string): Promise<number> {
     const result = await this.db.query<{ used: number }>(
       `SELECT count(*)::int AS used FROM runs
-        WHERE space_id=$1 AND project_id=$2 AND capability_id='research.adhoc_analyze'
+        WHERE space_id=$1 AND project_id=$2 AND capability_id IN ('research.adhoc_analyze','research.ask')
           AND created_at >= date_trunc('day', now())`,
       [spaceId, projectId],
     );
     return result.rows[0]?.used ?? 0;
   }
 
-  private async ensureNotebook(spaceId: string, projectId: string): Promise<{ id: string; space_id: string; project_id: string; created_at: string; updated_at: string }> {
-    const current = await this.db.query<any>(`SELECT * FROM research_notebooks WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]);
-    if (current.rows[0]) return current.rows[0];
-    const id = randomUUID(); const now = new Date().toISOString(); const empty = markdownToPm("");
-    await this.db.query(`INSERT INTO research_notebooks (id,space_id,project_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$4) ON CONFLICT (project_id,space_id) DO NOTHING`, [id, spaceId, projectId, now]);
-    const found = await this.db.query<any>(`SELECT * FROM research_notebooks WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]); const notebook = found.rows[0];
-    for (const key of NOTEBOOK_SECTION_KEYS) {
-      const sectionId = randomUUID();
-      const inserted = await this.db.query(`INSERT INTO research_notebook_sections (id,space_id,notebook_id,section_key,content_json,normalized_text,content_hash,version,updated_at) VALUES ($1,$2,$3,$4,$5::jsonb,'',$6,1,$7) ON CONFLICT (notebook_id,section_key) DO NOTHING RETURNING id`, [sectionId, spaceId, notebook.id, key, JSON.stringify(empty), sha256(""), now]);
-      if (inserted.rows[0]) await insertInitialRevision(this.db, { spaceId, sectionId, doc: empty, at: now });
+  /**
+   * Ensures a project's auto-created Knowledge Notes folder exists (system
+   * folder, one per project) and is seeded with the starter notes. A
+   * project's notes are ordinary Notes, just filed under this folder and
+   * tagged with `primary_project_id`, so they're free-form and fully
+   * interlinked with the rest of Knowledge — not locked to a fixed
+   * 4-section structure.
+   */
+  private async ensureWorkspace(spaceId: string, projectId: string): Promise<{ folderId: string }> {
+    const folderId = await this.ensureProjectNotesFolder(spaceId, projectId);
+    await this.ensureStarterNotes(spaceId, projectId, folderId);
+    return { folderId };
+  }
+
+  private async ensureProjectNotesFolder(spaceId: string, projectId: string): Promise<string> {
+    const existing = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]);
+    if (existing.rows[0]) return existing.rows[0].id;
+    const project = await this.db.query<{ name: string }>(`SELECT name FROM projects WHERE id=$1 AND space_id=$2`, [projectId, spaceId]);
+    const parentId = await this.resolveProjectsParentFolderId(spaceId);
+    const id = randomUUID(); const now = new Date().toISOString();
+    await this.db.query(
+      `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,project_id,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'project',0,true,false,$5,$6,$6)
+       ON CONFLICT (space_id,project_id) WHERE project_id IS NOT NULL DO NOTHING`,
+      [id, spaceId, parentId, project.rows[0]?.name ?? "Project", projectId, now],
+    );
+    const found = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]);
+    return found.rows[0]!.id;
+  }
+
+  /** Every space is seeded with a protected, singleton "Projects" PARA
+   * folder (system_role='projects_root', see spaceSeeds.ts) — nest each
+   * project's auto-created notes folder under it so it shows up where a
+   * user following that structure would look for it. Looked up by role
+   * (like Inbox/Archive), not by name, since the folder is protected but a
+   * pre-existing space seeded before this role existed may not have one —
+   * that degrades gracefully to a root-level folder, matching prior
+   * behavior. */
+  private async resolveProjectsParentFolderId(spaceId: string): Promise<string | null> {
+    const result = await this.db.query<{ id: string }>(
+      `SELECT id FROM note_collections WHERE space_id=$1 AND system_role='projects_root' LIMIT 1`,
+      [spaceId],
+    );
+    return result.rows[0]?.id ?? null;
+  }
+
+  private async ensureStarterNotes(spaceId: string, projectId: string, folderId: string): Promise<void> {
+    const base = Date.now();
+    for (const [index, key] of NOTEBOOK_SECTION_KEYS.entries()) {
+      const title = SECTION_LABELS[key];
+      const existing = await resolveProjectNoteByTitle(this.db, spaceId, projectId, title);
+      // Strictly increasing timestamps keep starter-note ordering
+      // (understanding/questions/ideas/experiments) deterministic — they'd
+      // otherwise tie on created_at if stamped with one shared `now`.
+      if (!existing) await this.createProjectNote({ spaceId, projectId, folderId, title, doc: markdownToPm(""), createdByUserId: null, at: new Date(base + index).toISOString() });
     }
-    return notebook;
+  }
+
+  private async listProjectNotes(spaceId: string, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>> {
+    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>(
+      `SELECT n.object_id AS id, so.title, n.version, n.content_json
+         FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND so.status='active' ORDER BY so.created_at ASC`,
+      [spaceId, projectId],
+    );
+    return rows.rows;
+  }
+
+  private async createProjectNote(input: {
+    spaceId: string; projectId: string; folderId: string; title: string; doc: Record<string, unknown>;
+    createdByUserId: string | null; at: string;
+  }): Promise<{ id: string; version: number }> {
+    const objectId = randomUUID();
+    const normalized = normalizePmText(input.doc);
+    await this.db.query(
+      `INSERT INTO space_objects (id,space_id,object_type,title,status,visibility,owner_user_id,primary_project_id,created_by_user_id,created_at,updated_at)
+       VALUES ($1,$2,'note',$3,'active','space_shared',$4,$5,$4,$6,$6)`,
+      [objectId, input.spaceId, input.title, input.createdByUserId, input.projectId, input.at],
+    );
+    await this.db.query(
+      `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash)
+       VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,1,$5)`,
+      [objectId, input.spaceId, JSON.stringify(input.doc), normalized, sha256(normalized)],
+    );
+    await insertInitialNoteRevision(this.db, { spaceId: input.spaceId, noteId: objectId, doc: input.doc, at: input.at, userId: input.createdByUserId });
+    await this.db.query(
+      `INSERT INTO note_collection_items (id,space_id,collection_id,note_id,sort_order,created_at) VALUES ($1,$2,$3,$4,0,$5)`,
+      [randomUUID(), input.spaceId, input.folderId, objectId, input.at],
+    );
+    return { id: objectId, version: 1 };
   }
 }
 
-function assertSectionKey(value: string): asserts value is SectionKey { if (!NOTEBOOK_SECTION_KEYS.includes(value as SectionKey)) throw new HttpError(422, "invalid notebook section"); }
 function text(value: unknown, max: number): string { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
 function arrayStrings(value: unknown): string[] { return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []; }
 function arrayObjects(value: unknown): Record<string, unknown>[] { return Array.isArray(value) ? value.map(objectValue) : []; }

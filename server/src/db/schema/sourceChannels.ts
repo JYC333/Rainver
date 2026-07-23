@@ -1,8 +1,9 @@
-import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, boolean, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./auth";
 import { spaces } from "./spaces";
 import { sourceConnections, sourceItems } from "./sources";
+import { researchQueryAttempts } from "./research";
 
 export const sourceChannels = pgTable("source_channels", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -12,9 +13,9 @@ export const sourceChannels = pgTable("source_channels", {
 	name: varchar({ length: 512 }).notNull(),
 	channelType: varchar("channel_type", { length: 32 }).notNull(),
 	endpointUrl: text("endpoint_url"),
-	queryJson: jsonb("query_json").notNull(),
-	providerQueryJson: jsonb("provider_query_json").notNull(),
-	queryFingerprint: varchar("query_fingerprint", { length: 128 }).notNull(),
+	queryJson: jsonb("query_json"),
+	providerQueryJson: jsonb("provider_query_json"),
+	queryFingerprint: varchar("query_fingerprint", { length: 128 }),
 	status: varchar({ length: 32 }).notNull(),
 	fetchFrequency: varchar("fetch_frequency", { length: 32 }).notNull(),
 	scheduleRuleJson: jsonb("schedule_rule_json"),
@@ -34,6 +35,30 @@ export const sourceChannels = pgTable("source_channels", {
 	check("ck_source_channels_fetch_frequency", sql`fetch_frequency IN ('manual','hourly','daily','weekly')`),
 	check("ck_source_channels_query_object", sql`jsonb_typeof(query_json) = 'object'::text`),
 	check("ck_source_channels_provider_query_object", sql`jsonb_typeof(provider_query_json) = 'object'::text`),
+]);
+
+/** Executable, versioned configuration for search-type source channels. */
+export const sourceSearchSpecs = pgTable("source_search_specs", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	sourceChannelId: varchar("source_channel_id", { length: 36 }).notNull(),
+	providerKey: varchar("provider_key", { length: 32 }).notNull(),
+	researchQueryAttemptId: varchar("research_query_attempt_id", { length: 36 }),
+	compiledProviderQueryJson: jsonb("compiled_provider_query_json").notNull(),
+	queryFingerprint: varchar("query_fingerprint", { length: 128 }).notNull(),
+	activeVersion: integer("active_version").default(1).notNull(),
+	activatedAt: timestamp("activated_at", { withTimezone: true, mode: "string" }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_source_search_specs_channel").on(table.sourceChannelId),
+	uniqueIndex("uq_source_search_specs_attempt").on(table.researchQueryAttemptId).where(sql`research_query_attempt_id IS NOT NULL`),
+	foreignKey({ columns: [table.sourceChannelId, table.spaceId], foreignColumns: [sourceChannels.id, sourceChannels.spaceId], name: "source_search_specs_channel_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.researchQueryAttemptId], foreignColumns: [researchQueryAttempts.id], name: "source_search_specs_attempt_delete_fkey" }).onDelete("set null"),
+	foreignKey({ columns: [table.researchQueryAttemptId, table.spaceId], foreignColumns: [researchQueryAttempts.id, researchQueryAttempts.spaceId], name: "source_search_specs_attempt_fkey" }),
+	check("ck_source_search_specs_provider", sql`provider_key IN ('arxiv','openalex','semantic_scholar','web_search')`),
+	check("ck_source_search_specs_version", sql`active_version >= 1`),
+	check("ck_source_search_specs_compiled_query", sql`jsonb_typeof(compiled_provider_query_json) = 'object'::text`),
 ]);
 
 export const sourceChannelItemLinks = pgTable("source_channel_item_links", {

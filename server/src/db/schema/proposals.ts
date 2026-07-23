@@ -49,6 +49,7 @@ export const proposals = pgTable("proposals", {
 	index("ix_proposals_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
 	unique("uq_proposals_id_space_id").on(table.id, table.spaceId),
 	uniqueIndex("uq_proposals_run_action_idempotency").on(table.createdByRunId,table.proposalType,table.actionIdempotencyKey).where(sql`action_idempotency_key IS NOT NULL`),
+	uniqueIndex("uq_proposals_pending_research_query_strategy").on(table.spaceId, table.projectId, table.proposalType).where(sql`status='pending' AND proposal_type='research_query_strategy_activation'`),
 	foreignKey({
 			columns: [table.projectId],
 			foreignColumns: [projects.id],

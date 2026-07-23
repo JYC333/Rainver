@@ -25,7 +25,7 @@ import type { PluginHost } from "../plugins/host";
 import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService";
 import { OperationalAlertService } from "../notifications/operationalAlerts";
 import { ExecutionGraphRecoveryService } from "../execution/executionGraphRecoveryService";
-import { ProjectResearchOrchestrator } from "../projectResearch";
+import { ProjectResearchPipelineService } from "../projectResearch";
 import { enqueueDueResearchIntegrityChecks } from "../projectResearch/integrityMonitorService";
 
 export interface BackgroundServicesHandle {
@@ -217,7 +217,7 @@ async function reconcileSourceBackfills(db: ReturnType<typeof getDbPool>):Promis
 }
 
 export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>): Promise<void> {
-  const orchestrator = new ProjectResearchOrchestrator(db);
+  const orchestrator = new ProjectResearchPipelineService(db);
   const unreconciledRuns = await db.query<{ id: string; space_id: string }>(
     `SELECT id, space_id
        FROM source_post_processing_runs

@@ -20,6 +20,7 @@ function state(current_stage: ResearchStage, stage_state: ResearchOperationState
     research_question_version: 1,
     report_depth: "full",
     question_refine_skipped: false,
+    research_scope: { in: [], out: [], sub_questions: [], must_have: [], nice_to_have: [] },
     channel_ids: [],
     project_source_binding_ids: [],
     source_post_processing_rule_ids: [],
@@ -53,6 +54,8 @@ describe("project research transition authority", () => {
         );
       }
     }
+    expect(isLegalResearchTransition("synthesis", "complete")).toBe(true);
+    expect(isLegalResearchTransition("failed", "complete")).toBe(true);
   });
 
   it("derives step progress from the stage and blocks the review stage", () => {
@@ -83,12 +86,12 @@ describe("project research transition authority", () => {
     expect(restored.watermark).toEqual({ before: null, after: null, overlap_hours: 48 });
   });
 
-  it("recovers a synthesis run id from the legacy progress projection", () => {
+  it("does not infer the authoritative synthesis run id from progress telemetry", () => {
     const restored = researchState({
       current_stage: "synthesis",
       synthesis_progress: { run_id: "run-from-progress", run_status: "succeeded" },
     });
-    expect(restored.synthesis_run_id).toBe("run-from-progress");
+    expect(restored.synthesis_run_id).toBeNull();
   });
 
   it("unions append-only source items while applying a stale snapshot", () => {

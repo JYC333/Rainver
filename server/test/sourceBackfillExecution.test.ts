@@ -6,21 +6,21 @@ import { vi } from "vitest";
 
 describe("source backfill extraction windows",()=>{
   it("adds the approved date window to arXiv scans",()=>{
-    const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", provider_query_json: { search_query: "cat:cs.AI", monitoring_field: "submittedDate" } }, { from: "2026-01-02T03:04:05.000Z", to: "2026-02-03T04:05:06.000Z", max_items: 17 }, {} ).url;
+    const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI", monitoring_field: "submittedDate" } }, { from: "2026-01-02T03:04:05.000Z", to: "2026-02-03T04:05:06.000Z", max_items: 17 }, {} ).url;
     const parsed=new URL(url);
     expect(parsed.searchParams.get("search_query")).toBe("(cat:cs.AI) AND submittedDate:[202601020304 TO 202602030405]");
     expect(parsed.searchParams.get("max_results")).toBe("17");
   });
 
   it("adds bounded pagination to cursor scans",()=>{
-    const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", provider_query_json: { search_query: "cat:cs.AI" } }, { from: "2026-01-01T00:00:00.000Z", to: "2026-01-02T00:00:00.000Z", cursor: 2, max_items: 25 }, {} ).url;
+    const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI" } }, { from: "2026-01-01T00:00:00.000Z", to: "2026-01-02T00:00:00.000Z", cursor: 2, max_items: 25 }, {} ).url;
     const parsed=new URL(url);
     expect(parsed.searchParams.get("start")).toBe("200");
     expect(parsed.searchParams.get("max_results")).toBe("25");
   });
 
   it("uses lastUpdatedDate for historical windows when configured", () => {
-    const url = sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", provider_query_json: { search_query: "cat:cs.AI", monitoring_field: "lastUpdatedDate" } }, {
+    const url = sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI", monitoring_field: "lastUpdatedDate" } }, {
         from: "2026-01-01T00:00:00.000Z",
         to: "2026-01-02T00:00:00.000Z",
         max_items: 100,
@@ -31,7 +31,7 @@ describe("source backfill extraction windows",()=>{
 
   it("keeps an overlap window for incremental arXiv scans", () => {
     const url = sourceConnectorRegistry.get("arxiv_api").buildScanRequest(
-      { endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", provider_query_json: { search_query: "cat:cs.AI", monitoring_field: "submittedDate" } },
+      { endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI", monitoring_field: "submittedDate" } },
       { last_published_at: "2026-01-03T12:00:00.000Z" },
     ).url;
     const parsed = new URL(url);

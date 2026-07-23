@@ -3,7 +3,7 @@ import { BookOpen, Edit2, RefreshCw } from 'lucide-react'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import type {
   ExtractedEvidence, Project, ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchCheckpoint,
-  ProjectResearchLiteratureMatrixItem, ProjectResearchScreeningCriteria,
+  ProjectResearchLiteratureMatrixItem,
   ProjectResearchWorkflow, ProjectSourceBinding, ReaderAnnotation, SourceItem,
   SourceChannel,
   ProjectOperation,
@@ -60,6 +60,7 @@ function researchStageLabel(value: unknown): string {
     case 'monitor_setup': return 'Preparing literature monitors'
     case 'backfill': return 'Importing literature history'
     case 'screening': return 'Screening papers'
+    case 'comparison': return 'Comparing new evidence'
     case 'synthesis': return 'Generating synthesis'
     case 'idea_review': return 'Waiting for idea review'
     case 'complete': return 'Research complete'
@@ -74,12 +75,21 @@ function isEmptySearchOperation(operation: ProjectOperation | null): boolean {
   return emptyResult.kind === 'no_source_items'
 }
 
+function noReportOutcome(operation: ProjectOperation | null): Record<string, unknown> | null {
+  if (!operation) return null
+  const outcome = objectValue(operation.progress_json.empty_result)
+  return outcome.kind === 'no_relevant_sources' || outcome.kind === 'no_coherent_synthesis' ? outcome : null
+}
+
+// Mirrors the backend's canonical stage-index table (stateMachine.ts's
+// researchStageIndex) — comparison and synthesis share one visual step
+// ("Compare or synthesize evidence").
 function researchStageIndex(value: unknown): number {
   switch (value) {
     case 'monitor_setup': return 0
     case 'backfill': return 1
     case 'screening': return 2
-    case 'synthesis': return 3
+    case 'comparison': case 'synthesis': return 3
     case 'idea_review': return 4
     default: return 0
   }
@@ -94,6 +104,27 @@ export function researchOperationStage(operation: ProjectOperation): unknown {
     return operation.progress_json.failed_stage
   }
   return operation.progress_json.current_stage
+}
+
+/**
+ * Comparison has no dedicated progress read model (unlike screening_progress
+ * / synthesis_progress) — everything here is derived from the pending/
+ * failed/results pools already on progress_json (see
+ * ProjectResearchMonitoringCoordinator.queueComparison) plus the
+ * remaining-batch count the backend already computes into
+ * steps[3].detail_json on every dispatch.
+ */
+function comparisonProgress(operation: ProjectOperation): { done: number; total: number; remainingBatches: number | null } {
+  const progress = operation.progress_json
+  const results = Array.isArray(progress.comparison_results_json) ? progress.comparison_results_json.length : 0
+  const pending = Array.isArray(progress.comparison_pending_source_item_ids) ? progress.comparison_pending_source_item_ids.length : 0
+  const failed = Array.isArray(progress.comparison_failed_source_item_ids) ? progress.comparison_failed_source_item_ids.length : 0
+  const inFlight = typeof progress.comparison_run_id === 'string' && Array.isArray(progress.comparison_source_item_ids)
+    ? progress.comparison_source_item_ids.length
+    : 0
+  const detail = operation.steps?.find(step => step.seq === 3)?.detail_json
+  const remainingBatches = typeof detail?.remaining_batches === 'number' ? detail.remaining_batches : null
+  return { done: results, total: results + pending + failed + inFlight, remainingBatches }
 }
 
 export function researchOperationPercent(operation: ProjectOperation): number {
@@ -117,16 +148,25 @@ export function researchOperationPercent(operation: ProjectOperation): number {
       : totalBatches > 0
         ? Math.min(0.94, 0.08 + (completedBatches / totalBatches) * 0.86)
         : 0.08
+  const comparison = comparisonProgress(operation)
+  const comparisonFraction = comparison.total > 0
+    ? Math.min(0.94, 0.08 + (comparison.done / comparison.total) * 0.86)
+    : 0.08
   const stageFraction = stage === 'backfill'
     ? totalSegments > 0 ? Math.min(0.98, (completedSegments + runningSegments * 0.35) / totalSegments) : 0.08
     : stage === 'screening'
       ? screeningFraction
+    : stage === 'comparison'
+      ? comparisonFraction
     : operation.status === 'waiting_review' ? 0.9 : 0.15
   return Math.min(99, Math.max(3, Math.round(((index + stageFraction) / 5) * 100)))
 }
 
 export function researchOperationDetail(operation: ProjectOperation): string {
   if (isEmptySearchOperation(operation)) return 'Search returned 0 papers · setup required'
+  const outcome = noReportOutcome(operation)
+  if (outcome?.kind === 'no_relevant_sources') return 'Screening complete · no relevant evidence for synthesis'
+  if (outcome?.kind === 'no_coherent_synthesis') return 'Research complete · no coherent citation-backed report'
   const stage = researchOperationStage(operation)
   const backfill = objectValue(operation.progress_json.backfill_progress)
   const total = numberValue(backfill.total_segments)
@@ -150,6 +190,13 @@ export function researchOperationDetail(operation: ProjectOperation): string {
       : screening.phase === 'ready_for_review' ? 'Screening complete' : 'Preparing screening batches'
     return `${batchDetail} · ${classified}/${screeningTotal} papers classified`
   }
+  if (stage === 'comparison') {
+    const { done, total: comparisonTotal, remainingBatches } = comparisonProgress(operation)
+    const batchDetail = remainingBatches === null
+      ? 'Preparing comparison batches'
+      : remainingBatches === 0 ? 'Finishing comparison' : `${remainingBatches} batch${remainingBatches === 1 ? '' : 'es'} remaining`
+    return comparisonTotal > 0 ? `${batchDetail} · ${done}/${comparisonTotal} papers compared` : batchDetail
+  }
   const synthesis = objectValue(operation.progress_json.synthesis_progress)
   if (stage === 'synthesis' && typeof synthesis.run_status === 'string') {
     const since = typeof synthesis.started_at === 'string'
@@ -164,6 +211,8 @@ export function researchOperationDetail(operation: ProjectOperation): string {
 
 function researchOperationNextStep(operation: ProjectOperation): string {
   if (isEmptySearchOperation(operation)) return 'Next: adjust the saved setup, then start the initial literature search again. Screening and synthesis were skipped.'
+  const outcome = noReportOutcome(operation)
+  if (outcome) return 'Next: review the collected papers and adjust the research scope or search settings. This is a completed research outcome, not an execution failure.'
   const stage = researchOperationStage(operation)
   const screening = objectValue(operation.progress_json.screening_progress)
   if (operation.status === 'failed') {
@@ -173,6 +222,7 @@ function researchOperationNextStep(operation: ProjectOperation): string {
   if (stage === 'screening' && numberValue(screening.total_items) === 0) return 'Next: revise the search query or date range, then rescan the empty windows. Synthesis is paused until papers are found.'
   if (stage === 'screening' && screening.phase === 'ready_for_review') return 'Next: review the screening summary; approval will build the matrix and queue synthesis.'
   if (stage === 'screening') return 'Next: finish all screening batches; the screening review opens automatically when every paper is classified.'
+  if (stage === 'comparison') return 'Next: finish comparing newly screened papers against the current understanding; synthesis starts automatically once done.'
   if (stage === 'synthesis') return 'Next: read the generated research report; its idea candidates will then enter review.'
   if (stage === 'idea_review') return 'Next: review the idea batch; approval completes this run and activates monitoring.'
   if (stage === 'monitor_setup') return 'Next: finish monitor setup, then import the selected history range.'
@@ -268,7 +318,6 @@ export interface AcademicResearchWorkbenchProps {
   researchRunStatuses: Record<string, string>
   researchDataLoading: boolean
   modelProviders: ModelProviderOut[]
-  screeningCriteria: ProjectResearchScreeningCriteria | null
   researchActionBusy: string | null
   onSaveInitialIntake: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
   onRefineQuestion: (input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }) => Promise<ProjectResearchQuestionRefinement>
@@ -285,7 +334,6 @@ export interface AcademicResearchWorkbenchProps {
   onRebuildMatrix: () => void
   onRunIntegrity: () => void
   onEditQuestion: () => void
-  onSourceCreated: (channel: SourceChannel) => Promise<void> | void
 }
 
 export function AcademicResearchWorkbench({
@@ -304,7 +352,6 @@ export function AcademicResearchWorkbench({
   researchRunStatuses,
   researchDataLoading,
   modelProviders,
-  screeningCriteria,
   researchActionBusy,
   onSaveInitialIntake,
   onRefineQuestion,
@@ -321,7 +368,6 @@ export function AcademicResearchWorkbench({
   onRebuildMatrix,
   onRunIntegrity,
   onEditQuestion,
-  onSourceCreated,
 }: AcademicResearchWorkbenchProps) {
   const [researchSetupOpen, setResearchSetupOpen] = useState(false)
   const [extendHistoryOpen, setExtendHistoryOpen] = useState(false)
@@ -507,7 +553,6 @@ export function AcademicResearchWorkbench({
         projectId={project.id}
         open={researchSetupOpen}
         draft={researchSetupDraft}
-        sourceChannels={sourceChannels}
         busyAction={researchActionBusy}
         modelProviders={modelProviders}
         canAct={canAct}
@@ -515,7 +560,6 @@ export function AcademicResearchWorkbench({
         onSave={onSaveInitialIntake}
         onRefineQuestion={onRefineQuestion}
         onStart={onStartInitialIntake}
-        onSourceCreated={onSourceCreated}
         onEditQuestion={onEditQuestion}
       />
       <section className="rounded-lg border border-border bg-card overflow-hidden">
@@ -596,13 +640,20 @@ export function AcademicResearchWorkbench({
                 </div>
                 <Badge variant="warning">{pendingCheckpoints.length} pending</Badge>
               </div>
-              {pendingCheckpoints.map(checkpoint => (
-                <ResearchCheckpointReview
-                  key={checkpoint.id}
-                  checkpoint={checkpoint}
-                  onDecide={decision => onDecideCheckpoint(checkpoint, decision)}
-                />
-              ))}
+              {pendingCheckpoints.map(checkpoint => {
+                const operationId = typeof checkpoint.machine_result_json?.operation_id === 'string'
+                  ? checkpoint.machine_result_json.operation_id
+                  : null
+                return (
+                  <ResearchCheckpointReview
+                    key={checkpoint.id}
+                    checkpoint={checkpoint}
+                    onDecide={decision => onDecideCheckpoint(checkpoint, decision)}
+                    onRefresh={operationId ? () => onReconcileOperation(operationId) : undefined}
+                    refreshing={researchActionBusy === 'reconcile-operation'}
+                  />
+                )
+              })}
             </div>
           )}
 

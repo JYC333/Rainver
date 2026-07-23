@@ -92,8 +92,14 @@ function runtimeHostRequest(
   adapterType: ManagedApiAdapterType,
   modelProviderId: string,
 ): RuntimeHostExecuteRequest {
-  const systemPrompt =
-    input.system_prompt ?? input.run.system_prompt ?? input.run.instruction ?? null;
+  // `instruction` is per-run domain content (e.g. the grounding text a
+  // capability builds for this specific call), distinct from the agent's
+  // persona `system_prompt`. It must always reach the model, not just when
+  // no persona is configured — folding it only into `systemPrompt` here
+  // meant any agent with a configured persona (the common case) silently
+  // dropped it entirely. Route it through the context slot instead, where
+  // it composes alongside the persona rather than being shadowed by it.
+  const systemPrompt = input.system_prompt ?? input.run.system_prompt ?? null;
   const groupedAgentIdentity = groupedAgentIdentityContext(input.run);
   const override = recordOrEmpty(input.run.model_override_json);
   const messages = canonicalMessages(override.messages);
@@ -113,7 +119,7 @@ function runtimeHostRequest(
     system_prompt: composeSystemContext(
       groupedAgentIdentity,
       systemPrompt,
-      input.context_text ?? null,
+      input.context_text ?? input.run.instruction ?? null,
       chatContextPreamble,
     ),
     prompt: input.prompt ?? input.run.prompt ?? "",

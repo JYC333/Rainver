@@ -79,6 +79,13 @@ import {
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter";
 import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes";
 import {
+  writeNote,
+  listNoteRevisions as listNoteRevisionRows,
+  rollbackNote as rollbackNoteContent,
+  insertInitialNoteRevision,
+  sha256,
+} from "./noteRevisionService";
+import {
   RELATION_CREATE_STATUSES,
   claimCreateStatusError,
   claimResolutionStateError,
@@ -1255,7 +1262,7 @@ export class PgKnowledgeRepository {
       `SELECT ${NOTE_COLUMNS}
          FROM ${NOTE_FROM}
          LEFT JOIN LATERAL (
-           SELECT nci.collection_id
+           SELECT nci.collection_id, nci.sort_order
              FROM note_collection_items nci
             WHERE nci.note_id = n.object_id
               AND nci.space_id = n.space_id
@@ -1266,7 +1273,7 @@ export class PgKnowledgeRepository {
            ON nci_filter.note_id = n.object_id
           AND nci_filter.space_id = n.space_id
         ${built.where}
-        ORDER BY so.updated_at DESC, n.object_id DESC
+        ORDER BY ${filters.collectionId ? "nci_filter.sort_order ASC," : ""} so.updated_at DESC, n.object_id DESC
         LIMIT $${built.params.length + 1} OFFSET $${built.params.length + 2}`,
       [...built.params, filters.limit, filters.offset],
     );
@@ -1290,6 +1297,25 @@ export class PgKnowledgeRepository {
   ): Promise<Record<string, unknown>> {
     const parentId = optionalString(body.parent_id);
     if (parentId) await this.requireNoteCollection(identity, parentId);
+    const requestedSortOrder = numberValue(body.sort_order);
+    let sortOrder = requestedSortOrder;
+    if (sortOrder === null) {
+      // The route runs this method inside a transaction. A parent-scoped
+      // advisory lock prevents concurrent creates into an empty sibling list
+      // from receiving the same append position.
+      await this.db.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        [`note-collection-order:${identity.spaceId}:${parentId ?? "root"}`],
+      );
+      const next = await this.db.query<{ sort_order: number }>(
+        `SELECT COALESCE(MAX(sort_order), -1) + 1 AS sort_order
+           FROM note_collections
+          WHERE space_id = $1
+            AND parent_id IS NOT DISTINCT FROM $2`,
+        [identity.spaceId, parentId],
+      );
+      sortOrder = next.rows[0]?.sort_order ?? 0;
+    }
     const now = new Date().toISOString();
     const result = await this.db.query<NoteCollectionRow>(
       `INSERT INTO note_collections (
@@ -1301,11 +1327,11 @@ export class PgKnowledgeRepository {
        )
        RETURNING ${NOTE_COLLECTION_COLUMNS}`,
       [
-        randomUUID(),
+        optionalString(body.id) ?? randomUUID(),
         identity.spaceId,
         parentId,
         requiredString(body.name, "name"),
-        numberValue(body.sort_order) ?? 0,
+        sortOrder,
         now,
       ],
     );
@@ -1321,6 +1347,13 @@ export class PgKnowledgeRepository {
     if (!current) throw new HttpError(404, "Note collection not found");
     if (current.is_system && Object.hasOwn(body, "system_role")) {
       throw new HttpError(422, "system_role cannot be changed");
+    }
+    // System folders (Inbox/Archive/each project's notes folder) are exempt
+    // from client-side drag affordances via isProtectedCollection(), but that
+    // is UI-only — enforce it here too so the invariant holds regardless of
+    // caller.
+    if (current.is_system && Object.hasOwn(body, "parent_id") && optionalString(body.parent_id) !== current.parent_id) {
+      throw new HttpError(422, "System folders cannot be moved");
     }
     const parentId = Object.hasOwn(body, "parent_id")
       ? optionalString(body.parent_id)
@@ -1383,10 +1416,10 @@ export class PgKnowledgeRepository {
        ), note AS (
          INSERT INTO notes (
            object_id, space_id, content_json, content_format, content_schema_version,
-           plain_text, created_from_activity_id
+           plain_text, created_from_activity_id, version, content_hash
          ) VALUES (
            $1, $2, $8::jsonb, $9, COALESCE($10::int, 1),
-           $11, $12
+           $11, $12, 1, $13
          )
        )
        SELECT $1::varchar AS id`,
@@ -1403,9 +1436,17 @@ export class PgKnowledgeRepository {
         numberValue(body.content_schema_version),
         plainText,
         optionalString(body.created_from_activity_id),
+        sha256(plainText ?? ""),
       ],
     );
     const note = result.rows[0]!;
+    await insertInitialNoteRevision(this.db, {
+      spaceId: identity.spaceId,
+      noteId: note.id,
+      doc: optionalObject(body.content_json) ?? {},
+      at: now,
+      userId: identity.userId,
+    });
     const collectionId = optionalString(body.collection_id);
     if (collectionId) await this.addNoteToCollection(identity, note.id, collectionId);
     await this.safeReindex((p) => p.reindex(identity.spaceId, "note", note.id));
@@ -1415,38 +1456,31 @@ export class PgKnowledgeRepository {
   async updateNote(identity: SpaceUserIdentity, noteId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
     const now = new Date().toISOString();
-    const plainText = Object.hasOwn(body, "plain_text") ? optionalString(body.plain_text) : undefined;
     const status = optionalString(body.status);
     if (status && !NOTE_STATUSES.has(status)) throw new HttpError(422, "invalid note status");
     await this.db.query(
       `WITH obj AS (
          UPDATE space_objects
             SET title = COALESCE($3, title),
-                summary = CASE WHEN $10::boolean THEN $11 ELSE summary END,
-                status = COALESCE($12::varchar(32), status),
-                primary_project_id = CASE WHEN $13::boolean THEN $14 ELSE primary_project_id END,
-                archived_at = CASE WHEN $12::varchar(32) = 'archived' THEN $15::timestamptz ELSE archived_at END,
-                deleted_at = CASE WHEN $12::varchar(32) = 'deleted' THEN $15::timestamptz ELSE deleted_at END,
-                updated_at = $15
+                summary = CASE WHEN $6::boolean THEN $7 ELSE summary END,
+                status = COALESCE($8::varchar(32), status),
+                primary_project_id = CASE WHEN $9::boolean THEN $10 ELSE primary_project_id END,
+                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz ELSE archived_at END,
+                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz ELSE deleted_at END,
+                updated_at = $11
           WHERE id = $1 AND space_id = $2 AND object_type = 'note'
           RETURNING id
        )
        UPDATE notes
-          SET content_json = CASE WHEN $4::boolean THEN $5::jsonb ELSE content_json END,
-              content_format = COALESCE($6, content_format),
-              content_schema_version = COALESCE($7::int, content_schema_version),
-              plain_text = CASE WHEN $8::boolean THEN $9 ELSE plain_text END
+          SET content_format = COALESCE($4, content_format),
+              content_schema_version = COALESCE($5::int, content_schema_version)
         WHERE object_id = $1 AND space_id = $2 AND EXISTS (SELECT 1 FROM obj)`,
       [
         noteId,
         identity.spaceId,
         optionalString(body.title),
-        Object.hasOwn(body, "content_json"),
-        JSON.stringify(optionalObject(body.content_json)),
         optionalString(body.content_format),
         numberValue(body.content_schema_version),
-        plainText !== undefined,
-        plainText ?? null,
         Object.hasOwn(body, "excerpt"),
         optionalString(body.excerpt),
         status,
@@ -1455,8 +1489,37 @@ export class PgKnowledgeRepository {
         now,
       ],
     );
+    // Content changes go through the versioned writer so every save (not
+    // just AI-driven ones) produces a note_revisions row and an incrementing
+    // version — see .agent knowledge-base notes-vs-AI-co-edit unification.
+    if (Object.hasOwn(body, "content_json")) {
+      const plainText = Object.hasOwn(body, "plain_text") ? optionalString(body.plain_text) ?? "" : undefined;
+      const result = await writeNote(this.db, {
+        spaceId: identity.spaceId,
+        noteId,
+        expectVersion: Object.hasOwn(body, "expect_version") ? numberValue(body.expect_version) ?? null : null,
+        content: { kind: "doc", doc: optionalObject(body.content_json) ?? {}, plainText },
+        source: "user_edit",
+        userId: identity.userId,
+      });
+      if (result.outcome === "version_conflict") {
+        throw new HttpError(409, "Note changed since it was loaded; reload and retry", { current_version: result.currentVersion });
+      }
+    }
     const collectionId = optionalString(body.collection_id);
     if (collectionId) await this.addNoteToCollection(identity, noteId, collectionId);
+    await this.safeReindex((p) => p.reindex(identity.spaceId, "note", noteId));
+    return (await this.getNote(identity, noteId))!;
+  }
+
+  async listNoteRevisions(identity: SpaceUserIdentity, noteId: string, limit?: number): Promise<Array<Record<string, unknown>>> {
+    if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
+    return listNoteRevisionRows(this.db, { spaceId: identity.spaceId, noteId, limit });
+  }
+
+  async rollbackNote(identity: SpaceUserIdentity, noteId: string, toVersion: number): Promise<Record<string, unknown>> {
+    if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
+    await rollbackNoteContent(this.db, { spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId });
     await this.safeReindex((p) => p.reindex(identity.spaceId, "note", noteId));
     return (await this.getNote(identity, noteId))!;
   }
@@ -2094,7 +2157,7 @@ export class PgKnowledgeRepository {
       `SELECT ${NOTE_COLUMNS}
          FROM ${NOTE_FROM}
          LEFT JOIN LATERAL (
-           SELECT nci.collection_id
+           SELECT nci.collection_id, nci.sort_order
              FROM note_collection_items nci
             WHERE nci.note_id = n.object_id
               AND nci.space_id = n.space_id
@@ -2134,11 +2197,22 @@ export class PgKnowledgeRepository {
     );
     if (!exists.rows[0]) throw new HttpError(404, "Note collection not found");
     await this.db.query(`DELETE FROM note_collection_items WHERE note_id = $1 AND space_id = $2`, [noteId, identity.spaceId]);
+    // Default: append after this collection's existing notes, so a moved-in
+    // note doesn't silently jump to the front of an already-ordered folder.
+    const sortOrder = await this.nextNoteSortOrder(identity.spaceId, collectionId);
     await this.db.query(
       `INSERT INTO note_collection_items (id, space_id, collection_id, note_id, sort_order, created_at)
-       VALUES ($1, $2, $3, $4, 0, $5)`,
-      [randomUUID(), identity.spaceId, collectionId, noteId, new Date().toISOString()],
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [randomUUID(), identity.spaceId, collectionId, noteId, sortOrder, new Date().toISOString()],
     );
+  }
+
+  private async nextNoteSortOrder(spaceId: string, collectionId: string): Promise<number> {
+    const result = await this.db.query<{ next_sort_order: number }>(
+      `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order FROM note_collection_items WHERE space_id=$1 AND collection_id=$2`,
+      [spaceId, collectionId],
+    );
+    return Number(result.rows[0]?.next_sort_order ?? 0);
   }
 
   private async insertKnowledgeProposal(inputIdentity: SpaceUserIdentity, input: {

@@ -131,6 +131,7 @@ export const researchScanSummaries = pgTable("research_scan_summaries", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	uniqueIndex("uq_research_scan_summaries_workflow_scan").using("btree", table.spaceId.asc().nullsLast(), table.workflowId.asc().nullsLast(), table.scanKey.asc().nullsLast()),
+	unique("uq_research_scan_summaries_id_space").on(table.id, table.spaceId),
 	index("ix_research_scan_summaries_project_scanned_at").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.scannedAt.desc().nullsLast()),
 	foreignKey({
 		columns: [table.workflowId, table.spaceId],

@@ -101,11 +101,16 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
+      research_context_version_id: expect.any(String),
       assessment: { answerable: false },
       suggested_questions: expect.arrayContaining([expect.stringContaining("tool-using coding agents")]),
       clarifying_questions: [{ question: "Which runtime should be studied?", options: ["Sandboxed CLI", "Managed API"], allow_multiple: false }],
     });
     const managedAgent = await pool!.query(`SELECT id FROM agents WHERE space_id=$1 AND agent_kind='system_research'`, [SPACE]);
     expect(managedAgent.rows).toHaveLength(1);
+    const contexts = await pool!.query(`SELECT objective,context_json,assessment_json FROM project_research_context_versions WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    expect(contexts.rows).toHaveLength(1);
+    expect(contexts.rows[0]).toMatchObject({ objective: "agent", assessment_json: { answerable: false } });
+    expect(contexts.rows[0].context_json).toMatchObject({ in_scope: ["tool-using coding agents"] });
   });
 });

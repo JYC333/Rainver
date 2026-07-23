@@ -11,6 +11,7 @@ import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
 import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialog } from './SourceMonitorDialog'
+import { sourceQueryText } from './sourceQueryText'
 import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup } from '../../types/api'
 
 interface SourceGroup {
@@ -41,15 +42,7 @@ function sourceIcon(channel: Pick<SourceChannel, 'channel_type'>) {
 }
 
 function monitorDescription(channel: SourceChannel): string {
-  if (channel.channel_type === 'search') {
-    if (channel.provider.key === 'arxiv' && channel.query.mode === 'all') return 'All arXiv papers'
-    if (channel.provider.key === 'arxiv' && channel.query.mode === 'recent_by_category') {
-      const categories = Array.isArray(channel.query.categories) ? channel.query.categories.join(', ') : ''
-      return categories ? `Categories: ${categories}` : 'arXiv category stream'
-    }
-    return String(channel.query.search_query ?? 'Configured academic search')
-  }
-  return channel.endpoint_url ?? 'Configured monitor'
+  return sourceQueryText(channel)
 }
 
 function formatTimestamp(value: string | null): string {

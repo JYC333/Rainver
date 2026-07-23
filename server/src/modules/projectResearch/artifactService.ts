@@ -11,6 +11,7 @@ const MATRIX_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 interface MatrixRow {
   id: string;
   object_id: string | null;
+  source_connection_id: string | null;
   source_item_id: string | null;
   evidence_id: string | null;
   title: string | null;
@@ -50,10 +51,9 @@ export class ProjectResearchArtifactService {
         LIMIT 1`,
       [input.spaceId, input.projectId, input.operationId],
     );
-    if (existing.rows[0]) return existing.rows[0].id;
-
     const rows = await this.db.query<MatrixRow>(
-      `SELECT pci.id, pci.object_id, si.id AS source_item_id, pci.evidence_id,
+      `SELECT pci.id, pci.object_id, pci.source_connection_id,
+              si.id AS source_item_id, pci.evidence_id,
               si.title, si.source_external_id, si.occurred_at,
               pci.triage_status, pci.relevance, pci.confidence, pci.role,
               pci.reason, si.metadata_json AS source_metadata,
@@ -120,8 +120,27 @@ export class ProjectResearchArtifactService {
         references: [citationReference(row)].filter(Boolean),
       })),
     });
-    const artifactId = randomUUID();
+    const sourceConnectionIds = [...new Set(rows.rows
+      .map((row) => row.source_connection_id)
+      .filter((value): value is string => Boolean(value)))];
+    const metadata = JSON.stringify({
+      schema_version: "literature_matrix.v1",
+      project_research_operation_id: input.operationId,
+      project_research_workflow_id: input.workflowId,
+      source_connection_ids: sourceConnectionIds,
+    });
     const now = new Date().toISOString();
+    if (existing.rows[0]) {
+      await this.db.query(
+        `UPDATE artifacts
+            SET content=$1, title=$2, updated_at=$3, metadata_json=$4::jsonb
+          WHERE id=$5 AND space_id=$6 AND project_id=$7`,
+        [content, `Literature Matrix (${now})`, now, metadata, existing.rows[0].id, input.spaceId, input.projectId],
+      );
+      return existing.rows[0].id;
+    }
+
+    const artifactId = randomUUID();
     await this.db.query(
       `INSERT INTO artifacts (
          id, space_id, project_id, artifact_type, surface_role, title, content, mime_type,
@@ -139,11 +158,7 @@ export class ProjectResearchArtifactService {
         content,
         JSON.stringify(["json"]),
         now,
-        JSON.stringify({
-          schema_version: "literature_matrix.v1",
-          project_research_operation_id: input.operationId,
-          project_research_workflow_id: input.workflowId,
-        }),
+        metadata,
         input.ownerUserId,
       ],
     );

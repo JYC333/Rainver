@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
 import {
+  __setNetworkRetryDelayForTests,
   __setProviderCommandStoreForTests,
   __setProviderHttpClientForTests,
   type ProviderCommandStore,
@@ -14,9 +15,17 @@ import { resolveTestUsageAttribution } from "./support/usageAttribution";
 
 let app: FastifyInstance;
 
+// Network-error retries add a real delay between attempts (see
+// NETWORK_ERROR_RETRY_DELAY_MS in invocation.ts) — skip it here so tests
+// that exhaust retries don't take multiple real seconds.
+beforeEach(() => {
+  __setNetworkRetryDelayForTests(async () => {});
+});
+
 afterEach(async () => {
   __setProviderCommandStoreForTests(null);
   __setProviderHttpClientForTests(null);
+  __setNetworkRetryDelayForTests(null);
   await app?.close();
 });
 
@@ -623,8 +632,52 @@ describe("runtime host internal route", () => {
       "target:provider-1",
       "fetch:gpt-4o-mini",
       "fetch:gpt-4o-mini",
+      "fetch:gpt-4o-mini",
+      "fetch:gpt-4o-mini",
       "outcome:member-1:failure",
     ]);
+    // Report the real attempt count instead of a hardcoded "attempt=1" —
+    // this request has no output_format, so it isn't in the message text,
+    // but the structured fields must still be accurate.
+    expect(res.json().output_json).toMatchObject({ attempt: 4 });
+  });
+
+  it("reports the real retry count in a structured-output failure instead of a hardcoded attempt=1", async () => {
+    const calls: string[] = [];
+    __setProviderCommandStoreForTests(fakeStore(calls));
+    __setProviderHttpClientForTests({
+      async fetch(_url, init) {
+        calls.push(`fetch:${JSON.parse(String(init?.body)).model}`);
+        const error = new Error("fetch failed") as Error & { cause?: Error };
+        error.cause = new Error("read ECONNRESET");
+        throw error;
+      },
+    });
+    app = buildServer(config(), { logger: false });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/internal/runtime-host/execute",
+      headers: { "x-agent-space-internal-token": "internal-token" },
+      payload: requestBody({
+        output_format: {
+          type: "json_schema",
+          schema_id: "research.test.v1",
+          schema: { type: "object" },
+          strict: true,
+        },
+      }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Same-key retries for a pure network failure (no response ever
+    // received): 1 initial attempt + 3 retries (see MAX_NETWORK_ERROR_RETRIES
+    // in invocation.ts) = 4 real requests before the provider fallback layer
+    // gives up — a genuine connection reset is unrelated to which key is
+    // used and often clears up within a few attempts, unlike a
+    // provider-classified transient *response* (e.g. 503).
+    expect(res.json().error_text).toContain("attempt=4");
+    expect(res.json().output_json).toMatchObject({ attempt: 4 });
   });
 
   it("forwards native messages to the provider when supplied", async () => {

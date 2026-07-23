@@ -144,6 +144,16 @@ OpenCode-first Router preference and does not route the managed API path through
 **Risk watch**
 - New adapters can duplicate or bypass credential, sandbox, and policy behavior.
 - Critical-risk execution must fail closed until Docker isolation is actually implemented.
+- Provider fallback must record the actual provider/model used so route evidence
+  is not attributed to the requested binding after a substitution.
+- CLI usage remains unavailable for runtimes that do not expose parseable usage;
+  cost-based retry supervision must treat that uncertainty explicitly.
+- Managed-provider cancellation currently relies on discarding late results;
+  propagate abort support before treating it as reliable execution cancellation.
+- A tool-enabled managed run that degrades to a tool-free completion must emit
+  visible uncertainty rather than looking equivalent to a fully capable run.
+- Keep Codex CLI at conservative trust while runtime-internal subagent control
+  remains unverified; a server tool boundary alone cannot prevent hidden fan-out.
 
 **Not now**
 - Docker sandbox pool, production container infrastructure, broad runtime marketplace.

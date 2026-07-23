@@ -1,22 +1,29 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import type { ServerConfig } from "../src/config";
+import { loadConfig, type ServerConfig } from "../src/config";
+import { __setProviderHttpClientForTests } from "../src/modules/providers";
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchWorkspaceService } from "../src/modules/projectResearch/workspaceService";
-import { ProjectResearchMonitorComparisonService } from "../src/modules/projectResearch/monitorComparisonService";
+import { ProjectResearchMonitorComparisonService, parseMonitorComparisons } from "../src/modules/projectResearch/monitorComparisonService";
 import { ProjectResearchIntegrityMonitorService, enqueueDueResearchIntegrityChecks } from "../src/modules/projectResearch/integrityMonitorService";
-import { writeNotebookSection } from "../src/modules/projectResearch/notebookWriteService";
+import { writeNote } from "../src/modules/knowledge/noteRevisionService";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { PgReaderRepository } from "../src/modules/reader/repository";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const SPACE = "11111111-1111-4111-8111-111111111111"; const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const PROJECT = "55555555-5555-4555-8555-555555555555";
-let database: TestPostgresDatabase | undefined; let pool: Pool | undefined; let available = false;
+const PROVIDER = "99999999-9999-4999-8999-999999999999";
+let database: TestPostgresDatabase | undefined; let pool: Pool | undefined; let available = false; let config: ServerConfig | undefined;
 
-beforeAll(async () => { try { database = await getTestPostgres(__filename); pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 }); await migrate(pool, join(process.cwd(), "migrations")); available = true; } catch (error) { console.warn(`[research-workspace-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`); } }, 180_000);
+beforeAll(async () => { try { database = await getTestPostgres(__filename); pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 }); await migrate(pool, join(process.cwd(), "migrations")); config = loadConfig({ ...process.env, SERVER_DATABASE_URL: database.getConnectionUri() }); available = true; } catch (error) { console.warn(`[research-workspace-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`); } }, 180_000);
 afterAll(async () => { await pool?.end(); await database?.stop(); });
-beforeEach(async () => { if (!available || !pool) return; await pool.query(`TRUNCATE research_checklist_items,research_paper_cards,research_notebook_section_revisions,research_notebook_sections,research_notebooks,project_corpus_items,source_items,projects,space_memberships,users,spaces CASCADE`); const now = new Date().toISOString(); await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]); await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]); });
+afterEach(() => { __setProviderHttpClientForTests(null); });
+beforeEach(async () => { if (!available || !pool) return; await pool.query(`TRUNCATE research_checklist_items,research_paper_cards,note_revisions,note_collection_items,note_collections,notes,space_objects,project_corpus_items,source_items,projects,space_memberships,users,spaces,runs,agent_runtime_profiles,agent_versions,agents,model_provider_space_grants,model_providers CASCADE`); const now = new Date().toISOString(); await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]); await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
+  await pool.query(`INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at) VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`, [PROVIDER, SPACE, USER, now]);
+  await pool.query(`INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at) VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`, [randomUUID(), PROVIDER, SPACE, USER, now]);
+});
 
 async function seedCorpusSourceProvenance(corpusItemId: string, sourceItemId: string, now: string): Promise<void> {
   await pool!.query(
@@ -27,14 +34,59 @@ async function seedCorpusSourceProvenance(corpusItemId: string, sourceItemId: st
 }
 
 describe("Research Workspace (real Postgres)", () => {
-  it("creates four notebook sections and enforces optimistic section versions", async () => {
+  it("creates four starter notes and enforces optimistic note versions", async () => {
     if (!available || !pool) return; const service = new ProjectResearchWorkspaceService(pool); const identity = { spaceId: SPACE, userId: USER };
-    const workspace = await service.initializeWorkspace(identity, PROJECT); expect(workspace.notebook.sections.map((v: { section_key: string }) => v.section_key)).toEqual(["understanding", "questions", "ideas", "experiments"]);
+    const workspace = await service.initializeWorkspace(identity, PROJECT);
+    expect(workspace.notes.map((v: { title: string }) => v.title)).toEqual(["Current understanding", "Open questions", "Idea pool", "Experiment log"]);
+    const understandingId = workspace.notes[0]!.id;
     const doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Current finding" }] }] };
-    const updated = await service.updateSection(identity, PROJECT, "understanding", { base_version: 1, content_json: doc }); expect(updated).toMatchObject({ version: 2, normalized_text: "Current finding", updated_by_user_id: USER });
-    const reader = await new PgReaderRepository(pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" } as ServerConfig).getDocument(identity, "research_notebook", updated.id);
-    expect(reader).toMatchObject({ document_type: "research_notebook", document_id: updated.id, normalized_text: "Current finding", content_hash: updated.content_hash });
-    await expect(service.updateSection(identity, PROJECT, "understanding", { base_version: 1, content_json: doc })).rejects.toMatchObject({ statusCode: 409 });
+    const knowledge = new PgKnowledgeRepository(pool);
+    const updated = await knowledge.updateNote(identity, understandingId, { expect_version: 1, content_json: doc, plain_text: "Current finding" });
+    expect(updated).toMatchObject({ version: 2, plain_text: "Current finding", updated_by_user_id: USER });
+    const reader = await new PgReaderRepository(pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" } as ServerConfig).getDocument(identity, "research_notebook", understandingId);
+    expect(reader).toMatchObject({ document_type: "research_notebook", document_id: understandingId, normalized_text: "Current finding", content_hash: updated.content_hash });
+    await expect(knowledge.updateNote(identity, understandingId, { expect_version: 1, content_json: doc })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("nests the project's auto-created notes folder under the seeded PARA 'Projects' folder", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    const projectsFolderId = randomUUID();
+    await pool.query(
+      `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+       VALUES ($1,$2,NULL,'Projects','projects_root',100,true,false,$3,$3)`,
+      [projectsFolderId, SPACE, now],
+    );
+    const workspace = await new ProjectResearchWorkspaceService(pool).initializeWorkspace({ spaceId: SPACE, userId: USER }, PROJECT);
+    const folder = await pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id=$1 AND space_id=$2`, [workspace.notes_collection_id, SPACE],
+    );
+    expect(folder.rows[0]?.parent_id).toBe(projectsFolderId);
+  });
+
+  it("nests under the seeded 'Projects' folder by role even if it was renamed", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    const projectsFolderId = randomUUID();
+    await pool.query(
+      `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+       VALUES ($1,$2,NULL,'My Projects','projects_root',100,true,false,$3,$3)`,
+      [projectsFolderId, SPACE, now],
+    );
+    const workspace = await new ProjectResearchWorkspaceService(pool).initializeWorkspace({ spaceId: SPACE, userId: USER }, PROJECT);
+    const folder = await pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id=$1 AND space_id=$2`, [workspace.notes_collection_id, SPACE],
+    );
+    expect(folder.rows[0]?.parent_id).toBe(projectsFolderId);
+  });
+
+  it("falls back to a root-level folder when no 'Projects' folder has been seeded (e.g. it was renamed or deleted)", async () => {
+    if (!available || !pool) return;
+    const workspace = await new ProjectResearchWorkspaceService(pool).initializeWorkspace({ spaceId: SPACE, userId: USER }, PROJECT);
+    const folder = await pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id=$1 AND space_id=$2`, [workspace.notes_collection_id, SPACE],
+    );
+    expect(folder.rows[0]?.parent_id).toBeNull();
   });
 
   it("does not initialize a workspace after its Project is archived", async () => {
@@ -44,33 +96,35 @@ describe("Research Workspace (real Postgres)", () => {
       new ProjectResearchWorkspaceService(pool).initializeWorkspace({ spaceId: SPACE, userId: USER }, PROJECT),
     ).rejects.toMatchObject({ statusCode: 409 });
     expect((await pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM research_notebooks WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT],
+      `SELECT count(*)::text AS count FROM note_collections WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT],
     )).rows[0]?.count).toBe("0");
   });
 
   it("applies AI block ops without touching other blocks and supports rollback from the revision history", async () => {
     if (!available || !pool) return; const service = new ProjectResearchWorkspaceService(pool); const identity = { spaceId: SPACE, userId: USER };
-    await service.initializeWorkspace(identity, PROJECT);
+    const workspace = await service.initializeWorkspace(identity, PROJECT);
+    const understandingId = workspace.notes[0]!.id;
+    const knowledge = new PgKnowledgeRepository(pool);
     const boldDoc = { type: "doc", content: [
       { type: "paragraph", content: [{ type: "text", marks: [{ type: "bold" }], text: "User formatted claim" }] },
       { type: "paragraph", content: [{ type: "text", text: "Second block" }] },
     ] };
-    await service.updateSection(identity, PROJECT, "understanding", { base_version: 1, content_json: boldDoc });
-    const written = await writeNotebookSection(pool, {
-      spaceId: SPACE, projectId: PROJECT, sectionKey: "understanding",
+    await knowledge.updateNote(identity, understandingId, { expect_version: 1, content_json: boldDoc, plain_text: "User formatted claim\n\nSecond block" });
+    const written = await writeNote(pool, {
+      spaceId: SPACE, noteId: understandingId,
       content: { kind: "ops", ops: [{ op: "replace", index: 1, count: 1, markdown: "Replaced second block" }, { op: "append", markdown: "## Monitoring update\n\n- New contradiction" }] },
       source: "ai_monitoring", refs: ["item-1"], diff: { ops: [] },
     });
     expect(written.outcome).toBe("written");
     if (written.outcome !== "written") return;
     // The user's formatted block survives byte-identical — the whole point of block ops.
-    expect((written.section.content_json as { content: Array<Record<string, unknown>> }).content[0]).toEqual(boldDoc.content[0]);
-    expect(written.section.normalized_text).toBe("User formatted claim\n\nReplaced second block\n\nMonitoring update\n\n- New contradiction");
-    const revisions = await service.sectionRevisions(identity, PROJECT, "understanding", {});
+    expect((written.note.content_json as { content: Array<Record<string, unknown>> }).content[0]).toEqual(boldDoc.content[0]);
+    expect(written.note.plain_text).toBe("User formatted claim\n\nReplaced second block\n\nMonitoring update\n\n- New contradiction");
+    const revisions = await knowledge.listNoteRevisions(identity, understandingId);
     expect(revisions.map((row) => [row.version, row.source])).toEqual([[3, "ai_monitoring"], [2, "user_edit"], [1, "seed"]]);
-    const restored = await service.rollbackSection(identity, PROJECT, "understanding", { to_version: 2 });
-    expect(restored).toMatchObject({ version: 4, normalized_text: "User formatted claim\n\nSecond block" });
-    expect((await service.sectionRevisions(identity, PROJECT, "understanding", {})).map((row) => [row.version, row.source])[0]).toEqual([4, "rollback"]);
+    const restored = await knowledge.rollbackNote(identity, understandingId, 2);
+    expect(restored).toMatchObject({ version: 4, plain_text: "User formatted claim\n\nSecond block" });
+    expect((await knowledge.listNoteRevisions(identity, understandingId)).map((row) => [row.version, row.source])[0]).toEqual([4, "rollback"]);
   });
 
   it("keeps user-edited paper cards when deep analysis runs again", async () => {
@@ -125,25 +179,21 @@ describe("Research Workspace (real Postgres)", () => {
       [randomUUID(), SPACE, PROJECT, workflow, operation, `operation:${operation}`, now],
     );
     const comparisonRun = randomUUID();
-    const comparisonInput = {
-      spaceId: SPACE, projectId: PROJECT, workflowId: workflow, operationId: operation, runId: comparisonRun,
-      expectedSourceItemIds: [supporting, contradicting],
-      output: { comparisons: [
-        { source_item_id: supporting, stance: "supports", detail: "Replicates the current effect.", affected_sections: ["understanding"] },
-        { source_item_id: contradicting, stance: "contradicts", detail: "Finds no effect under stronger controls.", affected_sections: ["understanding", "questions"] },
-      ] },
-    };
+    const comparisons = parseMonitorComparisons({ comparisons: [
+      { source_item_id: supporting, stance: "supports", detail: "Replicates the current effect.", affected_sections: ["understanding"] },
+      { source_item_id: contradicting, stance: "contradicts", detail: "Finds no effect under stronger controls.", affected_sections: ["understanding", "questions"] },
+    ] }, [supporting, contradicting]);
     const comparisonService = new ProjectResearchMonitorComparisonService(pool);
-    const result = await comparisonService.materialize(comparisonInput);
-    const replay = await comparisonService.materialize(comparisonInput);
+    const result = await comparisonService.persistComparisons({
+      spaceId: SPACE, projectId: PROJECT, workflowId: workflow, operationId: operation, runId: comparisonRun, comparisons,
+    });
     expect(result.notebookVersion).toBe(2);
-    expect(replay.notebookVersion).toBe(2);
     expect((await pool.query(`SELECT supports_count,contradicts_count,new_direction_count FROM research_scan_summaries WHERE operation_id=$1`, [operation])).rows[0])
       .toEqual({ supports_count: 1, contradicts_count: 1, new_direction_count: 0 });
-    const section = (await pool.query(`SELECT version,normalized_text,refs_json FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id WHERE n.project_id=$1 AND s.section_key='understanding'`, [PROJECT])).rows[0];
+    const section = (await pool.query(`SELECT n.version,n.plain_text,n.refs_json FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id WHERE so.primary_project_id=$1 AND so.title='Current understanding'`, [PROJECT])).rows[0];
     expect(section).toMatchObject({ version: 2, refs_json: [contradicting] });
-    expect(String(section?.normalized_text)).toContain("**Contradiction**");
-    expect(String(section?.normalized_text)).not.toContain("Replicates");
+    expect(String(section?.plain_text)).toContain("**Contradiction**");
+    expect(String(section?.plain_text)).not.toContain("Replicates");
     const supportOnlyOperation = randomUUID();
     await pool.query(
       `INSERT INTO project_operations (
@@ -158,13 +208,15 @@ describe("Research Workspace (real Postgres)", () => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,1,1,0,0,$7)`,
       [randomUUID(), SPACE, PROJECT, workflow, supportOnlyOperation, `operation:${supportOnlyOperation}`, now],
     );
-    const supportOnly = await comparisonService.materialize({
+    const supportOnly = await comparisonService.persistComparisons({
       spaceId: SPACE, projectId: PROJECT, workflowId: workflow, operationId: supportOnlyOperation, runId: randomUUID(),
-      expectedSourceItemIds: [supporting],
-      output: { comparisons: [{ source_item_id: supporting, stance: "supports", detail: "Replicates the current effect.", affected_sections: ["understanding"] }] },
+      comparisons: parseMonitorComparisons(
+        { comparisons: [{ source_item_id: supporting, stance: "supports", detail: "Replicates the current effect.", affected_sections: ["understanding"] }] },
+        [supporting],
+      ),
     });
     expect(supportOnly.notebookVersion).toBeNull();
-    expect((await pool.query(`SELECT version FROM research_notebook_sections s JOIN research_notebooks n ON n.id=s.notebook_id WHERE n.project_id=$1 AND s.section_key='understanding'`, [PROJECT])).rows[0]).toEqual({ version: 2 });
+    expect((await pool.query(`SELECT n.version FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id WHERE so.primary_project_id=$1 AND so.title='Current understanding'`, [PROJECT])).rows[0]).toEqual({ version: 2 });
   });
 
   it("deduplicates cited-DOI integrity alerts and creates review work", async () => {
@@ -189,7 +241,8 @@ describe("Research Workspace (real Postgres)", () => {
       [corpusItemId, SPACE, PROJECT, sourceItem, now],
     );
     await seedCorpusSourceProvenance(corpusItemId, sourceItem, now);
-    await pool.query(`UPDATE research_notebook_sections SET refs_json=$2::jsonb WHERE notebook_id=$1 AND section_key='understanding'`, [workspace.notebook.id, JSON.stringify([sourceItem])]);
+    const understandingId = workspace.notes[0]!.id;
+    await pool.query(`UPDATE notes SET refs_json=$2::jsonb WHERE object_id=$1`, [understandingId, JSON.stringify([sourceItem])]);
     const monitor = new ProjectResearchIntegrityMonitorService(pool, async () => ({ message: { "updated-by": [
       { DOI: "10.1000/retraction", type: "retraction", source: "retraction-watch" },
     ] } }));
@@ -203,5 +256,81 @@ describe("Research Workspace (real Postgres)", () => {
     expect((await pool.query(`SELECT checkpoint_type,status FROM project_research_checkpoints WHERE workflow_id=$1`, [workflow])).rows[0]).toEqual({ checkpoint_type: "integrity_gate", status: "pending" });
     expect(await enqueueDueResearchIntegrityChecks(pool, new Date("2026-07-19T12:00:00.000Z"))).toBe(1);
     expect(await enqueueDueResearchIntegrityChecks(pool, new Date("2026-07-19T13:00:00.000Z"))).toBe(0);
+  });
+
+  it("askAi queues an edit-mode run against the contracted section and counts against the shared daily budget", async () => {
+    if (!available || !pool || !config) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchWorkspaceService(pool, config);
+    await service.initializeWorkspace(identity, PROJECT);
+
+    const edited = await service.askAi(identity, PROJECT, {
+      prompt: "Rewrite the current understanding.",
+      section_key: "understanding",
+      execution: { model_provider_id: PROVIDER },
+    });
+    expect(edited).toMatchObject({ daily_limit: 20, daily_used: 1 });
+    const editRun = (await pool.query<{ capability_id: string; contract_snapshot_json: { workflow_input_json?: { research_adhoc?: unknown } } }>(
+      `SELECT capability_id,contract_snapshot_json FROM runs WHERE id=$1`, [edited.run_id],
+    )).rows[0];
+    expect(editRun?.capability_id).toBe("research.adhoc_analyze");
+    expect(editRun?.contract_snapshot_json.workflow_input_json?.research_adhoc).toBeTruthy();
+  });
+
+  it("notebookChat persists both turns to one reusable session and shares askAi's daily budget", async () => {
+    if (!available || !pool || !config) return;
+    // The provider is unreachable in tests; a fast, deterministic failure lets
+    // us assert the graceful-failure path (message persistence, session
+    // reuse, shared budget) without depending on the full structured-output
+    // adapter pipeline — success-path notebook writes are already covered via
+    // applyOpsWithConflictFallback in projectResearchSynthesisReconcileDb.test.ts.
+    __setProviderHttpClientForTests({ fetch: async () => new Response("{}", { status: 500 }) });
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchWorkspaceService(pool, config);
+    await service.initializeWorkspace(identity, PROJECT);
+
+    const first = await service.notebookChat(identity, PROJECT, {
+      message: "What is the current understanding?",
+      execution: { model_provider_id: PROVIDER },
+    });
+    expect(first.ok).toBe(false);
+    expect(first.daily_limit).toBe(20);
+    expect(first.daily_used).toBe(1);
+    const sessionId = first.session_id;
+    expect(sessionId).toBeTruthy();
+
+    const second = await service.notebookChat(identity, PROJECT, {
+      message: "Follow-up question.",
+      session_id: sessionId,
+      execution: { model_provider_id: PROVIDER },
+    });
+    // Reuses the same session (multi-turn) and keeps drawing from askAi's
+    // shared 20/project/day pool.
+    expect(second.session_id).toBe(sessionId);
+    expect(second.daily_used).toBe(2);
+
+    const messages = (await pool.query<{ role: string; content: string }>(
+      `SELECT role,content FROM messages WHERE session_id=$1 ORDER BY created_at ASC`, [sessionId],
+    )).rows;
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(messages[0]?.content).toBe("What is the current understanding?");
+    expect(messages[2]?.content).toBe("Follow-up question.");
+  });
+
+  it("notebookChat rejects a session_id that belongs to a different project", async () => {
+    if (!available || !pool || !config) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchWorkspaceService(pool, config);
+    await service.initializeWorkspace(identity, PROJECT);
+    const otherProject = randomUUID();
+    const now = new Date().toISOString();
+    await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Other','active',$4,$4)`, [otherProject, SPACE, USER, now]);
+    const otherSession = await pool.query<{ id: string }>(
+      `INSERT INTO sessions (id,space_id,user_id,project_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5) RETURNING id`,
+      [randomUUID(), SPACE, USER, otherProject, now],
+    );
+    await expect(service.notebookChat(identity, PROJECT, {
+      message: "Hello", session_id: otherSession.rows[0]!.id, execution: { model_provider_id: PROVIDER },
+    })).rejects.toMatchObject({ statusCode: 409 });
   });
 });

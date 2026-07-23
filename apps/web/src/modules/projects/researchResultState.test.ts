@@ -59,6 +59,25 @@ describe('researchResultState', () => {
     expect(result.notices).toContain('1 research operation is still running.')
   })
 
+  it('shows the newer running operation, not a stale failed one for the same workflow', () => {
+    // A retry (or an auto-created incremental scan) creates a fresh operation
+    // for the same workflow rather than reusing the old one — the old one
+    // stays "failed" forever in history. This must not be surfaced as the
+    // retriable failure once a newer operation for that same workflow is
+    // already running: the backend allows only one active operation per
+    // workflow, so a "Retry" pointed at the stale one would 409.
+    const result = state({
+      operations: [
+        operation('failed', '2026-07-18T08:00:00Z', { workflow_id: 'workflow-1', current_stage: 'failed', failed_stage: 'comparison' }),
+        operation('active', '2026-07-18T10:00:00Z', { workflow_id: 'workflow-1', current_stage: 'comparison' }),
+      ],
+    })
+    expect(result.kind).toBe('running')
+    expect(result.operation?.status).toBe('active')
+    expect(result.primaryAction).toBeNull()
+    expect(result.notices).not.toContain('1 research operation failed and can be retried.')
+  })
+
   it('does not call an unscanned monitoring day empty', () => {
     const result = state({ workflow: workflow({ monitoring: { active: true } }) })
     expect(result.kind).toBe('monitoring')
@@ -110,21 +129,40 @@ describe('researchResultState', () => {
     expect(result.detail).toContain('updated dates')
   })
 
+  it('presents an empty approved corpus as a completed research outcome', () => {
+    const result = state({
+      operations: [operation('completed', '2026-07-18T10:00:00Z', {
+        current_stage: 'complete',
+        empty_result: {
+          kind: 'no_relevant_sources', source_item_count: 8, relevant_source_count: 0,
+          message: 'No screened papers remained.', suggestions: ['Broaden the inclusion scope.'],
+        },
+      })],
+      reports: [],
+    })
+    expect(result.kind).toBe('completed')
+    expect(result.conclusion).toContain('no relevant evidence')
+    expect(result.detail).toBe('Broaden the inclusion scope.')
+    expect(result.primaryAction).toEqual({ key: 'view_corpus', label: 'Review collected papers' })
+    expect(result.failure).toBeNull()
+  })
+
   it('detects when the saved setup differs from what the search executed', () => {
     const executed = operation('completed', '2026-07-18T10:00:00Z', {
       current_stage: 'complete', empty_result: { kind: 'no_source_items' },
       history: { mode: 'bounded_range', from: '2026-07-15T00:00:00Z', to: '2026-07-18T00:00:00Z', max_items: 1000 },
       query: { sort_by: 'submittedDate' },
       channel_ids: ['channel-1'],
+      query_strategy_id: 'strategy-1',
     })
     const saved: ProjectResearchInitialIntakeInput = {
-      research_question: 'Old question', source_channel_ids: ['channel-1'], history_mode: 'bounded_range',
+      research_question: 'Old question', query_strategy_id: 'strategy-1', history_mode: 'bounded_range',
       from: '2026-07-15', to: '2026-07-18', max_items: 1000, monitoring_field: 'submittedDate', report_depth: 'quick', question_refine_skipped: false, execution: {},
     }
     expect(savedSetupDiffersFromOperation(saved, executed)).toBe(false)
     expect(savedSetupDiffersFromOperation({ ...saved, from: '2024-01-01' }, executed)).toBe(true)
     expect(savedSetupDiffersFromOperation({ ...saved, max_items: 500 }, executed)).toBe(true)
-    expect(savedSetupDiffersFromOperation({ ...saved, source_channel_ids: ['channel-1', 'channel-2'] }, executed)).toBe(true)
+    expect(savedSetupDiffersFromOperation({ ...saved, query_strategy_id: 'strategy-2' }, executed)).toBe(true)
     expect(savedSetupDiffersFromOperation(saved, null)).toBe(false)
   })
 

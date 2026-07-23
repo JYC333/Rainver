@@ -22,7 +22,7 @@ import type {
   ActivityRecord, ActivitySourceType,
   KnowledgeCreateProposalBody, KnowledgeItem, KnowledgeItemSummary, KnowledgeRelation, KnowledgeRelationProposalBody, KnowledgeUpdateProposalBody,
   KnowledgeSummary, KnowledgeSourceSummary,
-  Note, NoteSummary, NoteCreateBody, NoteUpdateBody, NoteCollection, NoteCollectionCreateBody, NoteCollectionUpdateBody, EntityLink, NoteLinkCreateBody,
+  Note, NoteSummary, NoteCreateBody, NoteUpdateBody, NotesTreeReorderBody, NotesTreeReorderResult, NoteRevision, NoteCollection, NoteCollectionCreateBody, NoteCollectionUpdateBody, EntityLink, NoteLinkCreateBody,
   FileNode, FileContent, GitStatus, RuntimeInfo, ConsoleSession, WorkspaceInfo,
   HomeSummaryOut, MeSummaryOut, MeTimelineEntry, MeTaskItem, MePendingProposalItem,
   PersonalMemoryGrantPreviewRequest, PersonalMemoryGrantPreviewResponse,
@@ -95,8 +95,8 @@ import type {
   ReaderCreateEvidenceRequest, ReaderCreatedEvidence,
   ReaderCreateProposalRequest, ReaderCreatedProposal,
   ContentAccessPolicy, ContentAccessUpdate,
-  ResearchEngineSearchResult, ResearchEngineMonitorResult,
-  ResearchWorkspace, ResearchNotebookSection, ResearchNotebookRevision, ResearchChecklistItem, ResearchPaperCard, ResearchReadingList,
+  ResearchProviderKey, ResearchQueryStrategy, MaterializedResearchStrategy,
+  ResearchWorkspace, ResearchChecklistItem, ResearchPaperCard, ResearchReadingList,
 } from '../types/api'
 import type {
   ContentPublication,
@@ -437,6 +437,11 @@ export const notesCollectionsApi = {
   delete: (id: string) => del<void>(`/notes/collections/${id}`),
 }
 
+export const notesTreeApi = {
+  reorder: (body: NotesTreeReorderBody) =>
+    patch<NotesTreeReorderResult>('/knowledge/notes/tree/reorder', body),
+}
+
 export const notesApi = {
   list: (params: { status?: string; project_id?: string; collection_id?: string; q?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -459,6 +464,10 @@ export const notesApi = {
     post<EntityLink>(`/knowledge/notes/${id}/links`, body),
   deleteLink: (id: string, linkId: string) =>
     del<void>(`/knowledge/notes/${id}/links/${linkId}`),
+  revisions: (id: string, limit?: number) =>
+    get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
+  rollback: (id: string, toVersion: number) =>
+    post<Note>(`/knowledge/notes/${id}/rollback`, { to_version: toVersion }),
 }
 
 // ── Sources (provenance / evidence layer) ──────────────────────────────────
@@ -580,6 +589,7 @@ export const runsApi = {
     workspace_id?: string
     project_id?: string
     workflow_version_id?: string
+    capability_id?: string
     limit?: number
     offset?: number
   } = {}) => {
@@ -590,6 +600,7 @@ export const runsApi = {
     if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.workflow_version_id !== undefined) q.workflow_version_id = params.workflow_version_id
+    if (params.capability_id !== undefined) q.capability_id = params.capability_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Run[]>('/runs?' + new URLSearchParams(q))
@@ -1885,14 +1896,17 @@ export const projectResearchApi = {
   workspace: (projectId: string) => get<ResearchWorkspace>(`/projects/${encodeURIComponent(projectId)}/research/workspace`),
   initializeWorkspace: (projectId: string) => post<ResearchWorkspace>(`/projects/${encodeURIComponent(projectId)}/research/workspace`, {}),
   readingList: (projectId: string, params: { triage_status?: string; read_status?: string; q?: string } = {}) => get<ResearchReadingList>(`/projects/${encodeURIComponent(projectId)}/research/reading-list?${new URLSearchParams(params)}`),
-  updateNotebookSection: (projectId: string, sectionKey: string, body: { base_version: number; content_json: Record<string, unknown> }) => put<ResearchNotebookSection>(`/projects/${encodeURIComponent(projectId)}/research/notebook/sections/${encodeURIComponent(sectionKey)}`, body),
-  notebookRevisions: (projectId: string, sectionKey: string, limit = 20) => get<ResearchNotebookRevision[]>(`/projects/${encodeURIComponent(projectId)}/research/notebook/sections/${encodeURIComponent(sectionKey)}/revisions?limit=${limit}`),
-  rollbackNotebookSection: (projectId: string, sectionKey: string, toVersion: number) => post<ResearchNotebookSection>(`/projects/${encodeURIComponent(projectId)}/research/notebook/sections/${encodeURIComponent(sectionKey)}/rollback`, { to_version: toVersion }),
+  // Per-note editing/revisions/rollback go through the generic notesApi —
+  // a project's notebook is just Notes filed under its auto-created folder.
   updatePaperCard: (projectId: string, sourceItemId: string, body: { why_md: string; how_md: string; what_md: string }) => put<ResearchPaperCard>(`/projects/${encodeURIComponent(projectId)}/research/reading-list/${encodeURIComponent(sourceItemId)}/card`, body),
   createChecklistItem: (projectId: string, text: string) => post<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist`, { text }),
   updateChecklistItem: (projectId: string, itemId: string, body: Partial<Pick<ResearchChecklistItem, 'text' | 'status' | 'sort_order'>>) => patch<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`, body),
   deleteChecklistItem: (projectId: string, itemId: string) => del<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`),
+  // `section_key` is a legacy field name accepted for backward compatibility
+  // (see workspaceService.ts askAi): a known starter-note key maps to its
+  // title; any other value is used as a literal note title.
   askAi: (projectId: string, body: { prompt: string; section_key: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ run_id: string; job_id: string; status: string; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/ask-ai`, body),
+  notebookChat: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ session_id: string; run_id: string; ok: boolean; reply?: string; error?: string; notebook_edit?: { note_id: string; version: number; conflict: boolean } | null; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/notebook-chat`, body),
   generateReportSnapshot: (projectId: string) => post<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/research/reports`, {}),
   refineQuestion: (projectId: string, body: {
     research_question: string
@@ -1901,23 +1915,7 @@ export const projectResearchApi = {
   }) => post<ProjectResearchQuestionRefinement>(`/projects/${encodeURIComponent(projectId)}/research/question/refine`, body),
   saveInitialIntakeDraft: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
     put<ProjectResearchWorkflow>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake`, body),
-  startInitialIntake: (projectId: string, body: {
-    research_question: string
-    source_channel_ids: string[]
-    history_mode?: 'bounded_range' | 'all_available'
-    from?: string | null
-    to?: string | null
-    max_items?: number
-    monitoring_field?: 'submittedDate' | 'lastUpdatedDate'
-    report_depth?: 'quick' | 'full'
-    question_refine_skipped?: boolean
-    schedule?: 'daily'
-    execution?: {
-      model_provider_id?: string
-      model_name?: string
-    }
-    idempotency_key?: string
-  }) =>
+  startInitialIntake: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
     post<ProjectResearchInitialIntakeResponse>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake/start`, body),
   profile: (projectId: string) =>
     get<ProjectResearchProfile>(`/projects/${encodeURIComponent(projectId)}/research/profile`),
@@ -2033,11 +2031,13 @@ export const projectResearchApi = {
     post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/research/reports/${encodeURIComponent(reportId)}/integrity`, {}),
 }
 
-export const researchEngineApi = {
-  search: (body: { question: string; project_id?: string; scope?: Record<string, unknown>; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
-    post<ResearchEngineSearchResult>('/research/engine/search', body),
-  createMonitors: (body: { strategy_id: string; project_id: string; provider_keys: string[]; credentials?: Record<string, string> }) =>
-    post<ResearchEngineMonitorResult>('/research/engine/monitors', body),
+export const researchDiscoveryApi = {
+  evaluate: (body: { project_id: string; research_context_version_id: string; providers: ResearchProviderKey[]; candidate_budget: number; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
+    post<{ strategy: ResearchQueryStrategy }>('/research/query-strategies/evaluate', body),
+  materialize: (strategyId: string, body: { provider_keys: ResearchProviderKey[]; credentials?: Record<string, string> }) =>
+    post<MaterializedResearchStrategy>(`/research/query-strategies/${encodeURIComponent(strategyId)}/materialize`, body),
+  retryProvider: (strategyId: string, providerKey: ResearchProviderKey, body: { project_id: string; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
+    post<{ strategy: ResearchQueryStrategy }>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`, body),
 }
 
 export const academicApi = {

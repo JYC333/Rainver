@@ -1,6 +1,7 @@
 import type { PromptResolveResult } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { Queryable } from "../routeUtils/common";
 import { resolvePrompt } from "../prompts/resolver";
+import type { ResearchScopeContext } from "./researchContext";
 
 export const PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY = "project_research.synthesis";
 export const PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY = "project_research.question_refine";
@@ -21,6 +22,7 @@ export async function resolveProjectResearchSynthesisPrompt(
     projectId: string;
     agentId: string;
     researchQuestion: string;
+    researchScope: ResearchScopeContext;
     reportDepth?: "quick" | "full";
     critiqueContext?: string;
   },
@@ -34,6 +36,7 @@ export async function resolveProjectResearchSynthesisPrompt(
     variables: {
       project_id: input.projectId,
       research_question: input.researchQuestion,
+      research_scope: JSON.stringify(input.researchScope),
       report_depth: input.reportDepth ?? "full",
       critique_context: input.critiqueContext ?? "none",
     },
@@ -50,6 +53,7 @@ export async function resolveProjectResearchCritiquePrompt(
     projectId: string;
     agentId: string;
     researchQuestion: string;
+    researchScope: ResearchScopeContext;
     reportDepth: "quick" | "full";
     report: Record<string, unknown>;
     corpusSummary: string;
@@ -64,6 +68,7 @@ export async function resolveProjectResearchCritiquePrompt(
     variables: {
       project_id: input.projectId,
       research_question: input.researchQuestion,
+      research_scope: JSON.stringify(input.researchScope),
       report_depth: input.reportDepth,
       report_json: JSON.stringify(input.report),
       corpus_summary: input.corpusSummary,

@@ -1,0 +1,74 @@
+asset_key: research_query.intent_plan
+display_name: Research Query Semantic Intent
+description: Extracts ranked semantic search concepts without provider-native query syntax.
+content:
+  schema_version: prompt_asset.v1
+  prompt_type: workflow
+  template: |-
+    Research context: {research_context}
+
+    Extract a compact semantic search intent. Do not emit provider names, URLs,
+    Boolean query strings, credentials, or the full research question as a search
+    term. Use concept phrases of at most a few words. Assign each concept exactly
+    one role:
+    - core: indispensable topic facets retained across query levels;
+    - expansions: alternative or adjacent vocabulary that can improve recall;
+    - qualifiers: population, method, setting, or outcome constraints used to narrow;
+    - exclusions: explicit false-positive concepts.
+
+    Rank concepts with weight from 0 to 1. Put direct lexical alternatives in a
+    concept's synonyms. Qualifiers are ANDed together when the query compiles,
+    so a qualifier with too few synonyms can collapse the result set on its
+    own — give every qualifier at least 2 synonyms (distinct real phrasings a
+    paper might actually use, not near-duplicates of the value), even if that
+    means fewer synonyms for core or expansion concepts. Return exactly the
+    four required arrays. The server adds schema_version and time_window and
+    deterministically compiles provider syntax.
+
+    Valid JSON example (copy this complete structure and replace the example values):
+    {
+      "core": [
+        {
+          "value": "LLM agent memory",
+          "synonyms": ["memory-augmented agents", "long-term agent memory"],
+          "weight": 1
+        },
+        {
+          "value": "cross-session recall",
+          "synonyms": ["multi-session memory"],
+          "weight": 0.9
+        }
+      ],
+      "expansions": [
+        {
+          "value": "retrieval augmented agents",
+          "synonyms": ["RAG agents"],
+          "weight": 0.7
+        }
+      ],
+      "qualifiers": [
+        {
+          "value": "evaluation benchmark",
+          "synonyms": ["empirical evaluation", "benchmark dataset", "quantitative evaluation"],
+          "weight": 0.85
+        }
+      ],
+      "exclusions": [
+        {
+          "value": "human autobiographical memory",
+          "synonyms": [],
+          "weight": 0.8
+        }
+      ]
+    }
+  variables_schema:
+    type: object
+    required: [research_context]
+    properties:
+      research_context: { type: string }
+  output_schema: {}
+  model_config: {}
+  rendering: { engine: plain }
+  safety:
+    untrusted_data_delimiters: true
+    requires_proposal_for_promotion: false

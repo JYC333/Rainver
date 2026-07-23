@@ -16,9 +16,10 @@ describe("Project Research report validation", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.report).toMatchObject({ schema_version: "research_report.v1" });
   });
-  it("normalizes a standalone JSON code fence", async () => {
+  it("rejects a standalone JSON code fence", async () => {
     const result = await validateResearchArtifacts(artifacts(`\`\`\`json\n${JSON.stringify(report)}\n\`\`\``));
-    expect(result.ok && result.normalized_content).toBe(JSON.stringify(report));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failure.code).toBe("research_artifact_invalid_json");
   });
   it("reports invalid JSON without exposing full content", async () => {
     const result = await validateResearchArtifacts(artifacts('{"schema_version":}'));

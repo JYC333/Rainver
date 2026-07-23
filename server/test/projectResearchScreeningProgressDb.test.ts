@@ -5,6 +5,8 @@ import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 // Real-Postgres coverage for reconcileOperation refreshing screening_progress
 // ("Papers classified" / "Batches" on the research operation card) on every
@@ -22,8 +24,10 @@ const CONNECTION = "44444444-4444-4444-8444-444444444444";
 const CHANNEL = "88888888-8888-4888-8888-888888888888";
 const WORKFLOW = "66666666-6666-4666-8666-666666666666";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
+const INCREMENTAL_OPERATION = "77777777-7777-4777-8777-777777777778";
 const PLAN = "aaaaaaaa-1111-4111-8111-111111111111";
 const AGENT = "99999999-9999-4999-8999-999999999999";
+const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -229,5 +233,101 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
       [SPACE, PROJECT],
     );
     expect(checkpoints.rows).toHaveLength(0);
+  });
+});
+
+// countRelevantItems (which gates whether the screening_gate checkpoint gets
+// created/refreshed) reads project_corpus_items/project_corpus_item_sources,
+// not source_post_processing_item_decisions directly — a corpus row is what
+// an AI classification actually produces once it's synced to the project.
+async function seedCorpusRelevance(sourceItemId: string, relevance: "relevant" | "maybe" | "not_relevant"): Promise<void> {
+  const now = new Date().toISOString();
+  const corpusItemId = randomUUID();
+  await pool!.query(
+    `INSERT INTO project_corpus_items (
+       id, space_id, project_id, source_item_id, role, status, triage_status, relevance,
+       metadata_json, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'candidate','active','new',$5,'{}'::jsonb,$6,$6)`,
+    [corpusItemId, SPACE, PROJECT, sourceItemId, relevance, now],
+  );
+  await pool!.query(
+    `INSERT INTO project_corpus_item_sources (id, corpus_item_id, space_id, project_id, source_item_id, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
+  );
+}
+
+async function seedIncrementalOperation(sourceItemIds: string[]): Promise<void> {
+  const now = new Date().toISOString();
+  const progress = {
+    schema_version: "project_research_operation.v1",
+    run_kind: "incremental",
+    workflow_id: WORKFLOW,
+    current_stage: "screening",
+    stage_state: "running",
+    partial: false,
+    channel_ids: [CHANNEL],
+    source_item_ids: sourceItemIds,
+    checkpoint_ids: [],
+    awaiting_source_scan: false,
+    source_post_processing_rule_ids: [],
+    source_post_processing_rule_id: null,
+    watermark: { before: null, after: null, overlap_hours: 48 },
+  };
+  await pool!.query(
+    `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
+     VALUES ($1,$2,$3,'research','Incremental scan','active',$4,$5::jsonb,$6,$6)`,
+    [INCREMENTAL_OPERATION, SPACE, PROJECT, OWNER, JSON.stringify(progress), now],
+  );
+}
+
+describe("ProjectResearchRepository checkpointReview classified count (real Postgres)", () => {
+  it("reflects papers classified after the screening_gate checkpoint was first created, not just at creation time", async () => {
+    if (!available || !pool) return;
+    await seedSourceItem("item-1", "Paper one");
+    await seedSourceItem("item-2", "Paper two");
+    await seedSourceItem("item-3", "Paper three");
+    await seedClassifiedDecision("item-1", "relevant");
+    await seedCorpusRelevance("item-1", "relevant");
+    // beforeEach seeds a baseline OPERATION on the same workflow; only one
+    // active research operation per workflow is allowed, and this test needs
+    // its own incremental operation instead.
+    await pool!.query(`UPDATE project_operations SET status='completed' WHERE id=$1`, [OPERATION]);
+    // item-2 and item-3 are not classified yet when the gate is first opened —
+    // this mirrors an incremental scan, which opens the screening_gate as soon
+    // as the operation enters "screening", then refreshes it on every
+    // subsequent reconcile tick while classification is still in flight.
+    await seedIncrementalOperation(["item-1", "item-2", "item-3"]);
+
+    const orchestrator = new ProjectResearchOrchestrator(pool!);
+    const repo = new ProjectResearchRepository(pool!);
+
+    await orchestrator.reconcileOperation(SPACE, INCREMENTAL_OPERATION);
+    const firstPass = await repo.listCheckpoints(identity, PROJECT, WORKFLOW);
+    expect(firstPass).toHaveLength(1);
+    expect((firstPass[0] as { review: { summary: Record<string, unknown> } }).review.summary).toMatchObject({
+      total: 3, classified: 1, unclassified: 2, processing_status: "incomplete",
+    });
+
+    // The remaining papers finish classification after the checkpoint already
+    // exists. A later reconcile tick refreshes the same (still-pending)
+    // checkpoint row in place rather than creating a new one.
+    await seedClassifiedDecision("item-2", "maybe");
+    await seedClassifiedDecision("item-3", "not_relevant");
+    await seedCorpusRelevance("item-2", "maybe");
+    await seedCorpusRelevance("item-3", "not_relevant");
+    await orchestrator.reconcileOperation(SPACE, INCREMENTAL_OPERATION);
+
+    const checkpointRows = await pool!.query<{ id: string }>(
+      `SELECT id FROM project_research_checkpoints WHERE space_id=$1 AND project_id=$2`,
+      [SPACE, PROJECT],
+    );
+    expect(checkpointRows.rows).toHaveLength(1);
+    expect(checkpointRows.rows[0]!.id).toBe((firstPass[0] as { id: string }).id);
+
+    const secondPass = await repo.listCheckpoints(identity, PROJECT, WORKFLOW);
+    expect((secondPass[0] as { review: { summary: Record<string, unknown> } }).review.summary).toMatchObject({
+      total: 3, classified: 3, unclassified: 0, processing_status: "complete",
+    });
   });
 });

@@ -76,6 +76,7 @@ export interface RunListFilters {
   workspace_id?: string | null;
   project_id?: string | null;
   workflow_version_id?: string | null;
+  capability_id?: string | null;
   run_role?: "execution" | "coordinator" | null;
   limit: number;
   offset: number;

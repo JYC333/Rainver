@@ -120,22 +120,10 @@ describe("structured output text normalization", () => {
     expect(() => structuredOutputFromText("no json anywhere.", format)).toThrow(/invalid structured output/);
   });
 
-  it("accepts a semantic rejection envelope extracted from surrounding model prose", () => {
-    const rejection = {
-      status: "rejected",
-      artifacts: [],
-      rejection: {
-        code: "research_question_not_actionable",
-        message: "The research question does not define an actionable synthesis target.",
-        reason: "The value `test` is too vague to connect the approved papers into a defensible synthesis.",
-        suggestions: [
-          "Provide a specific research question or thematic lens.",
-          "Select the source items that should be synthesized together.",
-        ],
-      },
-    };
-    const text = `<think>the question is not actionable</think>\nHere is the result:\n${JSON.stringify(rejection)}\n`;
-    expect(structuredOutputFromText(text, RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toEqual(rejection);
+  it("rejects a semantic rejection envelope because non-empty corpus synthesis must return a report", () => {
+    const output = { status: "rejected", artifacts: [] };
+    expect(() => structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT))
+      .toThrow(/failed schema/);
   });
 
   it("accepts direct JSON objects inside synthesis artifacts", () => {
@@ -155,7 +143,6 @@ describe("structured output text normalization", () => {
           ideas: [],
         },
       }],
-      rejection: null,
     };
     expect(structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toEqual(output);
   });
@@ -181,7 +168,6 @@ describe("structured output text normalization", () => {
         mime_type: "application/json",
         content: inner,
       }],
-      rejection: null,
     };
     expect(() => structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toThrow(/failed schema/);
   });
@@ -204,7 +190,6 @@ describe("structured output text normalization", () => {
         mime_type: "application/json",
         content: { $text: JSON.stringify(brief) },
       }],
-      rejection: null,
     };
     expect(structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toEqual({
       ...output,
@@ -221,7 +206,6 @@ describe("structured output text normalization", () => {
         mime_type: "application/json",
         content: { $text: JSON.stringify({ schema_version: "research_report.v1" }) },
       }],
-      rejection: null,
     };
     expect(() => structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toThrow(/failed schema/);
   });
@@ -235,66 +219,13 @@ describe("structured output text normalization", () => {
         mime_type: "application/json",
         content: { $text: "{}", extra: 1 },
       }],
-      rejection: null,
     };
     expect(() => structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toThrow(/failed schema/);
   });
 
-  // Providers without constrained decoding (observed with MiniMax-M3 tool
-  // calls) fill the required nullable `rejection` slot with a near-miss
-  // instead of the literal null. The transport layer coerces those; the
-  // orchestrator's semantic gate still enforces status/rejection coherence.
-  const succeededOutput = (rejection: unknown) => ({
-    status: "succeeded",
-    artifacts: [{
-      title: "Brief",
-      artifact_type: "research_report.archive.v1",
-      mime_type: "application/json",
-      content: {
-        schema_version: "research_report.v1",
-        research_question: "Does X improve Y?",
-        summary: "A bounded summary.",
-        findings: [],
-        limitations: [],
-        sources: [],
-        ideas: [],
-      },
-    }],
-    rejection,
-  });
-
-  it("coerces an empty-object rejection to null", () => {
-    expect(structuredOutputFromText(JSON.stringify(succeededOutput({})), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT))
-      .toEqual(succeededOutput(null));
-  });
-
-  it("coerces an all-null rejection object to null", () => {
-    const rejection = { code: null, message: null, reason: null, suggestions: null };
-    expect(structuredOutputFromText(JSON.stringify(succeededOutput(rejection)), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT))
-      .toEqual(succeededOutput(null));
-  });
-
-  it("coerces a \"null\" string rejection to null", () => {
-    expect(structuredOutputFromText(JSON.stringify(succeededOutput("null")), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT))
-      .toEqual(succeededOutput(null));
-  });
-
-  it("never coerces a schema-valid rejection object", () => {
-    const rejection = {
-      code: "insufficient_approved_corpus",
-      message: "Not enough approved sources.",
-      reason: "Only one source was approved.",
-      suggestions: ["Approve more sources."],
-    };
-    const output = { status: "rejected", artifacts: [], rejection };
-    expect(structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toEqual(output);
-  });
-
-  it("reports per-branch failures when a rejection matches no anyOf branch", () => {
-    const rejection = { code: "bogus_code", message: "m", reason: "r", suggestions: ["s"] };
-    const output = { status: "rejected", artifacts: [], rejection };
-    expect(() => structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT))
-      .toThrow(/\$\.rejection:anyOf\(0=\$\.rejection:type:null; 1=\$\.rejection\.code:enum\)/);
+  it("rejects an empty artifact array for a non-empty approved corpus", () => {
+    expect(() => structuredOutputFromText(JSON.stringify({ status: "succeeded", artifacts: [] }), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT))
+      .toThrow(/failed schema/);
   });
 
   it("rejects a direct artifact object that does not match its artifact type", () => {
@@ -306,7 +237,6 @@ describe("structured output text normalization", () => {
         mime_type: "application/json",
         content: { schema_version: "research_report.v1" },
       }],
-      rejection: null,
     };
     expect(() => structuredOutputFromText(JSON.stringify(output), RESEARCH_SYNTHESIS_OUTPUT_CONTRACT)).toThrow(/failed schema/);
   });
