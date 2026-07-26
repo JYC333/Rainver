@@ -8,6 +8,7 @@ const { runsApiMock, evolutionApiMock, useRunMock } = vi.hoisted(() => ({
     activities: vi.fn(),
     artifacts: vi.fn(),
     proposals: vi.fn(),
+    authorizationRequests: vi.fn(),
     attempts: vi.fn(),
     evaluations: vi.fn(),
     verifications: vi.fn(),
@@ -25,6 +26,7 @@ const { runsApiMock, evolutionApiMock, useRunMock } = vi.hoisted(() => ({
 
 vi.mock('../../../api/client', () => ({
   runsApi: runsApiMock,
+  authorizationRequestsApi: { approve: vi.fn(), reject: vi.fn() },
   artifactsApi: { export: vi.fn() },
   evolutionApi: evolutionApiMock,
 }))
@@ -34,7 +36,7 @@ vi.mock('../../../hooks/useRun', () => ({
 }))
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({
-    spaces: [{ id: 'space-1', name: 'Test Space' }],
+    spaces: [{ id: 'space-1', name: 'Test Space', role: 'owner' }],
     activeSpaceId: 'space-1',
     activeSpaceName: 'Test Space',
     personalSpaceId: 'space-1',
@@ -51,7 +53,7 @@ import RunDetailPage from '../RunDetailPage'
 
 const run = {
   id: 'run-1', status: 'succeeded', mode: 'live', run_type: 'task',
-  trigger_origin: 'user', space_id: 'space-1', workspace_id: null,
+  trigger_origin: 'user', space_id: 'space-1', project_folder_id: null,
   agent_id: 'agent-1', agent_version_id: 'agent-version-1', context_snapshot_id: null,
   instructed_by_user_id: 'user-1', instructed_by_agent_id: null, owner_user_id: 'user-1',
   created_at: '2026-07-12T00:00:00Z', started_at: '2026-07-12T00:00:01Z', ended_at: '2026-07-12T00:00:02Z',
@@ -97,6 +99,7 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.activities.mockResolvedValue({ items: [] })
     runsApiMock.artifacts.mockResolvedValue({ items: [] })
     runsApiMock.proposals.mockResolvedValue({ items: [] })
+    runsApiMock.authorizationRequests.mockResolvedValue([])
     runsApiMock.attempts.mockResolvedValue({ attempts: [], supervisor_decisions: [] })
     runsApiMock.evaluations.mockResolvedValue([])
     runsApiMock.verifications.mockResolvedValue([])
@@ -243,6 +246,7 @@ describe('RunDetailPage route decision panel', () => {
     renderPageWithSwitcher()
 
     await user.click(screen.getByRole('button', { name: 'Switch run' }))
+    await user.click(screen.getByRole('tab', { name: 'Activities' }))
     expect(await screen.findByText('Run B activity')).toBeInTheDocument()
     resolveRunAActivities({
       items: [{ id: 'activity-a', title: 'Run A activity', activity_type: 'run', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
@@ -268,5 +272,109 @@ describe('RunDetailPage route decision panel', () => {
     await user.type(screen.getByPlaceholderText('Why is this review being abandoned?'), 'No longer needed')
     await user.click(screen.getByRole('button', { name: 'Abandon Run' }))
     expect(runsApiMock.abandon).toHaveBeenCalledWith('run-1', { reason: 'No longer needed' })
+  })
+
+  it('requires the authorization decision instead of exposing generic resume', async () => {
+    runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
+    const authorizationWaitingRun = {
+      ...(waitingRun as Record<string, unknown>),
+      error_json: {
+        error_code: 'authorization_request_pending',
+        authorization_request_id: 'request-1',
+      },
+    } as never
+    useRunMock.mockReturnValue({ run: authorizationWaitingRun, loading: false, error: null })
+    runsApiMock.authorizationRequests.mockResolvedValue([{
+      id: 'request-1',
+      space_id: 'space-1',
+      run_id: 'run-1',
+      agent_id: 'agent-1',
+      instructed_by_user_id: 'user-1',
+      policy_decision_record_id: 'decision-1',
+      action_id: 'project.source.propose_bind',
+      policy_action: 'project.source.bind',
+      project_id: null,
+      resource_kind: 'projects',
+      resource_id: 'project-1',
+      reason: 'Need source binding approval',
+      status: 'pending',
+      resulting_action_grant_id: null,
+      decided_by_user_id: null,
+      requested_at: '2026-07-12T00:00:00Z',
+      decided_at: null,
+    }])
+    renderPage()
+
+    expect(await screen.findByText('Authorization requests')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Abandon' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
+  })
+
+  it('reloads authorization requests when polling reaches waiting_for_review', async () => {
+    runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
+    const running = { ...(run as Record<string, unknown>), status: 'running' } as never
+    const polledWaiting = {
+      ...(running as Record<string, unknown>),
+      status: 'waiting_for_review',
+      error_json: null,
+    } as never
+    const request = {
+      id: 'request-1',
+      space_id: 'space-1',
+      run_id: 'run-1',
+      agent_id: 'agent-1',
+      instructed_by_user_id: 'user-1',
+      policy_decision_record_id: 'decision-1',
+      action_id: 'project.source.propose_bind',
+      policy_action: 'project.source.bind',
+      project_id: 'project-1',
+      resource_kind: 'projects',
+      resource_id: 'project-1',
+      reason: 'Need source binding approval',
+      status: 'pending',
+      resulting_action_grant_id: null,
+      decided_by_user_id: null,
+      requested_at: '2026-07-12T00:00:00Z',
+      decided_at: null,
+    }
+    useRunMock.mockReturnValue({ run: running, loading: false, error: null })
+    runsApiMock.authorizationRequests
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([request])
+    const rendered = renderPage()
+    await waitFor(() => expect(runsApiMock.authorizationRequests).toHaveBeenCalledTimes(1))
+
+    useRunMock.mockReturnValue({ run: polledWaiting, loading: false, error: null })
+    rendered.rerender(
+      <MemoryRouter initialEntries={['/spaces/space-1/runs/run-1']}>
+        <Routes>
+          <Route path="/spaces/:spaceId/runs/:runId" element={<RunDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeInTheDocument()
+    expect(runsApiMock.authorizationRequests).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+  })
+
+  it('shows a retry action when authorization requests cannot be loaded', async () => {
+    runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
+    const authorizationWaitingRun = {
+      ...(waitingRun as Record<string, unknown>),
+      error_json: {
+        error_code: 'authorization_request_pending',
+        authorization_request_id: 'request-1',
+      },
+    } as never
+    useRunMock.mockReturnValue({ run: authorizationWaitingRun, loading: false, error: null })
+    runsApiMock.authorizationRequests.mockRejectedValue(new Error('authorization service unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Authorization requests unavailable')).toBeInTheDocument()
+    expect(screen.getByText('authorization service unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry authorization requests' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
   })
 })

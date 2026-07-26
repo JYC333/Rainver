@@ -2,7 +2,7 @@
 
 ## Shipped Foundations
 
-- Space / user / workspace data model with space isolation and two-user membership
+- Space / user / Project Folder data model with space isolation and two-user membership
 - Actor identity and `ActorRef` on new audit/event surfaces
 - Proposal-first memory and policy write boundaries
 - Memory ACL, read traces, source monitoring, and provenance chain
@@ -15,7 +15,7 @@
 - Persisted policy enforcement: `memory.private_placement` and `run.user_private_scope` through server policy services; structural write boundary through proposal apply services
 - Explicit server transaction helpers; savepoint-isolated RunStep evidence
 - `BackupService` canonical full-system backup; `ops/scripts/system/backup.sh` + `ops/scripts/system/restore.sh` offline full-system tools; `ops/scripts/db/` DB-only tools
-- Workspace lifecycle: stale-marking on missing paths (no hard-delete)
+- Project Folder lifecycle: archive/unregister on missing paths (no hard-delete; the physical directory is left untouched)
 - Deployer allowlist and Unix domain socket boundary
 - Home summary aggregation API
 - Layered `.agent/` context documentation
@@ -25,12 +25,11 @@
 - Incident collection and post-cutover audit from dogfooding
 - Documentation/source sync against current route registry, module ownership,
   frontend contracts, and explicit deferred/fail-closed surfaces
-- Frontend/backend type contract alignment (memory proposals, workspace fields, space type)
+- Frontend/backend type contract alignment (memory proposals, Project Folder fields, space type)
 - Home command center work over backend aggregate read models, not frontend
   reconstruction of domain logic
 - Artifact archive/delete API
 - Activity archive/delete
-- Workspace stale recovery UI
 - Additional persisted policy enforcement classes
 
 ## Intentionally Deferred

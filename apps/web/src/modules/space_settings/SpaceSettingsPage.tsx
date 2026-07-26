@@ -43,6 +43,9 @@ export default function SpaceSettingsPage() {
   const [inviting, setInviting] = useState(false)
   const [members, setMembers] = useState<SpaceMember[]>([])
   const [loadingMembers, setLoadingMembers] = useState(false)
+  const [snapshotDefaultDays, setSnapshotDefaultDays] = useState('')
+  const [snapshotDefaultCount, setSnapshotDefaultCount] = useState('')
+  const [savingSnapshotDefaults, setSavingSnapshotDefaults] = useState(false)
 
   useEffect(() => {
     if (!currentUser || !activeSpaceId || !manageable) {
@@ -55,6 +58,36 @@ export default function SpaceSettingsPage() {
       .catch(() => setMembers([]))
       .finally(() => setLoadingMembers(false))
   }, [activeSpaceId, currentUser, manageable])
+
+  useEffect(() => {
+    if (!activeSpaceId || !manageable) return
+    spacesApi.getSnapshotDefaults(activeSpaceId)
+      .then(d => {
+        setSnapshotDefaultDays(d.snapshot_retention_days_default !== null ? String(d.snapshot_retention_days_default) : '')
+        setSnapshotDefaultCount(d.snapshot_max_count_default !== null ? String(d.snapshot_max_count_default) : '')
+      })
+      .catch(() => null)
+  }, [activeSpaceId, manageable])
+
+  async function handleSaveSnapshotDefaults() {
+    if (!activeSpaceId) return
+    const days = snapshotDefaultDays.trim() ? parseInt(snapshotDefaultDays, 10) : null
+    const count = snapshotDefaultCount.trim() ? parseInt(snapshotDefaultCount, 10) : null
+    if (days !== null && (isNaN(days) || days < 1)) { toast.error('Retention days must be a positive integer'); return }
+    if (count !== null && (isNaN(count) || count < 1)) { toast.error('Max count must be a positive integer'); return }
+    setSavingSnapshotDefaults(true)
+    try {
+      await spacesApi.updateSnapshotDefaults(activeSpaceId, {
+        snapshot_retention_days_default: days,
+        snapshot_max_count_default: count,
+      })
+      toast.success('Space default snapshot settings saved')
+    } catch (err) {
+      toast.error(errMsg(err))
+    } finally {
+      setSavingSnapshotDefaults(false)
+    }
+  }
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
@@ -162,14 +195,49 @@ export default function SpaceSettingsPage() {
 
           <Card>
             <CardTitle className="flex items-center gap-2">
-              <History className="size-3.5" /> Snapshot Rollback
+              <History className="size-3.5" /> Snapshot Rollback Defaults
             </CardTitle>
             <p className="text-sm text-muted-foreground mb-3">
-              Configure per-workspace retention for code-patch rollback snapshots (days and max count).
+              Default retention for code-patch rollback snapshots. Project Folders without an explicit
+              override use these defaults; per-Folder overrides live in each Folder's own settings.
             </p>
-            <Button asChild variant="outline" size="sm">
-              <Link to="/workspace-snapshot-settings">Manage Snapshot Settings</Link>
-            </Button>
+            <div className="flex items-end gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                  Retention (days)
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  placeholder="7"
+                  value={snapshotDefaultDays}
+                  onChange={e => setSnapshotDefaultDays(e.target.value)}
+                  className="h-8 w-28 text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                  Max snapshots
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  placeholder="20"
+                  value={snapshotDefaultCount}
+                  onChange={e => setSnapshotDefaultCount(e.target.value)}
+                  className="h-8 w-28 text-sm"
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8"
+                disabled={savingSnapshotDefaults}
+                onClick={handleSaveSnapshotDefaults}
+              >
+                {savingSnapshotDefaults ? 'Saving…' : 'Save defaults'}
+              </Button>
+            </div>
           </Card>
 
           <Card>

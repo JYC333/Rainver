@@ -155,7 +155,7 @@ function childDraft(candidate: Record<string, unknown>, context: ProposalApplyCo
   const common = {
     rationale: "Generated from an accepted candidate-relation discovery packet.",
     visibility: "private",
-    workspaceId: context.proposal.workspace_id ?? null,
+    projectFolderId: context.proposal.project_folder_id ?? null,
     projectId: context.proposal.project_id,
   };
   if (proposalType === "object_relation_create") {

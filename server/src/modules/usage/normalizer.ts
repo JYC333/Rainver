@@ -103,7 +103,7 @@ export function normalizeUsageObservation(
     session_name: trimOrNull(input.session_name),
     agent_id: trimOrNull(input.agent_id),
     project_id: attribution.project_id,
-    workspace_id: attribution.workspace_id,
+    project_folder_id: attribution.project_folder_id,
     trigger_origin: trimOrNull(input.trigger_origin),
     occurred_at: occurredAt,
     recorded_at: recordedAt,

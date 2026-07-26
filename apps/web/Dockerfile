@@ -10,7 +10,7 @@
 # production image rather than a dev server.
 
 # ---- shared dependency layer ----------------------------------------------
-FROM node:22.22.2-slim AS base
+FROM node:24.18.0-slim AS base
 
 # npm retry config — guards against transient ECONNRESET in WSL2/Docker builds
 ENV NPM_CONFIG_FETCH_RETRIES=5 \

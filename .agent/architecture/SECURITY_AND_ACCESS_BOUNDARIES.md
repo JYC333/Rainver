@@ -27,7 +27,6 @@ All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
 - `GET /jobs/handlers`
-- `GET /workspace-console/runtimes`
 - `GET /runtime-tools...`, `POST /runtime-tools/{runtime}/install`, `POST /runtime-tools/{runtime}/activate`
 - `GET /providers/litellm-providers`, `/providers/catalog`
 
@@ -58,7 +57,7 @@ Rules:
 ## 3. Content Access
 
 All persisted content uses one read model. An active membership in the
-resource's Space is required first; workspace/project scope gates are applied
+resource's Space is required first; project_folder/project scope gates are applied
 second; owner, visibility, and explicit grants are evaluated last. Visibility
 has exactly three values: `private`, `space_shared`, and `selected_users`.
 Unknown values fail closed.
@@ -80,7 +79,7 @@ no-oracle behavior — the caller cannot distinguish "not found" from "not permi
 
 `private` content is owner-readable, `space_shared` is readable to scope-eligible
 members, and `selected_users` is readable to the owner and active same-Space
-grantees. `access_level=summary` withholds full content from non-owners. Workspace
+grantees. `access_level=summary` withholds full content from non-owners. Project Folder
 and project scope are independent from visibility. Space owner/admin roles may
 manage access policy but do not bypass read policy **by default**; the single
 exception is the creation-time, immutable Space oversight mode (below), scoped
@@ -143,7 +142,7 @@ other members' otherwise-private content into that run's own context/output,
 scoped to that run), which is a deliberate consequence of the same
 canonical-predicate mechanism, not a separate feature.
 
-Oversight does not pierce workspace/project scope gates, source consent
+Oversight does not pierce project_folder/project scope gates, source consent
 gates, or any other post-visibility deny gate besides the `highly_restricted`
 exception above. Cross-space reads always fail regardless of oversight;
 targeted publications remain the only cross-space transfer path.
@@ -153,7 +152,7 @@ targeted publications remain the only cross-space transfer path.
 `token_usage_events` is registered as `token_usage_event` in the canonical
 content resource registry. Direct user and CLI-import events are private and
 owned by that user. Run/Agent-backed calls snapshot the source resource owner,
-workspace/project scope, visibility, disclosure level, and active disclosure
+project_folder/project scope, visibility, disclosure level, and active disclosure
 grants for both `selected_users` and `space_shared` sources at call time. Ownerless events are accepted only for an explicit
 Space-system task and must be `space_shared`.
 
@@ -169,17 +168,27 @@ aggregate totals and no user, prompt, run, session, or source-resource dimension
 
 ## 4. Session Access Policy
 
-Sessions are user-owned within a space.
+Public `/sessions*` conversations are non-Room sessions owned by one user
+within a space. Room conversations are shared, Project-bound aggregates and
+are readable/writable only through `/rooms/{roomId}/conversations/*`.
 
 - `GET /sessions/{id}` requires authentication. `space_id` and `user_id` are extracted from
   the request identity and forwarded to `SessionService.get_session()` as SQL filters.
 - `GET /sessions/{id}/messages` follows the same pattern.
 - A cross-space request returns 404 (session not found in that space).
 - A same-space non-owner request returns 404 (session belongs to a different user).
+- A Room session returns 404 on every public `/sessions/{id}` read, message
+  write, and reflection command. RoomService rechecks active Room membership
+  and the Project ACL before its own reads and dispatch.
+- Public `POST /sessions/{id}/messages` accepts only `content`; the server
+  assigns `role='user'` and does not accept client metadata. Assistant role,
+  Run identity, artifact references, and action previews are server-owned.
 - An unauthorized request must not return any message content.
 
-Enforcement is at the SQL query layer: `Session.space_id == space_id` and
-`Session.user_id == user_id` are both applied as WHERE-clause filters.
+Enforcement is at the SQL query layer: `Session.space_id == space_id`,
+`Session.user_id == user_id`, and `Session.room_id IS NULL` are all applied as
+WHERE-clause filters. Room-specific repository commands use the Room,
+conversation, Project, and membership relations as one scope.
 
 ---
 
@@ -291,7 +300,7 @@ configuration and may hold private operational detail; `GET /projects` and
 The summary payload must stay redacted: `summary_text`, `topics_json`, and
 `highlights_json` are high-level fields; `source_refs_json` is pointer metadata
 only. It must not embed raw private memory, memo/document excerpts, artifact
-payloads, workspace file content, or other concrete project content. The
+payloads, Project Folder file content, or other concrete project content. The
 Projects search route only permits `project_public_summary`, so it cannot be
 used to probe Knowledge or Memory retrieval projections.
 
@@ -301,7 +310,7 @@ authority rule and writes only `review_status = 'draft'`. Its prompt version is
 `project_public_summary.prompt.v1`; provider routing uses auxiliary task
 `project_public_summary` unless the request supplies a model provider. The
 generator bounds and filters the source context before the model call: no
-workspace files, no artifact file bodies, no `highly_restricted` memory, and no
+Project Folder files, no artifact file bodies, no `highly_restricted` memory, and no
 sensitive/restricted memory content. Model-returned source refs are accepted
 only when they match source IDs that were actually supplied to the prompt. The
 generator writes a best-effort `policy_decision_records` audit row
@@ -396,6 +405,8 @@ throughout.
   can only enable/disable and select allowed/default installed versions for
   their own space.
 - Provider edit/key replacement and CLI login/profile mutation are owner-only.
+  Login PTY input is resolved through the authenticated owner's profile before
+  it can reach an active runtime session; a profile id alone grants no access.
   Space owners/admins may disable grants for their space without reading or
   editing secret material.
 - CLI credentials are stored as filesystem-managed paths; no secret material appears in API
@@ -409,12 +420,12 @@ throughout.
 
 ---
 
-## 10. Workspace and Artifact Path Safety
+## 10. Project Folder and Artifact Path Safety
 
-**Workspace file access** (`server/src/modules/workspaces/routes.ts`):
-- `PathPolicy` (`server/src/modules/workspaces/pathPolicy.ts`) is enforced before any disk access.
-- `workspace.read` policy is enforced before tree/file/status/diff reads.
-- system_core, external-root, protected/restricted, full-diff, and secret-like
+**Project Folder file access** (`server/src/modules/projectFolders/repository.ts`):
+- `PathPolicy` (`server/src/modules/projectFolders/pathPolicy.ts`) is enforced before any disk access.
+- `project_folder.read` policy is enforced before tree/file/status/diff reads.
+- Protected-Folder, external-root, protected/restricted, full-diff, and secret-like
   path reads force a durable `PolicyDecisionRecord`.
 - Forbidden path patterns include `.ssh`, `.aws`, `.gcp`, `.azure`,
   `credentials`, `instance/secrets`, `config/secrets`, `.git/config`,
@@ -424,6 +435,14 @@ throughout.
   secret-like key/value lines are redacted.
 - Forbidden write suffixes: `.py`, `.sh`, `.bash`, `.zsh`, `.fish`.
 - Paths resolved to absolute before validation; no symlink race conditions.
+- Low/medium-risk local CLI execution uses a rootless bubblewrap namespace:
+  an empty filesystem view receives only system runtime trees, exact
+  DNS/NSS/linker/CA configuration paths (never the whole `/etc`), runtime
+  tools, registered Folder entries, generated context, brokered HOME, and Run
+  Exchange paths. Folder/context mounts are read-only and the view root is
+  remounted read-only; other spaces and host paths are absent. Only brokered
+  HOME and Run Exchange output paths under configured managed roots are
+  writable. Namespace preflight failure is fail-closed.
 
 **Artifact export** (`server/src/modules/artifacts/` and run artifact materialization):
 - paths escaping the artifact storage root return no file.
@@ -452,7 +471,7 @@ throughout.
 
 All durable-data API routes are authenticated and space-scoped. Session conversation history
 is protected by auth + space + user scoping. Activity → proposal → memory boundary is
-enforced. Workspace path traversal is blocked. Artifact export is space- and
+enforced. Project Folder path traversal is blocked. Artifact export is space- and
 visibility-gated. Credential secrets are not exposed in API responses. Egress approval for
 personal memory is enforced and tested.
 

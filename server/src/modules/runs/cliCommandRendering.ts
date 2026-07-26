@@ -31,12 +31,15 @@ export async function renderCliCommand(
     permission_bypass: boolean;
     runtime_policy_json?: Record<string, unknown>;
     risk_level: string;
-    workspace_id: string | null;
+    project_folder_id: string | null;
     sandbox_cwd: string | null;
+    context_cwd?: string | null;
+    resume_session_id?: string | null;
+    required_sandbox_level?: string | null;
   },
 ): Promise<RenderedCliCommand> {
   try {
-    await assertRuntimeSubagentsDisabled(spec, input.sandbox_cwd);
+    await assertRuntimeSubagentsDisabled(spec, input.context_cwd ?? input.sandbox_cwd);
   } catch (error) {
     throw new CliRenderError(
       "runtime_subagents_not_disabled",
@@ -45,20 +48,24 @@ export async function renderCliCommand(
         : "Runtime subagent disablement could not be verified.",
     );
   }
-  const template =
-    input.mode === "interactive" && spec.invocation.interactive_command_template
+  const template = input.resume_session_id && spec.invocation.resume_command_template
+    ? spec.invocation.resume_command_template
+    : input.mode === "interactive" && spec.invocation.interactive_command_template
       ? spec.invocation.interactive_command_template
       : spec.invocation.headless_command_template;
   const values = {
     executable: input.executable,
     prompt: input.prompt,
     sandbox_cwd: input.sandbox_cwd ?? "",
+    resume_session_id: input.resume_session_id ?? "",
   };
   const argv = renderTemplate(template, values);
   const redacted = renderTemplate(template, { ...values, prompt: "[REDACTED_PROMPT]" });
+  applyReadOnlyVendorSandbox(spec, argv, input.required_sandbox_level);
+  applyReadOnlyVendorSandbox(spec, redacted, input.required_sandbox_level);
 
   const extraArgs: string[] = [];
-  if (input.model) {
+  if (input.model && spec.invocation.argument_rendering_strategy !== "ndjson_rpc") {
     if (!spec.model.supports_model_override || !spec.model.model_arg_template) {
       throw new CliRenderError("model_override_not_supported", `adapter_type '${spec.adapter_type}' does not support model override`);
     }
@@ -91,6 +98,19 @@ export async function renderCliCommand(
   };
 }
 
+function applyReadOnlyVendorSandbox(
+  spec: LocalCliRuntimeAdapterSpec,
+  argv: string[],
+  sandboxLevel: string | null | undefined,
+): void {
+  if (spec.adapter_type !== "codex_cli" || sandboxLevel !== "read_only") return;
+  const sandboxIndex = argv.indexOf("--sandbox");
+  // Codex app-server carries the sandbox mode in thread/start rather than
+  // process argv. Legacy direct-exec templates still use this flag.
+  if (sandboxIndex < 0 || sandboxIndex + 1 >= argv.length) return;
+  argv[sandboxIndex + 1] = "read-only";
+}
+
 function renderTemplate(template: string[], values: Record<string, string>): string[] {
   return template.map((part) =>
     part.replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (_match, name: string) => {
@@ -108,7 +128,7 @@ function permissionBypassError(
   input: {
     runtime_policy_json?: Record<string, unknown>;
     risk_level: string;
-    workspace_id: string | null;
+    project_folder_id: string | null;
     sandbox_cwd: string | null;
   },
 ): string | null {
@@ -122,7 +142,7 @@ function permissionBypassError(
   if (!["high", "critical"].includes(input.risk_level)) {
     return "Permission bypass requires risk_level high or critical.";
   }
-  if (!input.workspace_id || !input.sandbox_cwd) {
+  if (!input.project_folder_id || !input.sandbox_cwd) {
     return "Permission bypass requires an existing worktree workspace.";
   }
   return null;

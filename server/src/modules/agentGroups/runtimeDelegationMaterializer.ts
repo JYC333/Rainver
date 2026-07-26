@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   RunMaterializationItemSummary,
   RuntimeDelegationOutputItem,
@@ -96,6 +97,7 @@ export class AgentGroupRuntimeDelegationMaterializer
           reason: entry.reason ?? "runtime_delegation_output",
           budget_json: objectValue(entry.budget),
           context_policy_json: objectValue(entry.context),
+          tool_call_id: runtimeOutputDelegationKey(run.id, entry, index),
         },
       );
       if (result.delegation.status === "policy_denied" || !result.child_run_id) {
@@ -140,6 +142,37 @@ export class AgentGroupRuntimeDelegationMaterializer
       );
     }
   }
+}
+
+function runtimeOutputDelegationKey(
+  runId: string,
+  entry: RuntimeDelegationOutputItem,
+  index: number,
+): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(canonicalJson({
+      run_id: runId,
+      output_index: index,
+      target_agent_id: entry.target_agent_id,
+      instruction: entry.instruction,
+      reason: entry.reason ?? null,
+      budget: objectValue(entry.budget),
+      context: objectValue(entry.context),
+    })))
+    .digest("hex");
+  return `runtime_output:${digest}`;
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalJson(item)]),
+    );
+  }
+  return value;
 }
 
 function failedItem(

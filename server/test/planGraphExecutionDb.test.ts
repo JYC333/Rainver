@@ -7,10 +7,14 @@ import { loadConfig } from "../src/config";
 import { PgPlanRepository } from "../src/modules/plans/repository";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService";
 import { PgRunRepository } from "../src/modules/runs/repository";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
 import { PgTaskRepository } from "../src/modules/tasks/repository";
 import { PgAutomationRepository } from "../src/modules/automations/repository";
+import { assertBudgetSourcesAvailable } from "../src/modules/runs/budgetEnforcement";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "../src/modules/automations/actionNodeRegistry";
+import { withQueryableTransaction, type SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import type { RunBudgetSource } from "../src/modules/runs/contractSnapshot";
 
 const MIGRATIONS_DIR = `${process.cwd()}/migrations`;
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -33,14 +37,10 @@ const describeWithPostgres = describe.skipIf(
 );
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
-    available = true;
-  } catch (error) {
-    console.warn(`[plan-graph-execution-db] skipped — shared PostgreSQL unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  container = await getTestPostgres(__filename);
+  pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
+  await migrate(pool, MIGRATIONS_DIR);
+  available = true;
 }, 180_000);
 
 afterAll(async () => {
@@ -131,10 +131,57 @@ function agentPlanDefinition() {
       depends_on: [],
       capability_id: "task-work",
       verification_recipe_refs: ["output-check"],
-      contract_json: { risk_level: "high", max_attempts: 2 },
+      contract_json: { risk_level: "high", max_runs: 1, max_attempts: 2 },
       metadata_json: { runtime_delegation_allowed: false },
     }],
   };
+}
+
+async function seedBudgetAutomation(): Promise<void> {
+  const now = new Date().toISOString();
+  await pool!.query(
+    `INSERT INTO automations (
+       id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+       config_json, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, 'Shared budget automation', 'manual', 'active', '{}'::jsonb, $5, $5)`,
+    [AUTOMATION, SPACE, USER, AGENT, now],
+  );
+}
+
+async function createApprovedPlanWithBudget(
+  budgetSources: RunBudgetSource[],
+): Promise<{ plans: PgPlanRepository; planId: string; versionId: string }> {
+  const now = new Date().toISOString();
+  await pool!.query(
+    `INSERT INTO tasks (
+       id, space_id, task_role, title, description, task_type, status, priority,
+       risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+       created_at, updated_at
+     ) VALUES ($1, $2, 'source', 'Budget source task', 'Task with an inherited budget.', 'general',
+               'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+    [TASK, SPACE, USER, now],
+  );
+  const planningRun = await new PgTaskRepository(pool!).requestPlanningRun(identity, TASK, {
+    agent_id: AGENT,
+    prompt: "Plan this source task.",
+  }) as { id: string };
+  const plans = new PgPlanRepository(pool!);
+  const created = await plans.createPlanFromAgent(identity, {
+    sourceTaskId: TASK,
+    planningRunId: planningRun.id,
+    planningToolCallId: `tool-call-budget-${randomUUID()}`,
+    agentId: AGENT,
+    definitionJson: agentPlanDefinition(),
+    budgetCap: 100,
+    budgetSources,
+  });
+  const version = created.current_version as { id: string; approval_proposal_id: string };
+  const apply = PgProposalApplyService.fromConfig(loadConfig({
+    SERVER_DATABASE_URL: container!.getConnectionUri(),
+    SERVER_INTERNAL_TOKEN: "test-internal-token",
+  }));
+  await apply.accept(version.approval_proposal_id, identity);
+  return { plans, planId: String(created.id), versionId: version.id };
 }
 
 describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
@@ -223,10 +270,14 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       run_id: nodeRun!.run_id,
       space_id: SPACE,
       status: "succeeded",
-      output_json: {
-        result: "done",
-        materialization: [{ kind: "artifact", status: "succeeded", artifact_id: planArtifactId }],
-      },
+      output_json: canonicalRunOutput({
+        success: true,
+        outputText: "done",
+        outputJson: {
+          result: "done",
+          materialization: [{ kind: "artifact", status: "succeeded", artifact_id: planArtifactId }],
+        },
+      }),
       completed_at: new Date().toISOString(),
     });
     await runs.insertRunEvaluation({
@@ -239,6 +290,215 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     const reconciled = await plans.reconcilePlan(identity, String(first.id));
     expect(reconciled.status).toBe("completed");
     expect((await pool.query<{ status: string }>(`SELECT status FROM plan_nodes WHERE id = $1`, [nodeRun!.node_id])).rows[0]?.status).toBe("done");
+  });
+
+  it("rejects an Agent plan proposal whose node declares a budget source that does not exist", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Source task', 'Task requiring a plan.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+    const taskRepository = new PgTaskRepository(pool);
+    const planningRun = await taskRepository.requestPlanningRun(identity, TASK, {
+      agent_id: AGENT,
+      prompt: "Plan this source task.",
+    }) as { id: string };
+
+    const plans = new PgPlanRepository(pool);
+    const definition = agentPlanDefinition();
+    (definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json = {
+      ...(definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json,
+      budget_sources: [{ source: { kind: "automation", id: randomUUID() }, max_runs: 1 }],
+    };
+    await expect(plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK,
+      planningRunId: planningRun.id,
+      planningToolCallId: "tool-call-missing-node-budget",
+      agentId: AGENT,
+      definitionJson: definition,
+      budgetCap: 100,
+    })).rejects.toMatchObject({ code: "budget_source_not_found" });
+    expect((await pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
+  });
+
+  it("fails closed when a Plan node's declared budget source is already exhausted, leaving no queued Run or plan_node_runs row", async () => {
+    if (!available || !pool || !container) return;
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+         config_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'Shared budget automation', 'manual', 'active', '{}'::jsonb, $5, $5)`,
+      [AUTOMATION, SPACE, USER, AGENT, now],
+    );
+    // Consume the Automation's single admitted slot with an unrelated direct
+    // Run, the same way a manual fire would, before the Plan node ever tries
+    // to inherit that budget.
+    const runs = new PgRunRepository(pool);
+    const consumedRun = await runs.createQueuedRun({
+      agent_id: AGENT,
+      space_id: SPACE,
+      user_id: USER,
+      mode: "live",
+      run_type: "agent",
+      trigger_origin: "manual",
+      prompt: "Consume the automation's one admitted slot.",
+    });
+    await new PgAutomationRepository(pool).createAutomationRun({
+      automationId: AUTOMATION,
+      runId: consumedRun.id,
+      triggeredByUserId: USER,
+      triggerType: "manual",
+      preflightSnapshot: { executable: true },
+    });
+
+    await pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Budget source task', 'Task with an exhausted node budget.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+    const taskRepository = new PgTaskRepository(pool);
+    const planningRun = await taskRepository.requestPlanningRun(identity, TASK, {
+      agent_id: AGENT,
+      prompt: "Plan this source task.",
+    }) as { id: string };
+
+    const plans = new PgPlanRepository(pool);
+    const definition = agentPlanDefinition();
+    (definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json = {
+      ...(definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json,
+      budget_sources: [{ source: { kind: "automation", id: AUTOMATION }, max_runs: 1 }],
+    };
+    const created = await plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK,
+      planningRunId: planningRun.id,
+      planningToolCallId: "tool-call-exhausted-node-budget",
+      agentId: AGENT,
+      definitionJson: definition,
+      budgetCap: 100,
+    });
+    const version = created.current_version as { id: string; approval_proposal_id: string };
+    expect(version.approval_proposal_id).toBeTruthy();
+
+    const apply = PgProposalApplyService.fromConfig(loadConfig({
+      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_INTERNAL_TOKEN: "test-internal-token",
+    }));
+    await apply.accept(version.approval_proposal_id, identity);
+
+    await expect(plans.executePlan(identity, String(created.id), { agentId: AGENT })).rejects.toMatchObject({
+      code: "automation_max_runs_exceeded",
+    });
+
+    // The rejected node admission must roll back the whole execute attempt:
+    // no coordinator Run, no child Run, and no plan_node_runs link survive.
+    const plan = (await pool.query<{ status: string; root_run_id: string | null }>(
+      `SELECT status, root_run_id FROM plans WHERE id = $1`,
+      [created.id],
+    )).rows[0];
+    expect(plan).toMatchObject({ status: "active", root_run_id: null });
+    expect((await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM plan_node_runs
+        WHERE plan_node_id IN (SELECT id FROM plan_nodes WHERE plan_version_id = $1)`,
+      [version.id],
+    )).rows[0]?.count).toBe(0);
+    expect((await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM runs WHERE space_id = $1`,
+      [SPACE],
+    )).rows[0]?.count).toBe(2);
+  });
+
+  it("inherits a Plan-level budget into child Runs and consumes the source as one logical execution", async () => {
+    if (!available || !pool || !container) return;
+    await seedBudgetAutomation();
+    const source: RunBudgetSource = {
+      source: { kind: "automation", id: AUTOMATION },
+      max_runs: 1,
+    };
+    const { plans, planId, versionId } = await createApprovedPlanWithBudget([source]);
+
+    const executed = await plans.executePlan(identity, planId, { agentId: AGENT });
+    expect(executed.scheduled_node_ids).toHaveLength(1);
+    const child = (await pool.query<{ root_run_id: string; contract_snapshot_json: { budget_sources: RunBudgetSource[] } }>(
+      `SELECT r.root_run_id, r.contract_snapshot_json
+         FROM runs r
+         JOIN plan_node_runs pnr ON pnr.run_id = r.id AND pnr.space_id = r.space_id
+         JOIN plan_nodes n ON n.id = pnr.plan_node_id AND n.space_id = pnr.space_id
+        WHERE n.plan_version_id = $1`,
+      [versionId],
+    )).rows[0];
+    expect(child?.root_run_id).toBe(executed.root_run_id);
+    expect(child?.contract_snapshot_json.budget_sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: { kind: "automation", id: AUTOMATION }, max_runs: 1 }),
+    ]));
+    await expect(assertBudgetSourcesAvailable(pool, SPACE, [source])).rejects.toMatchObject({
+      code: "automation_max_runs_exceeded",
+    });
+  });
+
+  it("serializes concurrent manual and Plan admission against one inherited Automation budget", async () => {
+    if (!available || !pool || !container) return;
+    await seedBudgetAutomation();
+    const source: RunBudgetSource = {
+      source: { kind: "automation", id: AUTOMATION },
+      max_runs: 1,
+    };
+    const { plans, planId, versionId } = await createApprovedPlanWithBudget([source]);
+
+    const manualAdmission = () => withQueryableTransaction(pool!, async (client) => {
+      await assertBudgetSourcesAvailable(client, SPACE, [source]);
+      const run = await new PgRunRepository(client).createQueuedRun({
+        agent_id: AGENT,
+        space_id: SPACE,
+        user_id: USER,
+        mode: "live",
+        run_type: "agent",
+        trigger_origin: "manual",
+        prompt: "Compete with Plan admission.",
+        contract_snapshot: {
+          source: { kind: "automation", id: AUTOMATION },
+          max_runs: 1,
+        },
+      });
+      await new PgAutomationRepository(client).createAutomationRun({
+        automationId: AUTOMATION,
+        runId: run.id,
+        triggeredByUserId: USER,
+        triggerType: "manual",
+        preflightSnapshot: { executable: true },
+      });
+      return run.id;
+    });
+    const outcomes = await Promise.allSettled([
+      manualAdmission(),
+      plans.executePlan(identity, planId, { agentId: AGENT }),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejection = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    expect(rejection?.reason).toMatchObject({ code: "automation_max_runs_exceeded" });
+    const automationRuns = (await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM automation_runs WHERE automation_id = $1`,
+      [AUTOMATION],
+    )).rows[0]?.count ?? 0;
+    const planNodeRuns = (await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM plan_node_runs pnr
+         JOIN plan_nodes n ON n.id = pnr.plan_node_id AND n.space_id = pnr.space_id
+        WHERE n.plan_version_id = $1`,
+      [versionId],
+    )).rows[0]?.count ?? 0;
+    expect(automationRuns + planNodeRuns).toBe(1);
   });
 
   it("executes a fixed Workflow through Workflow Execution without creating a Plan", async () => {
@@ -260,7 +520,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
         space_id: SPACE,
         owner_user_id: USER,
         agent_id: AGENT,
-        workspace_id: null,
+        project_folder_id: null,
         project_id: null,
         name: "Fixed workflow automation",
         description: null,
@@ -358,8 +618,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       run_id: work!.run_id,
       space_id: SPACE,
       status: "succeeded",
-      output_text: "workflow done",
-      output_json: { result: { answer: 42 } },
+      output_json: canonicalRunOutput({ success: true, outputText: "workflow done", outputJson: { result: { answer: 42 } } }),
       completed_at: new Date().toISOString(),
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: work!.run_id, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: new Date().toISOString() });
@@ -434,7 +693,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     );
     const automation = {
       id: AUTOMATION, space_id: SPACE, owner_user_id: USER, agent_id: AGENT,
-      workspace_id: null, project_id: null, name: "Binding workflow", description: null,
+      project_folder_id: null, project_id: null, name: "Binding workflow", description: null,
       trigger_type: "manual", status: "active", preflight_snapshot_json: null,
       config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
       created_at: now, updated_at: now,
@@ -470,7 +729,15 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     )).rows[0]!.run_id;
     const runs = new PgRunRepository(pool);
     await runs.markRunRunning({ run_id: sourceRun, space_id: SPACE, started_at: now });
-    await runs.markRunTerminal({ run_id: sourceRun, space_id: SPACE, status: "succeeded", output_json: {}, completed_at: now });
+    await runs.markRunTerminal({
+      run_id: sourceRun,
+      space_id: SPACE,
+      status: "succeeded",
+      // Canonical-shaped but with no summary text, to exercise the
+      // "output_text_missing" sub-case distinctly from "not canonical at all".
+      output_json: { schema_version: "run_output.v1", status: "succeeded", summary: null, result: {}, output_manifest: [] },
+      completed_at: now,
+    });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
     await service.reconcileForRun(pool, SPACE, sourceRun, USER);
 
@@ -492,5 +759,407 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(states[0]!.resolved_inputs_json?.bindings[0]?.missing_reason).toBe("output_text_missing");
     expect(states[1]).toMatchObject({ node_key: "required", status: "failed", run_count: 0 });
     expect(states[1]!.blocked_reason).toBe("input_binding_unresolved:missing:output_text_missing");
+  });
+
+  it("dispatches 'action' nodes to a registered deterministic handler without spawning an agent run", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    actionNodeHandlerRegistry.register("test.echo_action", async (context) => ({
+      output: { echoed: context.inputs.value },
+    }));
+    actionNodeHandlerRegistry.register("test.failing_action", async () => {
+      throw new ActionNodeHandlerError("deliberate test failure", { partial: true });
+    });
+    await pool.query(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+         config_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'Action node automation', 'manual', 'active',
+                 '{"target_type":"workflow"}'::jsonb, $5, $5)`,
+      [AUTOMATION, SPACE, USER, AGENT, now],
+    );
+    const automation = {
+      id: AUTOMATION, space_id: SPACE, owner_user_id: USER, agent_id: AGENT,
+      project_folder_id: null, project_id: null, name: "Action node automation", description: null,
+      trigger_type: "manual", status: "active", preflight_snapshot_json: null,
+      config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
+      created_at: now, updated_at: now,
+    };
+    const service = new WorkflowExecutionService();
+    const execution = await service.start({
+      db: pool,
+      identity,
+      automation,
+      target: {
+        versionId: BINDING_WORKFLOW_VERSION,
+        resolutionTrace: [],
+        contentJson: {
+          schema_version: "workflow_definition.v1",
+          workflow_id: "action-node-workflow",
+          name: "Action node workflow",
+          description: "Exercises the action node_kind dispatch path.",
+          input_schema_json: {}, output_artifact_types: [], metadata_json: {},
+          nodes: [
+            { id: "source", title: "Source", depends_on: [], capability_id: "source", contract_json: {}, metadata_json: {} },
+            {
+              id: "ok_action", title: "Echo action", depends_on: ["source"],
+              input_bindings: [{ name: "value", from_node: "source", source: "output_json", json_pointer: "/value" }],
+              contract_json: {}, metadata_json: { node_kind: "action", action_key: "test.echo_action" },
+            },
+            {
+              id: "fail_action", title: "Failing action", depends_on: ["source"],
+              contract_json: {}, metadata_json: { node_kind: "action", action_key: "test.failing_action" },
+            },
+            {
+              id: "missing_action", title: "Unregistered action", depends_on: ["source"],
+              contract_json: {}, metadata_json: { node_kind: "action", action_key: "test.does_not_exist" },
+            },
+          ],
+        },
+      },
+      triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
+    });
+
+    const sourceRun = (await pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+       JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
+       WHERE node.execution_id = $1 AND node.node_key = 'source'`,
+      [execution.workflowExecutionId],
+    )).rows[0]!.run_id;
+    const runs = new PgRunRepository(pool);
+    await runs.markRunRunning({ run_id: sourceRun, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({ run_id: sourceRun, space_id: SPACE, status: "succeeded", output_json: canonicalRunOutput({ success: true, outputText: "", outputJson: { value: "world" } }), completed_at: now });
+    await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
+    await service.reconcileForRun(pool, SPACE, sourceRun, USER);
+
+    const nodes = (await pool.query<{ node_key: string; status: string; blocked_reason: string | null }>(
+      `SELECT node_key, status, blocked_reason FROM workflow_execution_nodes
+        WHERE execution_id = $1 AND node_key IN ('ok_action', 'fail_action', 'missing_action')
+        ORDER BY node_key`,
+      [execution.workflowExecutionId],
+    )).rows;
+    expect(nodes).toEqual([
+      { node_key: "fail_action", status: "failed", blocked_reason: "action_handler_error:deliberate test failure" },
+      { node_key: "missing_action", status: "failed", blocked_reason: "action_handler_not_registered:test.does_not_exist" },
+      { node_key: "ok_action", status: "done", blocked_reason: null },
+    ]);
+
+    const okRun = (await pool.query<{
+      run_type: string; status: string; output_json: { echoed: string };
+      outcome_status: string;
+    }>(
+      `SELECT r.run_type, r.status, r.output_json,
+              (SELECT outcome_status FROM run_evaluations re WHERE re.run_id = r.id ORDER BY re.evaluated_at DESC LIMIT 1) AS outcome_status
+         FROM workflow_execution_node_runs link
+         JOIN workflow_execution_nodes n ON n.id = link.node_id AND n.space_id = link.space_id
+         JOIN runs r ON r.id = link.run_id AND r.space_id = link.space_id
+        WHERE n.execution_id = $1 AND n.node_key = 'ok_action'`,
+      [execution.workflowExecutionId],
+    )).rows[0];
+    expect(okRun).toEqual({
+      run_type: "system",
+      status: "succeeded",
+      output_json: canonicalRunOutput({ success: true, outputText: "Workflow action completed.", outputJson: { echoed: "world" } }),
+      outcome_status: "passed",
+    });
+
+    const failRun = (await pool.query<{
+      status: string; output_json: { partial: boolean }; outcome_status: string;
+    }>(
+      `SELECT r.status, r.output_json,
+              (SELECT outcome_status FROM run_evaluations re WHERE re.run_id = r.id ORDER BY re.evaluated_at DESC LIMIT 1) AS outcome_status
+         FROM workflow_execution_node_runs link
+         JOIN workflow_execution_nodes n ON n.id = link.node_id AND n.space_id = link.space_id
+         JOIN runs r ON r.id = link.run_id AND r.space_id = link.space_id
+        WHERE n.execution_id = $1 AND n.node_key = 'fail_action'`,
+      [execution.workflowExecutionId],
+    )).rows[0];
+    expect(failRun).toEqual({
+      status: "failed",
+      output_json: canonicalRunOutput({ success: false, outputText: "", outputJson: { partial: true } }),
+      outcome_status: "failed",
+    });
+
+    const missingRunCount = (await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM workflow_execution_node_runs link
+         JOIN workflow_execution_nodes n ON n.id = link.node_id AND n.space_id = link.space_id
+        WHERE n.execution_id = $1 AND n.node_key = 'missing_action'`,
+      [execution.workflowExecutionId],
+    )).rows[0]?.count;
+    expect(missingRunCount).toBe(0);
+  });
+
+  it("keeps an async Action node in progress until its delegated Run finishes", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    let delegationCount = 0;
+    actionNodeHandlerRegistry.register("test.delegate_run", async (context) => {
+      delegationCount += 1;
+      const delegated = await new PgRunRepository(context.db).createQueuedRunWithBudgetAdmission({
+        agent_id: AGENT,
+        space_id: SPACE,
+        user_id: USER,
+        mode: "live",
+        run_type: "agent",
+        trigger_origin: "system",
+        prompt: `Delegated model work ${delegationCount}`,
+        instruction: "Return a deterministic test value.",
+      });
+      return { output: { queued: true }, delegatedRunId: delegated.id };
+    });
+    actionNodeHandlerRegistry.register("test.consume_delegated", async (context) => ({
+      output: {
+        source_run_id: context.bindings.find((binding) => binding.name === "value")?.source_run_id,
+        value: context.inputs.value,
+      },
+    }));
+    await pool.query(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+         config_json, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'Delegated action automation','manual','active',
+                 '{"target_type":"workflow"}'::jsonb,$5,$5)`,
+      [AUTOMATION, SPACE, USER, AGENT, now],
+    );
+    const automation = {
+      id: AUTOMATION, space_id: SPACE, owner_user_id: USER, agent_id: AGENT,
+      project_folder_id: null, project_id: null, name: "Delegated action automation", description: null,
+      trigger_type: "manual", status: "active", preflight_snapshot_json: null,
+      config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
+      created_at: now, updated_at: now,
+    };
+    const service = new WorkflowExecutionService();
+    const execution = await service.start({
+      db: pool,
+      identity,
+      automation,
+      target: {
+        versionId: BINDING_WORKFLOW_VERSION,
+        resolutionTrace: [],
+        contentJson: {
+          schema_version: "workflow_definition.v1",
+          workflow_id: "delegated-action-workflow",
+          name: "Delegated Action Workflow",
+          description: "Exercises async Action Run delegation.",
+          input_schema_json: {}, output_artifact_types: [], metadata_json: {},
+          nodes: [
+            {
+              id: "delegate", title: "Delegate", depends_on: [],
+              contract_json: { max_attempts: 2 },
+              metadata_json: { node_kind: "action", action_key: "test.delegate_run" },
+            },
+            {
+              id: "consume", title: "Consume", depends_on: ["delegate"],
+              input_bindings: [{
+                name: "value", from_node: "delegate", source: "output_json",
+                json_pointer: "/value", required: true,
+              }],
+              contract_json: {},
+              metadata_json: { node_kind: "action", action_key: "test.consume_delegated" },
+            },
+          ],
+        },
+      },
+      triggerType: "manual",
+      inputJson: {},
+      preflightSnapshot: { executable: true },
+      budgetSources: [],
+    });
+    const firstDelegated = (await pool.query<{ run_id: string; status: string }>(
+      `SELECT link.run_id, node.status
+         FROM workflow_execution_node_runs link
+         JOIN workflow_execution_nodes node
+           ON node.id=link.node_id AND node.space_id=link.space_id
+        WHERE node.execution_id=$1 AND node.node_key='delegate'
+          AND link.role='delegated'`,
+      [execution.workflowExecutionId],
+    )).rows[0];
+    expect(firstDelegated?.status).toBe("in_progress");
+
+    const runs = new PgRunRepository(pool);
+    await runs.markRunRunning({ run_id: firstDelegated!.run_id, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({
+      run_id: firstDelegated!.run_id,
+      space_id: SPACE,
+      status: "failed",
+      error_json: { error_code: "test_failure" },
+      completed_at: now,
+    });
+    await runs.insertRunEvaluation({
+      space_id: SPACE,
+      run_id: firstDelegated!.run_id,
+      outcome_status: "failed",
+      trajectory_status: "incomplete",
+      evaluated_at: now,
+    });
+    await service.reconcileForRun(pool, SPACE, firstDelegated!.run_id, USER);
+
+    const retryLinks = await pool.query<{ run_id: string; role: string }>(
+      `SELECT link.run_id, link.role
+         FROM workflow_execution_node_runs link
+         JOIN workflow_execution_nodes node
+           ON node.id=link.node_id AND node.space_id=link.space_id
+        WHERE node.execution_id=$1 AND node.node_key='delegate'
+          AND link.role LIKE 'delegated%'
+        ORDER BY link.created_at ASC, link.id ASC`,
+      [execution.workflowExecutionId],
+    );
+    expect(retryLinks.rows).toContainEqual({
+      run_id: firstDelegated!.run_id,
+      role: "delegated_superseded",
+    });
+    const delegated = retryLinks.rows.find((link) => link.role === "delegated");
+    expect(delegated?.run_id).toBeTruthy();
+    expect(delegated?.run_id).not.toBe(firstDelegated!.run_id);
+
+    await runs.markRunRunning({ run_id: delegated!.run_id, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({
+      run_id: delegated!.run_id,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: canonicalRunOutput({ success: true, outputText: "", outputJson: { value: "delegated-result" } }),
+      completed_at: now,
+    });
+    await runs.insertRunEvaluation({
+      space_id: SPACE,
+      run_id: delegated!.run_id,
+      outcome_status: "passed",
+      trajectory_status: "acceptable",
+      evaluated_at: now,
+    });
+    await service.reconcileForRun(pool, SPACE, delegated!.run_id, USER);
+
+    const consumer = (await pool.query<{ status: string; output_json: unknown }>(
+      `SELECT node.status, run.output_json
+         FROM workflow_execution_nodes node
+         JOIN workflow_execution_node_runs link
+           ON link.node_id=node.id AND link.space_id=node.space_id AND link.role='primary'
+         JOIN runs run ON run.id=link.run_id AND run.space_id=link.space_id
+        WHERE node.execution_id=$1 AND node.node_key='consume'`,
+      [execution.workflowExecutionId],
+    )).rows[0];
+    expect(consumer).toEqual({
+      status: "done",
+      output_json: canonicalRunOutput({
+        success: true,
+        outputText: "Workflow action completed.",
+        outputJson: { source_run_id: delegated!.run_id, value: "delegated-result" },
+      }),
+    });
+  });
+
+  it("retries a failed node up to contract_json.max_attempts before failing it, and never retries beyond the cap", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+         config_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'Retry automation', 'manual', 'active',
+                 '{"target_type":"workflow"}'::jsonb, $5, $5)`,
+      [AUTOMATION, SPACE, USER, AGENT, now],
+    );
+    const automation = {
+      id: AUTOMATION, space_id: SPACE, owner_user_id: USER, agent_id: AGENT,
+      project_folder_id: null, project_id: null, name: "Retry automation", description: null,
+      trigger_type: "manual", status: "active", preflight_snapshot_json: null,
+      config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
+      created_at: now, updated_at: now,
+    };
+    const service = new WorkflowExecutionService();
+    const execution = await service.start({
+      db: pool,
+      identity,
+      automation,
+      target: {
+        versionId: BINDING_WORKFLOW_VERSION,
+        resolutionTrace: [],
+        contentJson: {
+          schema_version: "workflow_definition.v1",
+          workflow_id: "retry-workflow",
+          name: "Retry workflow",
+          description: "Exercises unified minimal Node Retry.",
+          input_schema_json: {}, output_artifact_types: [], metadata_json: {},
+          nodes: [
+            { id: "flaky", title: "Flaky work", depends_on: [], capability_id: "flaky-work", contract_json: { max_attempts: 2 }, metadata_json: {} },
+            { id: "always_fails", title: "Always fails", depends_on: [], capability_id: "always-fails-work", contract_json: { max_attempts: 2 }, metadata_json: {} },
+          ],
+        },
+      },
+      triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
+    });
+    const runs = new PgRunRepository(pool);
+
+    const firstFlakyRun = (await pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+       JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
+       WHERE node.execution_id = $1 AND node.node_key = 'flaky'`,
+      [execution.workflowExecutionId],
+    )).rows[0]!.run_id;
+    await runs.markRunRunning({ run_id: firstFlakyRun, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({ run_id: firstFlakyRun, space_id: SPACE, status: "failed", error_json: { error_code: "transient" }, completed_at: now });
+    // One reconcile pass both projects the failed run's outcome onto the
+    // node (attempt 1 of 2 remaining -> back to 'ready', not 'failed') and
+    // immediately re-dispatches the ready node into attempt 2 — retry is not
+    // a separate step the caller has to remember to trigger.
+    await service.reconcileForRun(pool, SPACE, firstFlakyRun, USER);
+
+    const afterFirstFailure = (await pool.query<{ status: string; blocked_reason: string | null }>(
+      `SELECT status, blocked_reason FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'flaky'`,
+      [execution.workflowExecutionId],
+    )).rows[0];
+    expect(afterFirstFailure).toMatchObject({ status: "in_progress" });
+    expect(afterFirstFailure!.blocked_reason).toContain("run_failed:failed");
+
+    const flakyRunRows = (await pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+       JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
+       WHERE node.execution_id = $1 AND node.node_key = 'flaky' ORDER BY link.created_at ASC`,
+      [execution.workflowExecutionId],
+    )).rows;
+    expect(flakyRunRows).toHaveLength(2);
+    expect(flakyRunRows[0]!.run_id).not.toBe(flakyRunRows[1]!.run_id);
+    const secondFlakyRun = flakyRunRows[1]!.run_id;
+    await runs.markRunRunning({ run_id: secondFlakyRun, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({ run_id: secondFlakyRun, space_id: SPACE, status: "succeeded", output_json: {}, completed_at: now });
+    await runs.insertRunEvaluation({ space_id: SPACE, run_id: secondFlakyRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
+    await service.reconcileForRun(pool, SPACE, secondFlakyRun, USER);
+    expect((await pool.query<{ status: string }>(
+      `SELECT status FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'flaky'`,
+      [execution.workflowExecutionId],
+    )).rows[0]).toEqual({ status: "done" });
+
+    // The node whose every attempt fails only fails once max_attempts (2) is exhausted, never before.
+    const alwaysFailsRun1 = (await pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+       JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
+       WHERE node.execution_id = $1 AND node.node_key = 'always_fails'`,
+      [execution.workflowExecutionId],
+    )).rows[0]!.run_id;
+    await runs.markRunRunning({ run_id: alwaysFailsRun1, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({ run_id: alwaysFailsRun1, space_id: SPACE, status: "failed", error_json: { error_code: "persistent" }, completed_at: now });
+    await service.reconcileForRun(pool, SPACE, alwaysFailsRun1, USER);
+    expect((await pool.query<{ status: string }>(
+      `SELECT status FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'always_fails'`,
+      [execution.workflowExecutionId],
+    )).rows[0]).toEqual({ status: "in_progress" });
+    const alwaysFailsRun2 = (await pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+       JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
+       WHERE node.execution_id = $1 AND node.node_key = 'always_fails' ORDER BY link.created_at DESC LIMIT 1`,
+      [execution.workflowExecutionId],
+    )).rows[0]!.run_id;
+    expect(alwaysFailsRun2).not.toBe(alwaysFailsRun1);
+    await runs.markRunRunning({ run_id: alwaysFailsRun2, space_id: SPACE, started_at: now });
+    await runs.markRunTerminal({ run_id: alwaysFailsRun2, space_id: SPACE, status: "failed", error_json: { error_code: "persistent" }, completed_at: now });
+    await service.reconcileForRun(pool, SPACE, alwaysFailsRun2, USER);
+    const finalAlwaysFails = (await pool.query<{ status: string; count: number }>(
+      `SELECT node.status,
+              (SELECT count(*)::int FROM workflow_execution_node_runs wr WHERE wr.node_id = node.id) AS count
+         FROM workflow_execution_nodes node WHERE node.execution_id = $1 AND node.node_key = 'always_fails'`,
+      [execution.workflowExecutionId],
+    )).rows[0];
+    expect(finalAlwaysFails).toEqual({ status: "failed", count: 2 });
   });
 });

@@ -24,9 +24,9 @@ Every system action declares:
 - policy action, side-effect class, idempotency requirement, proposal type,
   and whether advance approval grants may apply.
 
-There are currently no `external_mcp` actions. Adding an MCP wrapper requires a
-separate authenticated/rate-limited public design; it must not expose the agent
-gateway directly.
+There are currently no public `external_mcp` actions. The private Run-scoped
+MCP transport is not a public registration surface and does not change action
+visibility.
 
 ## Dispatch boundary
 
@@ -40,6 +40,34 @@ The gateway is actor-neutral. HTTP routes continue to call their owning
 application services and `PolicyGateway` enforcement points. Server jobs may
 use internal/system-job actions. Managed model runs use `AgentToolGateway`, the
 agent-specific adapter over `SystemActionGateway`.
+
+Local CLI Runs use that same gateway through a Run-scoped MCP transport. The
+server issues an opaque, in-memory, short-lived identity only for the executing
+Run, exposes `initialize`, `tools/list`, and `tools/call`, and revokes the
+identity when the CLI exits. The transport reloads the Run in the identity's
+Space, requires it to remain `running`, and offers only the gateway's
+permission/capability intersection. It never gives the CLI database credentials
+or an internal service token.
+
+Run creation computes that intersection from the Run's declared
+`capabilities_json`, its immutable AgentVersion
+`tool_permissions_json.allowed_tools`, and the agent-tool-visible entries in
+`SYSTEM_ACTION_REGISTRY`. The result is persisted once in
+`runs.permission_snapshot_json.tool_grants`; an unknown, undeclared, or
+unpermitted action is absent. This snapshot controls CLI tool exposure, while
+the normal call-time PolicyGateway decision remains mandatory and authoritative.
+`authorization.request` is the sole built-in companion to capability
+intersection: a Run receives it only when that intersection exposes at least
+one other Agent tool, so an Agent can reference a denial from a tool it could
+actually call. Tool-free Runs remain tool-free (including network-isolated
+Docker CLI execution). The action does not grant authority; it can only create
+a bounded `authorization_requests` row.
+
+Codex, Claude Code, and OpenCode receive generated sandbox-only MCP
+configuration. Side-effecting calls use the MCP JSON-RPC request id as the
+canonical tool-call/idempotency key. Network-isolated one-shot Docker execution
+fails closed when a Run requests tools because it cannot reach the loopback
+broker.
 
 ## Managed-agent exposure
 
@@ -100,6 +128,34 @@ are user-only public actions and are not agent tools. Proposal apply, memory
 writes, credentials, policy override, and deployment remain fresh-human-review
 boundaries.
 
+## Authorization requests after deny
+
+A denied Agent tool result carries its sanitized
+`policy_decision_record_id`. The Agent may call `authorization.request` with
+that id and a bounded, secret-redacted reason. Request creation and the
+executing Run's transition to `waiting_for_review` commit together. The server
+proves that the decision is the built-in
+`managed_system_action_grant_required` deny, belongs to the same Space,
+active Run, and Agent, and names the exact registry action in its audited
+metadata. Only registry actions marked `grantable` are requestable. A Space
+owner's approval is fulfilled through a one-use, one-hour
+`ActionApprovalGrant` scoped to that Agent, action, and Run.
+
+Hard-invariant, Space-boundary, credential, unknown-action, non-grantable,
+proposal-apply, deployment, and policy-override denials cannot create a
+request. Approval never edits a PolicyDecisionRecord. A grantable action still
+re-enters the normal SystemActionGateway and proposal-apply path; the grant
+cannot override a hard-invariant decision, and its use is consumed atomically
+only by the proposal apply transaction.
+
+The decision and an `authorization_request_reconcile` job commit together.
+While the old execution lock remains held, the reconciler durably returns its
+Job to `pending` with a bounded future `scheduled_at` and restores the claim's
+attempt budget instead of burning attempts in the worker loop. After release,
+approval requeues the same Run exactly once; rejection uses canonical Run
+cancellation and its chat, materialization, Room, and AgentGroup finalizers.
+The generic Run resume endpoint cannot resume an authorization-request pause.
+
 ## Current source and Project actions
 
 The registry covers recipe planning/creation/dry-run/activation, connection
@@ -107,12 +163,13 @@ create/update/propose/activate, Project binding/proposal actions,
 ProjectOperation read/create/status changes, history-import preview/plan/
 proposal/pause/resume, and internal approved backfill start. Sources owns
 connection and history-import execution state; Projects owns binding,
-operation, corpus, and Project chat consumption state.
+operation, and corpus state.
 
-Project Chat is not a second execution pipeline. It creates a Project-scoped
-session and managed Run, enables the three proposal actions above, and returns
-safe `action_previews`. The same previews are stored on the assistant message
-metadata and link to canonical Review proposals.
+Room is not a second execution pipeline. A message creates a canonical
+collaboration task and queued Runs. Tool calls remain registry- and
+policy-gated. Each Room Run declares a `conversation_capture` Run Exchange
+output as a closing backstop; its structured changes become pending proposals
+through the same proposal creation policy path and never apply directly.
 
 ## Invariants
 

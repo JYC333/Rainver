@@ -8,7 +8,7 @@ import type { ServerConfig } from "../../config";
 import { registerCapabilityProposalAppliers } from "../capabilities/proposalApplier";
 import { registerKnowledgeProposalAppliers } from "../knowledge/proposalApplier";
 import { registerTaskProposalAppliers } from "../tasks/proposalApplier";
-import { registerWorkspaceProposalAppliers } from "../workspaces";
+import { registerProjectFolderProposalAppliers } from "../projectFolders";
 import { registerRetrievalDiagnosticsProposalAppliers } from "../retrieval/artifacts/diagnostics";
 import { registerRetrievalMaintenanceProposalAppliers } from "../retrieval/maintenance/artifacts";
 import { registerMemoryMaintenanceProposalAppliers } from "../memory/maintenanceArtifacts";
@@ -33,7 +33,7 @@ import {
 import type { Queryable } from "./repository";
 import {
   markPolicyBundleDirty,
-  markWorkspaceBundleDirty,
+  markProjectFolderBundleDirty,
   markAgentBundleDirty,
 } from "../context/digestService";
 import { PgJobQueueRepository } from "../jobs/repository";
@@ -119,7 +119,7 @@ export function createDefaultProposalApplierRegistry(
   registerRetrievalMaintenanceProposalAppliers(registry);
   registerMemoryMaintenanceProposalAppliers(registry);
   registerTaskProposalAppliers(registry);
-  registerWorkspaceProposalAppliers(registry);
+  registerProjectFolderProposalAppliers(registry);
   registerCustomSourceProposalAppliers(registry);
   registerSourceRecipeProposalAppliers(registry);
   registerSourceChannelProposalAppliers(registry);
@@ -252,12 +252,12 @@ async function applyPolicyChangeProposal(context: ProposalApplyContext): Promise
     user_id: context.userId,
     payload: { space_id: spaceId, digest_type: "policy_bundle" },
   });
-  // Policies live only in the space-level policy_bundle digest; workspace/agent
+  // Policies live only in the space-level policy_bundle digest; project_folder/agent
   // digests are memory-only and never embed policy content. Invalidating them on
   // a policy change would just recompute an identical memory hash (no-op refresh),
   // so a policy change marks the policy_bundle dirty and nothing else. Scoped
   // policies are still surfaced per-run at consumption time (loadDigestBundle
-  // assembles policy_bundle + workspace + agent for the run).
+  // assembles policy_bundle + project_folder + agent for the run).
 
   return {
     result_type: "policy_version",
@@ -274,14 +274,14 @@ async function markAndEnqueueMemoryDigestRefreshes(
   const queue = new PgJobQueueRepository(context.db);
   const seen = new Set<string>();
   for (const target of targets) {
-    if (target.scopeType === "workspace" && target.workspaceId) {
-      const key = `workspace:${target.workspaceId}`;
+    if (target.scopeType === "project_folder" && target.projectFolderId) {
+      const key = `project_folder:${target.projectFolderId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      await markWorkspaceBundleDirty(
+      await markProjectFolderBundleDirty(
         context.db,
         context.proposal.space_id,
-        target.workspaceId,
+        target.projectFolderId,
         dirtyReason,
       );
       await queue.enqueue({
@@ -290,8 +290,8 @@ async function markAndEnqueueMemoryDigestRefreshes(
         user_id: context.userId,
         payload: {
           space_id: context.proposal.space_id,
-          digest_type: "workspace",
-          scope_id: target.workspaceId,
+          digest_type: "project_folder",
+          scope_id: target.projectFolderId,
         },
       });
     } else if (target.scopeType === "agent" && target.agentId) {

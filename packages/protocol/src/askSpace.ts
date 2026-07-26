@@ -3,7 +3,7 @@
  *
  * Ask Space is the unified, user-facing "ask the space a question" entry point. It
  * gathers across the viewer-visible retrieval domains (Knowledge always; Memory
- * and Project public summaries opt-in), reusing each domain's own Context Brief
+ * Project public summaries, Sources, and Inquiry Threads opt-in), reusing each domain's own Context Brief
  * pipeline — so the single per-domain read gate is never duplicated and the
  * domains stay isolated. The response is read-only and proposal-first: it may
  * persist owner-private artifacts and surface follow-up actions, but it performs
@@ -22,7 +22,7 @@ import { ClaimTrajectorySignalSchema } from "./claimReviewLoop.js";
 
 // The isolated retrieval domains Ask Space can gather from. Each maps to its
 // own registry + read gate; they are never merged into one retrieval pass.
-export const AskSpaceDomainSchema = z.enum(["knowledge", "memory", "project", "source"]);
+export const AskSpaceDomainSchema = z.enum(["knowledge", "memory", "project", "source", "inquiry"]);
 export type AskSpaceDomain = z.infer<typeof AskSpaceDomainSchema>;
 
 export const AskSpaceRequestSchema = z
@@ -31,7 +31,7 @@ export const AskSpaceRequestSchema = z
     // Defaults to ["knowledge"] (the cheapest, least privacy-sensitive domain).
     // Memory touches the viewer's private entries + access logs, and Project
     // touches public summaries, so both are explicit opt-ins.
-    domains: z.array(AskSpaceDomainSchema).min(1).max(4).optional(),
+    domains: z.array(AskSpaceDomainSchema).min(1).max(5).optional(),
     max_results_per_domain: z.number().int().positive().max(50).optional(),
     mode: RetrievalSearchModeSchema.optional(),
     include_trace: z.boolean().optional(),

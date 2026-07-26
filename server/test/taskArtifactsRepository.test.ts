@@ -46,7 +46,7 @@ describe("task artifact repository visibility", () => {
       expect(query.sql).toContain("space_memberships content_member");
       expect(query.sql).toContain("a.visibility = 'space_shared'");
       expect(query.sql).toContain("content_access_grants content_grant");
-      expect(query.sql).toContain("project_workspaces");
+      expect(query.sql).toContain("project_folders");
       expect(query.sql).toContain("project_members");
     }
   });

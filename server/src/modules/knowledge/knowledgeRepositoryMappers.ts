@@ -25,7 +25,7 @@ export function knowledgeSummaryOut(row: KnowledgeItemRow): Record<string, unkno
     id: row.id,
     space_id: row.space_id,
     project_id: row.project_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     knowledge_kind: row.knowledge_kind,
     slug: row.slug,
     title: row.title,
@@ -55,6 +55,7 @@ export function knowledgeItemOut(row: KnowledgeItemRow, sourceRefs: Record<strin
     content_schema_version: numberValue(row.content_schema_version) ?? 1,
     plain_text: row.plain_text,
     source_refs: sourceRefs,
+    pinned_source_ref: optionalObject(row.pinned_source_ref_json),
     owner_user_id: row.owner_user_id,
     created_by_user_id: row.created_by_user_id,
     created_by_agent_id: row.created_by_agent_id,
@@ -88,7 +89,7 @@ export function claimSummaryOut(row: ClaimRow): Record<string, unknown> {
     title: row.title,
     excerpt: row.excerpt,
     primary_project_id: row.primary_project_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
   };
 }

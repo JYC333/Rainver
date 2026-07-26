@@ -96,7 +96,7 @@ export interface ApplyProposal {
   preview?: boolean;
   title: string | null;
   payload_json: Record<string, unknown> | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   visibility?: string | null;
   created_by_user_id: string | null;
   created_by_agent_id?: string | null;
@@ -110,7 +110,7 @@ export interface MemoryAcceptResult {
   supersededMemoryId: string | null;
   payloadJson: Record<string, unknown>;
   scopeType: string;
-  workspaceId: string | null;
+  projectFolderId: string | null;
   agentId: string | null;
   affectedDigestTargets: MemoryDigestTarget[];
 }
@@ -129,7 +129,7 @@ export interface AppliedMemoryRow {
   sensitivity_level: string;
   owner_user_id: string | null;
   subject_user_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
   source_trust: string | null;
   root_memory_id: string | null;
@@ -147,13 +147,13 @@ export interface MemoryApplyResult {
 
 export interface MemoryDigestTarget {
   scopeType: string;
-  workspaceId: string | null;
+  projectFolderId: string | null;
   agentId: string | null;
 }
 
 const INSERT_COLUMNS = `id, space_id, scope_type, memory_type, content, status,
   created_at, updated_at, subject_user_id, owner_user_id,
-  sensitivity_level, access_level, last_confirmed_at, workspace_id, namespace,
+  sensitivity_level, access_level, last_confirmed_at, project_folder_id, namespace,
   title, visibility, confidence, importance, source_id,
   created_by, approved_by, version, access_count, tags, memory_layer,
   created_from_proposal_id, root_memory_id, supersedes_memory_id, source_trust, agent_id,
@@ -161,7 +161,7 @@ const INSERT_COLUMNS = `id, space_id, scope_type, memory_type, content, status,
 
 const RETURNING_COLUMNS = `id, space_id, scope_type, namespace, memory_type, title,
   content, status, visibility, access_level, sensitivity_level, owner_user_id, subject_user_id,
-  workspace_id, project_id, source_trust,
+  project_folder_id, project_id, source_trust,
   root_memory_id, supersedes_memory_id, memory_layer, version, agent_id`;
 
 /** Columns + values needed for one new active memory version. */
@@ -176,7 +176,7 @@ interface NewMemoryFields {
   title: string;
   ownerUserId: string | null;
   subjectUserId: string | null;
-  workspaceId: string | null;
+  projectFolderId: string | null;
   projectId: string | null;
   agentId: string | null;
   memoryLayer: string | null;
@@ -248,7 +248,7 @@ export class PgMemoryApplyRepository {
       payloadJson: finalPayload,
       finalPayload,
       scopeType: result.memory.scope_type,
-      workspaceId: result.memory.workspace_id,
+      projectFolderId: result.memory.project_folder_id,
       agentId: result.memory.agent_id,
       affectedDigestTargets: result.affectedDigestTargets,
     };
@@ -313,7 +313,7 @@ export class PgMemoryApplyRepository {
       title: proposal.title ?? "",
       ownerUserId,
       subjectUserId: strOr(payload.subject_user_id),
-      workspaceId: proposal.workspace_id,
+      projectFolderId: proposal.project_folder_id,
       projectId,
       agentId: strOr(payload.agent_id),
       memoryLayer: memoryLayer(payload),
@@ -389,7 +389,7 @@ export class PgMemoryApplyRepository {
       title,
       ownerUserId,
       subjectUserId: strOr(payload.subject_user_id) ?? old.subject_user_id,
-      workspaceId: proposal.workspace_id ?? old.workspace_id,
+      projectFolderId: proposal.project_folder_id ?? old.project_folder_id,
       projectId,
       agentId: strOr(payload.agent_id) ?? old.agent_id,
       memoryLayer: memoryLayer(payload) ?? old.memory_layer,
@@ -521,7 +521,7 @@ export class PgMemoryApplyRepository {
         f.ownerUserId, // $8
         f.sensitivity, // $9
         f.accessLevel, // $10
-        f.workspaceId, // $11
+        f.projectFolderId, // $11
         f.namespace, // $12
         f.title, // $13
         f.visibility, // $14
@@ -623,12 +623,12 @@ function memoryLayer(payload: Record<string, unknown>): string | null {
 
 function digestTargetForMemory(memory: {
   scope_type: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   agent_id: string | null;
 }): MemoryDigestTarget {
   return {
     scopeType: memory.scope_type,
-    workspaceId: memory.workspace_id,
+    projectFolderId: memory.project_folder_id,
     agentId: memory.agent_id,
   };
 }
@@ -637,7 +637,7 @@ function distinctDigestTargets(targets: MemoryDigestTarget[]): MemoryDigestTarge
   const seen = new Set<string>();
   const out: MemoryDigestTarget[] = [];
   for (const target of targets) {
-    const key = `${target.scopeType}:${target.workspaceId ?? ""}:${target.agentId ?? ""}`;
+    const key = `${target.scopeType}:${target.projectFolderId ?? ""}:${target.agentId ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(target);

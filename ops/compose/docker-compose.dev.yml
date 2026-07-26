@@ -24,6 +24,11 @@ services:
       target: dev-runtime
       network: host
     container_name: agent-space-dev-server
+    # Rootless bubblewrap needs clone/unshare namespace syscalls that Docker's
+    # built-in seccomp profile blocks. No capabilities or privileged mode are
+    # granted; the child namespace supplies the read-only Project Folder mount.
+    security_opt:
+      - seccomp=unconfined
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -14,7 +14,7 @@ import { CONTEXT_ATTACHABLE_ARTIFACT_TYPES, isContextAttachableArtifactType } fr
 interface ContextArtifactPickerProps {
   selectedArtifactIds: string[]
   onChange: (artifactIds: string[]) => void
-  workspaceId?: string | null
+  projectFolderId?: string | null
   projectId?: string | null
   maxSelected?: number
   title?: string
@@ -31,7 +31,7 @@ interface RevocationScopeRef {
 export function ContextArtifactPicker({
   selectedArtifactIds,
   onChange,
-  workspaceId,
+  projectFolderId,
   projectId,
   maxSelected = 8,
   title = 'Context Artifacts',
@@ -45,13 +45,13 @@ export function ContextArtifactPicker({
   const [loading, setLoading] = useState(false)
   const [busyArtifactId, setBusyArtifactId] = useState<string | null>(null)
 
-  const normalizedWorkspaceId = workspaceId?.trim() || null
+  const normalizedFolderId = projectFolderId?.trim() || null
   const normalizedProjectId = projectId?.trim() || null
   const currentScope = useMemo<RevocationScopeRef | null>(() => {
     if (normalizedProjectId) return { scope_type: 'project', scope_id: normalizedProjectId }
-    if (normalizedWorkspaceId) return { scope_type: 'workspace', scope_id: normalizedWorkspaceId }
+    if (normalizedFolderId) return { scope_type: 'project_folder', scope_id: normalizedFolderId }
     return null
-  }, [normalizedProjectId, normalizedWorkspaceId])
+  }, [normalizedProjectId, normalizedFolderId])
 
   const artifactById = useMemo(
     () => new Map(artifacts.map(artifact => [artifact.id, artifact])),
@@ -78,7 +78,7 @@ export function ContextArtifactPicker({
         artifactsApi.list({
           limit: 100,
           artifact_type: artifactType,
-          workspace_id: normalizedWorkspaceId || undefined,
+          project_folder_id: normalizedFolderId || undefined,
           project_id: normalizedProjectId || undefined,
         }),
       ))
@@ -91,13 +91,13 @@ export function ContextArtifactPicker({
       const loadedArtifacts = [...byId.values()].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
       setArtifacts(loadedArtifacts)
 
-      if (normalizedWorkspaceId || normalizedProjectId) {
+      if (normalizedFolderId || normalizedProjectId) {
         const artifactIds = Array.from(new Set([
           ...loadedArtifacts.map(artifact => artifact.id),
           ...selectedArtifactIds,
         ])).slice(0, 100)
         const response = await contextApi.listArtifactRevocations({
-          workspace_id: normalizedWorkspaceId,
+          project_folder_id: normalizedFolderId,
           project_id: normalizedProjectId,
           artifact_ids: artifactIds,
         })
@@ -112,7 +112,7 @@ export function ContextArtifactPicker({
     } finally {
       setLoading(false)
     }
-  }, [activeSpaceId, normalizedProjectId, normalizedWorkspaceId, selectedArtifactIds])
+  }, [activeSpaceId, normalizedProjectId, normalizedFolderId, selectedArtifactIds])
 
   useEffect(() => { void load() }, [load])
 
@@ -228,11 +228,11 @@ export function ContextArtifactPicker({
               <div key={artifact.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Link to={`/artifacts/${artifact.id}${artifact.workspace_id ? `?workspace_id=${encodeURIComponent(artifact.workspace_id)}` : ''}`} className="truncate text-sm font-medium text-accent-foreground hover:underline">
+                    <Link to={`/artifacts/${artifact.id}${artifact.project_folder_id ? `?project_folder_id=${encodeURIComponent(artifact.project_folder_id)}` : ''}`} className="truncate text-sm font-medium text-accent-foreground hover:underline">
                       {artifact.title}
                     </Link>
                     <Badge variant="secondary">{artifact.artifact_type}</Badge>
-                    {artifact.workspace_id && <Badge variant="outline">workspace</Badge>}
+                    {artifact.project_folder_id && <Badge variant="outline">folder</Badge>}
                     {artifact.project_id && <Badge variant="outline">project</Badge>}
                     {revocation && <Badge variant="warning">revoked {revocation.scope_type}</Badge>}
                   </div>

@@ -137,7 +137,7 @@ function childDraftsForFinding(
       rationale: "Generated from accepted Memory maintenance packet; accepting this child proposal archives the target memory.",
       // Preserve the packet's own visibility for child memory_archive proposals.
       visibility: context.proposal.visibility ?? "private",
-      workspaceId: context.proposal.workspace_id ?? null,
+      projectFolderId: context.proposal.project_folder_id ?? null,
       projectId: null,
       payload: {
         ...basePayload,
@@ -161,7 +161,7 @@ function childDraftsForFinding(
         ? "Generated from accepted Memory maintenance packet; edit this child proposal before accepting if canonical Memory should change."
         : "Generated from accepted Memory maintenance packet; accepting this child proposal applies the reviewed Memory update.",
       visibility: context.proposal.visibility ?? "private",
-      workspaceId: context.proposal.workspace_id ?? null,
+      projectFolderId: context.proposal.project_folder_id ?? null,
       projectId: projectId ?? context.proposal.project_id ?? null,
       payload: {
         ...basePayload,

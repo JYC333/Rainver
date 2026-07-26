@@ -15,7 +15,7 @@ import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "./retrievalObjectTypes";
 
 interface KnowledgeProjectionRow {
   id: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   owner_user_id: string | null;
   created_by_user_id: string | null;
   visibility: string;
@@ -57,7 +57,7 @@ interface SourceProjectionRow {
 
 interface ClaimProjectionRow {
   id: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   owner_user_id: string | null;
   created_by_user_id: string | null;
   visibility: string;
@@ -327,7 +327,7 @@ async function revalidateKnowledgeMany(
 
 async function loadKnowledgeItem(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<KnowledgeProjectionRow>(
-    `SELECT ki.object_id AS id, so.workspace_id, so.owner_user_id,
+    `SELECT ki.object_id AS id, so.project_folder_id, so.owner_user_id,
             so.created_by_user_id, so.visibility, so.status,
             ki.knowledge_kind, so.title, ki.slug, ki.aliases_json, ki.content,
             ki.plain_text, so.summary AS excerpt, so.updated_at
@@ -347,7 +347,7 @@ async function loadKnowledgeItem(db: Queryable, spaceId: string, objectId: strin
     objectId: row.id,
     title: row.title,
     slug: row.slug,
-    workspaceId: row.workspace_id,
+    projectFolderId: row.project_folder_id,
     ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility,
     status: row.status,
@@ -378,7 +378,7 @@ async function loadNote(db: Queryable, spaceId: string, objectId: string): Promi
     objectId: row.id,
     title: row.title,
     slug: null,
-    workspaceId: null,
+    projectFolderId: null,
     ownerUserId: row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
@@ -409,7 +409,7 @@ async function loadSource(db: Queryable, spaceId: string, objectId: string): Pro
     objectId: row.id,
     title: row.title,
     slug: row.uri,
-    workspaceId: null,
+    projectFolderId: null,
     ownerUserId: row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
@@ -423,7 +423,7 @@ async function loadSource(db: Queryable, spaceId: string, objectId: string): Pro
 
 async function loadClaim(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<ClaimProjectionRow>(
-    `SELECT c.object_id AS id, so.workspace_id, so.owner_user_id,
+    `SELECT c.object_id AS id, so.project_folder_id, so.owner_user_id,
             so.created_by_user_id, so.visibility, so.status, c.claim_kind,
             so.title, c.subject_text, c.claim_text, c.resolution_state,
             so.updated_at
@@ -442,7 +442,7 @@ async function loadClaim(db: Queryable, spaceId: string, objectId: string): Prom
     objectId: row.id,
     title: row.title,
     slug: null,
-    workspaceId: row.workspace_id,
+    projectFolderId: row.project_folder_id,
     ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility,
     status: row.status,

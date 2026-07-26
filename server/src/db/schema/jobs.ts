@@ -1,9 +1,9 @@
-import { pgTable, index, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents";
 import { users } from "./auth";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 
 export const jobs = pgTable("jobs", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -25,7 +25,7 @@ export const jobs = pgTable("jobs", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	heartbeatAt: timestamp("heartbeat_at", { withTimezone: true, mode: 'string' }),
 	userId: varchar("user_id", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	agentId: varchar("agent_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_jobs_agent_id").using("btree", table.agentId.asc().nullsLast()),
@@ -35,7 +35,11 @@ export const jobs = pgTable("jobs", {
 	index("ix_jobs_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_jobs_type_claim_pending").using("btree", table.jobType.asc().nullsLast(), table.priority.desc().nullsFirst(), table.scheduledAt.asc().nullsLast()).where(sql`((status)::text = 'pending'::text)`),
 	index("ix_jobs_user_id").using("btree", table.userId.asc().nullsLast()),
-	index("ix_jobs_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_jobs_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
+	uniqueIndex("uq_jobs_session_condense_source_run").on(
+		table.spaceId,
+		sql`(payload_json->>'source_run_id')`,
+	).where(sql`job_type = 'session_condense' AND payload_json->>'source_run_id' IS NOT NULL`),
 	foreignKey({
 			columns: [table.agentId],
 			foreignColumns: [agents.id],
@@ -52,9 +56,9 @@ export const jobs = pgTable("jobs", {
 			name: "jobs_user_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "jobs_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "jobs_project_folder_id_fkey"
 		}),
 	check("ck_jobs_attempts_nonneg", sql`attempts >= 0`),
 	check("ck_jobs_max_attempts_positive", sql`max_attempts > 0`),

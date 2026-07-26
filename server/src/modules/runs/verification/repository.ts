@@ -8,7 +8,7 @@ import type {
 } from "./types";
 
 export interface VerificationPlanReader {
-  getPlan(run: Pick<RunRecord, "space_id" | "workspace_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan>;
+  getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan>;
 }
 
 interface VerificationPlanRow {
@@ -25,29 +25,29 @@ interface VerificationPlanRow {
 export class PgVerificationRepository implements VerificationPlanReader {
   constructor(private readonly db: Queryable) {}
 
-  async getPlan(run: Pick<RunRecord, "space_id" | "workspace_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan> {
+  async getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan> {
     let plan = emptyPlan();
-    if (run.workspace_id) {
+    if (run.project_folder_id) {
       const result = await this.db.query<VerificationPlanRow>(
         `SELECT vr.id AS recipe_id,
                 vr.commands_json,
                 vr.required_checks_json,
                 vr.artifact_expectations_json,
                 vr.timeout_seconds,
-                wp.test_commands_json AS profile_test_commands_json,
-                wp.build_commands_json AS profile_build_commands_json,
-                wp.forbidden_paths_json
-           FROM workspaces w
-           LEFT JOIN workspace_profiles wp
-             ON wp.workspace_id = w.id
-            AND wp.space_id = w.space_id
+                fec.test_commands_json AS profile_test_commands_json,
+                fec.build_commands_json AS profile_build_commands_json,
+                fec.forbidden_paths_json
+           FROM project_folders f
+           LEFT JOIN project_folder_execution_configs fec
+             ON fec.project_folder_id = f.id
+            AND fec.space_id = f.space_id
            LEFT JOIN validation_recipes vr
-             ON vr.id = wp.validation_recipe_id
-            AND vr.space_id = w.space_id
+             ON vr.id = fec.validation_recipe_id
+            AND vr.space_id = f.space_id
             AND vr.enabled = true
-          WHERE w.id = $1 AND w.space_id = $2
+          WHERE f.id = $1 AND f.space_id = $2
           LIMIT 1`,
-        [run.workspace_id, run.space_id],
+        [run.project_folder_id, run.space_id],
       );
       const row = result.rows[0];
       if (row) {

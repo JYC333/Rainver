@@ -27,7 +27,7 @@ interface SectionDef {
 
 /**
  * The Knowledge sub-areas, in switcher order. `home` is the optional overview hub;
- * the rest are the working workspaces. This catalog is the single source of truth for
+ * the rest are the working sections. This catalog is the single source of truth for
  * the breadcrumb switcher, the overview links, and the index redirect default.
  */
 export const KNOWLEDGE_SECTIONS: SectionDef[] = [
@@ -62,7 +62,7 @@ export const KNOWLEDGE_SECTIONS: SectionDef[] = [
  * Shared header for every Knowledge sub-area. Renders a lightweight
  * `Knowledge / <section> ▼` breadcrumb switcher (the only cross-section navigation —
  * there is no persistent Knowledge section sidebar or tab strip), the section
- * description, the active space, and optional workspace actions on the right.
+ * description, the active space, and optional section actions on the right.
  *
  * Mounting a section also records it as last-used so `/knowledge` reopens it
  * (the overview is excluded — see {@link rememberKnowledgeSection}).

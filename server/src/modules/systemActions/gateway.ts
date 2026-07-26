@@ -69,7 +69,14 @@ export class SystemActionGateway {
     if (!parsedInput.success) throw new SystemActionGatewayError("system_action_invalid_input", parsedInput.error.message);
     await this.hooks.onValidated?.(definition, parsedInput.data, context);
     const policy = await this.enforcePolicy(definition, parsedInput.data, context);
-    if (!policy.allowed) throw new SystemActionGatewayError("system_action_policy_denied", policy.reason ?? "Action denied by policy",policy.policy_decision_record_id??null);
+    if (!policy.allowed) {
+      const approvalRequired = policyRequiresApproval(policy.details);
+      throw new SystemActionGatewayError(
+        approvalRequired ? "system_action_approval_required" : "system_action_policy_denied",
+        policy.reason ?? (approvalRequired ? "Action requires approval" : "Action denied by policy"),
+        policy.policy_decision_record_id ?? null,
+      );
+    }
     const executor = this.executors.get(definition.id as SystemActionId);
     if (!executor) throw new SystemActionGatewayError("system_action_not_implemented", `No executor registered for '${actionId}'`);
     const output = await executor(parsedInput.data, { ...context, policy_decision: policy });
@@ -88,6 +95,14 @@ export class SystemActionGateway {
       throw error;
     }
   }
+}
+
+function policyRequiresApproval(details: unknown): boolean {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return false;
+  const value = details as Record<string, unknown>;
+  return value.status === "require_approval"
+    || value.decision === "require_approval"
+    || value.error_code === "policy_requires_approval";
 }
 
 function policyDecisionRecordIdFromOutput(output: unknown): string | null {

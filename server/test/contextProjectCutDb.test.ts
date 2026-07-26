@@ -111,7 +111,7 @@ async function retrieveIds(projectId: string | null | undefined): Promise<string
   const out = await new PgRunContextRepository(pool!).retrieve({
     spaceId: SPACE,
     userId: VIEWER,
-    workspaceId: null,
+    projectFolderId: null,
     agentId: null,
     query: null,
     agentMemoryPolicy: null,

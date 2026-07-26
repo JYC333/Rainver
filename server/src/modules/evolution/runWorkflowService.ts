@@ -70,7 +70,7 @@ export class RunWorkflowService {
         rationale: `Extracted from a ${preview.source_kind} with risk level ${preview.risk_level}.`,
         createdByUserId: identity.userId,
         createdByRunId: run.id,
-        workspaceId: run.workspace_id,
+        projectFolderId: run.project_folder_id,
         projectId: run.project_id,
         visibility: "space_shared",
         riskLevel: preview.risk_level,

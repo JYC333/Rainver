@@ -42,7 +42,7 @@ const policy = {
   owner_user_id: 'user-1',
   visibility: 'private' as const,
   access_level: 'full' as const,
-  workspace_id: null,
+  project_folder_id: null,
   project_id: null,
   grants: [],
 }

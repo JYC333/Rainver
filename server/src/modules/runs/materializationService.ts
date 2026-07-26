@@ -31,6 +31,8 @@ import {
   AgentGroupRuntimeDelegationMaterializer,
   type RuntimeDelegationMaterializerPort,
 } from "../agentGroups/runtimeDelegationMaterializer";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
+import { runOutputResult } from "./orchestrationResults";
 
 export interface RunMaterializationResult {
   items: RunMaterializationItemSummary[];
@@ -108,7 +110,10 @@ export class RunMaterializationService {
     run: RunRecord;
     adapterResult: RunAdapterResultEnvelope;
     sandbox_cwd?: string | null;
-  }): Promise<RunMaterializationResult> {
+    exchange_output_cwd?: string | null;
+  }, options: {
+    proposal_status?: "pending" | "staged";
+  } = {}): Promise<RunMaterializationResult> {
     const items: RunMaterializationItemSummary[] = [];
     const errors: string[] = [];
 
@@ -122,6 +127,33 @@ export class RunMaterializationService {
         label: `produced_artifact_path_${index}`,
       });
       collect(item, items, errors);
+    }
+
+    for (const [index, entry] of arrayValue(
+      (input.adapterResult as { exchange_artifact_paths?: unknown }).exchange_artifact_paths,
+    ).entries()) {
+      const item = await this.persistProducedArtifactPath({
+        run: input.run,
+        entry,
+        sandboxCwd: input.exchange_output_cwd ?? null,
+        label: `run_exchange_artifact_${index}`,
+        source: "run_exchange",
+      });
+      collect(item, items, errors);
+      if (
+        booleanValue(recordValue(entry).declared)
+        && stringValue(recordValue(entry).output_name) === "conversation_capture"
+        && runDeclaresOutput(input.run, "conversation_capture")
+      ) {
+        const captured = await this.persistConversationCaptureProposals({
+          run: input.run,
+          entry,
+          exchangeOutputCwd: input.exchange_output_cwd ?? null,
+          adapterType: input.adapterResult.adapter_type,
+          proposalStatus: options.proposal_status ?? "pending",
+        });
+        for (const proposal of captured) collect(proposal, items, errors);
+      }
     }
 
     const output = recordValue(input.adapterResult.output_json);
@@ -141,6 +173,7 @@ export class RunMaterializationService {
         proposal,
         adapterType: input.adapterResult.adapter_type,
         label: `output_proposal_${index}`,
+        proposalStatus: options.proposal_status ?? "pending",
       });
       collect(item, items, errors);
     }
@@ -156,18 +189,22 @@ export class RunMaterializationService {
       collect(item, items, errors);
     }
 
-    const delegationResult = await this.runtimeDelegationMaterializer.materialize({
-      run: input.run,
-      output_json: output,
-    });
-    items.push(...delegationResult.items);
-    errors.push(...delegationResult.errors);
-
     return { items, errors };
   }
 
   async finalizeRun(run: RunRecord): Promise<RunMaterializationItemSummary> {
     try {
+      if (run.status === "succeeded" || run.status === "degraded") {
+        const delegated = await this.runtimeDelegationMaterializer.materialize({
+          run,
+          output_json: runOutputResult(run.output_json),
+        });
+        if (delegated.errors.length > 0) {
+          throw new Error(
+            `Runtime delegation reconciliation failed: ${delegated.errors.join("; ")}`,
+          );
+        }
+      }
       const finalization = await this.finalizer.finalize(run.id, run.space_id);
       return {
         kind: "activity",
@@ -192,11 +229,51 @@ export class RunMaterializationService {
     }
   }
 
+  private async persistConversationCaptureProposals(input: {
+    run: RunRecord;
+    entry: unknown;
+    exchangeOutputCwd: string | null;
+    adapterType: string;
+    proposalStatus: "pending" | "staged";
+  }): Promise<RunMaterializationItemSummary[]> {
+    if (!input.exchangeOutputCwd) return [];
+    try {
+      const sourcePath = producedPath(input.entry);
+      if (!sourcePath || isAbsolute(sourcePath) || sourcePath.includes("\0")) {
+        throw new Error("conversation capture path is invalid");
+      }
+      const root = resolve(input.exchangeOutputCwd);
+      const path = resolve(root, sourcePath);
+      if (!isInside(path, root)) throw new Error("conversation capture path escapes Run Exchange");
+      const packet = recordValue(JSON.parse(await readFile(path, "utf8")));
+      const proposals = arrayValue(packet.proposed_changes);
+      const results: RunMaterializationItemSummary[] = [];
+      for (const [index, proposal] of proposals.entries()) {
+        results.push(await this.persistProposal({
+          run: input.run,
+          proposal,
+          adapterType: input.adapterType,
+          label: `conversation_capture_proposal_${index}`,
+          proposalStatus: input.proposalStatus,
+        }));
+      }
+      return results;
+    } catch (error) {
+      return [materializationError(
+        "proposal",
+        "conversation_capture",
+        "output_proposal_materialization_error",
+        error,
+      )];
+    }
+  }
+
   private async persistProducedArtifactPath(input: {
     run: RunRecord;
     entry: unknown;
     sandboxCwd: string | null;
     label: string;
+    source?: "produced_artifact_paths" | "run_exchange";
   }): Promise<RunMaterializationItemSummary> {
     try {
       if (!input.sandboxCwd) {
@@ -223,13 +300,15 @@ export class RunMaterializationService {
       await mkdir(dirname(absoluteTarget), { recursive: true });
       await copyFile(absoluteSource, absoluteTarget);
       const bytes = await readFile(absoluteTarget);
+      const entryRecord = recordValue(input.entry);
       const metadata = {
-        source: "produced_artifact_paths",
+        source: input.source ?? "produced_artifact_paths",
         source_path: relative(sandboxRoot, absoluteSource),
         size_bytes: info.size,
         sha256: createHash("sha256").update(bytes).digest("hex"),
+        output_name: stringValue(entryRecord.output_name),
+        declared: booleanValue(entryRecord.declared),
       };
-      const entryRecord = recordValue(input.entry);
       const artifactId = await this.insertArtifact({
         run: input.run,
         artifactType: stringValue(entryRecord.artifact_type) ?? "adapter_file",
@@ -270,7 +349,7 @@ export class RunMaterializationService {
         mimeType: stringValue(spec.mime_type) ?? "text/plain; charset=utf-8",
         preview: booleanValue(spec.preview) ?? input.run.mode === "dry_run",
         visibility: normalizeArtifactVisibility(stringValue(spec.visibility)),
-        workspaceId: stringValue(spec.workspace_id) ?? input.run.workspace_id,
+        projectFolderId: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
         metadata: {
           source: "adapter_output",
           adapter_type: input.adapterType,
@@ -298,6 +377,7 @@ export class RunMaterializationService {
     proposal: unknown;
     adapterType: string;
     label: string;
+    proposalStatus: "pending" | "staged";
   }): Promise<RunMaterializationItemSummary> {
     try {
       const spec = recordValue(input.proposal);
@@ -327,7 +407,7 @@ export class RunMaterializationService {
         run_id: input.run.id,
         context: {
           proposal_type: proposalType,
-          workspace_id: stringValue(spec.workspace_id) ?? input.run.workspace_id,
+          project_folder_id: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
           adapter_type: input.adapterType,
         },
         metadata_json: {
@@ -351,8 +431,9 @@ export class RunMaterializationService {
         urgency: normalizeUrgency(stringValue(spec.urgency)),
         preview: booleanValue(spec.preview) ?? input.run.mode === "dry_run",
         visibility: normalizeVisibility(stringValue(spec.visibility)),
-        workspaceId: stringValue(spec.workspace_id) ?? input.run.workspace_id,
+        projectFolderId: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
         projectId,
+        status: input.proposalStatus,
       });
       return {
         kind: "proposal",
@@ -378,13 +459,17 @@ export class RunMaterializationService {
     mimeType: string;
     preview: boolean;
     visibility?: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     metadata: Record<string, unknown>;
   }): Promise<string> {
     const id = randomUUID();
     const now = new Date().toISOString();
-    const workspaceId = input.workspaceId ?? input.run.workspace_id ?? null;
-    const visibility = input.visibility ?? "space_shared";
+    const projectFolderId = input.projectFolderId ?? input.run.project_folder_id ?? null;
+    const visibility = derivedOutputVisibility(
+      input.run,
+      input.visibility ?? "space_shared",
+      true,
+    );
     const policy = await this.policyEnforcer({
       action: "artifact.persist",
       actor_type: "run",
@@ -399,7 +484,7 @@ export class RunMaterializationService {
         title: input.title,
         mime_type: input.mimeType,
         visibility,
-        workspace_id: workspaceId,
+        project_folder_id: projectFolderId,
         project_id: input.run.project_id ?? null,
         storage_path: input.storagePath,
         content_inline: input.content !== null,
@@ -407,7 +492,7 @@ export class RunMaterializationService {
       metadata_json: {
         artifact_type: input.artifactType,
         visibility,
-        workspace_id: workspaceId,
+        project_folder_id: projectFolderId,
       },
       force_record: true,
     });
@@ -420,7 +505,7 @@ export class RunMaterializationService {
          storage_ref, storage_path, mime_type, exportable, export_formats_json,
          canonical_format, preview, relevant_period_start, relevant_period_end,
          created_at, updated_at, metadata_json, visibility, owner_user_id,
-         trust_level, project_id, workspace_id
+         trust_level, project_id, project_folder_id
        ) VALUES (
          $1, $2, $3, NULL, $4, $5, $6,
          NULL, $7, $8, true, $9::jsonb,
@@ -444,9 +529,19 @@ export class RunMaterializationService {
         visibility,
         input.run.instructed_by_user_id ?? null,
         input.run.project_id ?? null,
-        workspaceId,
+        projectFolderId,
       ],
     );
+    if (visibility === "selected_users") {
+      await inheritContentAccessGrants(this.db, {
+        spaceId: input.run.space_id,
+        sourceResourceType: "run",
+        sourceResourceId: input.run.id,
+        targetResourceType: "artifact",
+        targetResourceId: id,
+        inheritedAt: now,
+      });
+    }
     return id;
   }
 
@@ -461,9 +556,15 @@ export class RunMaterializationService {
     urgency: string;
     preview: boolean;
     visibility: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     projectId: string | null;
+    status: "pending" | "staged";
   }): Promise<string> {
+    const visibility = derivedOutputVisibility(
+      input.run,
+      input.visibility,
+      false,
+    );
     const row = await insertProposalRow(this.db, {
       spaceId: input.run.space_id,
       createdByRunId: input.run.id,
@@ -475,12 +576,23 @@ export class RunMaterializationService {
       riskLevel: input.riskLevel,
       urgency: input.urgency,
       preview: input.preview,
-      visibility: input.visibility,
-      workspaceId: input.workspaceId,
+      visibility,
+      projectFolderId: input.projectFolderId,
       projectId: input.projectId,
+      status: input.status,
       createdByAgentId: input.run.agent_id ?? null,
       createdByUserId: input.run.instructed_by_user_id ?? null,
     });
+    if (visibility === "selected_users") {
+      await inheritContentAccessGrants(this.db, {
+        spaceId: input.run.space_id,
+        sourceResourceType: "run",
+        sourceResourceId: input.run.id,
+        targetResourceType: "proposal",
+        targetResourceId: row.id,
+        inheritedAt: new Date().toISOString(),
+      });
+    }
     return row.id;
   }
 }
@@ -561,6 +673,11 @@ function producedPath(entry: unknown): string | null {
   );
 }
 
+function runDeclaresOutput(run: RunRecord, outputName: string): boolean {
+  return arrayValue(recordValue(run.contract_snapshot_json).required_outputs_json)
+    .some((output) => stringValue(recordValue(output).name) === outputName);
+}
+
 function proposalPayload(
   spec: Record<string, unknown>,
   proposalType: string,
@@ -619,7 +736,7 @@ function stripProposalEnvelope(spec: Record<string, unknown>): Record<string, un
     "urgency",
     "preview",
     "visibility",
-    "workspace_id",
+    "project_folder_id",
     "project_id",
   ]);
   for (const [key, value] of Object.entries(spec)) {
@@ -658,6 +775,15 @@ function normalizeArtifactVisibility(value: string | null): string {
   return value && ["private", "space_shared", "selected_users"].includes(value)
     ? value
     : "space_shared";
+}
+
+function derivedOutputVisibility(
+  run: RunRecord,
+  requested: string,
+  allowPrivate: boolean,
+): string {
+  if (run.visibility !== "selected_users") return requested;
+  return allowPrivate && requested === "private" ? "private" : "selected_users";
 }
 
 function titleForProposal(proposalType: string): string {

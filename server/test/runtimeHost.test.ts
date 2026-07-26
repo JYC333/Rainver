@@ -36,8 +36,33 @@ function config() {
   });
 }
 
-function requestBody(overrides: Record<string, unknown> = {}) {
+function requestBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    run_input: {
+      schema_version: "run_input.v1",
+      run_id: "run-1",
+      space_id: "space-1",
+      instruction: null,
+      task_goal: "Say hello",
+      messages: [],
+      inputs: { direct: null, workflow: null, upstream: null },
+      context: { context_snapshot_id: null, context_package_ref: null },
+      attachments: [],
+      project_folder_access: null,
+      output_contract: {
+        schema_version: "run_output_contract.v1",
+        structured_output: null,
+        required_outputs: [],
+      },
+      tool_grants: [],
+      execution: {
+        shape: "conversational",
+        risk_level: "low",
+        required_sandbox_level: "none",
+        policy_ref: "run_permission_snapshot:run-1",
+        budget_ref: "run_contract:run-1",
+      },
+    },
     run_id: "run-1",
     space_id: "space-1",
     model_provider_id: "provider-1",
@@ -113,6 +138,113 @@ function fakeHttpClient(calls: string[]): ProviderHttpClient {
 }
 
 describe("runtime host internal route", () => {
+  it("streams OpenAI-compatible conversation deltas while retaining the canonical result", async () => {
+    const calls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    const deltas: string[] = [];
+    __setProviderCommandStoreForTests(fakeStore(calls));
+    __setProviderHttpClientForTests({
+      async fetch(_url, init) {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response([
+          'data: {"model":"gpt-4o-mini","choices":[{"delta":{"content":"hello "}}]}',
+          "",
+          'data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}',
+          "",
+          'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+
+    const result = await executeRuntimeHost(
+      config(),
+      requestBody({
+        cache_strategy: "conversation",
+      }) as Parameters<typeof executeRuntimeHost>[1],
+      undefined,
+      { onTextDelta: (delta) => deltas.push(delta) },
+    );
+
+    expect(bodies[0]).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    expect(deltas).toEqual(["hello ", "world"]);
+    expect(result).toMatchObject({
+      success: true,
+      output_text: "hello world",
+      usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+    });
+  });
+
+  it("fails a truncated provider stream instead of persisting partial output as success", async () => {
+    const calls: string[] = [];
+    const deltas: string[] = [];
+    __setProviderCommandStoreForTests(fakeStore(calls));
+    __setProviderHttpClientForTests({
+      async fetch() {
+        return new Response([
+          'data: {"choices":[{"delta":{"content":"partial"}}]}',
+          "",
+        ].join("\n"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+
+    const result = await executeRuntimeHost(
+      config(),
+      requestBody({ cache_strategy: "conversation" }) as Parameters<typeof executeRuntimeHost>[1],
+      undefined,
+      { onTextDelta: (delta) => deltas.push(delta) },
+    );
+
+    expect(deltas).toEqual(["partial"]);
+    expect(result).toMatchObject({
+      success: false,
+      error_code: "provider_stream_interrupted",
+    });
+  });
+
+  it("marks Anthropic conversation system context as ephemeral-cacheable", async () => {
+    const calls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    __setProviderCommandStoreForTests(fakeStore(calls, "anthropic"));
+    __setProviderHttpClientForTests({
+      async fetch(_url, init) {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({
+          content: [{ type: "text", text: "cached reply" }],
+          model: "claude-test",
+          usage: { input_tokens: 3, output_tokens: 2 },
+          stop_reason: "end_turn",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    const result = await executeRuntimeHost(
+      config(),
+      requestBody({
+        model: "claude-test",
+        cache_strategy: "conversation",
+      }) as Parameters<typeof executeRuntimeHost>[1],
+    );
+
+    expect(result.success).toBe(true);
+    expect(bodies[0]?.system).toEqual([{
+      type: "text",
+      text: "Be direct.",
+      cache_control: { type: "ephemeral" },
+    }]);
+  });
+
   it("requires the internal service token", async () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls));
@@ -148,7 +280,7 @@ describe("runtime host internal route", () => {
         run_group_id: "group-1",
         agent_id: "agent-1",
         project_id: "project-1",
-        workspace_id: "workspace-1",
+        project_folder_id: "workspace-1",
         trigger_origin: "manual",
       }),
     });
@@ -194,7 +326,7 @@ describe("runtime host internal route", () => {
         session_id: "session-1",
         agent_id: "agent-1",
         project_id: "project-1",
-        workspace_id: "workspace-1",
+        project_folder_id: "workspace-1",
         trigger_origin: "manual",
         adapter_type: "ts_agent_host",
         provider_id: "provider-1",

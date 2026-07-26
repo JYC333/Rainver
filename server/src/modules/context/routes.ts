@@ -51,14 +51,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get("/api/v1/context/workspaces/:workspaceId/routing", async (request, reply) => {
+  app.get("/api/v1/context/project-folders/:projectFolderId/routing", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const workspaceId = optionalString(params(request).workspaceId);
-      if (!workspaceId) throw new HttpError(422, "workspace_id is required");
+      const projectFolderId = optionalString(params(request).projectFolderId);
+      if (!projectFolderId) throw new HttpError(422, "project_folder_id is required");
       const repo = PgContextProfileRepository.fromConfig(context.config);
-      const result = await repo.getWorkspaceRouting(identity, workspaceId);
+      const result = await repo.getFolderRouting(identity, projectFolderId);
       const protocol = await loadProtocol();
       return reply.send(protocol.ContextEffectiveRoutingResponseSchema.parse(result));
     } catch (error) {
@@ -66,12 +66,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/context/workspaces/:workspaceId/routing", async (request, reply) => {
+  app.put("/api/v1/context/project-folders/:projectFolderId/routing", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const workspaceId = optionalString(params(request).workspaceId);
-      if (!workspaceId) throw new HttpError(422, "workspace_id is required");
+      const projectFolderId = optionalString(params(request).projectFolderId);
+      if (!projectFolderId) throw new HttpError(422, "project_folder_id is required");
       const protocol = await loadProtocol();
       const parsed = protocol.ContextRoutingUpdateRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) {
@@ -79,14 +79,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       }
       const repo = PgContextProfileRepository.fromConfig(context.config);
       await repo.upsert(identity, {
-        scope_type: "workspace",
-        scope_id: workspaceId,
+        scope_type: "project_folder",
+        scope_id: projectFolderId,
         status: "active",
         version: parsed.data.routing_manifest_json.version,
         context_pack_json: parsed.data.context_pack_json,
         routing_manifest_json: parsed.data.routing_manifest_json,
       });
-      const result = await repo.getWorkspaceRouting(identity, workspaceId);
+      const result = await repo.getFolderRouting(identity, projectFolderId);
       return reply.send(protocol.ContextEffectiveRoutingResponseSchema.parse(result));
     } catch (error) {
       return sendRouteError(reply, error);
@@ -102,7 +102,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const items = await repo.listArtifactRevocations({
         spaceId: identity.spaceId,
         userId: identity.userId,
-        workspaceId: optionalString(q.workspace_id),
+        projectFolderId: optionalString(q.project_folder_id),
         projectId: optionalString(q.project_id),
         artifactIds: artifactIdsQuery(q.artifact_ids),
       });
@@ -167,7 +167,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const body = jsonBody(request);
       const q = query(request);
-      const workspaceId = optionalString(body.workspace_id) ?? optionalString(q.workspace_id);
+      const projectFolderId = optionalString(body.project_folder_id) ?? optionalString(q.project_folder_id);
       const projectId = optionalString(body.project_id) ?? optionalString(q.project_id);
       const agentId = optionalString(body.agent_id) ?? optionalString(q.agent_id);
       const capabilityId = optionalString(body.capability_id) ?? optionalString(q.capability_id);
@@ -178,7 +178,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const retrieval = await repo.retrieve({
         spaceId: identity.spaceId,
         userId: identity.userId,
-        workspaceId,
+        projectFolderId,
         agentId,
         capabilityId,
         query: optionalString(body.query) ?? optionalString(q.query),
@@ -192,14 +192,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const evidenceSelections = await repo.selectEvidenceForContext({
         spaceId: identity.spaceId,
         userId: identity.userId,
-        workspaceId,
+        projectFolderId,
         projectId,
         runId,
       });
       const artifactAttachments = await repo.selectArtifactAttachments({
         spaceId: identity.spaceId,
         userId: identity.userId,
-        workspaceId,
+        projectFolderId,
         projectId,
         artifactIds: contextArtifactIds,
       });
@@ -210,7 +210,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         retrievalTrace: {
           ...retrieval.retrievalTrace,
           preview_request: {
-            workspace_id: workspaceId,
+            project_folder_id: projectFolderId,
             project_id: projectId,
             agent_id: agentId,
             capability_id: capabilityId,
@@ -221,7 +221,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         tokenBudget: retrieval.tokenBudget,
         userId: identity.userId,
         spaceId: identity.spaceId,
-        workspaceId,
+        projectFolderId,
         sessionSummary,
         evidenceSelections,
         artifactAttachments,
@@ -283,15 +283,15 @@ function artifactIdsQuery(value: string | undefined): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 100);
 }
 
-function revocationScope(value: string | null): "workspace" | "project" {
-  if (value === "workspace" || value === "project") return value;
-  throw new HttpError(422, "scope_type must be workspace or project");
+function revocationScope(value: string | null): "project_folder" | "project" {
+  if (value === "project_folder" || value === "project") return value;
+  throw new HttpError(422, "scope_type must be project_folder or project");
 }
 
 type DigestRefreshRequest = {
-  scope_type: "space" | "workspace" | "agent";
+  scope_type: "space" | "project_folder" | "agent";
   scope_id: string | null;
-  digest_type: "policy_bundle" | "workspace" | "agent";
+  digest_type: "policy_bundle" | "project_folder" | "agent";
 };
 
 function parseDigestRefreshRequest(body: Record<string, unknown>): DigestRefreshRequest {
@@ -305,11 +305,11 @@ function parseDigestRefreshRequest(body: Record<string, unknown>): DigestRefresh
   if (!scopeType || !digestType) {
     throw new HttpError(422, "scope_type and digest_type must be provided together");
   }
-  if (!["space", "workspace", "agent"].includes(scopeType)) {
-    throw new HttpError(422, "scope_type must be one of space, workspace, agent");
+  if (!["space", "project_folder", "agent"].includes(scopeType)) {
+    throw new HttpError(422, "scope_type must be one of space, project_folder, agent");
   }
-  if (!["policy_bundle", "workspace", "agent"].includes(digestType)) {
-    throw new HttpError(422, "digest_type must be one of policy_bundle, workspace, agent");
+  if (!["policy_bundle", "project_folder", "agent"].includes(digestType)) {
+    throw new HttpError(422, "digest_type must be one of policy_bundle, project_folder, agent");
   }
   const scopeId = optionalString(body.scope_id);
   if (digestType === "policy_bundle") {
@@ -321,12 +321,12 @@ function parseDigestRefreshRequest(body: Record<string, unknown>): DigestRefresh
     }
     return { scope_type: "space", scope_id: null, digest_type: "policy_bundle" };
   }
-  if (digestType === "workspace") {
-    if (scopeType !== "workspace") {
-      throw new HttpError(422, "workspace digest refresh requires scope_type=workspace");
+  if (digestType === "project_folder") {
+    if (scopeType !== "project_folder") {
+      throw new HttpError(422, "project_folder digest refresh requires scope_type=project_folder");
     }
-    if (!scopeId) throw new HttpError(422, "workspace digest refresh requires scope_id");
-    return { scope_type: "workspace", scope_id: scopeId, digest_type: "workspace" };
+    if (!scopeId) throw new HttpError(422, "project_folder digest refresh requires scope_id");
+    return { scope_type: "project_folder", scope_id: scopeId, digest_type: "project_folder" };
   }
   if (scopeType !== "agent") {
     throw new HttpError(422, "agent digest refresh requires scope_type=agent");

@@ -24,6 +24,7 @@ import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
 import { memoryRetrievalRegistry } from "../memory/retrievalAdapter";
 import { projectRetrievalRegistry } from "../projects/retrievalAdapter";
 import { sourceRetrievalRegistry } from "../sources/retrievalAdapter";
+import { inquiryRetrievalRegistry } from "../inquiry/retrievalAdapter";
 import { PgMemoryReadRepository } from "../memory/repository";
 import { canInitiateContextOpsScan } from "../contextOps/reviewPolicy";
 import { buildClaimTrajectory } from "../knowledge/claimReviewLoop";
@@ -69,6 +70,12 @@ const DOMAIN_CONFIG: Record<AskSpaceDomain, DomainConfig> = {
     objectTypes: ["source_item", "extracted_evidence"],
     surface: "source_brief",
     persistTrace: false,
+  },
+  inquiry: {
+    registry: inquiryRetrievalRegistry,
+    objectTypes: ["inquiry_thread"],
+    surface: "inquiry_brief",
+    persistTrace: true,
   },
 };
 
@@ -476,6 +483,7 @@ function primaryObjectType(section: AskSpaceDomainSection): RetrievalObjectType 
   if (section.domain === "memory") return "memory_entry";
   if (section.domain === "project") return "project_public_summary";
   if (section.domain === "source") return "source_item";
+  if (section.domain === "inquiry") return "inquiry_thread";
   return "knowledge_item";
 }
 
@@ -483,6 +491,7 @@ function domainLabel(domain: AskSpaceDomain): string {
   if (domain === "memory") return "Memory";
   if (domain === "project") return "Project summaries";
   if (domain === "source") return "Source";
+  if (domain === "inquiry") return "Inquiry";
   return "Knowledge";
 }
 

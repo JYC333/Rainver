@@ -270,6 +270,7 @@ function allowedExecutionChannel(value: string | null | undefined): string | nul
   return [
     "managed_api",
     "provider_proxy",
+    "local_cli",
     "local_cli_transcript",
     "manual_import",
     "cross_instance_import",

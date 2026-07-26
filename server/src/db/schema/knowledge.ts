@@ -6,7 +6,7 @@ import { activityRecords } from "./activity";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { artifacts } from "./artifacts";
 import { proposals } from "./proposals";
 import { projects } from "./projects";
@@ -67,7 +67,7 @@ export const evidenceLinks = pgTable("evidence_links", {
 		}),
 	check("ck_evidence_links_link_type", sql`(link_type)::text = ANY (ARRAY[('supports'::character varying)::text, ('contradicts'::character varying)::text, ('derived_from'::character varying)::text, ('mentions'::character varying)::text, ('context_candidate'::character varying)::text, ('used_in_context'::character varying)::text])`),
 	check("ck_evidence_links_status", sql`(status)::text = ANY (ARRAY[('candidate'::character varying)::text, ('active'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
-	check("ck_evidence_links_target_type", sql`(target_type)::text = ANY (ARRAY[('space'::character varying)::text, ('workspace'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('agent'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('knowledge'::character varying)::text, ('memory'::character varying)::text, ('task'::character varying)::text])`),
+	check("ck_evidence_links_target_type", sql`(target_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project_folder'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('agent'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('knowledge'::character varying)::text, ('memory'::character varying)::text, ('task'::character varying)::text])`),
 ]);
 
 export const extractedEvidence = pgTable("extracted_evidence", {
@@ -211,6 +211,11 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	redirectToItemId: varchar("redirect_to_item_id", { length: 36 }),
 	version: integer().notNull(),
 	deprecatedAt: timestamp("deprecated_at", { withTimezone: true, mode: 'string' }),
+	// Discriminated, immutable pointer to the exact source revision this
+	// version was promoted/revalidated from — never a pointer
+	// to a live mutable object. Null for Knowledge created outside promotion or
+	// through a path that predates the promotion-Candidate flow.
+	pinnedSourceRefJson: jsonb("pinned_source_ref_json"),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_knowledge_items_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),
 	index("ix_knowledge_items_knowledge_kind").using("btree", table.knowledgeKind.asc().nullsLast()),
@@ -289,7 +294,7 @@ export const spaceObjects = pgTable("space_objects", {
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	primaryProjectId: varchar("primary_project_id", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }),
 	createdByAgentId: varchar("created_by_agent_id", { length: 36 }),
 	createdByRunId: varchar("created_by_run_id", { length: 36 }),
@@ -305,7 +310,7 @@ export const spaceObjects = pgTable("space_objects", {
 	index("ix_space_objects_space_type").using("btree", table.spaceId.asc().nullsLast(), table.objectType.asc().nullsLast()),
 	index("ix_space_objects_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_space_objects_visibility").using("btree", table.visibility.asc().nullsLast()),
-	index("ix_space_objects_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_space_objects_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.createdByAgentId],
 			foreignColumns: [agents.id],
@@ -337,9 +342,9 @@ export const spaceObjects = pgTable("space_objects", {
 			name: "space_objects_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "space_objects_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "space_objects_project_folder_id_fkey"
 		}),
 	unique("space_objects_id_space_id_key").on(table.id, table.spaceId),
 	check("ck_space_objects_object_type", sql`(object_type)::text = ANY (ARRAY[('knowledge_item'::character varying)::text, ('note'::character varying)::text, ('source'::character varying)::text, ('person'::character varying)::text, ('organization'::character varying)::text, ('relationship'::character varying)::text, ('claim'::character varying)::text])`),

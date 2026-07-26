@@ -20,10 +20,10 @@ import {
   resolveProjectResearchCritiquePrompt,
   resolveProjectResearchSynthesisPrompt,
 } from "../promptRegistry";
-import type { ResearchOperationState, ResearchStage, ResearchTransitionResult } from "../stateMachine";
-import { researchStage, researchState, transition as transitionResearchOperation } from "../stateMachine";
-import { deriveStepStates } from "../stateMachine";
-import { setResearchOperationState } from "./operationStateWriter";
+import type { ResearchOperationState, ResearchStage, ResearchMutationResult } from "../operationProjection";
+import { researchStage, researchState, advanceOperation as advanceResearchOperation } from "../operationProjection";
+import { deriveStepStates } from "../operationProjection";
+import { setResearchOperationState } from "./operationProjectionWriter";
 
 export const RESEARCH_SYNTHESIS_CAPABILITIES = [
   "research.source_collect",
@@ -94,10 +94,10 @@ export class ProjectResearchSynthesisCoordinator {
     private readonly ports: ProjectResearchSynthesisPorts,
   ) {}
 
-  async queue(input: QueueSynthesisInput): Promise<ResearchTransitionResult> {
+  async queue(input: QueueSynthesisInput): Promise<ResearchMutationResult> {
     const { spaceId, userId, projectId, operationId, workflowId } = input;
     let emptyMatrix = false;
-    const result = await transitionResearchOperation(this.db, spaceId, operationId, {
+    const result = await advanceResearchOperation(this.db, spaceId, operationId, {
       from: input.from,
       to: "synthesis",
       mutate: async ({ db, state: current }) => {
@@ -202,7 +202,7 @@ export class ProjectResearchSynthesisCoordinator {
         { seq: 3, status: "active", detail: { run_id: current.synthesis_run_id } },
         { seq: 4, status: "pending" },
       ],
-      onIllegal: "noop",
+      onStale: "noop",
     });
     if (!emptyMatrix) return result;
     const operation = await this.ports.operation(spaceId, operationId);
@@ -215,8 +215,8 @@ export class ProjectResearchSynthesisCoordinator {
     });
   }
 
-  async queueCritique(input: QueueSynthesisStageInput): Promise<ResearchTransitionResult> {
-    return transitionResearchOperation(this.db, input.spaceId, input.operationId, {
+  async queueCritique(input: QueueSynthesisStageInput): Promise<ResearchMutationResult> {
+    return advanceResearchOperation(this.db, input.spaceId, input.operationId, {
       from: ["synthesis"],
       to: "synthesis",
       mutate: async ({ db, state }) => {
@@ -303,11 +303,11 @@ export class ProjectResearchSynthesisCoordinator {
         { seq: 3, status: "active", detail: { run_id: state.synthesis_run_id, phase: "critique" } },
         { seq: 4, status: "pending" },
       ],
-      onIllegal: "noop",
+      onStale: "noop",
     });
   }
 
-  async queueRevision(input: QueueSynthesisStageInput): Promise<ResearchTransitionResult> {
+  async queueRevision(input: QueueSynthesisStageInput): Promise<ResearchMutationResult> {
     const operation = await this.ports.operation(input.spaceId, input.operationId);
     const state = operation ? researchState(operation.progress_json) : null;
     if (!state?.synthesis_critique || state.synthesis_critique.status !== "revision_needed") {
@@ -721,8 +721,8 @@ export class ProjectResearchSynthesisCoordinator {
       reasonCode: string;
       suggestions: string[];
     },
-  ): Promise<ResearchTransitionResult> {
-    const result = await transitionResearchOperation(this.db, operation.space_id, operation.id, {
+  ): Promise<ResearchMutationResult> {
+    const result = await advanceResearchOperation(this.db, operation.space_id, operation.id, {
       from: [researchStage(state.current_stage)],
       to: "complete",
       mutate: ({ state: current }) => {
@@ -744,7 +744,7 @@ export class ProjectResearchSynthesisCoordinator {
         { seq: 3, status: "skipped", detail: { outcome: outcome.kind, reason_code: outcome.reasonCode } },
         { seq: 4, status: "skipped" },
       ],
-      onIllegal: "noop",
+      onStale: "noop",
     });
     if (result.applied && result.state) {
       await this.ports.setWorkflowMonitoring(operation.space_id, operation.project_id, state.workflow_id, result.state);

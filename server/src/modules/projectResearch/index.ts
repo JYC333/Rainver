@@ -6,10 +6,9 @@ export const projectResearchModule: ServerModule = {
   registerRoutes,
 };
 
-export { __setProjectResearchRepositoryFactoryForTests, __setProjectExperimentRepositoryFactoryForTests, __setProjectResearchOrchestratorFactoryForTests } from "./routes";
+export { __setProjectResearchRepositoryFactoryForTests, __setProjectResearchOrchestratorFactoryForTests } from "./routes";
 export { ProjectResearchRepository } from "./repository";
 export { ProjectResearchReportRepository } from "./reportRepository";
-export { ProjectExperimentRepository } from "./experimentRepository";
 export { ProjectResearchOrchestrator, registerProjectResearchHandler } from "./orchestrator";
 export { ProjectResearchPipelineService } from "./pipeline/researchPipelineService";
 export { ProjectResearchExecutionProfileService } from "./executionProfileService";

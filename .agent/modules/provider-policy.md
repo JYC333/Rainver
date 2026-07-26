@@ -152,7 +152,7 @@ process environment.
 |---|---|
 | Anthropic (Claude) | Data sent to Anthropic servers; not for private/sensitive enterprise data without a data processing agreement |
 | OpenAI (Codex) | Same; OpenAI API terms apply |
-| Any cloud LLM | Prompts include context_snapshot (memory + workspace). Review what goes in context before using a third-party provider |
+| Any cloud LLM | Prompts include context_snapshot (memory + Project Folder). Review what goes in context before using a third-party provider |
 | Ollama / local | No external data transmission; safe for private data |
 
 ## When Adding a New Provider
@@ -172,6 +172,6 @@ runtime credential policy tests before they are considered wired.
 
 ## Related Files
 - `server/src/config.ts` — provider/runtime config inputs
-- `server/src/modules/workspaces/` — sandbox/workspace boundaries
+- `server/src/modules/projectFolders/` — sandbox/Project Folder boundaries
 - `server/src/modules/runs/` and `runtimeAdapters/` — runtime adapter implementations
 - `.agent/modules/runtime-adapters.md` — adapter registry and license notes

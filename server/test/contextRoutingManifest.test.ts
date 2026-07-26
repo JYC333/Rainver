@@ -47,13 +47,13 @@ describe("context routing manifest", () => {
         default_agent_doc_paths: [],
         rules: [
           {
-            path_glob: "apps/web/src/modules/context_workspace/**",
+            path_glob: "apps/web/src/modules/context_configuration/**",
             agent_doc_paths: [".agent/modules/frontend-layout.md"],
             priority: 1,
           },
         ],
       },
-      touchedFiles: ["apps/web/src/modules/context_workspace/ContextWorkspacePage.tsx"],
+      touchedFiles: ["apps/web/src/modules/context_configuration/ContextConfigurationPage.tsx"],
     });
 
     expect(docs).toContain(".agent/modules/frontend-layout.md");

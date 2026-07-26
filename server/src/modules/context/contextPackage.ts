@@ -18,13 +18,13 @@ export function buildContextPackage(input: {
   tokenBudget: Record<string, unknown>;
   userId: string;
   spaceId: string;
-  workspaceId: string | null;
+  projectFolderId: string | null;
   sessionSummary: SessionSummaryRow | null;
   evidenceSelections?: readonly ContextEvidenceSelection[];
   artifactAttachments?: readonly ContextArtifactAttachmentSelection[];
 }): ContextPackage {
   const userMemory = input.memories.filter((m) => m.scope_type === "user");
-  const workspaceMemory = input.memories.filter((m) => m.scope_type === "workspace");
+  const workspaceMemory = input.memories.filter((m) => m.scope_type === "project_folder");
   const capabilityMemory = input.memories.filter((m) => m.scope_type === "capability");
   const agentMemory = input.memories.filter((m) => m.scope_type === "agent");
   const systemPolicy = input.memories.filter((m) => m.scope_type === "system");
@@ -108,7 +108,7 @@ export function buildContextPackage(input: {
 
   const pkg = {
     user_memory: serialize(userMemory, false),
-    workspace_memory: serialize(workspaceMemory, false),
+    project_folder_memory: serialize(workspaceMemory, false),
     capability_memory: serialize(capabilityMemory, false),
     agent_memory: serialize(agentMemory, false),
     system_policy: serialize(systemPolicy, true),

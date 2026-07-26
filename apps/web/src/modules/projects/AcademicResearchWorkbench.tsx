@@ -9,12 +9,14 @@ import type {
   ProjectOperation,
   ProjectResearchQuestionImpact, ProjectResearchQuestionRefinement, ProjectResearchQuestionResolutionStrategy,
   ProjectResearchScanSummary,
+  InquiryThread,
 } from '../../types/api'
 import type { ModelProviderOut } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { DatePicker } from '../../components/ui/date-picker'
 import { Input } from '../../components/ui/input'
+import { Select } from '../../components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog'
 import { researchWorkflowForDisplayFrom } from './researchWorkflowView'
 import { researchSetupDraftFromWorkflow, serializeResearchSetupDraft } from './researchSetupDraft'
@@ -81,7 +83,7 @@ function noReportOutcome(operation: ProjectOperation | null): Record<string, unk
   return outcome.kind === 'no_relevant_sources' || outcome.kind === 'no_coherent_synthesis' ? outcome : null
 }
 
-// Mirrors the backend's canonical stage-index table (stateMachine.ts's
+// Mirrors the backend's canonical stage-index table (operationProjection.ts's
 // researchStageIndex) — comparison and synthesis share one visual step
 // ("Compare or synthesize evidence").
 function researchStageIndex(value: unknown): number {
@@ -310,6 +312,8 @@ export interface AcademicResearchWorkbenchProps {
   recentEvidence: ExtractedEvidence[]
   readerAnnotations: ReaderAnnotation[]
   researchWorkflows: ProjectResearchWorkflow[]
+  selectedWorkflowId: string | null
+  onSelectWorkflow: (workflowId: string) => void
   researchScanSummaries: ProjectResearchScanSummary[]
   researchCheckpoints: ProjectResearchCheckpoint[]
   literatureMatrix: ProjectResearchLiteratureMatrixItem[]
@@ -318,6 +322,7 @@ export interface AcademicResearchWorkbenchProps {
   researchRunStatuses: Record<string, string>
   researchDataLoading: boolean
   modelProviders: ModelProviderOut[]
+  questionThreads?: InquiryThread[]
   researchActionBusy: string | null
   onSaveInitialIntake: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
   onRefineQuestion: (input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }) => Promise<ProjectResearchQuestionRefinement>
@@ -344,6 +349,8 @@ export function AcademicResearchWorkbench({
   recentEvidence,
   readerAnnotations,
   researchWorkflows,
+  selectedWorkflowId,
+  onSelectWorkflow,
   researchScanSummaries,
   researchCheckpoints,
   literatureMatrix,
@@ -352,6 +359,7 @@ export function AcademicResearchWorkbench({
   researchRunStatuses,
   researchDataLoading,
   modelProviders,
+  questionThreads = [],
   researchActionBusy,
   onSaveInitialIntake,
   onRefineQuestion,
@@ -379,13 +387,15 @@ export function AcademicResearchWorkbench({
   const [questionImpactError, setQuestionImpactError] = useState<string | null>(null)
   const checkpointsRef = useRef<HTMLDivElement>(null)
   const sourceHref = `/projects/${project.id}/sources`
-  const activeWorkflow = activeResearchWorkflowFrom(researchWorkflows)
-  const displayWorkflow = researchWorkflowForDisplayFrom(researchWorkflows)
+  const displayWorkflow = researchWorkflowForDisplayFrom(researchWorkflows, selectedWorkflowId)
+  const activeWorkflow = displayWorkflow?.status === 'active' ? displayWorkflow : null
   const activeScanSummaries = activeWorkflow
     ? researchScanSummaries.filter(summary => summary.workflow_id === activeWorkflow.id)
     : []
-  const currentResearchOperation = researchOperations.find(operation => operation.kind === 'research' && ['active', 'waiting_review'].includes(operation.status))
-    ?? researchOperations.find(operation => operation.kind === 'research')
+  const scopedOperations = researchOperations.filter(operation =>
+    operation.kind === 'research' && operation.progress_json.workflow_id === displayWorkflow?.id)
+  const currentResearchOperation = scopedOperations.find(operation => ['active', 'waiting_review'].includes(operation.status))
+    ?? scopedOperations[0]
     ?? null
   // Relative timestamps ("Last update 12s ago", "running since 3m ago") are
   // computed at render time; without a clock tick they would only move when a
@@ -399,15 +409,15 @@ export function AcademicResearchWorkbench({
     const timer = window.setInterval(() => setClockTick(tick => tick + 1), 1_000)
     return () => window.clearInterval(timer)
   }, [showOperationCard])
-  const initialLiteratureOperations = researchOperations
-    .filter(operation => operation.kind === 'research' && operation.progress_json.run_kind === 'baseline')
+  const initialLiteratureOperations = scopedOperations
+    .filter(operation => operation.progress_json.run_kind === 'baseline')
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
   const initialLiteratureOperation = initialLiteratureOperations[0] ?? null
   const emptyInitialLiteratureOperation = isEmptySearchOperation(initialLiteratureOperation) ? initialLiteratureOperation : null
   const initialIntakeStarted = initialLiteratureOperation !== null
   const coverageRanges = historyCoverageRanges(activeWorkflow)
   const earliestCoverage = coverageRanges.filter(range => range.status === 'completed').sort((a, b) => a.from.localeCompare(b.from))[0] ?? null
-  const historicalBackfillActive = researchOperations.some(operation => operation.kind === 'research' && operation.progress_json.run_kind === 'historical_backfill' && ['active', 'waiting_review'].includes(operation.status))
+  const historicalBackfillActive = scopedOperations.some(operation => operation.progress_json.run_kind === 'historical_backfill' && ['active', 'waiting_review'].includes(operation.status))
   const monitoring = objectValue(activeWorkflow?.state_json.monitoring)
   const projectBindingChannelIds = useMemo(
     () => new Set(sourceBindings.filter(binding => binding.status === 'active').map(binding => binding.source_channel_id)),
@@ -417,8 +427,18 @@ export function AcademicResearchWorkbench({
   const initialIntakeDraft = objectValue(displayWorkflow?.state_json.draft)
   const initialIntakeSaved = initialIntakeDraft.status === 'saved' || emptyInitialLiteratureOperation !== null
   const canExtendHistory = Boolean(activeWorkflow && !historicalBackfillActive && initialLiteratureOperation?.status === 'completed' && monitoring.active === true && initialIntakeConfig.history_mode !== 'all_available' && earliestCoverage)
-  const syncNeeded = workflowQuestionNeedsSync(project, activeWorkflow)
-  const projectQuestion = project.current_focus?.trim() ?? ''
+  const pinnedThread = Array.isArray(activeWorkflow?.state_json.thread_scope)
+    ? activeWorkflow?.state_json.thread_scope[0] as Record<string, unknown> | undefined
+    : undefined
+  const currentThread = typeof pinnedThread?.thread_id === 'string'
+    ? questionThreads.find(thread => thread.id === pinnedThread.thread_id)
+    : undefined
+  const syncNeeded = Boolean(currentThread
+    && (currentThread.version !== pinnedThread?.version || currentThread.statement !== pinnedThread?.statement))
+  const projectQuestion = currentThread?.statement.trim()
+    ?? (typeof displayWorkflow?.state_json.research_question === 'string'
+      ? displayWorkflow.state_json.research_question.trim()
+      : '')
   const researchSetupDraft = useMemo(
     () => researchSetupDraftFromWorkflow(displayWorkflow, projectQuestion, [...projectBindingChannelIds], literatureMatrix.length),
     [displayWorkflow, projectBindingChannelIds, projectQuestion, literatureMatrix.length],
@@ -445,7 +465,7 @@ export function AcademicResearchWorkbench({
     projectQuestion,
     workflow: activeWorkflow,
     checkpoints: pendingCheckpoints,
-    operations: researchOperations,
+    operations: scopedOperations,
     reports: researchReports,
     scanSummaries: activeScanSummaries,
     paperCount: Math.max(literatureMatrix.length, operationPaperCount),
@@ -551,10 +571,12 @@ export function AcademicResearchWorkbench({
       )}
       <ResearchSetupDialog
         projectId={project.id}
+        workflowId={selectedWorkflowId}
         open={researchSetupOpen}
         draft={researchSetupDraft}
         busyAction={researchActionBusy}
         modelProviders={modelProviders}
+        questionThreads={questionThreads}
         canAct={canAct}
         onOpenChange={setResearchSetupOpen}
         onSave={onSaveInitialIntake}
@@ -576,7 +598,18 @@ export function AcademicResearchWorkbench({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link to={`/projects/${project.id}/research`}><Button size="sm"><BookOpen className="size-3.5" />Open research workspace</Button></Link>
+          {researchWorkflows.length > 0 && <Select
+            ariaLabel="Selected research question workflow"
+            value={displayWorkflow?.id ?? ''}
+            options={researchWorkflows
+              .filter(workflow => workflow.status !== 'archived')
+              .map(workflow => ({
+                value: workflow.id,
+                label: `${typeof workflow.state_json.research_question === 'string' ? workflow.state_json.research_question : 'Untitled question'} · ${workflow.status}`,
+              }))}
+            onChange={onSelectWorkflow}
+          />}
+          <Link to={`/projects/${project.id}/research`}><Button size="sm"><BookOpen className="size-3.5" />Open research Area</Button></Link>
           <Button size="sm" variant={projectQuestion ? 'ghost' : 'secondary'} onClick={onEditQuestion}>
             <Edit2 className="size-3.5" />
             {projectQuestion ? 'Edit question' : 'Set research question'}
@@ -594,7 +627,7 @@ export function AcademicResearchWorkbench({
             <div className="flex items-start justify-between gap-3 flex-wrap">
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold">Research controls</h3>
-                <p className="text-sm text-muted-foreground">{activeWorkflow ? 'Run monitoring or extend historical coverage. Living documents and report review are in the research workspace.' : nextAction}</p>
+                <p className="text-sm text-muted-foreground">{activeWorkflow ? 'Run monitoring or extend historical coverage. Living documents and report review are in the research Area.' : nextAction}</p>
               </div>
               {displayWorkflow ? (
                 <Badge variant={displayWorkflow.status === 'not_started' ? 'outline' : 'muted'}>

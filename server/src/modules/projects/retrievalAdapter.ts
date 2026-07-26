@@ -45,7 +45,7 @@ export const projectRetrievalAdapter: RetrievalDomainAdapter = {
       objectId: row.project_id,
       title: row.name,
       slug: null,
-      workspaceId: null,
+      projectFolderId: null,
       ownerUserId: row.owner_user_id,
       visibility: "space_shared",
       status: row.review_status,

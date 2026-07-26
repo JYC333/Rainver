@@ -22,6 +22,7 @@ describe("object schema / object kind protocol contracts", () => {
       "project_public_summary",
       "source_item",
       "extracted_evidence",
+      "inquiry_thread",
     ]);
     expect(RetrievalObjectTypeSchema.parse("source_item")).toBe("source_item");
     expect(RetrievalObjectTypeSchema.parse("extracted_evidence")).toBe("extracted_evidence");

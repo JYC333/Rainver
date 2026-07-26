@@ -84,6 +84,10 @@ waits for dependency completion, creates checkpoint Proposals when required,
 and consumes the latest `RunEvaluation`: a terminal adapter success without a
 passed evaluation does not complete a node. Finalization discovers the graph
 from `plan_node_runs`, so route hints are evidence only, not the primary link.
+Plan-level budget sources are inherited by each child Run. Node-local flat
+caps use the owning Plan ID, while explicitly declared node budget sources are
+persisted separately; admission occurs before Run/link creation under the same
+transaction and counts inherited source consumption by logical root Run.
 
 Before creating a ready child Run, the scheduler resolves every declared input
 from the latest dependency Run whose evaluation passed. A missing required
@@ -112,6 +116,32 @@ The shared execution behavior is exposed through `PlanExecutionService` and
 links and post-finalization reconciliation. The Automation fire transaction
 commits the Workflow Execution, coordinator Run, child scheduling, and
 `automation_runs` audit link together.
+
+Workflow nodes may be Model (`leaf`), deterministic `action`, integration, or
+approval-checkpoint nodes. Model and Action failures create bounded new Run
+attempts on the same node according to `contract_json.max_attempts`; retry does
+not reopen a completed execution or add a graph cycle. A domain that needs to
+project terminal Workflow status into its own aggregate registers an outcome
+handler keyed by `workflow_id`. The generic Automations service never writes
+the domain table directly.
+
+An Action may return a `delegatedRunId` for durable asynchronous work that it
+started. Its own system Run completes immediately, but the node remains
+`in_progress` and links the delegated Run with role `delegated`. The delegated
+Run's evaluated terminal outcome becomes the node outcome and authoritative
+downstream output. Attempt counts include only primary node Runs, so delegated
+work does not consume a retry attempt. If delegated work fails and the node
+has another attempt, its audit link is retained as `delegated_superseded`
+before the new primary attempt becomes authoritative.
+
+Academic Research uses this mechanism for every run kind. One immutable
+execution-per-pass graph invokes the deterministic coordinator, waits on any
+queued research model Run, and applies bounded subsequent stage Runs. Retry,
+resume, rescan, and later observations create a fresh Workflow Execution;
+they never add a cycle or reopen an old graph. A registered terminal handler
+marks a linked Project operation failed when a pass fails. Projection writes
+are guarded by the operation's `current_execution_id`, so an older pass cannot
+overwrite the outcome of a newer authoritative pass.
 
 Post-finalization reconciliation is the immediate path, not the only recovery
 path. `ExecutionGraphRecoveryService` scans active Plan and Workflow executions

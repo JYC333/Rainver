@@ -17,7 +17,7 @@ export interface JobOut {
   id: string;
   space_id: string;
   user_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   agent_id: string | null;
   job_type: string;
   status: string;
@@ -148,7 +148,7 @@ export function jobToOut(job: JobRecord): JobOut {
     id: job.id,
     space_id: job.space_id,
     user_id: job.user_id,
-    workspace_id: job.workspace_id,
+    project_folder_id: job.project_folder_id,
     agent_id: job.agent_id,
     job_type: job.job_type,
     status: job.status,

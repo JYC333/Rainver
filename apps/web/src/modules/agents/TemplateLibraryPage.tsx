@@ -65,7 +65,7 @@ export default function TemplateLibraryPage() {
       </div>
 
       <p className="text-sm text-muted-foreground rounded-lg border border-border bg-muted/30 px-4 py-3">
-        Chat uses your space's default Assistant — it is system-managed and not shown here.
+        Add agents to a Project Room to converse or dispatch work.
         Templates are factories for specialized agents (reflection, knowledge, review, …).
       </p>
 

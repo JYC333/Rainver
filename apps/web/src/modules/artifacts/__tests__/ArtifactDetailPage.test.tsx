@@ -20,7 +20,7 @@ describe('ArtifactDetailPage', () => {
       id: 'archive-1', space_id: 'space-1', run_id: 'run-1', proposal_id: null,
       artifact_type: 'research_report.archive.v1', surface_role: 'system_archive', title: 'Research report archive', mime_type: 'application/json',
       exportable: true, preview: false, storage_ref: null, storage_path: null, has_inline_content: true,
-      content: '{"summary":"This must not be rendered"}', project_id: 'project-1', workspace_id: null,
+      content: '{"summary":"This must not be rendered"}', project_id: 'project-1', project_folder_id: null,
       created_at: '2026-07-19T00:00:00.000Z', updated_at: '2026-07-19T01:00:00.000Z',
     })
   })

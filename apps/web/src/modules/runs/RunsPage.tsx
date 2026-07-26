@@ -1,12 +1,12 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Play, FolderKanban, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { runsApi } from '../../api/client'
+import { agentsApi, runsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { Run } from '../../types/api'
+import type { AgentOut, Run } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -15,12 +15,13 @@ import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
 import { PreviewBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
+import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
 }
 
-function RunRow({ r, onRefresh }: { r: Run; onRefresh: () => void }) {
+function RunRow({ r, agentName, onRefresh }: { r: Run; agentName: string | null; onRefresh: () => void }) {
   return (
     <Card className="p-4 flex flex-wrap items-start justify-between gap-3">
       <div className="space-y-2 min-w-0 flex-1">
@@ -30,16 +31,16 @@ function RunRow({ r, onRefresh }: { r: Run; onRefresh: () => void }) {
           {r.run_type && <Badge variant="outline">{r.run_type}</Badge>}
           {r.mode === 'dry_run' && <PreviewBadge />}
           <ScopeBadge visibility={r.visibility} omitShared />
-          <span className="font-mono text-xs text-muted-foreground truncate max-w-[200px]">{r.id}</span>
         </div>
+        {(r.instruction || r.prompt) && <p className="text-sm font-medium">{r.instruction ?? r.prompt}</p>}
         <p className="text-xs text-muted-foreground">
-          agent {r.agent_id.slice(0, 10)}… · created {fmt(r.created_at)}
+          {agentName ?? 'Agent unavailable'} · created {fmt(r.created_at)}
           {r.started_at && ` · started ${fmt(r.started_at)}`}
           {r.ended_at && ` · ended ${fmt(r.ended_at)}`}
         </p>
         {r.task_id && (
           <Link to={`/tasks/${r.task_id}`} className="text-xs text-accent-foreground hover:underline">
-            Task {r.task_id.slice(0, 10)}…
+            Open linked task
           </Link>
         )}
         {r.status === 'failed' && r.error_message && (
@@ -89,6 +90,7 @@ export default function RunsPage() {
   const browsingSpaceName = activeSpaceName ?? spaces.find(s => s.id === browsingSpaceId)?.name ?? null
 
   const [runs, setRuns] = useState<Run[]>([])
+  const [agents, setAgents] = useState<AgentOut[]>([])
   const [loading, setLoading] = useState(true)
   const [fStatus, setFStatus] = useState('')
   const [fMode, setFMode] = useState('')
@@ -108,7 +110,7 @@ export default function RunsPage() {
         status: fStatus || undefined,
         mode: fMode || undefined,
         agent_id: fAgent || undefined,
-        workspace_id: fWs || undefined,
+        project_folder_id: fWs || undefined,
         project_id: projectFilter || undefined,
       })
       setRuns(data)
@@ -121,12 +123,10 @@ export default function RunsPage() {
   }, [fStatus, fMode, fAgent, fWs, projectFilter, browsingSpaceId])
 
   useEffect(() => { load() }, [load])
-
-  const agentOpts = useMemo(() => {
-    const s = new Set<string>()
-    runs.forEach(r => s.add(r.agent_id))
-    return [...s].sort().map(v => ({ value: v, label: v.slice(0, 12) + '…' }))
-  }, [runs])
+  useEffect(() => {
+    if (!browsingSpaceId) return
+    agentsApi.list({ limit: '200', status: 'active' }).then(setAgents).catch(error => toast.error(errMsg(error)))
+  }, [browsingSpaceId])
 
   return (
     <div className="p-6 space-y-6">
@@ -187,20 +187,25 @@ export default function RunsPage() {
           />
         </div>
         <div className="min-w-[140px]">
-          <Label className="text-xs">Agent id</Label>
+          <Label className="text-xs">Agent</Label>
           <Select
             value={fAgent}
-            options={[{ value: '', label: 'Any' }, ...agentOpts]}
+            options={[{ value: '', label: 'Any Agent' }, ...agents.map(agent => ({ value: agent.id, label: agent.name }))]}
             onChange={setFAgent}
           />
         </div>
-        <div className="min-w-[160px]">
-          <Label className="text-xs">Workspace id</Label>
-          <input
-            className="flex h-9 w-full rounded-md border border-border bg-transparent px-2 text-xs font-mono"
-            placeholder="filter…"
-            value={fWs}
-            onChange={e => setFWs(e.target.value)}
+        <div className="grid min-w-[360px] grid-cols-2 gap-2">
+          <ProjectFolderSelectors
+            projectId={projectFilter}
+            folderId={fWs}
+            onProjectChange={value => setSearchParams(params => {
+              if (value) params.set('project_id', value)
+              else params.delete('project_id')
+              return params
+            })}
+            onFolderChange={setFWs}
+            projectLabel="Project"
+            folderLabel="Project Folder"
           />
         </div>
         <Button variant="secondary" size="sm" onClick={load}>Refresh</Button>
@@ -217,7 +222,7 @@ export default function RunsPage() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {runs.map(r => <RunRow key={r.id} r={r} onRefresh={load} />)}
+          {runs.map(r => <RunRow key={r.id} r={r} agentName={agents.find(agent => agent.id === r.agent_id)?.name ?? null} onRefresh={load} />)}
         </div>
       )}
     </div>

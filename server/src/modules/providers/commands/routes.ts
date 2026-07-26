@@ -648,7 +648,13 @@ export function registerProviderCommandRoutes(
         "CliLoginInputRequestSchema",
         jsonBody(request),
       );
-      if (!broker.sendLoginInput(query(request).runtime ?? "", body.input, body.profile_id)) {
+      if (!await broker.sendLoginInput(
+        query(request).runtime ?? "",
+        body.input,
+        identity.spaceId,
+        identity.userId,
+        body.profile_id,
+      )) {
         return reply
           .code(404)
           .send({ detail: `No active login session for runtime '${query(request).runtime ?? ""}'` });
@@ -761,6 +767,7 @@ export function registerProviderCommandRoutes(
             runtime: string;
             profile_id?: string | null;
             require_existing?: boolean;
+            user_id: string;
           }
       >("RuntimeCredentialResolveRequestSchema", jsonBody(request));
       if (body.kind === "model_provider_api_key") {
@@ -788,6 +795,7 @@ export function registerProviderCommandRoutes(
         body.profile_id,
         body.require_existing ?? true,
         body.space_id,
+        body.user_id,
       );
       if (!profile) return reply.code(404).send({ detail: "Credential profile not found" });
       return reply.send({
@@ -812,6 +820,7 @@ export function registerProviderCommandRoutes(
         runtime: string;
         executor_mode: "worktree" | "docker";
         profile_id?: string | null;
+        user_id: string;
       }>("CliCredentialGrantRequestSchema", jsonBody(request));
       return reply.send(
         await broker.grantForRun(
@@ -820,6 +829,7 @@ export function registerProviderCommandRoutes(
           body.runtime,
           body.executor_mode,
           body.profile_id,
+          { user_id: body.user_id },
         ),
       );
     } catch (error) {

@@ -30,6 +30,7 @@ export function ChatThread({
   emptyTitle,
   emptyDescription,
   assistantLabel = 'Assistant',
+  composerDisabled = false,
 }: {
   messages: ChatThreadMessage[]
   sending: boolean
@@ -41,6 +42,7 @@ export function ChatThread({
   emptyTitle: string
   emptyDescription: string
   assistantLabel?: string
+  composerDisabled?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -104,10 +106,11 @@ export function ChatThread({
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend() }
           }}
           placeholder={placeholder}
+          disabled={composerDisabled}
           rows={2}
           className="resize-none flex-1"
         />
-        <Button type="submit" disabled={sending || loadingHistory || !input.trim()}>
+        <Button type="submit" disabled={composerDisabled || sending || loadingHistory || !input.trim()}>
           {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
         </Button>
       </form>

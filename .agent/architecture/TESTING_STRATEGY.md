@@ -17,9 +17,9 @@ Server unit-style tests contain deterministic rule and boundary checks. Use them
 
 Route and integration tests contain public boundary checks. Use them for API response shapes, status codes, request validation, adapter/provider protocol contracts, schema checks, storage/path contracts, and observable side effects across a public boundary.
 
-Invariant-style tests contain cross-cutting product rules that must hold even when internals change. Use them for space isolation, approval gates, run auditability, artifact path boundaries, terminal run state, workspace path enforcement, memory mutation boundaries, proposal application boundaries, and runtime/provider separation.
+Invariant-style tests contain cross-cutting product rules that must hold even when internals change. Use them for space isolation, approval gates, run auditability, artifact path boundaries, terminal run state, Project Folder path enforcement, memory mutation boundaries, proposal application boundaries, and runtime/provider separation.
 
-Workflow-style tests contain multi-step product flows from request to durable result. Use them for activity-to-memory, run execution, run output materialization, produced artifact paths, proposal approval, home summary behavior, workspace code proposal flows, and runtime failure handling. Workflow tests assert final observable state and audit trail.
+Workflow-style tests contain multi-step product flows from request to durable result. Use them for activity-to-memory, run execution, run output materialization, produced artifact paths, proposal approval, home summary behavior, Project Folder code proposal flows, and runtime failure handling. Workflow tests assert final observable state and audit trail.
 
 Test support files contain shared factories, fixtures, fake runtimes, fake providers, and assertion helpers. Support code should make valid product states easy to create and invalid states explicit at the call site.
 
@@ -30,7 +30,7 @@ Protect product behavior:
 - API contracts and public response shapes.
 - Durable database state.
 - Artifacts, proposals, activity records, memories, runs, and audit records.
-- Authorization, space isolation, workspace path boundaries, and proposal gates.
+- Authorization, space isolation, Project Folder path boundaries, and proposal gates.
 - Runtime failure behavior and absence of partial side effects.
 - Run output materialization from structured runtime output.
 
@@ -51,7 +51,7 @@ Do not add tests for:
 
 ## Fixtures And Factories
 
-Factories must create valid minimal objects by default. Required ownership fields such as `space_id`, `created_by_user_id`, `workspace_id`, and related actor IDs should be visible at call sites when the rule under test depends on them.
+Factories must create valid minimal objects by default. Required ownership fields such as `space_id`, `created_by_user_id`, `project_folder_id`, and related actor IDs should be visible at call sites when the rule under test depends on them.
 
 Rules:
 
@@ -179,11 +179,11 @@ Use the server and protocol suites from their package roots:
 
 ```bash
 cd server
-COREPACK_ENABLE_AUTO_PIN=0 pnpm exec tsc --noEmit
-COREPACK_ENABLE_AUTO_PIN=0 pnpm exec vitest run
+npx tsc --noEmit
+npx vitest run
 
 cd ../packages/protocol
-COREPACK_ENABLE_AUTO_PIN=0 pnpm exec vitest run
+npx vitest run
 ```
 
 Do not point tests at a real mode data tree. Integration tests that need

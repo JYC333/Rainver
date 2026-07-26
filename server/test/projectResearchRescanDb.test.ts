@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 // Real-Postgres coverage for rescanning a literature intake operation that
@@ -24,10 +25,13 @@ const CHANNEL = "88888888-8888-4888-8888-888888888888";
 const WORKFLOW = "66666666-6666-4666-8666-666666666666";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 const PLAN = "aaaaaaaa-1111-4111-8111-111111111111";
+const AGENT = "99999999-9999-4999-8999-999999999999";
+const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
 let available = false;
+let threadScope: { thread_id: string; version: number; kind: string; statement: string };
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
@@ -67,6 +71,31 @@ beforeEach(async () => {
     [PROJECT, SPACE, OWNER, now],
   );
   await pool.query(
+    `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
+     VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
+    [AGENT, SPACE, OWNER, now],
+  );
+  await pool.query(
+    `INSERT INTO agent_versions (
+       id, agent_id, space_id, version_label, system_prompt, model_config_json,
+       runtime_config_json, context_policy_json, memory_policy_json,
+       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
+     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
+    [AGENT_VERSION, AGENT, SPACE, now],
+  );
+  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  const thread = await new InquiryThreadService(pool).createThread(
+    identity,
+    PROJECT,
+    { kind: "question", statement: "Does X improve Y?" },
+  );
+  threadScope = {
+    thread_id: String(thread.id),
+    version: Number(thread.version),
+    kind: "question",
+    statement: String(thread.statement),
+  };
+  await pool.query(
     `INSERT INTO source_connectors (id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, created_at, updated_at)
      VALUES ($1,'arxiv_api','arXiv','external_feed','pull','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
@@ -105,7 +134,13 @@ beforeEach(async () => {
   await pool.query(
     `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
      VALUES ($1,$2,$3,'literature_review','screening','active','agent_assisted',$4::jsonb,$5,$5)`,
-    [WORKFLOW, SPACE, PROJECT, JSON.stringify({ initial_intake: { max_items: 10 } }), now],
+    [WORKFLOW, SPACE, PROJECT, JSON.stringify({
+      research_question: "Does X improve Y?",
+      research_question_version: thread.version,
+      thread_scope: [threadScope],
+      agent_id: AGENT,
+      initial_intake: { max_items: 10 },
+    }), now],
   );
 });
 
@@ -137,6 +172,10 @@ async function seedOperation(status: "active" | "waiting_review", currentStage: 
     schema_version: "project_research_operation.v1",
     run_kind: "baseline",
     workflow_id: WORKFLOW,
+    agent_id: AGENT,
+    research_question: "Does X improve Y?",
+    research_question_version: threadScope.version,
+    thread_scope: [threadScope],
     source_backfill_plan_ids: planIds,
     source_backfill_plan_id: planIds[0] ?? null,
     current_stage: currentStage,
@@ -169,13 +208,16 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
   it("updates the saved item limit without requiring a research question or source monitor", async () => {
     if (!available || !pool) return;
 
-    await new ProjectResearchOrchestrator(pool!).updateInitialItemLimit(identity, PROJECT, { max_items: 25 });
+    await new ProjectResearchOrchestrator(pool!).updateInitialItemLimit(identity, PROJECT, {
+      workflow_id: WORKFLOW,
+      max_items: 25,
+    });
 
     const workflow = await pool.query<{ state_json: { research_question?: string; source_channel_ids?: string[]; initial_intake?: { max_items?: number } } }>(
       `SELECT state_json FROM project_research_workflows WHERE id=$1`,
       [WORKFLOW],
     );
-    expect(workflow.rows[0]!.state_json.research_question).toBeUndefined();
+    expect(workflow.rows[0]!.state_json.research_question).toBe("Does X improve Y?");
     expect(workflow.rows[0]!.state_json.source_channel_ids).toBeUndefined();
     expect(workflow.rows[0]!.state_json.initial_intake?.max_items).toBe(25);
   });
@@ -435,6 +477,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
 
     const workflow = await new ProjectResearchOrchestrator(pool!).saveInitialIntakeDraft(identity, PROJECT, {
+      workflow_id: WORKFLOW,
       research_question: "Adjusted research question",
       source_channel_ids: [CHANNEL],
       history_mode: "bounded_range",
@@ -455,7 +498,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       draft: { status: "saved" },
     });
     const project = await pool.query<{ current_focus: string | null }>(`SELECT current_focus FROM projects WHERE id=$1`, [PROJECT]);
-    expect(project.rows[0]?.current_focus).toBe("Adjusted research question");
+    expect(project.rows[0]?.current_focus).toBeNull();
   });
 
   it("completes idea review from a durable decision when the decision hook was lost", async () => {

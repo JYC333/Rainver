@@ -68,6 +68,7 @@ describe("provider and credential runtime contracts", () => {
       CliCredentialGrantRequestSchema.parse({
         run_id: "run-1",
         space_id: "space-1",
+        user_id: "user-1",
         runtime: "codex_cli",
         risk_level: "medium",
         executor_mode: "worktree",

@@ -44,7 +44,7 @@ export interface UsageEventRecord {
   session_name: string | null;
   agent_id: string | null;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   occurred_at: string;
   recorded_at: string;
   input_tokens: number | string;
@@ -216,7 +216,7 @@ export class PgUsageRepository {
         subject_user_id, subject_team_id, adapter_type, runtime_tool_version,
         provider_id, provider_type, provider_name_snapshot, vendor, model, task,
         run_id, root_run_id, parent_run_id, run_group_id, session_id, external_session_id,
-        session_path, session_name, agent_id, project_id, workspace_id, trigger_origin,
+        session_path, session_name, agent_id, project_id, project_folder_id, trigger_origin,
         occurred_at, recorded_at, input_tokens, output_tokens, total_tokens,
         cache_creation_input_tokens, cache_read_input_tokens, reasoning_tokens,
         request_count, estimated_cost_usd, usage_schema, usage_details_json,
@@ -249,7 +249,7 @@ export class PgUsageRepository {
         execution_channel, meter_subject_type,
         meter_subject_id, provider_id, provider_type, provider_name_snapshot, vendor,
         model, task, run_id, session_id, external_session_id, session_path,
-        session_name, agent_id, project_id, workspace_id, occurred_at, recorded_at,
+        session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
         cache_read_input_tokens, reasoning_tokens, request_count, estimated_cost_usd,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
@@ -311,7 +311,7 @@ export class PgUsageRepository {
         event.session_name,
         event.agent_id,
         event.project_id,
-        event.workspace_id,
+        event.project_folder_id,
         event.trigger_origin,
         event.occurred_at,
         event.recorded_at,
@@ -508,7 +508,7 @@ export class PgUsageRepository {
         execution_channel, meter_subject_type,
         meter_subject_id, provider_id, provider_type, provider_name_snapshot, vendor,
         model, task, run_id, session_id, external_session_id, session_path,
-        session_name, agent_id, project_id, workspace_id, occurred_at, recorded_at,
+        session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
         cache_read_input_tokens, reasoning_tokens, request_count, estimated_cost_usd,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
@@ -728,7 +728,7 @@ export class PgUsageRepository {
         execution_channel, meter_subject_type,
         meter_subject_id, provider_id, provider_type, provider_name_snapshot, vendor,
         model, task, run_id, session_id, external_session_id, session_path,
-        session_name, agent_id, project_id, workspace_id, occurred_at, recorded_at,
+        session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
         cache_read_input_tokens, reasoning_tokens, request_count, estimated_cost_usd,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
@@ -1246,7 +1246,7 @@ export function eventToOut(row: UsageEventRecord): Record<string, unknown> {
     session_name: row.session_name,
     agent_id: row.agent_id,
     project_id: row.project_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     occurred_at: dateIso(row.occurred_at),
     recorded_at: dateIso(row.recorded_at),
     usage_details: row.usage_details_json ?? {},

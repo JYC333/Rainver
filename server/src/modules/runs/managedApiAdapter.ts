@@ -2,12 +2,14 @@ import type {
   CanonicalMessage,
   CanonicalUsage,
   RunAdapterResultEnvelope,
+  RunInputEnvelope,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { executeRuntimeHost, type RuntimeHostLogger } from "../runtimeHost";
 import { contractRecord } from "./contractSnapshot";
+import { assembleRunInputEnvelope } from "./runInputEnvelope";
 import type { RunRecord } from "./repository";
 import type { ManagedApiRetrievalToolDeps } from "./managedRetrievalTools";
 import type { AgentDelegationToolDeps } from "./managedAgentDelegationTools";
@@ -17,6 +19,7 @@ import {
   redactSecretPatterns,
   sanitizeEvidenceJson,
 } from "./evidenceRedaction";
+import { normalizeManagedModelEvents } from "./runtimeEventNormalization";
 
 export type ManagedApiAdapterType = "model_api" | "ts_agent_host";
 
@@ -32,12 +35,14 @@ export type RuntimeHostExecutor = (
 
 export interface ManagedApiNoToolAdapterInput {
   run: RunRecord;
+  run_input?: RunInputEnvelope;
   model?: string | null;
   system_prompt?: string | null;
   prompt?: string | null;
   context_text?: string | null;
   max_tokens?: number | null;
   context_snapshot_id?: string | null;
+  text_delta_sink?: (delta: string) => void;
 }
 
 export interface ManagedApiNoToolAdapterDeps extends ManagedApiRetrievalToolDeps {
@@ -77,7 +82,13 @@ export async function executeManagedApiNoToolAdapter(
 
   const request = runtimeHostRequest(input, adapterType, modelProviderId);
   const execute = deps.executeRuntimeHost
-    ?? ((runtimeConfig, runtimeRequest) => executeRuntimeHost(runtimeConfig, runtimeRequest, deps.runtimeHostLogger));
+    ?? ((runtimeConfig, runtimeRequest) =>
+      executeRuntimeHost(
+        runtimeConfig,
+        runtimeRequest,
+        deps.runtimeHostLogger,
+        { onTextDelta: input.text_delta_sink },
+      ));
   const response = await new AgentToolGateway(config).execute(input.run, request, execute, deps);
   return envelopeFromRuntimeHost(input, adapterType, response, startedAt);
 }
@@ -106,9 +117,19 @@ function runtimeHostRequest(
   const chatContextPreamble = typeof override.chat_context_preamble === "string"
     ? override.chat_context_preamble
     : null;
+  const dynamicConversationContext = messages
+    ? [
+        input.context_text ?? input.run.instruction ?? null,
+        chatContextPreamble,
+      ].filter((part): part is string => Boolean(part?.trim())).join("\n\n")
+    : null;
   const contract = contractRecord(input.run.contract_snapshot_json);
   const outputFormat = structuredOutputFormat(contract.structured_output_json);
   return {
+    run_input: input.run_input ?? assembleRunInputEnvelope(input.run, {
+      prompt: input.prompt,
+      contextSnapshotId: input.context_snapshot_id,
+    }),
     run_id: input.run.id,
     space_id: input.run.space_id,
     model_provider_id: modelProviderId,
@@ -119,11 +140,13 @@ function runtimeHostRequest(
     system_prompt: composeSystemContext(
       groupedAgentIdentity,
       systemPrompt,
-      input.context_text ?? input.run.instruction ?? null,
-      chatContextPreamble,
+      messages ? null : input.context_text ?? input.run.instruction ?? null,
+      messages ? null : chatContextPreamble,
     ),
     prompt: input.prompt ?? input.run.prompt ?? "",
-    ...(messages ? { messages } : {}),
+    ...(messages
+      ? { messages: appendDynamicConversationContext(messages, dynamicConversationContext) }
+      : {}),
     mode: input.run.mode,
     instruction: input.run.instruction,
     session_id: input.run.session_id,
@@ -132,7 +155,7 @@ function runtimeHostRequest(
     run_group_id: input.run.run_group_id ?? null,
     agent_id: input.run.agent_id,
     project_id: input.run.project_id,
-    workspace_id: input.run.workspace_id,
+    project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
     capability_id: null,
     context_snapshot_id: input.context_snapshot_id ?? null,
@@ -140,7 +163,35 @@ function runtimeHostRequest(
     ...(outputFormat ? { output_format: outputFormat } : {}),
     tool_mode: "disabled",
     tool_bindings: [],
+    cache_strategy:
+      recordOrEmpty(recordOrEmpty(input.run.model_override_json).chat_turn).schema_version === "chat_turn.v1"
+        ? "conversation"
+        : undefined,
   };
+}
+
+function appendDynamicConversationContext(
+  messages: CanonicalMessage[],
+  context: string | null,
+): CanonicalMessage[] {
+  if (!context) return messages;
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) {
+    return [...messages, { role: "user", content: context }];
+  }
+  return messages.map((message, index) =>
+    index === lastUserIndex
+      ? {
+          ...message,
+          content: `${message.content ?? ""}\n\n[Retrieved context for this turn]\n${context}`,
+        }
+      : message);
 }
 
 function structuredOutputFormat(value: unknown): RuntimeHostExecuteRequest["output_format"] {
@@ -247,6 +298,10 @@ function envelopeFromRuntimeHost(
     completed_at: response.completed_at ?? new Date().toISOString(),
     usage: normalizeUsage(response.usage),
     metadata_json: metadata as RunAdapterResultEnvelope["metadata_json"],
+    runtime_events: normalizeManagedModelEvents(
+      response.events,
+      response.completed_at ?? new Date().toISOString(),
+    ),
   };
 }
 

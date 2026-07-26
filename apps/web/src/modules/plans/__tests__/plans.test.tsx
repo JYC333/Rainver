@@ -14,7 +14,7 @@ describe('PlansPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     plansApiMock.list.mockResolvedValue([{
-      id: 'plan-1', space_id: 'space-1', workspace_id: null, project_id: null, source_task_id: 'task-1', root_run_id: null,
+      id: 'plan-1', space_id: 'space-1', project_folder_id: null, project_id: null, source_task_id: 'task-1', root_run_id: null,
       name: 'Plan Alpha', description: 'Agent generated', status: 'active', created_by_user_id: 'user-1', created_by_agent_id: 'agent-1',
       created_at: '2026-07-12T00:00:00Z', updated_at: '2026-07-12T00:00:00Z',
       current_version: { id: 'version-1', version: 1, status: 'approved', node_count: 2, depth: 2, pending_node_count: 1 },

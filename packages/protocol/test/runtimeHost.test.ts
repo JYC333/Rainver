@@ -8,6 +8,7 @@ import {
 describe("runtime host contract", () => {
   it("parses an explicit provider-backed host execution request", () => {
     const value = RuntimeHostExecuteRequestSchema.parse({
+      run_input: runInput(),
       run_id: "run-1",
       space_id: "space-1",
       model_provider_id: "provider-1",
@@ -36,6 +37,7 @@ describe("runtime host contract", () => {
 
   it("allows authorized tool binding metadata without secret material", () => {
     const value = RuntimeHostExecuteRequestSchema.parse({
+      run_input: runInput(),
       run_id: "run-1",
       space_id: "space-1",
       model_provider_id: "provider-1",
@@ -97,3 +99,31 @@ describe("runtime host contract", () => {
     ).toBe(false);
   });
 });
+
+function runInput() {
+  return {
+    schema_version: "run_input.v1",
+    run_id: "run-1",
+    space_id: "space-1",
+    instruction: null,
+    task_goal: "Use the managed runtime",
+    messages: [],
+    inputs: { direct: null, workflow: null, upstream: null },
+    context: { context_snapshot_id: null, context_package_ref: null },
+    attachments: [],
+    project_folder_access: null,
+    output_contract: {
+      schema_version: "run_output_contract.v1",
+      structured_output: null,
+      required_outputs: [],
+    },
+    tool_grants: [],
+    execution: {
+      shape: "conversational",
+      risk_level: "low",
+      required_sandbox_level: "none",
+      policy_ref: "run_permission_snapshot:run-1",
+      budget_ref: "run_contract:run-1",
+    },
+  };
+}

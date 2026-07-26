@@ -13,6 +13,13 @@ export const projects = pgTable("projects", {
 	status: varchar({ length: 32 }).notNull(),
 	currentFocus: text("current_focus"),
 	settingsJson: jsonb("settings_json"),
+	// Immutable creation-time provenance only: which Project Template produced
+	// this Project and when. Runtime behavior (Area reachability, capability
+	// exposure) must never branch on this field.
+	templateKey: varchar("template_key", { length: 64 }).default('blank').notNull(),
+	templateAppliedJson: jsonb("template_applied_json"),
+	primaryMode: varchar("primary_mode", { length: 32 }).default('inquiry').notNull(),
+	activeBriefVersionId: varchar("active_brief_version_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	archivedAt: timestamp("archived_at", { withTimezone: true, mode: 'string' }),
@@ -32,8 +39,119 @@ export const projects = pgTable("projects", {
 			foreignColumns: [spaces.id],
 			name: "projects_space_id_fkey"
 		}),
+	foreignKey({
+			columns: [table.activeBriefVersionId, table.id, table.spaceId],
+			foreignColumns: [projectBriefVersions.id, projectBriefVersions.projectId, projectBriefVersions.spaceId],
+			name: "projects_active_brief_version_fkey"
+		}),
 	unique("uq_projects_space_id_id").on(table.id, table.spaceId),
 	check("ck_projects_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
+	check("ck_projects_primary_mode", sql`(primary_mode)::text = ANY (ARRAY[('inquiry'::character varying)::text, ('decision'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])`),
+]);
+
+// Versioned Project Brief. Material changes create a new version; the active
+// pointer lives on `projects.active_brief_version_id`. See ADR 0011 and the
+// current Projects architecture document.
+export const projectBriefVersions = pgTable("project_brief_versions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	version: varchar({ length: 16 }).notNull(),
+	goal: text(),
+	scopeIncluded: text("scope_included"),
+	scopeExcluded: text("scope_excluded"),
+	successDefinition: text("success_definition"),
+	constraints: text(),
+	assumptions: text(),
+	createdByUserId: varchar("created_by_user_id", { length: 36 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_project_brief_versions_project_id").using("btree", table.projectId.asc().nullsLast()),
+	index("ix_project_brief_versions_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	uniqueIndex("uq_project_brief_versions_project_version").using("btree", table.projectId.asc().nullsLast(), table.version.asc().nullsLast()),
+	unique("uq_project_brief_versions_id_project_space").on(table.id, table.projectId, table.spaceId),
+	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "project_brief_versions_space_project_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "project_brief_versions_space_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.createdByUserId],
+			foreignColumns: [users.id],
+			name: "project_brief_versions_created_by_user_id_fkey"
+		}).onDelete("set null"),
+]);
+
+// Append-only. A Mode transition is a focus/projection change only; it never
+// migrates or copies business rows from one Project Area to another.
+export const projectModeTransitions = pgTable("project_mode_transitions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	fromMode: varchar("from_mode", { length: 32 }),
+	toMode: varchar("to_mode", { length: 32 }).notNull(),
+	reason: text(),
+	triggerRef: varchar("trigger_ref", { length: 128 }),
+	confirmedByUserId: varchar("confirmed_by_user_id", { length: 36 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_project_mode_transitions_project_id").using("btree", table.projectId.asc().nullsLast(), table.createdAt.desc()),
+	index("ix_project_mode_transitions_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "project_mode_transitions_space_project_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "project_mode_transitions_space_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.confirmedByUserId],
+			foreignColumns: [users.id],
+			name: "project_mode_transitions_confirmed_by_user_id_fkey"
+		}).onDelete("set null"),
+	check("ck_project_mode_transitions_to_mode", sql`(to_mode)::text = ANY (ARRAY[('inquiry'::character varying)::text, ('decision'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])`),
+]);
+
+// Per-user UI state over aggregated ProjectAttentionItem rows (which are
+// computed on demand from registered domain adapters, not stored). See plan
+// section 8.
+export const projectAttentionUserStates = pgTable("project_attention_user_states", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	userId: varchar("user_id", { length: 36 }).notNull(),
+	sourceType: varchar("source_type", { length: 64 }).notNull(),
+	sourceId: varchar("source_id", { length: 36 }).notNull(),
+	seenAt: timestamp("seen_at", { withTimezone: true, mode: 'string' }),
+	snoozedUntil: timestamp("snoozed_until", { withTimezone: true, mode: 'string' }),
+	pinnedAt: timestamp("pinned_at", { withTimezone: true, mode: 'string' }),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_project_attention_user_states_scope").using("btree", table.userId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.sourceType.asc().nullsLast(), table.sourceId.asc().nullsLast()),
+	index("ix_project_attention_user_states_project_id").using("btree", table.projectId.asc().nullsLast()),
+	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "project_attention_user_states_space_project_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "project_attention_user_states_space_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [users.id],
+			name: "project_attention_user_states_user_id_fkey"
+		}).onDelete("cascade"),
 ]);
 
 export const projectPublicSummaries = pgTable("project_public_summaries", {

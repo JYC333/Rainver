@@ -6,6 +6,10 @@ import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContex
 import { resolveIdentity } from "../routeUtils/common";
 import { PgRunRepository, type RunEventPage } from "../runs/repository";
 import { runEventToOut } from "../runs/runReadModel";
+import {
+  CHAT_TEXT_DELTA_TYPE,
+  subscribeChatTextDeltas,
+} from "./conversationDeltaBus";
 
 /** Runtime string kept in lockstep with `EventType.RunEventAppended`. */
 export const RUN_EVENT_APPENDED_TYPE = "run.event_appended";
@@ -30,7 +34,7 @@ interface RunEventDTO {
   summary?: string | null;
   error_code?: string | null;
   error_message?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   artifact_id?: string | null;
   proposal_id?: string | null;
   data_exposure_level?: string | null;
@@ -213,43 +217,49 @@ export async function streamRunEvents(
   if (!pageResult.ok) return sendInitialFailure(reply, requestId, pageResult);
 
   const raw = startSse(reply, requestId);
+  const unsubscribeDeltas = subscribeChatTextDeltas(runId, (event) => {
+    if (!closed && !raw.destroyed) writeSse(raw, CHAT_TEXT_DELTA_TYPE, event);
+  });
 
-  while (!closed) {
-    const emitted = pageResult.page.items.length;
-    for (const event of pageResult.page.items) {
-      writeSse(
-        raw,
-        RUN_EVENT_APPENDED_TYPE,
-        toEnvelope(event),
-        String(event.event_index),
+  try {
+    while (!closed) {
+      const emitted = pageResult.page.items.length;
+      for (const event of pageResult.page.items) {
+        writeSse(
+          raw,
+          RUN_EVENT_APPENDED_TYPE,
+          toEnvelope(event),
+          String(event.event_index),
+        );
+        offset = event.event_index + 1;
+      }
+
+      if (!options.tail && (offset >= pageResult.page.total || emitted === 0)) break;
+
+      const caughtUp = offset >= pageResult.page.total || emitted === 0;
+      if (caughtUp) await sleep(config.runEventStreamPollIntervalMs);
+      if (closed) break;
+
+      pageResult = await fetchRunEventsPage(
+        repository,
+        runId,
+        identity.spaceId,
+        offset,
+        config.runEventStreamPageLimit,
+        options,
       );
-      offset = event.event_index + 1;
+      if (!pageResult.ok) {
+        writeSse(raw, STREAM_ERROR_EVENT, {
+          error: pageResult.error,
+          message: pageResult.message,
+        });
+        break;
+      }
     }
-
-    if (!options.tail && (offset >= pageResult.page.total || emitted === 0)) break;
-
-    const caughtUp = offset >= pageResult.page.total || emitted === 0;
-    if (caughtUp) await sleep(config.runEventStreamPollIntervalMs);
-    if (closed) break;
-
-    pageResult = await fetchRunEventsPage(
-      repository,
-      runId,
-      identity.spaceId,
-      offset,
-      config.runEventStreamPageLimit,
-      options,
-    );
-    if (!pageResult.ok) {
-      writeSse(raw, STREAM_ERROR_EVENT, {
-        error: pageResult.error,
-        message: pageResult.message,
-      });
-      break;
-    }
+  } finally {
+    unsubscribeDeltas();
+    raw.end();
   }
-
-  raw.end();
 }
 
 function pageToDto(page: RunEventPage): RunEventsPage {

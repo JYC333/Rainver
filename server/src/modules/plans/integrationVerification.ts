@@ -1,4 +1,5 @@
 import type { Queryable } from "../routeUtils/common";
+import { runOutputResult } from "../runs/orchestrationResults";
 
 export interface PlanIntegrationVerification {
   status: "passed" | "failed";
@@ -172,7 +173,7 @@ async function validateRows(client: Queryable, spaceId: string, rows: PlanNodeOu
 
 async function validateNodeOutput(client: Queryable, spaceId: string, row: PlanNodeOutputRow): Promise<OutputValidation> {
   if (!row.run_id) return { valid: false, output_ref_count: 0, reasons: ["child_run_missing"] };
-  const output = recordValue(row.output_json);
+  const output = runOutputResult(row.output_json);
   const materialization = arrayValue(output.materialization);
   const reasons: string[] = arrayValue(output.materialization_errors).length > 0 ? ["materialization_errors_present"] : [];
   const artifactRefs = materialization.filter((item) => {

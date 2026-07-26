@@ -4,7 +4,7 @@ import { agents } from "./agents";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { artifacts } from "./artifacts";
 import { proposals } from "./proposals";
 import { projects } from "./projects";
@@ -24,7 +24,7 @@ export const memoryEntries = pgTable("memory_entries", {
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	sensitivityLevel: varchar("sensitivity_level", { length: 32 }).default('normal').notNull(),
 	lastConfirmedAt: timestamp("last_confirmed_at", { withTimezone: true, mode: 'string' }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	agentId: varchar("agent_id", { length: 36 }),
 	namespace: varchar({ length: 255 }),
 	title: varchar({ length: 512 }),
@@ -65,7 +65,7 @@ export const memoryEntries = pgTable("memory_entries", {
 	index("ix_memory_entries_subject_user_id").using("btree", table.subjectUserId.asc().nullsLast()),
 	index("ix_memory_entries_supersedes_memory_id").using("btree", table.supersedesMemoryId.asc().nullsLast()),
 	index("ix_memory_entries_visibility").using("btree", table.visibility.asc().nullsLast()),
-	index("ix_memory_entries_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_memory_entries_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.projectId],
 			foreignColumns: [projects.id],
@@ -112,9 +112,9 @@ export const memoryEntries = pgTable("memory_entries", {
 			name: "memory_entries_subject_user_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "memory_entries_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "memory_entries_project_folder_id_fkey"
 		}),
 	check("ck_memory_entries_memory_layer", sql`(memory_layer IS NULL) OR ((memory_layer)::text = ANY (ARRAY[('episodic'::character varying)::text, ('semantic'::character varying)::text]))`),
 	check("ck_memory_entries_sensitivity_level", sql`(sensitivity_level)::text = ANY (ARRAY[('normal'::character varying)::text, ('sensitive'::character varying)::text, ('restricted'::character varying)::text, ('highly_restricted'::character varying)::text])`),

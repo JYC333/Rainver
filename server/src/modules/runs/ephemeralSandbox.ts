@@ -3,7 +3,7 @@
  * for a file-access CLI adapter that has no persistent workspace bound. This is
  * the first rung of the working-directory scope ladder (none -> ephemeral ->
  * session -> project -> worktree); `worktree` is now owned by the workspace
- * manager in `modules/workspaces/sandbox.ts`.
+ * manager in `modules/projectFolders/sandbox.ts`.
  *
  * The directory lives under the shared sandbox root (same root as worktrees),
  * is isolated per run, and is removed on every terminal path (success, failure,
@@ -14,7 +14,7 @@
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
-export type WorkingDirScope = "none" | "ephemeral" | "worktree";
+export type WorkingDirScope = "none" | "ephemeral" | "read_only" | "worktree";
 
 /** Cleanup kind marking a server-owned ephemeral dir. */
 export const EPHEMERAL_CLEANUP_KIND = "ephemeral_ts";
@@ -24,6 +24,7 @@ export function workingDirScopeForLevel(
   level: string | null | undefined,
 ): WorkingDirScope {
   if (level === "ephemeral") return "ephemeral";
+  if (level === "read_only") return "read_only";
   if (level === "worktree" || level === "one_shot_docker") return "worktree";
   return "none";
 }

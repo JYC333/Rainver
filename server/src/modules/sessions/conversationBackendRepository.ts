@@ -1,0 +1,403 @@
+import { randomUUID } from "node:crypto";
+import type {
+  ConversationBackendBinding,
+  ConversationBackendOption,
+} from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+import type { Queryable } from "../routeUtils/common";
+
+interface BackendRow {
+  runtime_profile_id: string;
+  name: string;
+  adapter_type: string;
+  model_name: string | null;
+  model_provider_id: string | null;
+  provider_enabled: boolean | null;
+  provider_credential_id: string | null;
+  provider_has_healthy_credential: boolean;
+  is_default: boolean;
+}
+
+interface CredentialRow {
+  id: string;
+  runtime: string;
+  name: string;
+  is_default: boolean;
+}
+
+interface CliCredentialAvailability {
+  availableProfiles(
+    spaceId: string,
+    userId: string,
+  ): Promise<Record<string, unknown>[]>;
+}
+
+interface BindingRow {
+  binding_id: string;
+  runtime_profile_id: string;
+  credential_profile_id: string | null;
+  runtime_state_key: string;
+  runtime_session_id: string | null;
+  runtime_context_fingerprint: string | null;
+  runtime_message_cursor_id?: string | null;
+  model_name: string | null;
+  model_provider_id: string | null;
+  runtime_config_json: Record<string, unknown>;
+  runtime_policy_json: Record<string, unknown>;
+}
+
+export interface ResolvedConversationBackend extends ConversationBackendBinding {
+  binding_id: string;
+  runtime_state_key: string;
+  runtime_session_id: string | null;
+  runtime_context_fingerprint: string | null;
+  runtime_message_cursor_id?: string | null;
+  model_name: string | null;
+  model_provider_id: string | null;
+  runtime_config_json: Record<string, unknown>;
+  runtime_policy_json: Record<string, unknown>;
+  retired_runtime_state_key: string | null;
+}
+
+export class ConversationBackendError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = "ConversationBackendError";
+  }
+}
+
+export class PgConversationBackendRepository {
+  constructor(
+    private readonly db: Queryable,
+    private readonly cliCredentials: CliCredentialAvailability,
+  ) {}
+
+  async listOptions(
+    spaceId: string,
+    userId: string,
+    agentId: string,
+  ): Promise<ConversationBackendOption[]> {
+    const [profiles, credentials, availableCredentials] = await Promise.all([
+      this.db.query<BackendRow>(
+        `SELECT profile.id AS runtime_profile_id, profile.name,
+                profile.adapter_type, profile.model_name,
+                profile.model_provider_id,
+                (provider.enabled AND provider_grant.enabled) AS provider_enabled,
+                provider.credential_id AS provider_credential_id,
+                EXISTS (
+                  SELECT 1
+                    FROM model_provider_credentials credential
+                   WHERE credential.provider_id = profile.model_provider_id
+                     AND credential.enabled = true
+                     AND credential.healthy = true
+                     AND (
+                       credential.cooldown_until IS NULL
+                       OR credential.cooldown_until <= now()
+                     )
+                ) AS provider_has_healthy_credential,
+                profile.is_default
+           FROM agent_runtime_profiles profile
+           LEFT JOIN model_providers provider
+             ON provider.id = profile.model_provider_id
+           LEFT JOIN model_provider_space_grants provider_grant
+             ON provider_grant.provider_id = profile.model_provider_id
+            AND provider_grant.space_id = profile.space_id
+          WHERE profile.space_id = $1
+            AND profile.agent_id = $2
+            AND profile.enabled = true
+          ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC`,
+        [spaceId, agentId],
+      ),
+      this.db.query<CredentialRow>(
+        `SELECT profile.id, profile.runtime, profile.name, credential_grant.is_default
+           FROM cli_credential_space_grants credential_grant
+           JOIN cli_credential_profiles profile
+             ON profile.id = credential_grant.profile_id
+            AND profile.owner_user_id = $2
+          WHERE credential_grant.space_id = $1
+            AND credential_grant.owner_user_id = $2
+            AND credential_grant.enabled = true
+          ORDER BY credential_grant.is_default DESC, profile.name ASC, profile.id ASC`,
+        [spaceId, userId],
+      ),
+      this.cliCredentials.availableProfiles(spaceId, userId),
+    ]);
+    const loggedInCredentialIds = new Set(
+      availableCredentials
+        .filter((profile) => profile.logged_in === true)
+        .map((profile) => profile.id)
+        .filter((id): id is string => typeof id === "string"),
+    );
+
+    return profiles.rows.flatMap((profile) => {
+      const spec = getRuntimeAdapterSpec(profile.adapter_type);
+      if (!spec || spec.implementation_status !== "implemented") return [];
+      const requiresCliCredential = isLocalCliRuntimeAdapter(profile.adapter_type);
+      const providerAvailable =
+        profile.model_provider_id !== null &&
+        profile.provider_enabled === true &&
+        Boolean(profile.provider_credential_id || profile.provider_has_healthy_credential);
+      if (
+        spec.credentials.credential_mode === "model_provider_api_key" &&
+        !providerAvailable
+      ) {
+        return [];
+      }
+      if (
+        spec.credentials.credential_mode === "cli_profile_or_model_provider" &&
+        !requiresCliCredential &&
+        !providerAvailable
+      ) {
+        return [];
+      }
+      const credentialProfiles = requiresCliCredential
+        ? credentials.rows
+            .filter((credential) =>
+              credential.runtime === spec.credentials.credential_runtime_name &&
+              loggedInCredentialIds.has(credential.id))
+            .map((credential) => ({
+              id: credential.id,
+              name: credential.name,
+              is_default: credential.is_default,
+            }))
+        : [];
+      if (requiresCliCredential && credentialProfiles.length === 0) return [];
+      return [{
+        runtime_profile_id: profile.runtime_profile_id,
+        name: profile.name,
+        adapter_type: profile.adapter_type,
+        model_name: profile.model_name,
+        requires_cli_credential: requiresCliCredential,
+        credential_profiles: credentialProfiles,
+      }];
+    });
+  }
+
+  async resolveBinding(input: {
+    space_id: string;
+    user_id: string;
+    session_id: string;
+    agent_id: string;
+    requested?: {
+      runtime_profile_id: string;
+      credential_profile_id?: string | null;
+    } | null;
+  }): Promise<ResolvedConversationBackend> {
+    const options = await this.listOptions(
+      input.space_id,
+      input.user_id,
+      input.agent_id,
+    );
+    const existing = await this.findResolvedBinding(
+      input.space_id,
+      input.user_id,
+      input.session_id,
+      input.agent_id,
+    );
+    const stored = input.requested ? null : existing;
+    const runtimeProfileId =
+      input.requested?.runtime_profile_id ??
+      stored?.runtime_profile_id ??
+      options[0]?.runtime_profile_id;
+    const option = options.find(
+      (candidate) => candidate.runtime_profile_id === runtimeProfileId,
+    );
+    if (!option) {
+      throw new ConversationBackendError(
+        stored
+          ? "The stored conversation backend is no longer eligible; select a new backend"
+          : "No eligible conversation backend is available for this user",
+        409,
+      );
+    }
+    if (!option.requires_cli_credential && input.requested?.credential_profile_id) {
+      throw new ConversationBackendError(
+        "credential_profile_id is valid only for a CLI conversation backend",
+        422,
+      );
+    }
+
+    const requestedCredentialId =
+      input.requested?.credential_profile_id ??
+      stored?.credential_profile_id ??
+      null;
+    const selectedCredential = option.credential_profiles.find(
+      (credential) => credential.id === requestedCredentialId,
+    );
+    if (stored?.credential_profile_id && !selectedCredential) {
+      throw new ConversationBackendError(
+        "The stored CLI credential is no longer eligible; select a new backend",
+        409,
+      );
+    }
+    const credentialProfileId = option.requires_cli_credential
+      ? (
+          selectedCredential ??
+          option.credential_profiles.find((credential) => credential.is_default) ??
+          option.credential_profiles[0]
+        )?.id ?? null
+      : null;
+    if (option.requires_cli_credential && !credentialProfileId) {
+      throw new ConversationBackendError(
+        `Conversation backend '${option.name}' requires one of the user's enabled CLI credential profiles`,
+        409,
+      );
+    }
+    if (
+      input.requested?.credential_profile_id &&
+      credentialProfileId !== input.requested.credential_profile_id
+    ) {
+      throw new ConversationBackendError(
+        "The selected CLI credential is not owned by this user, enabled in this space, or compatible with the backend",
+        403,
+      );
+    }
+
+    const binding: ConversationBackendBinding = {
+      runtime_profile_id: option.runtime_profile_id,
+      adapter_type: option.adapter_type,
+      credential_profile_id: credentialProfileId,
+    };
+    return this.upsertBinding(input, binding, existing?.runtime_state_key ?? null);
+  }
+
+  async findBinding(
+    spaceId: string,
+    userId: string,
+    sessionId: string,
+    agentId: string,
+  ): Promise<ConversationBackendBinding | null> {
+    const binding = await this.findResolvedBinding(spaceId, userId, sessionId, agentId);
+    return binding
+      ? {
+          runtime_profile_id: binding.runtime_profile_id,
+          adapter_type: binding.adapter_type,
+          credential_profile_id: binding.credential_profile_id,
+        }
+      : null;
+  }
+
+  private async findResolvedBinding(
+    spaceId: string,
+    userId: string,
+    sessionId: string,
+    agentId: string,
+  ): Promise<ResolvedConversationBackend | null> {
+    const result = await this.db.query<BindingRow & { adapter_type: string }>(
+      `SELECT binding.id AS binding_id,
+              binding.runtime_profile_id, binding.credential_profile_id,
+              binding.runtime_state_key, binding.runtime_session_id,
+              binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
+              profile.adapter_type, profile.model_name,
+              profile.model_provider_id, profile.runtime_config_json,
+              profile.runtime_policy_json
+         FROM session_conversation_backends binding
+         JOIN sessions session_row
+           ON session_row.id = binding.session_id
+          AND session_row.space_id = binding.space_id
+         JOIN agent_runtime_profiles profile
+           ON profile.id = binding.runtime_profile_id
+          AND profile.space_id = binding.space_id
+          AND profile.agent_id = binding.agent_id
+        WHERE binding.space_id = $1
+          AND binding.user_id = $2
+          AND binding.session_id = $3
+          AND binding.agent_id = $4
+        LIMIT 1`,
+      [spaceId, userId, sessionId, agentId],
+    );
+    const row = result.rows[0];
+    return row ? { ...row, retired_runtime_state_key: null } : null;
+  }
+
+  private async upsertBinding(
+    input: {
+      space_id: string;
+      user_id: string;
+      session_id: string;
+      agent_id: string;
+    },
+    binding: ConversationBackendBinding,
+    previousStateKey: string | null,
+  ): Promise<ResolvedConversationBackend> {
+    const now = new Date().toISOString();
+    const runtimeStateKey = randomUUID();
+    const result = await this.db.query<{ binding_id: string }>(
+      `INSERT INTO session_conversation_backends (
+          id, space_id, session_id, user_id, agent_id, runtime_profile_id,
+          credential_profile_id, runtime_state_key, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+       ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_user_agent
+       DO UPDATE SET
+         runtime_profile_id = EXCLUDED.runtime_profile_id,
+         credential_profile_id = EXCLUDED.credential_profile_id,
+         runtime_state_key = CASE
+           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+            AND session_conversation_backends.credential_profile_id
+                IS NOT DISTINCT FROM EXCLUDED.credential_profile_id
+           THEN session_conversation_backends.runtime_state_key
+           ELSE EXCLUDED.runtime_state_key
+         END,
+         runtime_session_id = CASE
+           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+            AND session_conversation_backends.credential_profile_id
+                IS NOT DISTINCT FROM EXCLUDED.credential_profile_id
+           THEN session_conversation_backends.runtime_session_id
+           ELSE NULL
+         END,
+         runtime_context_fingerprint = CASE
+           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+            AND session_conversation_backends.credential_profile_id
+                IS NOT DISTINCT FROM EXCLUDED.credential_profile_id
+           THEN session_conversation_backends.runtime_context_fingerprint
+           ELSE NULL
+         END,
+         runtime_message_cursor_id = CASE
+           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+            AND session_conversation_backends.credential_profile_id
+                IS NOT DISTINCT FROM EXCLUDED.credential_profile_id
+           THEN session_conversation_backends.runtime_message_cursor_id
+           ELSE NULL
+         END,
+         runtime_session_updated_at = CASE
+           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+            AND session_conversation_backends.credential_profile_id
+                IS NOT DISTINCT FROM EXCLUDED.credential_profile_id
+           THEN session_conversation_backends.runtime_session_updated_at
+           ELSE NULL
+         END,
+         updated_at = EXCLUDED.updated_at
+       RETURNING id AS binding_id`,
+      [
+        randomUUID(),
+        input.space_id,
+        input.session_id,
+        input.user_id,
+        input.agent_id,
+        binding.runtime_profile_id,
+        binding.credential_profile_id,
+        runtimeStateKey,
+        now,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("conversation backend binding was not persisted");
+    const resolved = await this.findResolvedBinding(
+      input.space_id,
+      input.user_id,
+      input.session_id,
+      input.agent_id,
+    );
+    if (!resolved) throw new Error("conversation backend binding was not found after persistence");
+    return {
+      ...resolved,
+      retired_runtime_state_key:
+        previousStateKey && previousStateKey !== resolved.runtime_state_key
+          ? previousStateKey
+          : null,
+    };
+  }
+}

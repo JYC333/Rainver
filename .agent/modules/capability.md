@@ -58,25 +58,14 @@ pages consume `/api/v1/capability-definitions`; built-in capability definitions
 come from the server registry module. Historical catalog YAML manifests may
 exist for diagnostics or development but do not enter the product path.
 
-The legacy catalog registry loads two sources when used internally:
+The legacy catalog registry loads one source when used internally:
 
 - `builtin`: diagnostic/example capabilities bundled under `catalog/capabilities/`.
-- `external_workspace`: workflow capabilities stored in a local registered Workspace.
 
-External capability roots are configured on a workspace registered as a capability library:
-
-```json
-{
-  "workspace_type": "capability_library",
-  "metadata_json": {
-    "capability_roots": ["capabilities"]
-  }
-}
-```
-
-`workspace_type` is the real `Workspace.workspace_type` column (not stored in `metadata_json`). `capability_roots` lives in `metadata_json` only. The registry scans only workspaces in the current space with `workspace_type="capability_library"`. It does not scan ordinary workspaces, GitHub URLs, remote URLs, or clone repositories.
-
-Each `capability_roots` entry must be a **local relative path**, must not contain `..`, and must resolve inside the workspace root through `workspace_absolute_root` and `PathPolicy`. The registry scans only direct child directories containing `capability.yaml`.
+The capability package registry does not infer package identity from Project
+Folder metadata. Package identity comes from the explicit package source and
+reviewed import record; no current code path scans Project Folders for
+capability manifests.
 
 Builtin capabilities follow their manifest `enabled` value. External capabilities default to disabled when discovered. Enable/disable for external capabilities is persisted outside manifests in `$AGENT_SPACE_HOME/config/settings.yaml`:
 

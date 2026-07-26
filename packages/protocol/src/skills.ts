@@ -128,7 +128,7 @@ export type SkillPackageFile = z.infer<typeof SkillPackageFileSchema>;
 export const SkillLocalOverlayScopeSchema = z.enum([
   "space",
   "project",
-  "workspace",
+  "project_folder",
   "agent",
   "user",
 ]);

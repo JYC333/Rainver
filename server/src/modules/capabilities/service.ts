@@ -332,7 +332,7 @@ async function buildWorkflowRunDraft(input: {
       workflow_config_json: config,
       agent_id: agentId ?? null,
       runtime_profile_id: runtimeProfileId,
-      workspace_id: optionalString(request.workspace_id),
+      project_folder_id: optionalString(request.project_folder_id),
       session_id: optionalString(request.session_id),
       prompt,
       instruction: optionalString(request.instruction),

@@ -17,7 +17,7 @@ import { spaces } from "./spaces";
 import { users } from "./auth";
 import { agents } from "./agents";
 import { projects } from "./projects";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { tasks } from "./tasks";
 import { runs } from "./runs";
 import { evolvableAssetVersions } from "./evolvableAssets";
@@ -25,7 +25,7 @@ import { evolvableAssetVersions } from "./evolvableAssets";
 export const plans = pgTable("plans", {
   id: varchar({ length: 36 }).primaryKey().notNull(),
   spaceId: varchar("space_id", { length: 36 }).notNull(),
-  workspaceId: varchar("workspace_id", { length: 36 }),
+  projectFolderId: varchar("project_folder_id", { length: 36 }),
   projectId: varchar("project_id", { length: 36 }),
   sourceTaskId: varchar("source_task_id", { length: 36 }).notNull(),
   rootRunId: varchar("root_run_id", { length: 36 }),
@@ -45,7 +45,7 @@ export const plans = pgTable("plans", {
   unique("uq_plans_source_task_id").on(table.sourceTaskId),
   unique("uq_plans_id_space_id").on(table.id, table.spaceId),
   foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "plans_space_id_fkey" }),
-  foreignKey({ columns: [table.workspaceId, table.spaceId], foreignColumns: [workspaces.id, workspaces.spaceId], name: "plans_workspace_id_fkey" }),
+  foreignKey({ columns: [table.projectFolderId, table.spaceId], foreignColumns: [projectFolders.id, projectFolders.spaceId], name: "plans_project_folder_id_fkey" }),
   foreignKey({ columns: [table.projectId], foreignColumns: [projects.id], name: "plans_project_id_delete_fkey" }).onDelete("set null"),
   foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "plans_project_id_fkey" }),
   foreignKey({ columns: [table.sourceTaskId, table.spaceId], foreignColumns: [tasks.id, tasks.spaceId], name: "plans_source_task_space_fkey" }),
@@ -109,6 +109,7 @@ export const planNodes = pgTable("plan_nodes", {
   maxDurationSeconds: integer("max_duration_seconds"),
   policyJson: jsonb("policy_json"),
   verificationRecipeRefsJson: jsonb("verification_recipe_refs_json").default([]).notNull(),
+  budgetSourcesJson: jsonb("budget_sources_json").default([]).notNull(),
   metadataJson: jsonb("metadata_json").default({}).notNull(),
   blockedReason: text("blocked_reason"),
   contentHash: varchar("content_hash", { length: 128 }).notNull(),

@@ -766,13 +766,11 @@ export class ProjectResearchRepository {
         ...stringArray(progress.source_post_processing_rule_ids),
         optionalString(progress.source_post_processing_rule_id) ?? "",
       ]);
-      // A decided checkpoint's review must stay reproducible as of the
-      // decision, but a still-pending one is refreshed in place (same row,
-      // machine_result_json/updated_at rewritten on every reconcile tick) —
-      // anchoring on created_at would freeze classified/usage counts at
-      // whatever was true when the checkpoint first appeared, forever, no
-      // matter how many later reconciles or refreshes run.
-      const asOf = dateIso(checkpoint.decided_at) ?? dateIso(checkpoint.updated_at) ?? new Date().toISOString();
+      // A decided checkpoint's review stays reproducible as of the decision.
+      // A pending checkpoint must read through the present: classification
+      // may finish after the operation enters waiting_review, when no later
+      // reconcile tick will rewrite the checkpoint's updated_at.
+      const asOf = dateIso(checkpoint.decided_at) ?? new Date().toISOString();
       const [items, corpusSummary, decisionCoverage, usage] = await Promise.all([
         sourceItemIds.length
           ? this.db.query<ScreeningReviewItemRow>(
@@ -1050,7 +1048,8 @@ export class ProjectResearchRepository {
   /**
    * V1 checks: citation existence for cited papers, claim has evidence or
    * an explicit gap, evidence source is visible in the project corpus, and
-   * experiment-backed claims reference a project_experiment_provenance row.
+   * experiment-backed claims reference a real Experiment Definition
+   * (modules/experiments).
    */
   private async computeIntegrityReport(
     spaceId: string,
@@ -1137,18 +1136,18 @@ export class ProjectResearchRepository {
         }
       }
 
-      for (const experimentKey of plannedExperimentIds) {
-        const provenance = await this.db.query<{ id: string }>(
-          `SELECT id FROM project_experiment_provenance
-            WHERE space_id = $1 AND project_id = $2 AND experiment_key = $3 LIMIT 1`,
-          [spaceId, projectId, experimentKey],
+      for (const experimentDefinitionId of plannedExperimentIds) {
+        const definition = await this.db.query<{ id: string }>(
+          `SELECT id FROM experiment_definitions
+            WHERE space_id = $1 AND project_id = $2 AND id = $3 LIMIT 1`,
+          [spaceId, projectId, experimentDefinitionId],
         );
-        if (!provenance.rows[0]) {
+        if (!definition.rows[0]) {
           findings.push({
             severity: "high",
             claim_link_id: link.id,
             code: "experiment_provenance_not_found",
-            message: `Declared experiment '${experimentKey}' has no provenance record in this project`,
+            message: `Declared experiment '${experimentDefinitionId}' has no Experiment Definition in this project`,
           });
         }
       }

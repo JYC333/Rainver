@@ -1049,7 +1049,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           status: optionalString(q.status) ?? "active",
           visibility: optionalString(q.visibility),
           projectId: optionalString(q.project_id),
-          workspaceId: optionalString(q.workspace_id),
+          projectFolderId: optionalString(q.project_folder_id),
           q: optionalString(q.q),
           limit,
           offset,

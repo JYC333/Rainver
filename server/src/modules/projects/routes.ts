@@ -38,6 +38,9 @@ import { ProjectPublicSummaryGenerator } from "./publicSummaryGenerator";
 import { PgProjectRepository } from "./repository";
 import { ProjectSourceBindingService } from "./projectSourceBindingService";
 import { ProjectSourceProposalService } from "./projectSourceProposalService";
+import { ProjectKernelService } from "./kernelService";
+import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "./attentionService";
+import { ProjectOverviewService } from "./overviewService";
 import { enforceSources } from "../sources/enforceSources";
 import { ProjectOperationService } from "./projectOperationService";
 
@@ -656,39 +659,107 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get("/api/v1/projects/:projectId/workspaces", async (request, reply) => {
+  // Folder listing/creation/update/deletion all live in the projectFolders
+  // module under this same `/api/v1/projects/:projectId/folders` path.
+
+  registerBuiltInAttentionAdapters();
+  const kernel = () => ProjectKernelService.fromConfig(context.config);
+  const attention = () => ProjectAttentionService.fromConfig(context.config);
+  const overview = () => ProjectOverviewService.fromConfig(context.config);
+
+  app.get("/api/v1/projects/:projectId/brief-versions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await repository().listWorkspaces(identity, params(request).projectId ?? ""));
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await kernel().listBriefVersions(identity, projectId));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.post("/api/v1/projects/:projectId/workspaces", async (request, reply) => {
+  app.get("/api/v1/projects/:projectId/brief-versions/active", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(
-        await repository().linkWorkspace(identity, params(request).projectId ?? "", jsonBody(request)),
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await kernel().getActiveBriefVersion(identity, projectId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/brief-versions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.code(201).send(await kernel().createBriefVersion(identity, projectId, jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/mode-transitions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await kernel().listModeTransitions(identity, projectId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/mode-transitions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.code(201).send(await kernel().transitionMode(identity, projectId, jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/attention", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await attention().listAttentionItems(identity, projectId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.put("/api/v1/projects/:projectId/attention/:sourceType/:sourceId/state", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const sourceType = requiredString(p.sourceType, "source_type");
+      const sourceId = requiredString(p.sourceId, "source_id");
+      const body = jsonBody(request);
+      const patch: { seen_at?: string | null; snoozed_until?: string | null; pinned_at?: string | null } = {};
+      if (Object.prototype.hasOwnProperty.call(body, "seen_at")) patch.seen_at = optionalString(body.seen_at) ?? null;
+      if (Object.prototype.hasOwnProperty.call(body, "snoozed_until")) patch.snoozed_until = optionalString(body.snoozed_until) ?? null;
+      if (Object.prototype.hasOwnProperty.call(body, "pinned_at")) patch.pinned_at = optionalString(body.pinned_at) ?? null;
+      return reply.send(
+        await attention().setUserState(identity, projectId, sourceType, sourceId, patch),
       );
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.delete("/api/v1/projects/:projectId/workspaces/:workspaceId", async (request, reply) => {
+  app.get("/api/v1/projects/:projectId/overview", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      await repository().unlinkWorkspace(
-        identity,
-        params(request).projectId ?? "",
-        params(request).workspaceId ?? "",
-        optionalString(query(request).role),
-      );
-      return reply.code(204).send();
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await overview().getOverview(identity, projectId));
     } catch (error) {
       return sendRouteError(reply, error);
     }

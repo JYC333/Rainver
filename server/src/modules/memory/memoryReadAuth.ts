@@ -17,7 +17,7 @@ export interface MemoryAuthFields {
   effective_access_level?: string | null;
   owner_user_id: string | null;
   scope_type: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   content_access_grants?: readonly ContentAccessGrant[] | null;
 }
 
@@ -26,7 +26,7 @@ export interface MemoryReadContext {
   spaceId: string;
   activeSpaceMember?: boolean;
   scopeAllowed?: boolean;
-  workspaceId?: string | null;
+  projectFolderId?: string | null;
   includeSystemScope?: boolean;
   /**
    * The viewer's effective Space oversight mode, already gated by role.
@@ -50,14 +50,14 @@ export function memoryAccessDecision(
     || !isContentAccessLevel(memory.access_level)
   ) return "deny";
   if (memory.scope_type === "system" && context.includeSystemScope !== true) return "deny";
-  if (memory.workspace_id && memory.workspace_id !== context.workspaceId) return "deny";
+  if (memory.project_folder_id && memory.project_folder_id !== context.projectFolderId) return "deny";
   const resource = {
     id: memory.id ?? "memory",
     space_id: memory.space_id,
     owner_user_id: memory.owner_user_id,
     visibility: memory.visibility,
     access_level: memory.access_level,
-    workspace_id: memory.workspace_id,
+    project_folder_id: memory.project_folder_id,
   };
   const decision = isContentAccessLevel(memory.effective_access_level)
     ? memory.effective_access_level

@@ -117,7 +117,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
       owner_user_id: null,
       access_level: "full",
       last_confirmed_at: null,
-      workspace_id: null,
+      project_folder_id: null,
       memory_layer: null,
       actor_user_id: null,
       provenance_entries: [
@@ -175,7 +175,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
       importance: null,
       tags: null,
       subject_user_id: null,
-      workspace_id: null,
+      project_folder_id: null,
       memory_layer: null,
       actor_user_id: null,
       provenance_entries: [],
@@ -183,7 +183,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
     const archive = await repo.archiveMemoryProposal(SPACE, USER, "memory-1", null, {
       operation: "archive",
       target_memory_id: "memory-1",
-      workspace_id: null,
+      project_folder_id: null,
       actor_user_id: null,
       provenance_entries: [],
     });
@@ -227,7 +227,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
         importance: null,
         tags: null,
         subject_user_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         memory_layer: null,
         actor_user_id: null,
         provenance_entries: [],

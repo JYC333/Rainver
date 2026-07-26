@@ -21,7 +21,7 @@ The governance UI for long-term memory. Memory review is not just a list — it 
 
 ### 1. Active Memory List
 - List all active memories for current space + user
-- Filters: scope, type, visibility, workspace, importance, confidence, created_at
+- Filters: scope, type, visibility, Project Folder, importance, confidence, created_at
 - Sort: by importance, last accessed, updated_at
 - Each item: scope badge, title, content preview, access_count, last_accessed_at
 - Actions: view detail, archive, flag for review

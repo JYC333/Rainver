@@ -6,6 +6,8 @@ import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPost
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 // Real-Postgres coverage for the Academic Research project-scoped research
@@ -18,6 +20,8 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
+const AGENT = "99999999-9999-4999-8999-999999999999";
+const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -58,6 +62,20 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await pool.query(
+    `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
+     VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
+    [AGENT, SPACE, OWNER, now],
+  );
+  await pool.query(
+    `INSERT INTO agent_versions (
+       id, agent_id, space_id, version_label, system_prompt, model_config_json,
+       runtime_config_json, context_policy_json, memory_policy_json,
+       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
+     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
+    [AGENT_VERSION, AGENT, SPACE, now],
+  );
+  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
 });
 
 function repo(): ProjectResearchRepository {
@@ -67,6 +85,17 @@ function repo(): ProjectResearchRepository {
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 describe("ProjectResearchRepository (real Postgres)", () => {
+  it("materializes and reuses a normal Inquiry Question as the Auto Research scope", async () => {
+    if (!available || !pool) return;
+    const first = await resolveResearchThreadScope(pool, identity, PROJECT, "Which mechanism explains the effect?", null);
+    const second = await resolveResearchThreadScope(pool, identity, PROJECT, "Which mechanism explains the effect?", null);
+    expect(second).toEqual(first);
+    expect((await pool.query<{ created_from: string }>(
+      `SELECT created_from FROM inquiry_threads WHERE id=$1 AND space_id=$2`,
+      [first.thread_id, SPACE],
+    )).rows[0]?.created_from).toBe("user");
+  });
+
   it("aggregates persisted monitoring scans into one entry per UTC day without synthesizing missing days", async () => {
     if (!available) return;
     await repo().upsertProfile(identity, PROJECT, { research_question: "Does X improve Y?" });
@@ -116,6 +145,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
        ) VALUES ($1,$2,$3,'research','Incremental scan','active',$4,$5::jsonb,$6,$6)`,
       [operationId, SPACE, PROJECT, OWNER, JSON.stringify({
         schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: workflowId,
+        agent_id: AGENT,
         research_question: "Does X improve Y?", research_question_version: 1, channel_ids: ["channel-1"],
         source_item_ids: [], current_stage: "screening", stage_state: "running", awaiting_source_scan: true,
         watermark: { before: null, after: "2026-07-17T00:00:00.000Z", overlap_hours: 48 },
@@ -228,6 +258,11 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     if (!available) return;
     const workflowId = randomUUID();
     const now = new Date().toISOString();
+    const thread = await new InquiryThreadService(pool!).createThread(
+      identity,
+      PROJECT,
+      { kind: "question", statement: "Old research question" },
+    );
     await pool!.query(`UPDATE projects SET current_focus=$2, updated_at=$3 WHERE id=$1 AND space_id=$4`, [PROJECT, "New research question", now, SPACE]);
     await pool!.query(
       `INSERT INTO project_research_workflows (
@@ -239,6 +274,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         PROJECT,
         JSON.stringify({
           research_question: "Old research question",
+          thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
           channel_ids: [],
           project_source_binding_ids: [],
           monitoring: { active: true },
@@ -250,7 +286,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const orchestrator = new ProjectResearchOrchestrator(pool!);
     await expect(orchestrator.triggerIncremental(identity, PROJECT, workflowId, {})).rejects.toMatchObject({ statusCode: 409 });
 
-    const applied = await orchestrator.applyQuestionForward(identity, PROJECT);
+    const applied = await orchestrator.applyQuestionForward(identity, PROJECT, workflowId);
     expect(applied).toMatchObject({ id: workflowId, state_json: { research_question: "New research question" } });
     expect(applied.state_json).toMatchObject({
       previous_research_question: "Old research question",
@@ -271,6 +307,11 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const humanItemId = randomUUID();
     const aiItemId = randomUUID();
     const now = new Date().toISOString();
+    const thread = await new InquiryThreadService(pool!).createThread(
+      identity,
+      PROJECT,
+      { kind: "question", statement: "Old question" },
+    );
     await pool!.query(`UPDATE projects SET current_focus='New question', updated_at=$3 WHERE id=$1 AND space_id=$2`, [PROJECT, SPACE, now]);
     await pool!.query(
       `INSERT INTO project_research_workflows (
@@ -278,6 +319,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
        ) VALUES ($1,$2,$3,'literature_review','complete','active','autonomous',$4::jsonb,$5,$5)`,
       [workflowId, SPACE, PROJECT, JSON.stringify({
         research_question: "Old question", research_question_version: 1, channel_ids: [],
+        thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
         report_depth: "full", question_refine_skipped: false,
         source_post_processing_rule_ids: [], monitoring: { active: true },
       }), now],
@@ -301,7 +343,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [randomUUID(), SPACE, PROJECT, humanItemId, now, randomUUID(), aiItemId],
     );
 
-    const result = await new ProjectResearchOrchestrator(pool!).resolveQuestionChange(identity, PROJECT, "rescreen") as {
+    const result = await new ProjectResearchOrchestrator(pool!).resolveQuestionChange(identity, PROJECT, workflowId, "rescreen") as {
       workflow: { state_json: Record<string, unknown> };
       operation: { progress_json: Record<string, unknown> };
     };

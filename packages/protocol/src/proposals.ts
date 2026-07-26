@@ -16,7 +16,7 @@ export const ProposalOutSchema = z
     id: IdSchema,
     space_id: IdSchema,
     user_id: z.string(),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     source_session_id: IdSchema.nullish(),
     source_task_id: IdSchema.nullish(),
     source_run_id: IdSchema.nullish(),

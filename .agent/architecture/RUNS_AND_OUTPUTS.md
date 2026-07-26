@@ -4,6 +4,49 @@ Date: 2026-05-14
 
 Runs are the durable execution record for agent work. A run must be auditable: request metadata, selected runtime, status, output, errors, activities, artifacts, and proposals must be inspectable after execution.
 
+## Logical input and output contracts
+
+The protocol defines three runtime-neutral contracts:
+
+- `run_input.v1` is a computed adapter input assembled from existing durable
+  Run/contract/Context/permission authorities.
+- `runtime_event.v1` is the bounded semantic adapter-event vocabulary; raw
+  token deltas and stdout/stderr are not members of this persisted contract.
+- `run_output.v1` is the canonical final result plus declared-output
+  validation manifest.
+
+`run_input.v1` is passed to both managed and local-CLI adapter boundaries and
+to the internal runtime host. It does not create a new database authority and
+does not duplicate rendered private context.
+
+For local CLI Runs, the server projects the envelope to a hidden Run Exchange.
+Declared files are collected into the logical output manifest only after
+containment, regular-file, size, and optional JSON Schema checks. A successful
+process with a missing/invalid required output is a failed Run output.
+Undeclared bounded files may be materialized as candidate Artifacts but never
+satisfy a declaration. Raw Exchange state is deleted after materialization.
+
+Terminal `runs.output_json` is always the strict `run_output.v1` envelope.
+Adapter-native structured values and materialization summaries live under
+`result`; the top level contains only schema version, semantic status, bounded
+summary, result, and the validated output manifest. Workflow JSON Pointer
+bindings resolve against `result` and fail closed when the source Run has no
+canonical envelope.
+
+Managed model lifecycle events and the JSONL modes of OpenCode, Codex CLI, and
+Claude Code normalize to `runtime_event.v1`. Local CLI stdout is parsed by
+complete line as it arrives, so supported tool lifecycle events are appended
+before process exit. Text/token deltas, stderr/stdout chunks, and unknown
+vendor payloads are not persisted as RunEvent rows.
+
+Local CLI runtimes receive an opaque, short-lived, Run-scoped MCP identity and
+only the intersection of the Run's declared grants and the System Action
+Registry. The MCP endpoint re-loads the Run and space boundary for every call;
+the canonical JSON-RPC call id is the action idempotency key. A
+`require_approval` policy result moves the Run and current Attempt to
+`waiting_for_review`. The adapter completion path re-checks CLI Run state and
+does not overwrite that pause with a terminal result.
+
 ## Trace Read Model
 
 `GET /api/v1/runs/{id}/trace` is the replay-oriented read model for failed and
@@ -27,12 +70,69 @@ export, and any raw context/prompt inspection remain separate gated reads.
 Cross-space trace reads return not found and must not reveal whether the run
 exists.
 
+`GET /api/v1/runs/{id}/io` is the user-facing logical I/O view. It reconstructs
+the runtime-neutral input without rendered hidden context or physical Exchange
+paths, returns only a validated `run_output.v1`, filters the event list to the
+semantic runtime vocabulary, and permission-filters Artifact references.
+Run Detail renders this view separately from phase audit data.
+It opens on logical I/O, with routing/model/profile provenance, verification,
+attempt/fallback evidence, Artifacts, Proposals, and actionable review recovery
+available without exposing physical Exchange paths or hidden rendered context.
+
+Ordinary Assistant Chat uses the same queued Run pipeline. `POST
+/api/v1/agents/{id}/chat` atomically persists the session/user message, Run,
+context snapshot, and `agent_run` job in one database transaction, then returns
+HTTP 202 with `chat_turn_accepted.v1`; it never
+executes an adapter on the request path. The client then follows the canonical
+RunEvent SSE endpoint. The accepted `run_id` is also attached to the durable
+user message, so a reload retains a direct recovery link even if the live
+stream disconnects. The worker persists one assistant message keyed by
+`run_id` before appending the sole terminal `chat_completed` event. On that
+event the client reads the durable message, including Artifact and canonical
+tool-call references. Worker recovery periodically reconciles any terminal Chat
+Run missing this event, including stale/orphaned and retry-exhausted work.
+While the adapter is running, non-durable `chat.text_delta` frames share that
+SSE connection so the reply renders incrementally; lifecycle remains the
+persisted RunEvent granularity.
+
+Conversation backend selection is a user × session binding. The selectable
+runtime profiles come from the Agent, while CLI credentials come only from the
+signed-in user's enabled space grants. The chosen backend is frozen on the Run.
+Shared Agent runtime profiles never store a user credential. Direct CLI chat
+uses the lightweight prompt-only execution mode: an isolated cwd and credential
+broker remain mandatory, while vendor context files, Run Exchange, tool
+transport, and worktree preparation are skipped.
+There is no synchronous Chat endpoint or second Chat execution path. Run
+cancellation remains the normal Run stop operation.
+
+Each Room message creates one `agent_run_group`; the group is a collaboration
+task, not the persistent conversation. The group records `room_id`,
+`session_id`, `trigger_message_id`, `project_id`, and the Room's nullable
+`project_folder_id`. Every recipient Run
+records the speaking human as `instructed_by_user_id`, uses that human's
+conversation backend binding, and declares `conversation_capture.json` as a
+Run Exchange proposal packet (required for local CLI, declared as an optional
+closing backstop for managed API). Its schema requires an explicit
+`status=succeeded|rejected`; `rejected` is a semantic failure signal, while
+`proposed_changes` remains the proposal payload. The server never infers
+semantic failure from natural-language output. Materialization first creates
+staged proposals through normal policy enforcement. Terminal publication
+atomically promotes them to pending only for accepted Runs, or rejects them for
+failed/cancelled/orphaned Runs; it never activates memory directly.
+Room Runs use `selected_users` visibility with active content grants for the
+current Room roster, still bounded by the canonical Project ACL. Artifacts and
+proposals materialized from those Runs remain `selected_users` and inherit the
+Run grants; adapter output cannot widen them to `space_shared`. Room members may
+read task evidence, but only the speaking task's `manager_user_id` may mutate,
+pause, cancel, or append directly to that task.
+
 `GET /api/v1/agent-groups/{group_id}/trace` is the grouped-run companion read
-model. It returns the group, members, room messages, delegations, root run id,
+model. It returns the group, members, task messages, delegations, root run id,
 child run ids, linked artifact/proposal ids, and `run.spawn_child`
-policy-decision ids. It is manager-scoped and must not inline artifact content,
-raw rendered context, or secret material. A newly created room may have no root
-run yet; the root id is populated by the first user chat message.
+policy-decision ids. It is manager-scoped for ordinary groups and readable by
+active Project-authorized Room members for Room tasks; it must not inline artifact content,
+raw rendered context, or secret material. A newly created task group has no
+root run until its triggering message is dispatched.
 
 ## RunStep vs RunEvent — grain rule
 
@@ -71,7 +171,8 @@ detail to both.
 
 ## Materialization
 
-Run output materialization supports:
+Adapter result materialization supports these fields before the canonical
+terminal envelope is written:
 
 - `output_json.artifacts` for content-backed artifacts.
 - `output_json.activities` for run-event activity records.
@@ -79,7 +180,11 @@ Run output materialization supports:
 - `output_json.delegations` for structured agent-group child-run requests.
 - `produced_artifact_paths` from the runtime result for file-backed artifacts.
 
-Materialization records errors in `run.output_json.materialization_errors` when structured output cannot be safely converted into durable records. Safe records are still created when possible. If the adapter succeeds but artifact/proposal/finalization materialization partially fails, the run is marked `degraded`.
+Materialization records errors in
+`run.output_json.result.materialization_errors` when structured output cannot
+be safely converted into durable records. Safe records are still created when
+possible. If the adapter succeeds but artifact/proposal/finalization
+materialization partially fails, the run is marked `degraded`.
 
 Artifact INSERTs run the `artifact.persist` policy gate first. Proposal INSERTs
 run the `proposal.create` policy gate first.
@@ -92,9 +197,11 @@ parse free text to authorize delegation. Materialization calls
 authority-envelope, and `run.spawn_child` policy checks before queueing any
 child run.
 
-Managed API runs inside an AgentRunGroup expose authorized room tools:
-`agent.delegate` and `agent.wait_for_results`. They are available to every
-active room agent, not only the manager. Natural-language requests such as
+Managed API and local CLI runs inside an AgentRunGroup expose authorized room
+tools through the same `AgentToolGateway`: `agent.delegate` and
+`agent.wait_for_results`. Both execution channels require the corresponding
+snapshotted Run tool grant. They are available to every active room agent, not
+only the manager. Natural-language requests such as
 "ask two reviewers" should be handled by the current recipient agent calling
 `agent.delegate` for selected room members rather than by the model simulating
 their answers. If the current agent needs sibling or delegated results before it
@@ -163,7 +270,7 @@ proposal-envelope fields.
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
   `adapter_type="capability"`; that adapter spec remains disabled until a native
   executor exists.
-- External workspace capabilities default **disabled**; enable state persists in `$AGENT_SPACE_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
+- External capabilities default **disabled**; enable state persists in `$AGENT_SPACE_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
 - Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
 - `one_shot_docker` is the critical local-CLI executor mode. It provides a
   separate container with deny-by-default networking, read-only root, dropped
@@ -176,7 +283,7 @@ proposal-envelope fields.
 
 The A2 Verification Engine runs before a worktree sandbox is cleaned up and
 persists one `verification_results` row per `(run, verifier_type,
-verifier_version)`. It consumes the immutable Run contract, the workspace's
+verifier_version)`. It consumes the immutable Run contract, the Project Folder's
 enabled `ValidationRecipe`/profile checks, adapter output, materialization
 summaries, and the live sandbox. Supported deterministic checks are
 `command`, `test`, `lint`, `typecheck`, `file_exists`, `file_changed`,
@@ -205,10 +312,26 @@ a second logical Run: it records the completed attempt, writes an idempotent
 persisted fallback chain, the next untried eligible profile is selected and
 stamped for that attempt; an explicit profile remains a hard pin.
 
-The deterministic MVP retries only classified transient failures and respects
-the `max_attempts` cap and aggregate run cost cap. Exhaustion, non-retryable
-failures, missing retry identity, and budget exhaustion move the logical Run to
-`waiting_for_review`. Cost is read from the append-only usage ledger.
+The deterministic MVP retries classified transient failures plus explicit
+semantic rejection, deterministic verification failure, and required Run
+Exchange output validation failure. A successful adapter process with an
+explicit `status=rejected` or failed/error acceptance check is terminalized as
+a failed Attempt before finalization. `RunEvaluation` classifies the structured
+reason, and the existing Supervisor remains the sole physical-attempt authority.
+It respects the `max_attempts` cap and aggregate run cost cap. A retry receives
+the original task plus bounded prior-attempt reason context; a grouped/Room Run
+is not projected terminal while the Supervisor has requeued it. Exhaustion,
+non-retryable failures, missing retry identity, and budget exhaustion move the
+logical Run to `waiting_for_review`. Cost is read from the append-only usage
+ledger.
+
+Pre-materialization checks run before proposal, artifact, delegation, or code
+patch side effects. Output-dependent checks run after passive outputs have been
+staged. Runtime delegation is deferred to terminal finalization and replayed
+from the durable canonical output using a stable idempotency key, so worker
+reclaim and explicit finalization use one recoverable path. A finalization
+failure leaves the committed Run outcome intact and retries the Job; chat/Room
+completion is withheld until that finalization succeeds.
 
 Runs in `waiting_for_review` have explicit human controls: `POST /resume`
 requeues after approval (`same_attempt` for an in-flight policy pause,
@@ -268,8 +391,8 @@ and model name at creation. `RunOut.resolved_model` exposes a safe summary:
 
 `runs.runtime_profile_id` records which `AgentRuntimeProfile` was selected.
 `runs.runtime_profile_snapshot_json` stores the selected profile's adapter,
-provider/model, credential profile, runtime config, and runtime policy at run
-creation. Execution uses that snapshot before falling back to the immutable
+provider/model, the Run-owner credential selected by routing, runtime config,
+and runtime policy at run creation. Execution uses that snapshot before falling back to the immutable
 `AgentVersion`, so later runtime profile edits affect only future runs.
 
 Adapters that consume model config today depend on runtime requirements.
@@ -277,6 +400,14 @@ Adapters that consume model config today depend on runtime requirements.
 CLI supports them. `capability` records model config but does not call an LLM.
 Claude execution must go through the `claude_code`
 RuntimeAdapterSpec and `GenericCliRuntimeAdapter`.
+
+Conversation text deltas are ephemeral transport events. The server keeps a
+bounded, five-minute in-process replay buffer so an SSE subscriber that connects
+after a queued Run starts can catch up before the durable assistant message is
+available. This transport assumes the official single-server deployment: a
+multi-server or separately deployed worker topology must replace the process
+local bus with shared pub/sub while preserving the same `chat.text_delta`
+contract. The durable message remains the canonical conversation record.
 
 ## ModelProvider secrets
 

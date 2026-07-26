@@ -74,6 +74,8 @@ export interface ProviderChatRequestBody {
   max_tokens?: number;
   tools?: CanonicalToolDefinition[] | null;
   output_format?: ProviderStructuredOutput | null;
+  cache_strategy?: "conversation";
+  on_text_delta?: (delta: string) => void;
   egressPolicy?: RetrievalEgressPolicy | null;
   metering: ProviderMeteringContext;
 }
@@ -286,6 +288,58 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
   } catch {
     throw new ProviderInvocationError(502, "Provider returned invalid JSON");
   }
+}
+
+async function assertStreamingResponseOk(response: Response): Promise<void> {
+  if (response.ok) return;
+  const text = await response.text();
+  const decision = classifyProviderFailure(response.status, text);
+  throw new ProviderInvocationError(
+    502,
+    `Provider request failed with status ${response.status}`,
+    decision,
+    decision.failure_class === "rate_limit" ? "provider_rate_limit" : undefined,
+  );
+}
+
+async function* responseLines(response: Response): AsyncGenerator<string> {
+  if (!response.body) {
+    throw new ProviderInvocationError(502, "Provider returned no response stream");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) yield line;
+      if (done) break;
+    }
+    if (buffer) yield buffer;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function jsonRecord(value: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | null {
+  const field = value[key];
+  return typeof field === "string" ? field : null;
 }
 
 function openAiBase(provider: ProviderInfo): string {
@@ -646,6 +700,7 @@ async function completeOpenAiCompatible(
   const messagesBody = schemaInstruction
     ? { ...body, system: body.system ? `${body.system}\n\n${schemaInstruction}` : schemaInstruction }
     : body;
+  const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
   const response = await fetchProviderResponse(networkProfile, `${openAiCompatibleBase(provider)}/chat/completions`, {
     method: "POST",
     headers: {
@@ -672,8 +727,15 @@ async function completeOpenAiCompatible(
           },
         },
       } : {}),
+      ...(streaming ? {
+        stream: true,
+        stream_options: { include_usage: true },
+      } : {}),
     }),
   });
+  if (streaming) {
+    return completeOpenAiStream(response, provider.provider_type, model, body.on_text_delta!);
+  }
   const data = (await parseJsonResponse(response)) as {
     choices?: Array<{
       finish_reason?: string | null;
@@ -752,6 +814,55 @@ async function completeOpenAiCompatible(
   };
 }
 
+async function completeOpenAiStream(
+  response: Response,
+  providerType: string,
+  requestedModel: string,
+  onTextDelta: (delta: string) => void,
+): Promise<ProviderChatResponseBody> {
+  await assertStreamingResponseOk(response);
+  let content = "";
+  let model = requestedModel;
+  let usage: Record<string, unknown> = {};
+  let finishReason: string | null = null;
+  let terminated = false;
+  for await (const line of responseLines(response)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload) continue;
+    if (payload === "[DONE]") {
+      terminated = true;
+      continue;
+    }
+    const event = jsonRecord(payload);
+    if (!event) continue;
+    const eventModel = stringField(event, "model");
+    if (eventModel) model = eventModel;
+    if (isRecord(event.usage)) usage = event.usage;
+    const choice = Array.isArray(event.choices) && isRecord(event.choices[0])
+      ? event.choices[0]
+      : null;
+    const delta = choice && isRecord(choice.delta)
+      ? stringField(choice.delta, "content")
+      : null;
+    if (delta) {
+      content += delta;
+      onTextDelta(delta);
+    }
+    const reason = choice ? stringField(choice, "finish_reason") : null;
+    if (reason) finishReason = reason;
+  }
+  if (!terminated) throw interruptedProviderStreamError();
+  return {
+    content,
+    provider: providerType,
+    model,
+    usage,
+    structured_output: null,
+    finish_reason: finishReason,
+  };
+}
+
 function structuredOutputFromOpenAiChoice(
   choice: {
     message?: {
@@ -806,6 +917,12 @@ async function completeAnthropic(
     : [];
   const requestTools = [...structuredDefinition, ...(body.tools ?? [])];
   const tools = anthropicTools(requestTools);
+  const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
+  const system = body.system
+    ? body.cache_strategy === "conversation"
+      ? [{ type: "text", text: body.system, cache_control: { type: "ephemeral" } }]
+      : body.system
+    : undefined;
   const response = await fetchProviderResponse(networkProfile, anthropicMessagesUrl(provider), {
     method: "POST",
     headers: {
@@ -815,7 +932,7 @@ async function completeAnthropic(
     },
     body: JSON.stringify({
       model,
-      system: body.system ?? undefined,
+      system,
       messages: anthropicMessages(body),
       temperature: body.temperature,
       // Tool-use turns need headroom for the tool_use block plus a follow-up
@@ -827,8 +944,12 @@ async function completeAnthropic(
           ? { type: "tool", name: providerStructuredOutputName(body.output_format.schema_id) }
           : { type: "auto" },
       } : {}),
+      ...(streaming ? { stream: true } : {}),
     }),
   });
+  if (streaming) {
+    return completeAnthropicStream(response, model, body.on_text_delta!);
+  }
   const data = (await parseJsonResponse(response)) as {
     content?: Array<{
       type?: string;
@@ -877,6 +998,49 @@ async function completeAnthropic(
   };
 }
 
+async function completeAnthropicStream(
+  response: Response,
+  requestedModel: string,
+  onTextDelta: (delta: string) => void,
+): Promise<ProviderChatResponseBody> {
+  await assertStreamingResponseOk(response);
+  let content = "";
+  let model = requestedModel;
+  let usage: Record<string, unknown> = {};
+  let finishReason: string | null = null;
+  let terminated = false;
+  for await (const line of responseLines(response)) {
+    if (!line.startsWith("data:")) continue;
+    const event = jsonRecord(line.slice(5).trim());
+    if (!event) continue;
+    if (event.type === "message_stop") terminated = true;
+    if (isRecord(event.message)) {
+      model = stringField(event.message, "model") ?? model;
+      if (isRecord(event.message.usage)) usage = { ...usage, ...event.message.usage };
+    }
+    if (isRecord(event.usage)) usage = { ...usage, ...event.usage };
+    const deltaRecord = isRecord(event.delta) ? event.delta : null;
+    const delta = deltaRecord?.type === "text_delta"
+      ? stringField(deltaRecord, "text")
+      : null;
+    if (delta) {
+      content += delta;
+      onTextDelta(delta);
+    }
+    const stopReason = deltaRecord ? stringField(deltaRecord, "stop_reason") : null;
+    if (stopReason) finishReason = stopReason;
+  }
+  if (!terminated) throw interruptedProviderStreamError();
+  return {
+    content,
+    provider: "anthropic",
+    model,
+    usage,
+    structured_output: null,
+    finish_reason: finishReason,
+  };
+}
+
 function isStructuredObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -910,12 +1074,13 @@ async function completeOllama(
     throw new ProviderInvocationError(400, "base_url is required for provider_type 'ollama'");
   }
   const model = bareModelName("ollama", resolveModel(provider, body.model));
+  const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
   const response = await fetchProviderResponse(networkProfile, `${base}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model,
-      stream: false,
+      stream: streaming,
       messages: body.system
         ? [{ role: "system", content: body.system }, ...body.messages.map((m) => ({ role: m.role, content: m.content ?? "" }))]
         : body.messages.map((m) => ({ role: m.role, content: m.content ?? "" })),
@@ -926,6 +1091,9 @@ async function completeOllama(
       ...(body.output_format ? { format: body.output_format.schema } : {}),
     }),
   });
+  if (streaming) {
+    return completeOllamaStream(response, model, body.on_text_delta!);
+  }
   const data = (await parseJsonResponse(response)) as {
     message?: { content?: string };
     model?: string;
@@ -944,6 +1112,56 @@ async function completeOllama(
         })
       : null,
   };
+}
+
+async function completeOllamaStream(
+  response: Response,
+  requestedModel: string,
+  onTextDelta: (delta: string) => void,
+): Promise<ProviderChatResponseBody> {
+  await assertStreamingResponseOk(response);
+  let content = "";
+  let model = requestedModel;
+  let finishReason: string | null = null;
+  let usage: Record<string, unknown> = {};
+  let terminated = false;
+  for await (const line of responseLines(response)) {
+    const event = jsonRecord(line.trim());
+    if (!event) continue;
+    model = stringField(event, "model") ?? model;
+    const message = isRecord(event.message) ? event.message : null;
+    const delta = message ? stringField(message, "content") : null;
+    if (delta) {
+      content += delta;
+      onTextDelta(delta);
+    }
+    if (event.done === true) {
+      terminated = true;
+      finishReason = stringField(event, "done_reason") ?? "stop";
+      usage = {
+        prompt_tokens: event.prompt_eval_count,
+        completion_tokens: event.eval_count,
+      };
+    }
+  }
+  if (!terminated) throw interruptedProviderStreamError();
+  return {
+    content,
+    provider: "ollama",
+    model,
+    usage,
+    structured_output: null,
+    finish_reason: finishReason,
+  };
+}
+
+function interruptedProviderStreamError(): ProviderInvocationError {
+  return new ProviderInvocationError(
+    502,
+    "Provider stream ended before its terminal marker",
+    { failure_class: "transient", actions: ["fallback_provider", "fail"] },
+    "provider_stream_interrupted",
+  );
 }
 
 function attemptOnce(
@@ -1247,8 +1465,18 @@ async function invokeProviderWithPool(
     let sameKeyRetries = 0;
     for (;;) {
       attempts += 1;
+      let emittedText = false;
+      const attemptBody = body.on_text_delta
+        ? {
+            ...body,
+            on_text_delta: (delta: string) => {
+              emittedText = true;
+              body.on_text_delta?.(delta);
+            },
+          }
+        : body;
       try {
-        const result = await attemptOnce(target, candidate.api_key, body);
+        const result = await attemptOnce(target, candidate.api_key, attemptBody);
         if (candidate.member_id) {
           await store.recordPoolOutcome(candidate.member_id, { kind: "success" });
         }
@@ -1262,6 +1490,14 @@ async function invokeProviderWithPool(
         });
         return result;
       } catch (error) {
+        if (emittedText) {
+          throw new ProviderInvocationError(
+            502,
+            "Provider stream ended after partial output was delivered",
+            { failure_class: "permanent", actions: ["fail"] },
+            "provider_stream_interrupted",
+          );
+        }
         lastError = error;
         if (error instanceof ProviderInvocationError) error.attempts = attempts;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
@@ -1415,6 +1651,8 @@ export interface ProviderMessagesCompletionInput {
   max_tokens?: number;
   tools?: CanonicalToolDefinition[] | null;
   output_format?: ProviderStructuredOutput | null;
+  cache_strategy?: "conversation";
+  on_text_delta?: (delta: string) => void;
   /** Auxiliary-task name; resolves a ProviderTaskPolicy chain when present. */
   task?: string | null;
   egressPolicy?: RetrievalEgressPolicy | null;
@@ -1465,6 +1703,8 @@ export async function completeProviderMessages(
     max_tokens: input.max_tokens,
     tools: input.tools,
     output_format: input.output_format,
+    cache_strategy: input.cache_strategy,
+    on_text_delta: input.on_text_delta,
     egressPolicy: input.egressPolicy,
     metering: meteringContext(input.metering, input.task),
   });

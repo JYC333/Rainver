@@ -25,7 +25,6 @@ import {
 } from './utils'
 
 interface RelationForm {
-  manual_item_id: string
   relation_type: KnowledgeRelationType
   status: Extract<KnowledgeRelationStatus, 'candidate' | 'active'>
   confidence: string
@@ -40,7 +39,6 @@ interface KnowledgeRelationProposalFormProps {
 
 export default function KnowledgeRelationProposalForm({ currentItemId, onProposalCreated }: KnowledgeRelationProposalFormProps) {
   const [form, setForm] = useState<RelationForm>({
-    manual_item_id: '',
     relation_type: 'related_to',
     status: 'active',
     confidence: '',
@@ -80,13 +78,12 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
       return
     }
     setSelected(item)
-    setField('manual_item_id', item.id)
   }
 
   async function submitRelationProposal() {
-    const targetId = (selected?.id ?? form.manual_item_id).trim()
+    const targetId = selected?.id ?? ''
     if (!targetId) {
-      toast.error('Select a target item or enter an item ID')
+      toast.error('Search for and select a target Knowledge item')
       return
     }
     if (targetId === currentItemId) {
@@ -111,7 +108,6 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
       })
       onProposalCreated(p)
       setForm({
-        manual_item_id: '',
         relation_type: 'related_to',
         status: 'active',
         confidence: '',
@@ -161,7 +157,7 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
                   <Badge variant="secondary">{item.knowledge_kind}</Badge>
                   <ScopeBadge visibility={item.visibility} />
                 </div>
-                <p className="text-xs text-muted-foreground font-mono select-all">{item.id}</p>
+                {item.content_preview && <p className="line-clamp-2 text-xs text-muted-foreground">{item.content_preview}</p>}
               </button>
             ))}
           </div>
@@ -175,22 +171,10 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
               <Badge variant="secondary">{selected.knowledge_kind}</Badge>
               <ScopeBadge visibility={selected.visibility} />
             </div>
-            <p className="text-xs font-mono select-all text-muted-foreground mt-1">{selected.id}</p>
           </div>
         )}
 
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <Label>Manual to_object_id</Label>
-            <Input
-              value={form.manual_item_id}
-              onChange={e => {
-                setSelected(null)
-                setField('manual_item_id', e.target.value)
-              }}
-              placeholder="Advanced fallback: target knowledge item id"
-            />
-          </div>
           <div>
             <Label>relation_type</Label>
             <Select value={form.relation_type} onChange={v => setField('relation_type', v as KnowledgeRelationType)} options={KNOWLEDGE_RELATION_TYPES.map(t => ({ value: t, label: t }))} />

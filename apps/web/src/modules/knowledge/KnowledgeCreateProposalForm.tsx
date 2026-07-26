@@ -18,13 +18,13 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
+import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 import KnowledgeProposalNotice from './KnowledgeProposalNotice'
 import {
   KNOWLEDGE_FORMATS,
   KNOWLEDGE_ITEM_KINDS,
   KNOWLEDGE_VISIBILITIES,
   parseOptionalConfidence,
-  parseSourceRefs,
   parseTags,
   validateConfidence,
 } from './utils'
@@ -38,9 +38,7 @@ interface CreateForm {
   tags: string
   confidence: string
   project_id: string
-  workspace_id: string
-  source_run_id: string
-  source_refs: string
+  project_folder_id: string
   object_kind_fields: string
   rationale: string
 }
@@ -54,9 +52,7 @@ const EMPTY_CREATE_FORM: CreateForm = {
   tags: '',
   confidence: '',
   project_id: '',
-  workspace_id: '',
-  source_run_id: '',
-  source_refs: '',
+  project_folder_id: '',
   object_kind_fields: '',
   rationale: '',
 }
@@ -107,13 +103,6 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
       toast.error('Confidence must be a number from 0 to 1')
       return
     }
-    let sourceRefs: Record<string, unknown>[]
-    try {
-      sourceRefs = parseSourceRefs(form.source_refs)
-    } catch (e) {
-      toast.error(errMsg(e))
-      return
-    }
     let objectKindFields: Record<string, unknown> | undefined
     if (form.object_kind_fields.trim()) {
       try {
@@ -136,9 +125,9 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
       tags: parseTags(form.tags),
       confidence,
       project_id: form.project_id.trim() || null,
-      workspace_id: form.workspace_id.trim() || null,
-      source_run_id: form.source_run_id.trim() || null,
-      source_refs: sourceRefs,
+      project_folder_id: form.project_folder_id.trim() || null,
+      source_run_id: null,
+      source_refs: [],
       ...(objectKindFields ? { object_kind_fields: objectKindFields } : {}),
       rationale: form.rationale.trim() || null,
     }
@@ -199,28 +188,14 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
       <div className="mt-5 border-t border-border pt-4">
         <CardTitle>Advanced Associations</CardTitle>
         <div className="grid gap-3 md:grid-cols-2 mt-3">
-          <div>
-            <Label>project_id</Label>
-            <Input value={form.project_id} onChange={e => setField('project_id', e.target.value)} placeholder="optional project id" />
-          </div>
-          <div>
-            <Label>workspace_id</Label>
-            <Input value={form.workspace_id} onChange={e => setField('workspace_id', e.target.value)} placeholder="optional workspace id" />
-          </div>
+          <ProjectFolderSelectors projectId={form.project_id} folderId={form.project_folder_id} onProjectChange={value => setField('project_id', value)} onFolderChange={value => setField('project_folder_id', value)} />
         </div>
       </div>
 
       <div className="mt-5 border-t border-border pt-4">
-        <CardTitle>Advanced Source</CardTitle>
+        <CardTitle>Advanced fields</CardTitle>
+        <p className="mt-1 text-xs text-muted-foreground">Run and source provenance is attached by the owning extraction/review flow, not entered manually.</p>
         <div className="grid gap-3 md:grid-cols-2 mt-3">
-          <div>
-            <Label>source_run_id</Label>
-            <Input value={form.source_run_id} onChange={e => setField('source_run_id', e.target.value)} placeholder="optional run id" />
-          </div>
-          <div className="md:col-span-2">
-            <Label>source_refs JSON</Label>
-            <Textarea value={form.source_refs} onChange={e => setField('source_refs', e.target.value)} placeholder='optional, e.g. [{"kind":"doc","id":"..."}]' />
-          </div>
           <div className="md:col-span-2">
             <Label>object_kind_fields JSON</Label>
             <Textarea value={form.object_kind_fields} onChange={e => setField('object_kind_fields', e.target.value)} placeholder='optional, e.g. {"risk":"low"}' />

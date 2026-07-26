@@ -64,7 +64,7 @@ class CapturingDb implements Queryable {
     }
     if (norm.includes("FROM artifacts")) {
       const userId = params[2] as string | null;
-      const workspaceId = params[3] as string | null;
+      const projectFolderId = params[3] as string | null;
       const projectId = params[4] as string | null;
       const artifactIds = Array.isArray(params[1]) ? new Set(params[1] as string[]) : null;
       const rows = this.artifacts.filter((artifact) => {
@@ -72,8 +72,8 @@ class CapturingDb implements Queryable {
         if (artifactIds && !artifactIds.has(String(artifact.id))) return false;
         const visibility = String(artifact.visibility ?? "");
         const ownerUserId = typeof artifact.owner_user_id === "string" ? artifact.owner_user_id : null;
-        if (artifact.workspace_id) {
-          if (artifact.workspace_id !== workspaceId || !this.accessibleWorkspaceIds.has(workspaceId ?? "")) {
+        if (artifact.project_folder_id) {
+          if (artifact.project_folder_id !== projectFolderId || !this.accessibleWorkspaceIds.has(projectFolderId ?? "")) {
             return false;
           }
         }
@@ -92,7 +92,7 @@ class CapturingDb implements Queryable {
         : [{ owner_user_id: this.projectOwnerUserId }];
       return { rows: rows as Row[], rowCount: rows.length };
     }
-    if (norm.includes("FROM workspaces")) {
+    if (norm.includes("FROM project_folders")) {
       const rows = this.accessibleWorkspaceIds.has(String(params[1])) ? [{ one: 1 }] : [];
       return { rows: rows as Row[], rowCount: rows.length };
     }
@@ -124,7 +124,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const db = new CapturingDb();
     await new PgRunContextRepository(db).filterEligibleDigestMemoryIds({
       spaceId: "space-1",
-      scopeType: "workspace",
+      scopeType: "project_folder",
       scopeId: "ws-1",
       memoryIds: ["mem-1"],
     });
@@ -140,7 +140,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     await new PgRunContextRepository(db).selectEvidenceForContext({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: "project-1",
       runId: null,
     });
@@ -158,7 +158,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     await new PgRunContextRepository(db).selectEvidenceForContext({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
       runId: null,
     });
@@ -249,7 +249,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectEvidenceForContext({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
       runId: "run-1",
     });
@@ -306,7 +306,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
       agent_version_id: null,
       context_snapshot_id: null,
       prompt: "hello",
-      workspace_id: null,
+      project_folder_id: null,
       project_id: null,
       session_id: null,
       instructed_by_user_id: "user-1",
@@ -372,7 +372,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "private",
         owner_user_id: "user-1",
         project_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
       {
@@ -384,7 +384,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "private",
         owner_user_id: "user-1",
         project_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
       {
@@ -416,7 +416,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "private",
         owner_user_id: "user-1",
         project_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
       {
@@ -439,7 +439,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "private",
         owner_user_id: "user-1",
         project_id: "project-1",
-        workspace_id: null,
+        project_folder_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -447,7 +447,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: "ws-1",
+      projectFolderId: "ws-1",
       projectId: "project-1",
       artifactIds: ["brief-1", "missing-1", "generic-1", "explain-1", "matrix-1"],
     });
@@ -527,9 +527,9 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const artifactQuery = db.queries.find((query) => query.sql.includes("FROM artifacts"));
     expect(artifactQuery?.sql).toContain("visibility = 'space_shared'");
     expect(artifactQuery?.sql).toContain("content_access_grants");
-    expect(artifactQuery?.sql).toContain("a.workspace_id = $4");
+    expect(artifactQuery?.sql).toContain("a.project_folder_id = $4");
     expect(artifactQuery?.sql).toContain("a.project_id = $5");
-    expect(artifactQuery?.sql).toContain("project_workspaces");
+    expect(artifactQuery?.sql).toContain("project_folders");
     expect(artifactQuery?.sql).toContain("project_members");
     expect(artifactQuery?.params).toContain("ws-1");
   });
@@ -550,7 +550,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "space_shared",
         owner_user_id: "other-user",
         project_id: null,
-        workspace_id: "ws-1",
+        project_folder_id: "ws-1",
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -559,19 +559,19 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const withoutWorkspace = await repository.selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: null,
+      projectFolderId: null,
       artifactIds: ["brief-1"],
     });
     const withWorkspace = await repository.selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: "ws-1",
+      projectFolderId: "ws-1",
       artifactIds: ["brief-1"],
     });
     const withDifferentWorkspace = await repository.selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: "ws-2",
+      projectFolderId: "ws-2",
       artifactIds: ["brief-1"],
     });
 
@@ -607,7 +607,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "private",
         owner_user_id: "user-1",
         project_id: null,
-        workspace_id: "ws-1",
+        project_folder_id: "ws-1",
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -628,7 +628,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: "ws-1",
+      projectFolderId: "ws-1",
       projectId: "project-1",
       artifactIds: ["brief-1"],
     });
@@ -672,7 +672,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "space_shared",
         owner_user_id: "other-user",
         project_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -680,7 +680,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: null,
+      projectFolderId: null,
       artifactIds: ["brief-shared"],
     });
 
@@ -722,7 +722,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "space_shared",
         owner_user_id: "other-user",
         project_id: null,
-        workspace_id: "ws-1",
+        project_folder_id: "ws-1",
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -730,7 +730,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: "ws-1",
+      projectFolderId: "ws-1",
       artifactIds: ["brief-workspace"],
     });
 
@@ -754,7 +754,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "private",
         owner_user_id: "user-1",
         project_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -762,7 +762,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: null,
+      projectFolderId: null,
       artifactIds: ["brief-own"],
     });
 
@@ -790,7 +790,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
         visibility: "space_shared",
         owner_user_id: "other-user",
         project_id: null,
-        workspace_id: "ws-1",
+        project_folder_id: "ws-1",
         created_at: "2026-06-25T00:00:00.000Z",
       },
     ];
@@ -798,7 +798,7 @@ describe("PgRunContextRepository digest source revalidation", () => {
     const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
       spaceId: "space-1",
       userId: "user-1",
-      workspaceId: "ws-1",
+      projectFolderId: "ws-1",
       artifactIds: ["brief-1"],
     });
 

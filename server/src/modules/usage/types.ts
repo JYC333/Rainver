@@ -15,6 +15,7 @@ export type UsageSourceType =
 export type UsageExecutionChannel =
   | "managed_api"
   | "provider_proxy"
+  | "local_cli"
   | "local_cli_transcript"
   | "manual_import"
   | "cross_instance_import"
@@ -81,7 +82,7 @@ export interface UsageObservation {
   session_name?: string | null;
   agent_id?: string | null;
   project_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   trigger_origin?: string | null;
   occurred_at?: string | Date | null;
   request_count?: number | null;
@@ -141,7 +142,7 @@ export interface NormalizedUsageObservation {
   session_name: string | null;
   agent_id: string | null;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   trigger_origin: string | null;
   occurred_at: string;
   recorded_at: string;
@@ -186,7 +187,7 @@ export interface UsageAttribution {
   access_level: "full" | "summary";
   source_resource_type: string | null;
   source_resource_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
   grant_snapshots: UsageGrantSnapshot[];
 }

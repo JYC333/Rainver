@@ -97,7 +97,7 @@ interface KnowledgeItemRow {
   id: string;
   space_id: string;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   root_item_id: string | null;
   supersedes_item_id: string | null;
   redirect_to_item_id: string | null;
@@ -124,6 +124,7 @@ interface KnowledgeItemRow {
   created_from_proposal_id: string | null;
   approved_by_user_id: string | null;
   version: string | number;
+  pinned_source_ref_json: unknown;
   archived_at: string | null;
   deprecated_at: string | null;
   created_at: string | null;
@@ -154,7 +155,7 @@ interface ClaimRow {
   excerpt: string | null;
   owner_user_id: string | null;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   created_by_user_id: string | null;
   created_by_agent_id: string | null;
   created_by_run_id: string | null;
@@ -234,7 +235,7 @@ interface SpaceObjectRow {
   visibility: string;
   owner_user_id: string | null;
   primary_project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   created_by_user_id: string | null;
 }
 
@@ -403,7 +404,7 @@ const VALID_PROVENANCE_TYPES = new Set([
 
 const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
-  so.workspace_id, ki.root_item_id, ki.supersedes_item_id,
+  so.project_folder_id, ki.root_item_id, ki.supersedes_item_id,
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
   so.title, ki.content, ki.content_json, ki.content_format,
   ki.content_schema_version, ki.plain_text, so.summary AS excerpt,
@@ -411,7 +412,7 @@ const KNOWLEDGE_ITEM_COLUMNS = `
   ki.tags_json, ki.confidence, so.owner_user_id,
   so.created_by_user_id, so.created_by_agent_id, so.created_by_run_id,
   ki.created_from_proposal_id,
-  ki.approved_by_user_id, ki.version, so.archived_at, ki.deprecated_at,
+  ki.approved_by_user_id, ki.version, ki.pinned_source_ref_json, so.archived_at, ki.deprecated_at,
   so.created_at, so.updated_at
 `;
 
@@ -429,7 +430,7 @@ const CLAIM_COLUMNS = `
   c.holder_type, c.holder_id, c.confidence, c.confidence_method,
   c.resolution_state, c.valid_from, c.valid_until, c.observed_at,
   c.metadata_json, so.status, so.visibility, so.title, so.summary AS excerpt,
-  so.owner_user_id, so.primary_project_id AS project_id, so.workspace_id,
+  so.owner_user_id, so.primary_project_id AS project_id, so.project_folder_id,
   so.created_by_user_id, so.created_by_agent_id, so.created_by_run_id,
   c.created_from_proposal_id, c.approved_by_user_id, so.archived_at,
   so.created_at, so.updated_at
@@ -539,7 +540,7 @@ async function applyKnowledgeCreateProposal(
   }
 
   const projectId = optionalString(payload.project_id);
-  const workspaceId = optionalString(payload.workspace_id);
+  const projectFolderId = optionalString(payload.project_folder_id);
   const contentJson = optionalObject(payload.content_json);
   const aliases = toStringArray(payload.aliases);
   const tags = toStringArray(payload.tags);
@@ -547,6 +548,12 @@ async function applyKnowledgeCreateProposal(
   const sourceRefs = provenanceEntriesFromPayload(payload.source_refs);
   const sourceRunId = optionalString(payload.source_run_id);
   const slug = optionalString(payload.slug);
+  // Discriminated, immutable pointer to the exact source revision this
+  // Knowledge version was promoted from — set only when the
+  // proposal originated from modules/knowledgePromotion's Candidate accept
+  // flow; a proposal authored any other way (agent tool call, manual API
+  // use) simply has none.
+  const pinnedSourceRef = optionalObject(payload.pinned_source_ref);
 
   const now = new Date().toISOString();
   const plainText = derivePlainText({ title, content, contentJson });
@@ -557,7 +564,7 @@ async function applyKnowledgeCreateProposal(
     `WITH obj AS (
        INSERT INTO space_objects (
          id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, workspace_id, created_by_user_id,
+         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
          created_by_agent_id, created_by_run_id, created_at, updated_at
        ) VALUES (
          $1, $2, 'knowledge_item', $3, $4, 'active', $5,
@@ -569,12 +576,12 @@ async function applyKnowledgeCreateProposal(
          object_id, space_id, knowledge_kind, slug, aliases_json, content,
          content_json, content_format, content_schema_version, plain_text,
          verification_status, reflection_status, tags_json, confidence,
-         created_from_proposal_id, approved_by_user_id, version
+         created_from_proposal_id, approved_by_user_id, version, pinned_source_ref_json
        ) VALUES (
          $1, $2, $12, $13, $14::jsonb, $15,
          $16::jsonb, $17, COALESCE($18::int, 1), $19,
          $20, $21, $22::jsonb, $23,
-         $24, $25, 1
+         $24, $25, 1, $26::jsonb
        )
        RETURNING object_id AS id
      )
@@ -587,7 +594,7 @@ async function applyKnowledgeCreateProposal(
       visibility,
       requestedOwnerUserId ?? context.proposal.created_by_user_id,
       projectId,
-      workspaceId,
+      projectFolderId,
       context.proposal.created_by_user_id,
       sourceRunId ?? context.proposal.created_by_run_id,
       now,
@@ -605,6 +612,7 @@ async function applyKnowledgeCreateProposal(
       confidence,
       context.proposal.id,
       context.userId,
+      pinnedSourceRef ? JSON.stringify(pinnedSourceRef) : null,
     ],
   );
 
@@ -667,6 +675,7 @@ async function applyKnowledgeUpdateProposal(
   const tags = hasPayloadKey(payload, "tags") ? toStringArray(payload.tags) : [];
   const sourceRefs = provenanceEntriesFromPayload(payload.source_refs);
   const slug = optionalString(payload.slug) ?? current.slug;
+  const pinnedSourceRef = optionalObject(payload.pinned_source_ref);
   const now = new Date().toISOString();
 
   const itemId = randomUUID();
@@ -680,7 +689,7 @@ async function applyKnowledgeUpdateProposal(
     `WITH obj AS (
        INSERT INTO space_objects (
          id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, workspace_id, created_by_user_id,
+         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
          created_by_agent_id, created_by_run_id, created_at, updated_at
        ) VALUES (
          $1, $2, 'knowledge_item', $3, $4, 'active', $5,
@@ -693,13 +702,13 @@ async function applyKnowledgeUpdateProposal(
          knowledge_kind, slug, aliases_json, content, content_json,
          content_format, content_schema_version, plain_text,
          verification_status, reflection_status, tags_json, confidence,
-         created_from_proposal_id, approved_by_user_id, version
+         created_from_proposal_id, approved_by_user_id, version, pinned_source_ref_json
        ) VALUES (
          $1, $2, $12, $13,
          $14, $15, $16::jsonb, $17, $18::jsonb,
          $19, $20, $21,
          $22, $23, $24::jsonb, $25,
-         $26, $27, $28
+         $26, $27, $28, $29::jsonb
        )
        RETURNING object_id AS id
      )
@@ -712,7 +721,7 @@ async function applyKnowledgeUpdateProposal(
       current.visibility,
       current.owner_user_id,
       current.project_id,
-      current.workspace_id,
+      current.project_folder_id,
       context.proposal.created_by_user_id,
       context.proposal.created_by_run_id,
       now,
@@ -733,6 +742,7 @@ async function applyKnowledgeUpdateProposal(
       context.proposal.id,
       context.userId,
       newVersion,
+      pinnedSourceRef ? JSON.stringify(pinnedSourceRef) : null,
     ],
   );
 
@@ -868,7 +878,7 @@ async function applyClaimCreateProposal(
     `WITH obj AS (
        INSERT INTO space_objects (
          id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, workspace_id, created_by_user_id,
+         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
          created_by_agent_id, created_by_run_id, created_at, updated_at,
          archived_at
        ) VALUES (
@@ -900,7 +910,7 @@ async function applyClaimCreateProposal(
       visibility,
       requestedOwnerUserId ?? context.proposal.created_by_user_id,
       optionalString(payload.project_id) ?? context.proposal.project_id,
-      optionalString(payload.workspace_id) ?? context.proposal.workspace_id,
+      optionalString(payload.project_folder_id) ?? context.proposal.project_folder_id,
       context.proposal.created_by_user_id,
       context.proposal.created_by_run_id ?? null,
       now,
@@ -1607,7 +1617,7 @@ async function requireSpaceObjectForMutation(
 async function getSpaceObjectById(db: Queryable, spaceId: string, objectId: string): Promise<SpaceObjectRow> {
   const result = await db.query<SpaceObjectRow>(
     `SELECT id, space_id, object_type, title, status, visibility, owner_user_id,
-            primary_project_id, workspace_id, created_by_user_id
+            primary_project_id, project_folder_id, created_by_user_id
        FROM space_objects
       WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
     [objectId, spaceId],
@@ -1897,7 +1907,7 @@ function serializeKnowledgeItem(row: KnowledgeItemRow): Record<string, unknown> 
     id: row.id,
     space_id: row.space_id,
     project_id: row.project_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     root_item_id: row.root_item_id,
     supersedes_item_id: row.supersedes_item_id,
     redirect_to_item_id: row.redirect_to_item_id,
@@ -1924,6 +1934,7 @@ function serializeKnowledgeItem(row: KnowledgeItemRow): Record<string, unknown> 
     created_from_proposal_id: row.created_from_proposal_id,
     approved_by_user_id: row.approved_by_user_id,
     version: toNumber(row.version),
+    pinned_source_ref: optionalObject(row.pinned_source_ref_json),
     created_at: normalizeDate(row.created_at),
     updated_at: normalizeDate(row.updated_at),
     archived_at: normalizeDate(row.archived_at),
@@ -1956,7 +1967,7 @@ function serializeClaim(row: ClaimRow, sources: ClaimSourceRow[]): Record<string
     excerpt: row.excerpt,
     owner_user_id: row.owner_user_id,
     project_id: row.project_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     created_by_user_id: row.created_by_user_id,
     created_by_agent_id: row.created_by_agent_id,
     created_by_run_id: row.created_by_run_id,

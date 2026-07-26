@@ -7,7 +7,7 @@ Define AI agents and wire them to execution. An agent is a configured product-le
 ## Three-Way Separation
 
 ```
-Agent            — product-level actor (owned by user/space/workspace, has policy)
+Agent            — product-level actor (owned by user/space/Project Folder, has policy)
     ↓ dispatches via
 Runtime Adapter  — technical execution backend (capability, model_api, claude_code, codex_cli, …)
     ↓ calls
@@ -82,9 +82,10 @@ Rules (clean model — no old paths):
   spec (`visibility=system_internal`, hidden from the library; see below). **There is no
   `general_chat` template** and no product-level DirectChat.
   - `personal_assistant` (category `assistant`, `visibility=system_internal`) — NOT a normal
-    reusable template. It is the provenance seed spec for each space's system-managed default
-    Assistant (the Chat identity). It is excluded from the public Template Library and from user
-    create-from-template; instances are minted only by the SpaceAssistant seeder (see below).
+    reusable template. It is the provenance seed spec for a space's `system_assistant`-kind
+    Agent, the anchor for Assistant preferences settings (see below). It is excluded from the
+    public Template Library and from user create-from-template; a space is not guaranteed to
+    have an instance.
   - `activity_reflector` (category `reflection`) — processes captures/activity into typed
     proposals + a reflection summary; `classification_mode: model_selects`.
   - `memory_reflector` (category `memory`) — proposal-only memory update/merge/delete; can never
@@ -101,18 +102,23 @@ Rules (clean model — no old paths):
   `default_review_mode`. Durable changes are proposal-only (`proposal_only: true`).
 - **Context policy uses product-level `allowed_input_contexts` (ceiling) + `default_input_contexts`**
   (enabled start set); the assistant narrows/selects within the ceiling at run time.
-- **Chat is backed by the space's system-managed default Assistant, not a naked DirectChat.**
-  Per-space resolution lives in the server agents module
-  (`get_default_assistant` / idempotent `get_or_create_default_assistant`; the older
-  `resolve_default_personal_assistant` / `ensure_default_personal_assistant` names remain as
-  aliases) and is exposed at `GET`/`POST /api/v1/agents/default-assistant`. The Assistant is an
-  ordinary Agent (so the runtime path is unchanged — it loads `Agent.current_version_id` →
-  `AgentVersion` like any other) but is **system-managed**: `agent_kind="system_assistant"`,
-  system/space-owned (`owner_user_id` NULL), named *Personal Assistant* in personal spaces and
-  *Space Assistant* in shared ones, with **at most one active per space** (DB partial-unique index
-  `uq_agents_system_assistant_per_space` + resolve-before-create). It is minted from the internal
-  `personal_assistant` seed spec via copy-on-create; there is no global default-agent or hardcoded
-  built-in-agent semantics, and users cannot create duplicate Assistants from a template.
+- **Chat is a queued Run, not a naked DirectChat.** A chat turn persists a user
+  message and a queued Run, returns `chat_turn_accepted.v1`, and is executed by the
+  `agent_run` worker. Clients follow the canonical RunEvent SSE stream until the
+  worker-published `chat_completed` event, then read the durable assistant message. The
+  request route never invokes a runtime adapter directly. Chat is not backed by a single
+  space-wide default Assistant identity: `/rooms` resolves a `user × session × agent`
+  conversation backend per speaker (`modules/rooms.md`), so which Agent and which
+  runtime a turn runs against is a per-conversation, per-user choice.
+  A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL, named
+  *Personal Assistant* in personal spaces and *Space Assistant* in shared ones, at most
+  one active per space via partial-unique index `uq_agents_system_assistant_per_space`,
+  minted from the internal `personal_assistant` seed spec) can still exist per space, but
+  only as the anchor for the soft Assistant preferences below — it is not an execution
+  identity Chat routes through, and there is no route that auto-creates one. `GET
+  /api/v1/agents/default-assistant/settings` resolves an existing `system_assistant`
+  Agent if present; if none exists, preferences are still readable and writable with
+  `assistant_agent_id: null`.
 - **Assistant preferences are a soft layer, never policy.** The
   `agent.default_assistant.settings` space-scoped setting
   (`GET`/`PATCH /api/v1/agents/default-assistant/settings`) holds
@@ -163,7 +169,7 @@ Rules:
 
 - Memory content (memory module)
 - Policy decisions (policy module)
-- Workspace/sandbox lifecycle (`server/src/modules/workspaces/` and runtime adapter execution workspaces)
+- Project Folder/sandbox lifecycle (`server/src/modules/projectFolders/` and runtime adapter execution sandboxes)
 - Capability definitions (capability module)
 - Provider credentials (`ModelProvider` encrypted config + `server/src/modules/providers/`; CLI profiles through the CredentialBroker)
 - Run execution orchestration (`server/src/modules/runs/` + job worker)
@@ -202,11 +208,14 @@ AgentRuntimeProfile:
   adapter_type                 — model_api, claude_code, codex_cli, ... (`capability` is planned/disabled)
   model_provider_id            — optional ModelProvider binding
   model_name                   — optional model id for the selected provider
-  credential_profile_id        — optional CLI credential profile binding
-  runtime_config_json          — resolved runtime config, including CLI tool version when relevant
+  runtime_config_json          — resolved runtime config, including CLI tool version and an
+                                  optional credential_profile_id default hint, when relevant
   runtime_policy_json          — runtime policy/default adapter metadata
   enabled, is_default
   Note: mutable product configuration. Runs snapshot the profile at creation.
+  Note: the profile has no dedicated credential column. A CLI conversation
+        turn resolves its credential profile from the signed-in user's
+        conversation backend binding, never from a space-shared profile.
 
 Run:
   id, space_id, agent_id, agent_version_id, runtime_profile_id
@@ -354,7 +363,7 @@ remains; every card is backed by an API call.
   (history + restore), **Runs** (real run history with useful empty state).
 - **Policy → product mapping** (`policyMap.ts`, rendered by `ConfigCards.tsx`) is the single
   source of truth that translates `context_policy_json` → input cards (capture inbox / approved
-  memory / previous reflection summaries / sessions / workspace), `output_policy_json` → output
+  memory / previous reflection summaries / sessions / Project Folder), `output_policy_json` → output
   type cards (task/idea/memory proposals, reflection summary artifact, wiki/archive), with memory
   outputs always shown as review-required; `tool_policy_json` + `memory_policy_json` → the
   "this agent can / cannot" safety statements and a derived review posture (Strict/Balanced/
@@ -379,12 +388,14 @@ and a concrete Agent is created only on demand via copy-on-create.
 Built-in **templates** (global factories, idempotent, seeded by the server agents module,
 seeded once in `bootstrap`). Five are **public** reusable specialized factories; the sixth,
 `personal_assistant`, is an **internal seed spec** (`visibility=system_internal`) for the
-system-managed default Assistant — hidden from the public library and not user-instantiable.
+per-space `system_assistant`-kind Agent — hidden from the public library and not
+user-instantiable.
 **`general_chat` is intentionally not seeded** and there is no product-level DirectChat:
-- `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the per-space
-  system-managed default Assistant (the Chat identity); dynamic per-run context selection via
-  ContextBuilder; `chat_message` + proposal-only task/idea/memory/knowledge. Not a reusable
-  template; instances are minted only by the SpaceAssistant seeder.
+- `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
+  per-space `system_assistant`-kind Agent, which anchors Assistant preferences settings;
+  dynamic per-run context selection via ContextBuilder; `chat_message` + proposal-only
+  task/idea/memory/knowledge. Not a reusable template; not created on demand — a space may
+  have none.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
   proposals + reflection summary; `classification_mode: model_selects`; proposal-only durables
 - `memory_reflector` (`memory`) — model-only; memory update/merge/delete proposals only (+ noop);
@@ -397,19 +408,19 @@ system-managed default Assistant — hidden from the public library and not user
   patch apply (a code-writing `coding_task_agent` is future scope)
 
 Why no `general_chat`/DirectChat: a generic session-only chat object would be a naked DirectChat
-with no space awareness. Chat in this system is the per-space **system-managed default Assistant
-Agent** instead — it carries the space's context policy and proposal-only output policy. Templates
-not seeded initially (future scope): `coding_task_agent`, `research_scout`, `source_processor`,
+with no space awareness. Every Room conversation instead targets an explicit, space-scoped
+`Agent` — carrying that Agent's context policy and proposal-only output policy — resolved per
+speaker through the conversation backend binding (`modules/rooms.md`). Templates not seeded
+initially (future scope): `coding_task_agent`, `research_scout`, `source_processor`,
 `weekly_planner`, `finance_reviewer`, `health_reviewer`, `task_manager`.
 
 There is **no** single global "default agent" that runs implicitly. Every `Run` targets an
 explicit `Agent`, and execution config resolves from the Run's snapshotted runtime profile plus
 `Agent.current_version_id` → `AgentVersion`.
-The per-space default Assistant Agent (`agent_kind="system_assistant"`, system-owned, one active
-per space) is resolved/created on demand by the server agents module
-(`GET`/`POST /api/v1/agents/default-assistant`) from the internal `personal_assistant` seed spec —
-it is an ordinary copy-on-create Agent at runtime, not a special runtime path. Users configure soft
-Assistant **preferences** (`agent.default_assistant.settings`), never the core prompt or hard policy.
+A `system_assistant`-kind Agent (system-owned, at most one active per space) is not
+auto-created; a space may have none. When one exists, it is only the anchor for soft Assistant
+**preferences** (`agent.default_assistant.settings`), never the core prompt or hard policy, and
+it is not a Chat execution identity.
 
 Memory reflection (`POST /sessions/{id}/reflect`) is an explicit **internal service**
 (the memory consolidation/reflection path via the `memory.reflect` capability) — it does not run
@@ -425,8 +436,8 @@ need a native, no-credential execution path.
 |---------------|---------------------|-----------------|-----------------------------------------------------------|
 | `capability`  | any                 | none            | Local enabled capability execution; no file access by default |
 | `model_api`   | any                 | none            | Managed API runtime; credentials resolved through ModelProvider |
-| `claude_code` | none (no workspace) / high (workspace) | `ephemeral` / `worktree` | No workspace → ephemeral run-scope dir; workspace bound → requires high → worktree. Never runs at none/dry_run |
-| `codex_cli`   | none (no workspace) / high (workspace) | `ephemeral` / `worktree` | No workspace → ephemeral run-scope dir; workspace bound → requires high → worktree. Never runs at none/dry_run |
+| `claude_code` | none (no Folder) / high (Folder) | `ephemeral` / `worktree` | No Folder → ephemeral run-scope dir; Folder bound → requires high → worktree. Never runs at none/dry_run |
+| `codex_cli`   | none (no Folder) / high (Folder) | `ephemeral` / `worktree` | No Folder → ephemeral run-scope dir; Folder bound → requires high → worktree. Never runs at none/dry_run |
 
 ## Invariants
 

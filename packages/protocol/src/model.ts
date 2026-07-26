@@ -60,8 +60,18 @@ export const CanonicalUsageSchema = z.object({
   input_tokens: z.number().int().nonnegative().optional(),
   output_tokens: z.number().int().nonnegative().optional(),
   total_tokens: z.number().int().nonnegative().optional(),
+  cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+  cache_read_input_tokens: z.number().int().nonnegative().optional(),
+  reasoning_tokens: z.number().int().nonnegative().optional(),
 });
 export type CanonicalUsage = z.infer<typeof CanonicalUsageSchema>;
+
+/** Provider-reported usage for one concrete model within a generation. */
+export const CanonicalModelUsageSchema = z.object({
+  model: z.string().min(1),
+  usage: CanonicalUsageSchema,
+});
+export type CanonicalModelUsage = z.infer<typeof CanonicalModelUsageSchema>;
 
 // ---------------------------------------------------------------------------
 // Request

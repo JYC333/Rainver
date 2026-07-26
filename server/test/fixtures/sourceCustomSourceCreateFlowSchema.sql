@@ -328,7 +328,7 @@ CREATE TABLE public.proposals (
     updated_at timestamp with time zone NOT NULL,
     reviewed_at timestamp with time zone,
     reviewed_by character varying(36),
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     rationale text,
     created_by_agent_id character varying(36),
     created_by_user_id character varying(36),
@@ -395,17 +395,14 @@ CREATE TABLE public.project_members (
     CONSTRAINT project_members_pkey PRIMARY KEY (id)
 );
 
--- Minimal workspaces + project_workspaces for the canonical content-access
--- workspace-scope gate (contentScopeSql / workspaceProjectReadAccessSql).
-CREATE TABLE public.workspaces (
+-- Minimal project_folders for the canonical content-access Folder-scope gate
+-- (contentScopeSql / projectFolderReadAccessSql). A Folder belongs to exactly
+-- one Project via a direct, non-null FK — there is no join table.
+CREATE TABLE public.project_folders (
     id character varying(36) NOT NULL,
     space_id character varying(36) NOT NULL,
-    CONSTRAINT workspaces_pkey PRIMARY KEY (id)
-);
-
-CREATE TABLE public.project_workspaces (
     project_id character varying(36) NOT NULL,
-    workspace_id character varying(36) NOT NULL
+    CONSTRAINT project_folders_pkey PRIMARY KEY (id)
 );
 
 CREATE TABLE public.space_memberships (
@@ -692,7 +689,7 @@ CREATE TABLE public.space_objects (
     access_level character varying(16) DEFAULT 'full' NOT NULL,
     owner_user_id character varying(36),
     primary_project_id character varying(36),
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     deleted_at timestamp with time zone,
     CONSTRAINT space_objects_pkey PRIMARY KEY (id)
 );
@@ -730,7 +727,7 @@ CREATE TABLE public.retrieval_objects (
     space_id character varying(36) NOT NULL,
     object_type character varying(64) NOT NULL,
     object_id character varying(36) NOT NULL,
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     owner_user_id character varying(36),
     visibility character varying(32),
     status character varying(32) NOT NULL,
@@ -827,7 +824,7 @@ CREATE TABLE public.jobs (
     updated_at timestamp with time zone NOT NULL,
     heartbeat_at timestamp with time zone,
     user_id character varying(36),
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     agent_id character varying(36),
     CONSTRAINT jobs_pkey PRIMARY KEY (id),
     CONSTRAINT ck_jobs_attempts_nonneg CHECK ((attempts >= 0)),

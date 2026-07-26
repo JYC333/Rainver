@@ -26,13 +26,13 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 | Vector + ANN (halfvec HNSW at default dim) + intent ranking | solid; access-neutral ranking calibrated with floor-ratio gating + deterministic post-RRF cosine blend + runtime-gated visible-edge backlink / candidate-owned salience / richer dedup / autocut mechanics + aggregate boost-attribution/score-bucket/drop telemetry; true BM25 / non-default-dim ANN deferred |
 | Reranker + query rewriter (gated, skippable, audited) | solid; rerank payload bounded by a token (char-proxy) budget |
 | Context Brief: synthesis + citations + two-tier gap analysis | solid; selected Knowledge, Memory, Project, and Sources briefs can persist as owner-private `retrieval_brief` artifacts through separate routes; gap findings are advisory artifact metadata, not a proposal channel |
-| Ask Space (unified entry point) | core product slice; `POST /api/v1/ask-space/think` (`modules/askSpace`) runs the per-domain Context Brief pipeline across Knowledge (always) + opt-in Memory/Project/Sources through `RetrievalSearchService`, reusing each domain's own read gate and Memory access logging; returns per-domain cited answers, optional opt-in cross-domain `combined_answer`, aggregate gap summary, domain-tagged provenance, and proposal-first follow-up descriptors (Claim Candidate Packet / maintenance scan, surfaced only with Context Ops scan authority); combined synthesis reuses `ProviderSynthesizer` and the same external-egress/source-policy gate over the union of included sources, and Memory is excluded from the combined prompt unless `combine_include_memory` is explicitly set; optionally persists per-domain `retrieval_brief` artifacts plus an owner-private `ask_space_session` artifact; creates no Memory proposals and performs no canonical writes; web `Ask Space` page + `ask_space_session` renderer |
+| Ask Space (unified entry point) | core product slice; `POST /api/v1/ask-space/think` (`modules/askSpace`) runs the per-domain Context Brief pipeline across Knowledge (default) + opt-in Memory/Project/Sources/Inquiry through `RetrievalSearchService`, reusing each domain's own read gate and Memory access logging; returns per-domain cited answers, optional opt-in cross-domain `combined_answer`, aggregate gap summary, domain-tagged provenance, and proposal-first follow-up descriptors (Claim Candidate Packet / maintenance scan, surfaced only with Context Ops scan authority); combined synthesis reuses `ProviderSynthesizer` and the same external-egress/source-policy gate over the union of included sources, and Memory is excluded from the combined prompt unless `combine_include_memory` is explicitly set; optionally persists per-domain `retrieval_brief` artifacts plus an owner-private `ask_space_session` artifact; creates no Memory proposals and performs no canonical writes; web `Ask Space` page + `ask_space_session` renderer |
 | Claim Candidate Packet | solid backend/product slice; `POST /api/v1/knowledge/claims/candidate-packets` plus the web API client and artifact renderer is the explicit bridge from selected retrieval brief / retrieval maintenance / diagnostics / Memory maintenance artifacts into `claim_candidate_packet` artifacts and proposals; brief uncited-claim candidates include deterministic holder/perspective, validity/observation, and governed source-ref hints when available; accepting the packet creates valid child pending claim/claim-relation/object-relation proposals only and records skipped invalid children; `space_ops` packets default to `space_shared` source artifacts and require explicit `promote_private_sources_to_space_ops` opt-in plus `private_source_promotion_confirmed = true` to include the caller's private source artifacts |
 | Maintenance scan (duplicate/orphan/thin/stale/relation, read-only) | solid; manual route plus Context Review Cycle route/Automation target produces report artifacts and optional packet proposals |
 | Egress governance (per-space external-egress switch) | solid; backend + Space Settings UI implemented; external/local/internal destination vocabulary implemented; DB-backed chat candidates use the conservative external-provider egress gate until chat provider routing is passed into the collector |
 | Source / connector consent | implemented across the retrieval read plane; source connections normalize versioned consent/policy JSON and enforce connected retention/proposal-target checks; the reader/agent/admin read gate + source-egress gate are consumed by search, Context Brief, graph/relational traversal, managed-run tools, rerank/synthesis/embedding egress, maintenance scans, relation discovery, Context Ops drill-down, claim evidence rendering, non-creator artifact attachment, and DB-backed chat candidates with explicit source ids; the connector→projection linkage is covered by a real-DB test; connector refresh/purge edge cases and future chat artifact/evidence-pack attachments remain deferred |
 | Agent retrieval tool surface (viewer-scoped, audited) | solid; opt-in managed `model_api` / `ts_agent_host` tool loop for Knowledge `retrieval.search` / `retrieval.brief`; explicit Memory, Project public-summary, and Sources domain tools; manual and preflight modes; runtime-host tool calling supports OpenAI-compatible and Anthropic providers; Agent UI exposes the Memory/Project/Sources opt-in |
-| Explicit context artifact attachments | productized for `/context/build` and first managed-run forms; context build/run create accept `context_artifact_ids`; the shared Context Artifact picker selects/removes/revokes visible attachable retrieval/maintenance/eval/explain artifacts in Context Preview, Task run creation, and Research workflow launch, loading each attachable type through server-side filters; previews approved/blocked attachment entries and displays policy/source-policy snapshots including `source_connection_ids`, normalized source-policy snapshots, and the current reader gate; Artifacts list/detail pages link attachable reports into that workflow; attached artifacts render as bounded evidence packs with artifact refs, domain labels, workspace/project policy snapshots, included evidence-pack refs, and prepare-time revalidation; workspace/project-scoped active revocation rows block future attachment without mutating existing snapshots; workspace-scoped `space_shared` artifacts require `artifacts.workspace_id`, matching workspace context, and Project-inherited workspace ACL for non-owner attachment/list/read paths; unsupported, revoked, or hidden artifacts are recorded as blocked |
+| Explicit context artifact attachments | productized for `/context/build` and first managed-run forms; context build/run create accept `context_artifact_ids`; the shared Context Artifact picker selects/removes/revokes visible attachable retrieval/maintenance/eval/explain artifacts in Context Preview, Task run creation, and Research workflow launch, loading each attachable type through server-side filters; previews approved/blocked attachment entries and displays policy/source-policy snapshots including `source_connection_ids`, normalized source-policy snapshots, and the current reader gate; Artifacts list/detail pages link attachable reports into that workflow; attached artifacts render as bounded evidence packs with artifact refs, domain labels, project_folder/project policy snapshots, included evidence-pack refs, and prepare-time revalidation; project_folder/project-scoped active revocation rows block future attachment without mutating existing snapshots; Folder-scoped `space_shared` artifacts require `artifacts.project_folder_id`, matching Folder context, and Project-inherited Folder ACL for non-owner attachment/list/read paths; unsupported, revoked, or hidden artifacts are recorded as blocked |
 | Context Ops read model + Context Health page | operator console; `GET /api/v1/context-ops/summary` and the web `Context Health` page aggregate whole-space index/embedding/source health plus the current operator's private maintenance, diagnostics, explain, brief, feedback, and Memory provenance loop; `GET /api/v1/context-ops/drilldown` turns the index-freshness, embedding-backlog, source-warning, maintenance-report, diagnostics-report, explain-report, and recent-brief aggregates into bounded, access-safe detail lists/summaries (object lists pass the same adapter read gate **and** source read policy as search; source-warning details are owner-scoped unless owner/admin; artifact sections reuse owner-scoped/`space_ops`-gated summary queries); the page also exposes maintenance-scan, diagnostics-report, targeted explain, explain preset/comparison, Context Review Cycle scan triggers, and artifact-level or batched Claim Candidate Packet actions for supported recent briefs/reports (with optional packet creation and a Memory maintenance toggle) gated by `context_ops_scan_mode`; `POST /api/v1/context-ops/review-cycle/run` and Automation target `context_ops_review_cycle` run the broader read-only/proposal-first cycle and return `degraded`/`warnings` when optional packet stages fail after reports are saved; the `retrieval.space.settings` scoped setting's `context_ops_review_mode` can additionally expose shared `space_ops` reports/packets to owners/admins or all members without weakening private packet creator-only review |
 | Context observation reports | implemented lightweight Context Ops entry; `POST /api/v1/context-ops/context-observations/scan` summarizes the current Context Ops window into red/yellow/green observations, daily observation text, periodic distillation suggestions via `suggested_target`, and source refs; it can persist a private `context_observation_report` artifact with `canonical_format = context_observation_report.v1`; response and artifact payload always include `canonical_write_performed = false` and do not write Memory, Knowledge, Capability, or Assistant preference rows |
 | Object Schema Registry / object schema | implemented core runtime slices; fixed `object_type` plus governed per-space `object_kind`, active-kind retrieval filters/metadata, Space Settings registry UI, field-schema proposal validation, relation hints, object-schema export/import, and deterministic Context Ops schema suggestions |
@@ -68,7 +68,7 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 ## Context Observation Reports
 
 `POST /api/v1/context-ops/context-observations/scan` is the lightweight Context
-Workspace entry into Context Ops. It reuses the access-safe Context Ops summary,
+Configuration entry into Context Ops. It reuses the access-safe Context Ops summary,
 then produces a `context_observation_report.v1` shape:
 
 - red/yellow/green observation items
@@ -221,18 +221,18 @@ attachable types: `retrieval_brief`, `retrieval_eval_report`,
 Project Research automatically attaches its refreshed matrix to synthesis as a
 bounded evidence pack; matrix metadata carries the originating source connection
 ids so prepare-time source-policy and provider-egress checks still apply.
-workspace-scoped `space_shared` artifacts are not broad space-shared artifacts:
-`artifacts.workspace_id` is required by the baseline schema, and non-owner
-attachment/list/read/export paths require the caller's workspace context to
-match that value and pass Project-inherited workspace ACL. Workspaces have no
-separate membership table: read access is inherited from linked Projects through
-`project_workspaces` plus project owner / active `project_members` rows, with
-personal-space workspaces treated as readable inside that personal space. A
-workspace with no linked readable Project fails closed for non-owner
-workspace-scoped `space_shared` artifact reads. The Artifacts UI preserves an explicit
-`workspace_id` filter when listing, opening, or exporting workspace-scoped
-artifacts; without a workspace context, workspace-scoped `space_shared` artifacts remain
-hidden from non-owners.
+Project-Folder-scoped `space_shared` artifacts are not broad space-shared
+artifacts: `artifacts.project_folder_id` is required by the baseline schema,
+and non-owner attachment/list/read/export paths require the caller's Folder
+context to match that value and pass the Folder's inherited Project ACL. A
+Project Folder has no separate membership table — it inherits its owning
+Project's ACL completely (`project_folders.project_id` is a direct, non-null,
+single-owner FK; there is no link table), with personal-space Folders treated
+as readable inside that personal space. A Folder whose owning Project is not
+readable fails closed for non-owner Folder-scoped `space_shared` artifact
+reads. The Artifacts UI preserves an explicit `project_folder_id` filter when
+listing, opening, or exporting Folder-scoped artifacts; without a Folder
+context, Folder-scoped `space_shared` artifacts remain hidden from non-owners.
 
 Attachments are rendered by the context repository as bounded summaries, not raw
 artifact content dumps. Each attachment carries a model-visible domain label
@@ -265,11 +265,11 @@ The shared web Context Artifact picker is the current productized selection
 surface. It loads visible attachable artifacts through per-type server filters,
 supports URL preselection from Artifacts in Context Preview, removes selected
 artifact ids for future builds/runs, and can persist or restore future-use
-workspace/project revocations. Context Preview renders the returned
+project_folder/project revocations. Context Preview renders the returned
 approved/blocked attachment entries with rejection reasons plus policy and
 source-policy snapshots. Task managed-run creation and Research workflow launch
 use the same picker and pass explicit context artifact ids into their run bodies;
-Task runs support workspace-scoped revocation because the Task model has no
+Task runs support project_folder-scoped revocation because the Task model has no
 `project_id`. Agent detail currently has no direct run-creation form; if added,
 it should reuse the shared picker. Chat-turn attachments remain out of scope.
 
@@ -277,7 +277,7 @@ Attachment renderers are intentionally bounded. Explain report attachments do
 not stringify their stored target/match JSON; they expose only selected
 aggregate-safe fields. Brief attachments can include saved query/answer metadata
 because the user explicitly selected that artifact for runtime context.
-Workspace/project-scoped `context_artifact_revocations` rows are soft-deletable
+Project Folder/project-scoped `context_artifact_revocations` rows are soft-deletable
 future-use deny rows only; past run snapshots remain immutable audit records.
 The chat-turn path still does not accept artifact attachments yet. Its
 DB-backed candidate collector re-gates Knowledge, Source, and Project
@@ -621,7 +621,8 @@ remains future product work.
   and Sources retrieval tool opt-in, Ask Space exposes Sources as a non-default
   domain toggle, Home links allowed reviewers to Context
   Ops according to Context Ops review/scan settings and shows the other
-  context-layer operation surfaces, Context Ops displays backend aggregate health
+  context-layer operation surfaces, Ask Space also exposes Inquiry Threads
+  through the Inquiry adapter's live Project read gate, Context Ops displays backend aggregate health
   summaries, Retrieval Settings exposes review/scan settings, and proposal
   detail can accept retrieval maintenance packets.
 - **Agent tool surface.** `modules/retrieval/tool/service.ts`

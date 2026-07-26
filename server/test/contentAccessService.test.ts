@@ -9,7 +9,7 @@ class AccessDb {
     owner_user_id: "owner-1",
     visibility: "private",
     access_level: "full",
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
   };
   activeUsers = new Set(["owner-1", "member-1"]);

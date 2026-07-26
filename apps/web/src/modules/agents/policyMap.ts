@@ -126,11 +126,11 @@ const INPUT_CONTEXT_LABELS: Record<string, string> = {
   existing_ideas: 'Existing ideas',
   ideas: 'Ideas',
   projects: 'Projects (current project if selected)',
-  workspace_metadata: 'Workspace metadata',
+  project_folder_metadata: 'Project Folder metadata',
   recent_runs: 'Recent runs',
   recent_proposals: 'Recent proposals',
   manual_context: 'Manually attached context',
-  selected_workspace: 'Selected workspace',
+  selected_project_folder: 'Selected Project Folder',
   selected_files: 'Selected files',
   git_diff: 'Git diff',
   agent_docs: 'Agent docs',
@@ -319,7 +319,7 @@ export function safetySummary(version: {
   if (writable.length === 0 || asBool(mem.requires_proposal)) cannot.push('directly write memory (proposal-only)')
   if (!asBool(tool.shell)) cannot.push('access the shell')
   if (!asBool(tool.file_write)) cannot.push('write files')
-  if (!asBool(tool.workspace_write)) cannot.push('write workspace files')
+  if (!asBool(tool.project_folder_write)) cannot.push('write Project Folder files')
   if ('web_search' in tool && !asBool(tool.web_search)) cannot.push('search the web')
   if ('patch_apply' in tool && !asBool(tool.patch_apply)) cannot.push('apply code patches')
   if (!asBool(tool.credential_access)) cannot.push('access credentials')

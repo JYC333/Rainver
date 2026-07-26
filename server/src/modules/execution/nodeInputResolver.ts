@@ -1,5 +1,6 @@
 import type { WorkflowNodeInputBinding } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { Queryable } from "../routeUtils/common";
+import { runOutputResult } from "../runs/orchestrationResults";
 
 const MAX_BINDING_CHARS = 12_000;
 
@@ -54,19 +55,24 @@ export async function resolveNodeInputs(
          ) latest_evaluation ON latest_evaluation.outcome_status = 'passed'
         WHERE source_node.space_id = $1 AND source_node.node_key = $2
           AND source_node.${input.scopeColumn} = $3
-        ORDER BY link.created_at DESC, link.id DESC
+        ORDER BY (link.role='delegated') DESC, link.created_at DESC, link.id DESC
         LIMIT 1`,
       [input.spaceId, binding.from_node, input.scopeId],
     );
     const row = source.rows[0];
+    const canonicalOutput = row ? record(row.output_json) : {};
+    const hasCanonicalOutput = canonicalOutput.schema_version === "run_output.v1";
+    const canonicalResult = hasCanonicalOutput ? runOutputResult(row?.output_json) : {};
     let value: unknown = null;
     let artifactId: string | null = null;
     let missingReason: string | null = row ? null : "passed_source_run_missing";
-    if (row && binding.source === "output_text") {
-      value = record(row.output_json).output_text ?? null;
+    if (row && binding.source !== "artifact" && !hasCanonicalOutput) {
+      missingReason = "canonical_output_missing";
+    } else if (row && binding.source === "output_text") {
+      value = canonicalOutput.summary ?? null;
       if (value === null) missingReason = "output_text_missing";
     } else if (row && binding.source === "output_json") {
-      value = jsonPointer(row.output_json, binding.json_pointer ?? "");
+      value = jsonPointer(canonicalResult, binding.json_pointer ?? "");
       if (value === undefined) {
         value = null;
         missingReason = "json_pointer_missing";

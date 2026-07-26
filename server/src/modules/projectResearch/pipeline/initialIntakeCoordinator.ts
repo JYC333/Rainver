@@ -9,9 +9,11 @@ import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/conf
 import { SourcePostProcessingService } from "../../sources/postProcessing/service";
 import { relevanceProfileFromResearchContext, type ResearchScopeContext } from "../researchContext";
 import { ProjectResearchDiscoveryBridge } from "./researchDiscoveryBridge";
+import type { ResearchThreadScopeRef } from "../threadScope";
 
 export interface InitialIntakeRuleInput {
   researchQuestion: string;
+  threadScope: ResearchThreadScopeRef[];
   agentId: string;
   runtimeProfileId: string;
   researchScope: ResearchScopeContext;
@@ -147,7 +149,9 @@ export class ProjectResearchInitialIntakeCoordinator {
     providerKey: string,
   ): Promise<Record<string, unknown>> {
     await lockActiveProjectForMutation(this.db, identity.spaceId, projectId);
-    const ruleName = `Auto Research: ${monitorName}`.trim();
+    const primaryThreadId = input.threadScope[0]?.thread_id;
+    if (!primaryThreadId) throw new HttpError(422, "Auto Research requires a pinned Inquiry Thread scope");
+    const ruleName = `Auto Research ${primaryThreadId.slice(0, 8)}: ${monitorName}`.trim();
     const existing = await this.db.query<Record<string, unknown>>(
       `SELECT * FROM source_post_processing_rules
         WHERE space_id=$1 AND project_id=$2 AND source_channel_id=$3
@@ -180,6 +184,7 @@ export class ProjectResearchInitialIntakeCoordinator {
         runtime_profile_id: input.runtimeProfileId,
         structured_output_schema_id: "source_post_processing.result.v1",
         research_question_version: 1,
+        thread_scope: input.threadScope,
         content_profile: contentProfileForProvider(providerKey),
         summary_goal: input.researchQuestion,
         retrieval_context: { enabled: true, domains: ["project"], query: input.researchQuestion, max_results_per_domain: 10, mode: "hybrid" },

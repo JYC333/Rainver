@@ -21,7 +21,7 @@ import { projects } from "./projects";
 import { runs } from "./runs";
 import { sessions } from "./sessions";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 
 export const instanceIdentity = pgTable("instance_identity", {
 	id: varchar({ length: 32 }).primaryKey().notNull(),
@@ -149,7 +149,7 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 	sessionName: varchar("session_name", { length: 256 }),
 	agentId: varchar("agent_id", { length: 36 }),
 	projectId: varchar("project_id", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	triggerOrigin: varchar("trigger_origin", { length: 64 }),
 	occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "string" }).notNull(),
 	recordedAt: timestamp("recorded_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -242,9 +242,9 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 		name: "token_usage_events_project_id_fkey",
 	}).onDelete("set null"),
 	foreignKey({
-		columns: [table.workspaceId],
-		foreignColumns: [workspaces.id],
-		name: "token_usage_events_workspace_id_fkey",
+		columns: [table.projectFolderId],
+		foreignColumns: [projectFolders.id],
+		name: "token_usage_events_project_folder_id_fkey",
 	}).onDelete("set null"),
 	foreignKey({
 		columns: [table.importBatchId],
@@ -258,7 +258,7 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 	}).onDelete("set null"),
 	check("ck_token_usage_events_source_type", sql`(source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])`),
 	check("ck_token_usage_events_event_type", sql`(event_type)::text = ANY (ARRAY[('llm.generation'::character varying)::text, ('llm.embedding'::character varying)::text, ('llm.rerank'::character varying)::text, ('cli.history_usage'::character varying)::text, ('usage.adjustment'::character varying)::text])`),
-	check("ck_token_usage_events_execution_channel", sql`(execution_channel)::text = ANY (ARRAY[('managed_api'::character varying)::text, ('provider_proxy'::character varying)::text, ('local_cli_transcript'::character varying)::text, ('manual_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('unknown'::character varying)::text])`),
+	check("ck_token_usage_events_execution_channel", sql`(execution_channel)::text = ANY (ARRAY[('managed_api'::character varying)::text, ('provider_proxy'::character varying)::text, ('local_cli'::character varying)::text, ('local_cli_transcript'::character varying)::text, ('manual_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('unknown'::character varying)::text])`),
 	check("ck_token_usage_events_total_tokens_source", sql`(total_tokens_source)::text = ANY (ARRAY[('provider_total'::character varying)::text, ('sum_of_buckets'::character varying)::text, ('estimated'::character varying)::text, ('unknown'::character varying)::text])`),
 	check("ck_token_usage_events_usage_accuracy", sql`(usage_accuracy)::text = ANY (ARRAY[('provider_reported'::character varying)::text, ('proxy_observed'::character varying)::text, ('transcript_lower_bound'::character varying)::text, ('estimated'::character varying)::text, ('quota_snapshot'::character varying)::text, ('unknown'::character varying)::text])`),
 	check("ck_token_usage_events_dedupe_confidence", sql`(dedupe_confidence)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text])`),

@@ -24,6 +24,13 @@ snapshotted onto each run.
 same command rendering, credential, context, subprocess, output parser, and
 usage provider path. Native adapters are limited to `capability`.
 
+When `run_input.v1` contains tool grants, the generic CLI path configures the
+vendor's MCP client for the private Run tool broker. The broker is only a
+transport over `AgentToolGateway`/`SystemActionGateway`; registry schemas,
+capability and immutable AgentVersion allowlists, policy,
+approval/proposal behavior, idempotency, domain executors, and audit remain
+server-owned.
+
 Use `/runtime-tools` for CLI binary installation/status, space runtime policy,
 and
 `RuntimeAdapterSpec` / `adapter_type` for runtime semantics. The old
@@ -44,7 +51,7 @@ worktree isolation.
 Credential profile readiness requires the selected source path to exist.
 
 Vendor context files (`CLAUDE.md`, `AGENTS.md`, `prompt.md`) are generated only
-inside the run worktree. They are never written to the real workspace because
+inside the run worktree. They are never written to the real Project Folder because
 agent-space remains the source of truth for context snapshots and proposals.
 
 `one_shot_docker` is implemented for local CLI specs through the server's
@@ -54,11 +61,16 @@ runtime-tool path is unavailable. Provider-proxy/network-profile execution is
 not permitted in this MVP Docker mode.
 
 Usage providers are runtime-generic. Adapters without a real probe return
-unknown accuracy plus fallback run statistics. Claude Code quota refresh is
-cached-only in this build.
+unknown accuracy plus fallback run statistics. Live Claude Code and Codex
+quota probes use unique isolated homes, and cached snapshots are scoped to the
+selected credential profile.
 
-Output parsers must describe real behavior. Current local CLI specs use
-generic/plain-text parsing unless an adapter-specific parser is implemented.
+Output parsers must describe real behavior. Claude Code uses stream JSON with
+partial messages enabled. Codex uses its app-server stdio protocol and OpenCode
+uses ACP over stdio; those protocol surfaces provide native assistant-text
+deltas instead of completion-only CLI envelopes. Supported lifecycle events
+are normalized incrementally; unknown vendor payload and text deltas are not
+promoted to persisted semantic events.
 
 To add a new local CLI adapter, add a validated `RuntimeAdapterSpec` and the
 corresponding server adapter behavior if command rendering, parsing, or credential

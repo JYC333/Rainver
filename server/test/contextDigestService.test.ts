@@ -5,7 +5,7 @@ import {
   renderPolicyBundleContent,
   renderMemoryBundleContent,
   markPolicyBundleDirty,
-  markWorkspaceBundleDirty,
+  markProjectFolderBundleDirty,
   markAgentBundleDirty,
 } from "../src/modules/context/digestService";
 
@@ -59,7 +59,7 @@ class FakeDb {
     this.queries.push({ sql, params });
     const norm = sql.replace(/\s+/g, " ").trim();
 
-    if (norm.startsWith("SELECT 1 FROM workspaces") || norm.startsWith("SELECT 1 FROM agents")) {
+    if (norm.startsWith("SELECT 1 FROM project_folders") || norm.startsWith("SELECT 1 FROM agents")) {
       return this._scopeActive ? { rows: [{}], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
     if (norm.startsWith("SELECT id, name, domain") && norm.includes("FROM policies")) {
@@ -226,17 +226,17 @@ describe("PgContextDigestService.generatePolicyBundle", () => {
   it("changes source_hash when policy priority or applies_to changes", async () => {
     const base = await new PgContextDigestService(
       new FakeDb().withPolicies([
-        policy({ priority: 10, applies_to_json: { workspace_ids: ["ws-1"] } }),
+        policy({ priority: 10, applies_to_json: { project_folder_ids: ["ws-1"] } }),
       ]).withDigest(null) as never,
     ).generatePolicyBundle("space-1");
     const priorityChanged = await new PgContextDigestService(
       new FakeDb().withPolicies([
-        policy({ priority: 20, applies_to_json: { workspace_ids: ["ws-1"] } }),
+        policy({ priority: 20, applies_to_json: { project_folder_ids: ["ws-1"] } }),
       ]).withDigest(null) as never,
     ).generatePolicyBundle("space-1");
     const scopeChanged = await new PgContextDigestService(
       new FakeDb().withPolicies([
-        policy({ priority: 10, applies_to_json: { workspace_ids: ["ws-2"] } }),
+        policy({ priority: 10, applies_to_json: { project_folder_ids: ["ws-2"] } }),
       ]).withDigest(null) as never,
     ).generatePolicyBundle("space-1");
 
@@ -385,14 +385,14 @@ describe("renderMemoryBundleContent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PgContextDigestService.generateWorkspaceBundle
+// PgContextDigestService.generateProjectFolderBundle
 // ---------------------------------------------------------------------------
 
-describe("PgContextDigestService.generateWorkspaceBundle", () => {
+describe("PgContextDigestService.generateProjectFolderBundle", () => {
   it("inserts a new digest when none exists", async () => {
     const db = new FakeDb().withMemories([mem()]).withDigest(null);
     const svc = new PgContextDigestService(db as never);
-    const result = await svc.generateWorkspaceBundle("space-1", "ws-1");
+    const result = await svc.generateProjectFolderBundle("space-1", "ws-1");
     expect(result.status).toBe("generated");
     expect(result.version).toBe(1);
     expect(result.scope_id).toBe("ws-1");
@@ -402,12 +402,12 @@ describe("PgContextDigestService.generateWorkspaceBundle", () => {
 
   it("returns 'unchanged' when source_hash matches existing active digest", async () => {
     const seeder = new FakeDb().withMemories([mem()]).withDigest(null);
-    const first = await new PgContextDigestService(seeder as never).generateWorkspaceBundle("space-1", "ws-1");
+    const first = await new PgContextDigestService(seeder as never).generateProjectFolderBundle("space-1", "ws-1");
 
     const db = new FakeDb()
       .withMemories([mem()])
       .withDigest({ id: "old-digest", version: 1, status: "active", source_hash: first.source_hash });
-    const result = await new PgContextDigestService(db as never).generateWorkspaceBundle("space-1", "ws-1");
+    const result = await new PgContextDigestService(db as never).generateProjectFolderBundle("space-1", "ws-1");
     expect(result.status).toBe("unchanged");
     expect(result.id).toBe("old-digest");
     expect(db.captureInsertedDigestId()).toBeNull();
@@ -417,7 +417,7 @@ describe("PgContextDigestService.generateWorkspaceBundle", () => {
     const db = new FakeDb()
       .withMemories([mem()])
       .withDigest({ id: "old-digest", version: 2, status: "active", source_hash: "stale-hash" });
-    const result = await new PgContextDigestService(db as never).generateWorkspaceBundle("space-1", "ws-1");
+    const result = await new PgContextDigestService(db as never).generateProjectFolderBundle("space-1", "ws-1");
     expect(result.status).toBe("generated");
     expect(result.version).toBe(3);
     expect(db.updates).toContain("supersede");
@@ -426,23 +426,23 @@ describe("PgContextDigestService.generateWorkspaceBundle", () => {
 
   it("re-activates a dirty digest when source_hash is unchanged", async () => {
     const seeder = new FakeDb().withMemories([mem()]).withDigest(null);
-    const first = await new PgContextDigestService(seeder as never).generateWorkspaceBundle("space-1", "ws-1");
+    const first = await new PgContextDigestService(seeder as never).generateProjectFolderBundle("space-1", "ws-1");
 
     const db = new FakeDb()
       .withMemories([mem()])
       .withDigest({ id: "dirty-digest", version: 1, status: "dirty", source_hash: first.source_hash });
-    const result = await new PgContextDigestService(db as never).generateWorkspaceBundle("space-1", "ws-1");
+    const result = await new PgContextDigestService(db as never).generateProjectFolderBundle("space-1", "ws-1");
     expect(result.status).toBe("unchanged");
     expect(db.updates).toContain("mark_active");
     expect(db.captureInsertedDigestId()).toBeNull();
   });
 
-  it("uses workspace_id column in the memory query", async () => {
+  it("uses project_folder_id column in the memory query", async () => {
     const db = new FakeDb().withMemories([]).withDigest(null);
-    await new PgContextDigestService(db as never).generateWorkspaceBundle("space-1", "ws-99");
+    await new PgContextDigestService(db as never).generateProjectFolderBundle("space-1", "ws-99");
     const memQuery = db.queries.find((q) => q.sql.includes("FROM memory_entries"));
     expect(memQuery).toBeDefined();
-    expect(memQuery?.sql).toContain("workspace_id");
+    expect(memQuery?.sql).toContain("project_folder_id");
     expect(memQuery?.sql).toContain("project_id IS NULL");
     expect(memQuery?.sql).toContain("me.visibility = 'space_shared'");
     expect(memQuery?.sql).toContain("highly_restricted");
@@ -452,7 +452,7 @@ describe("PgContextDigestService.generateWorkspaceBundle", () => {
   it("fails closed (404) when the workspace is missing or archived", async () => {
     const db = new FakeDb().withMemories([mem()]).withDigest(null).withScopeActive(false);
     await expect(
-      new PgContextDigestService(db as never).generateWorkspaceBundle("space-1", "ws-gone"),
+      new PgContextDigestService(db as never).generateProjectFolderBundle("space-1", "ws-gone"),
     ).rejects.toMatchObject({ statusCode: 404 });
     // Existence is checked before any memory load or digest insert.
     expect(db.queries.some((q) => q.sql.includes("FROM memory_entries"))).toBe(false);
@@ -461,8 +461,8 @@ describe("PgContextDigestService.generateWorkspaceBundle", () => {
 
   it("locks the scope row FOR UPDATE to serialize against a concurrent archive", async () => {
     const db = new FakeDb().withMemories([]).withDigest(null);
-    await new PgContextDigestService(db as never).generateWorkspaceBundle("space-1", "ws-1");
-    const scopeCheck = db.queries.find((q) => q.sql.includes("FROM workspaces"));
+    await new PgContextDigestService(db as never).generateProjectFolderBundle("space-1", "ws-1");
+    const scopeCheck = db.queries.find((q) => q.sql.includes("FROM project_folders"));
     expect(scopeCheck?.sql).toContain("FOR UPDATE");
   });
 });
@@ -500,27 +500,27 @@ describe("PgContextDigestService.generateAgentBundle", () => {
   });
 
   it("produces different source hashes for workspace vs agent with same memories", async () => {
-    const run = async (method: "generateWorkspaceBundle" | "generateAgentBundle") => {
+    const run = async (method: "generateProjectFolderBundle" | "generateAgentBundle") => {
       const db = new FakeDb().withMemories([mem()]).withDigest(null);
       const svc = new PgContextDigestService(db as never);
       return svc[method]("space-1", "scope-1");
     };
-    const [ws, ag] = await Promise.all([run("generateWorkspaceBundle"), run("generateAgentBundle")]);
+    const [ws, ag] = await Promise.all([run("generateProjectFolderBundle"), run("generateAgentBundle")]);
     expect(ws.source_hash).not.toBe(ag.source_hash);
   });
 });
 
 // ---------------------------------------------------------------------------
-// markWorkspaceBundleDirty / markAgentBundleDirty
+// markProjectFolderBundleDirty / markAgentBundleDirty
 // ---------------------------------------------------------------------------
 
-describe("markWorkspaceBundleDirty", () => {
+describe("markProjectFolderBundleDirty", () => {
   it("issues UPDATE with workspace scope_type and workspace scope_id", async () => {
     const db = new FakeDb();
-    await markWorkspaceBundleDirty(db as never, "space-1", "ws-1", { triggered_by: "test" });
+    await markProjectFolderBundleDirty(db as never, "space-1", "ws-1", { triggered_by: "test" });
     expect(db.updates).toContain("mark_dirty");
     const updateQuery = db.queries.find((q) => q.sql.includes("status = 'dirty'"));
-    expect(updateQuery?.sql).toContain("scope_type = 'workspace'");
+    expect(updateQuery?.sql).toContain("scope_type = 'project_folder'");
     expect(updateQuery?.sql).toContain("status IN ('active', 'dirty')");
     expect(updateQuery?.params).toContain("space-1");
     expect(updateQuery?.params).toContain("ws-1");
@@ -528,9 +528,9 @@ describe("markWorkspaceBundleDirty", () => {
 
   it("takes the workspace generation advisory lock before marking dirty", async () => {
     const db = new FakeDb();
-    await markWorkspaceBundleDirty(db as never, "space-1", "ws-1", { triggered_by: "test" });
+    await markProjectFolderBundleDirty(db as never, "space-1", "ws-1", { triggered_by: "test" });
     const lock = db.queries.find((q) => q.sql.includes("pg_advisory_xact_lock"));
-    expect(lock?.params).toContain("workspace:space-1:ws-1");
+    expect(lock?.params).toContain("project_folder:space-1:ws-1");
     const lockIdx = db.queries.findIndex((q) => q.sql.includes("pg_advisory_xact_lock"));
     const updateIdx = db.queries.findIndex((q) => q.sql.includes("status = 'dirty'"));
     expect(lockIdx).toBeLessThan(updateIdx);
@@ -568,7 +568,7 @@ describe("ContextDigestRefreshService", () => {
       .withDigest(null)
       .withDirtyDigests([
         { scope_type: "space", scope_id: null, digest_type: "policy_bundle" },
-        { scope_type: "workspace", scope_id: "ws-1", digest_type: "workspace" },
+        { scope_type: "project_folder", scope_id: "ws-1", digest_type: "project_folder" },
         { scope_type: "agent", scope_id: "agent-1", digest_type: "agent" },
       ]);
 
@@ -576,7 +576,7 @@ describe("ContextDigestRefreshService", () => {
 
     expect(results.map((r) => `${r.digest_type}:${r.scope_id ?? "space"}`)).toEqual([
       "policy_bundle:space",
-      "workspace:ws-1",
+      "project_folder:ws-1",
       "agent:agent-1",
     ]);
     expect(results).toEqual([
@@ -587,8 +587,8 @@ describe("ContextDigestRefreshService", () => {
         source_policy_count: 1,
       }),
       expect.objectContaining({
-        digest_type: "workspace",
-        scope_type: "workspace",
+        digest_type: "project_folder",
+        scope_type: "project_folder",
         scope_id: "ws-1",
         source_memory_count: 1,
       }),

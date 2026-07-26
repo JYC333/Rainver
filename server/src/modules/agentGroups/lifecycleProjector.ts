@@ -3,6 +3,7 @@ import { getDbPool, type Pool } from "../../db/pool";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { withDbTransaction } from "../routeUtils/common";
 import { PgRunRepository, type RunRecord } from "../runs/repository";
+import { runOutputResult } from "../runs/orchestrationResults";
 import { PgAgentGroupRepository, type RunDelegationRecord } from "./repository";
 
 type DelegationTerminalStatus = "succeeded" | "failed" | "cancelled";
@@ -95,6 +96,19 @@ export class AgentGroupRunLifecycleProjector {
     });
   }
 
+  async reconcileWaitingRun(run: RunRecord): Promise<void> {
+    if (run.status !== "waiting_for_dependency" || !run.run_group_id) return;
+    await withDbTransaction(this.pool, async (client) => {
+      await queueWaitingDependencyRunIfReady({
+        groups: new PgAgentGroupRepository(client),
+        runs: new PgRunRepository(client),
+        jobs: new PgJobQueueRepository(client),
+        completedRun: run,
+        waitingRun: run,
+      });
+    });
+  }
+
   private async projectGroupedRunTerminalMessage(run: RunRecord): Promise<void> {
     if (!run.run_group_id || run.delegation_id) return;
     if (!isTerminalRunStatus(run.status)) return;
@@ -163,9 +177,10 @@ function delegationStatusForRun(status: string): DelegationTerminalStatus | null
 }
 
 function delegationResultSummary(run: RunRecord): string {
-  const output = recordValue(run.output_json);
-  const text = stringValue(output.output_text)
-    ?? stringValue(output.summary)
+  const envelope = recordValue(run.output_json);
+  const output = runOutputResult(run.output_json);
+  const text = stringValue(envelope.summary)
+    ?? stringValue(output.output_text)
     ?? stringValue(output.result_summary);
   if (text) return truncateResultSummary(text);
 
@@ -195,9 +210,10 @@ function stringValue(value: unknown): string | null {
 
 function groupedRunMessageContent(run: RunRecord): string | null {
   if (run.status === "failed" || run.status === "cancelled" || run.status === "orphaned") return null;
-  const output = recordValue(run.output_json);
-  const text = stringValue(output.output_text)
-    ?? stringValue(output.summary)
+  const envelope = recordValue(run.output_json);
+  const output = runOutputResult(run.output_json);
+  const text = stringValue(envelope.summary)
+    ?? stringValue(output.output_text)
     ?? stringValue(output.result_summary);
   return text ? truncateResultSummary(text) : null;
 }
@@ -236,7 +252,7 @@ async function appendDelegationLifecycleEvent(input: {
     event_type: input.event_type,
     status: input.status,
     summary: input.summary,
-    workspace_id: input.run.workspace_id,
+    project_folder_id: input.run.project_folder_id,
     metadata_json: metadata,
   });
   if (!input.run.root_run_id || input.run.root_run_id === input.run.id) return;
@@ -246,7 +262,7 @@ async function appendDelegationLifecycleEvent(input: {
     event_type: input.event_type,
     status: input.status,
     summary: input.summary,
-    workspace_id: input.run.workspace_id,
+    project_folder_id: input.run.project_folder_id,
     metadata_json: metadata,
   });
 }
@@ -331,7 +347,8 @@ async function queueWaitingDependencyRunIfReady(input: {
     metadata_json: {
       wait_for_results_run_id: resumed.id,
       depends_on_run_ids: waiting.depends_on_run_ids,
-      completed_run_id: input.completedRun.id,
+      completed_run_id:
+        dependencyRuns[dependencyRuns.length - 1]?.id ?? input.completedRun.id,
     },
   });
   await input.jobs.enqueue({
@@ -339,7 +356,7 @@ async function queueWaitingDependencyRunIfReady(input: {
     space_id: resumed.space_id,
     user_id: group.manager_user_id,
     agent_id: resumed.agent_id,
-    workspace_id: resumed.workspace_id ?? null,
+    project_folder_id: resumed.project_folder_id ?? null,
     payload: {
       run_id: resumed.id,
       run_group_id: resumed.run_group_id,

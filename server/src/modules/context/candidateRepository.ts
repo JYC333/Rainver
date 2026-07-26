@@ -27,7 +27,7 @@ import { readSpaceRetrievalSettings } from "../retrieval/settings";
  * the `buildChatContext` loop applies `max_items` / `max_tokens` / dedup over
  * the ordered prefix.
  *
- * The chat request carries no `workspace_id` / `project_id` / `manual_context`,
+ * The chat request carries no `project_folder_id` / `project_id` / `manual_context`,
  * so only the memory / knowledge / source / activity selectors fire in this
  * path.
  *
@@ -281,9 +281,9 @@ export class PgChatCandidateRepository {
 
   /**
    * A project's notes (its auto-created Knowledge Notes folder, see
-   * workspaceService.ts), most recently updated first. Scoped by
+   * areaService.ts), most recently updated first. Scoped by
    * `primary_project_id` at the SQL level — this is what
-   * ChatContextCandidateCollector relies on to keep Project Chat isolated
+   * ChatContextCandidateCollector relies on to keep project-scoped conversation isolated
    * to the requesting project's own notes (never another project's, never
    * space-wide notes).
    */

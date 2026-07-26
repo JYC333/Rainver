@@ -41,12 +41,12 @@ describe("renderContextPreamble", () => {
   it("renders the header plus a bullet per item, with/without excerpt", () => {
     const out = renderContextPreamble([
       item({ item_type: "memory", title: "Mem", excerpt: "content" }),
-      item({ item_type: "workspace", title: "WS", excerpt: "" }),
+      item({ item_type: "project_folder", title: "WS", excerpt: "" }),
     ]);
     expect(out).toBe(
       "[Context from your space — use it if relevant; do not repeat it verbatim.]\n" +
         "- (memory) Mem: content\n" +
-        "- (workspace) WS",
+        "- (project_folder) WS",
     );
   });
 
@@ -61,9 +61,11 @@ describe("renderContextPreamble", () => {
 });
 
 describe("composeChatPrompt", () => {
-  it("prepends the preamble with a blank line, or returns the bare message", () => {
-    expect(composeChatPrompt("PRE", "hi")).toBe("PRE\n\nhi");
-    expect(composeChatPrompt("", "hi")).toBe("hi");
+  it("keeps conversation as the stable prefix and appends dynamic context", () => {
+    expect(composeChatPrompt("history\n\nhi", "PRE")).toBe(
+      "history\n\nhi\n\nPRE",
+    );
+    expect(composeChatPrompt("hi", "")).toBe("hi");
   });
 });
 

@@ -27,7 +27,7 @@ export interface NotebookNoteRow {
 
 /**
  * Resolves a project-scoped note by title (first match, oldest first).
- * Returns null when the project's notes workspace isn't initialized yet, or
+ * Returns null when the project's notes area isn't initialized yet, or
  * the named note doesn't exist (e.g. a starter note was renamed/deleted).
  */
 export async function resolveProjectNoteByTitle(

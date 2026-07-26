@@ -15,7 +15,7 @@ function memory(overrides: Partial<MemoryAuthFields> = {}): MemoryAuthFields {
     access_level: "full",
     owner_user_id: "owner-1",
     scope_type: "user",
-    workspace_id: null,
+    project_folder_id: null,
     ...overrides,
   };
 }

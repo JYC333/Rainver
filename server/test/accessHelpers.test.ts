@@ -10,7 +10,7 @@ const resource = {
   owner_user_id: "owner-1",
   visibility: "private",
   access_level: "full",
-  workspace_id: null,
+  project_folder_id: null,
   project_id: null,
 };
 
@@ -74,7 +74,7 @@ describe("content access", () => {
     expect(predicate).toContain("a.owner_user_id = $2");
     expect(predicate).toContain("content_access_grants content_grant");
     expect(predicate).toContain("project_members content_project_member");
-    expect(predicate).toContain("project_workspaces workspace_access_link");
+    expect(predicate).toContain("project_folders folder_access_folder");
     // The oversight branch is a documented exception (Space owner/admin, only
     // when the Space's oversight_mode <> 'none'), not an unconditional admin
     // bypass — see contentOversightEligibleSql. Assert its exact shape instead

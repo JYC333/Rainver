@@ -5,7 +5,7 @@ export const codePatchSnapshots = pgTable("code_patch_snapshots", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	proposalId: varchar("proposal_id", { length: 36 }).notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }).notNull(),
+	projectFolderId: varchar("project_folder_id", { length: 36 }).notNull(),
 	filesJson: jsonb("files_json").notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -15,7 +15,7 @@ export const codePatchSnapshots = pgTable("code_patch_snapshots", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_code_patch_snapshots_expires_at").using("btree", table.expiresAt.asc().nullsLast()),
 	index("ix_code_patch_snapshots_proposal_id").using("btree", table.proposalId.asc().nullsLast()),
-	index("ix_code_patch_snapshots_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_code_patch_snapshots_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	check("ck_code_patch_snapshots_status", sql`(status)::text = ANY (ARRAY[('available'::character varying)::text, ('rolled_back'::character varying)::text, ('pruned'::character varying)::text])`),
 ]);
 

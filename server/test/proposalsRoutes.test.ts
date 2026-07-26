@@ -29,7 +29,7 @@ function proposal(overrides: Partial<ProposalOut> = {}): ProposalOut {
     id: "proposal-1",
     space_id: "space-1",
     user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     source_session_id: null,
     source_task_id: null,
     source_run_id: null,

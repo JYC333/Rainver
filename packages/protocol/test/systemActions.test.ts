@@ -11,7 +11,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["source.channel.propose_activation","project.source.propose_bind","source.backfill.propose_start","task.plan.propose"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","source.backfill.propose_start","task.plan.propose"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 

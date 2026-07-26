@@ -7,6 +7,10 @@ import {
   __setStreamingRepositoryFactoryForTests,
 } from "../src/modules/streaming";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
+import {
+  publishChatTextDelta,
+  subscribeChatTextDeltas,
+} from "../src/modules/streaming/conversationDeltaBus";
 
 let app: FastifyInstance;
 
@@ -30,7 +34,7 @@ function runEvent(index: number) {
     summary: `event ${index}`,
     error_code: null,
     error_message: null,
-    workspace_id: null,
+    project_folder_id: null,
     artifact_id: null,
     proposal_id: null,
     data_exposure_level: null,
@@ -50,7 +54,7 @@ function runRecord() {
     mode: "live",
     prompt: null,
     instruction: null,
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "mock",
@@ -83,6 +87,23 @@ function parseSseEvents(payload: string): Array<{ id?: string; event?: string; d
 }
 
 describe("run-event SSE streaming edge", () => {
+  it("replays bounded non-durable text deltas when the worker starts before SSE subscribes", () => {
+    publishChatTextDelta("run-buffered", "early ");
+    publishChatTextDelta("run-buffered", "reply");
+    const received: Array<{ delta_index: number; delta: string }> = [];
+    const unsubscribe = subscribeChatTextDeltas("run-buffered", event => {
+      received.push({ delta_index: event.delta_index, delta: event.delta });
+    });
+    publishChatTextDelta("run-buffered", " live");
+    unsubscribe();
+
+    expect(received).toEqual([
+      { delta_index: 0, delta: "early " },
+      { delta_index: 1, delta: "reply" },
+      { delta_index: 2, delta: " live" },
+    ]);
+  });
+
   it("replays server run events as canonical SSE envelopes", async () => {
     __setAuthIdentityForTests({ spaceId: "personal", userId: "user-1" });
     const events = [runEvent(0), runEvent(1)];

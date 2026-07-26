@@ -64,6 +64,10 @@ const objectInput = z.record(z.string(), z.unknown());
 const objectOutput = z.record(z.string(), z.unknown());
 const proposalOutput = z.object({ modelResult: z.record(z.string(), z.unknown()), summary: z.record(z.string(), z.unknown()) }).passthrough();
 const proposalInputs:Record<string,z.ZodType>={
+  "authorization.request": z.object({
+    policy_decision_record_id: z.string().min(1),
+    reason: z.string().trim().min(1).max(1000),
+  }).strict(),
   "task.plan.propose": z.object({
     task_id: z.string().min(1),
     plan_id: z.string().min(1).nullable().optional(),
@@ -80,6 +84,7 @@ const proposalInputs:Record<string,z.ZodType>={
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
+  agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable"),
   action("retrieval.search", "Search knowledge", "retrieval", "RetrievalToolService.search", "retrieval.search"),
   action("retrieval.brief", "Build knowledge brief", "retrieval", "RetrievalToolService.brief", "retrieval.brief"),
   action("memory.retrieval.search", "Search memory", "memory", "RetrievalToolService.search", "memory.retrieval.search"),

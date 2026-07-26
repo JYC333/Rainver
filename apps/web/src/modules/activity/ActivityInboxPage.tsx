@@ -25,7 +25,7 @@ const SOURCE_COLORS: Record<ActivitySourceType, string> = {
   web_capture:     'secondary',
   file_import:     'secondary',
   run_event:       'muted',
-  workspace_event: 'muted',
+  project_folder_event: 'muted',
   system_event:    'muted',
   external_source: 'secondary',
   source:          'secondary',
@@ -313,7 +313,7 @@ export default function ActivityInboxPage() {
               </Badge>
               <Badge variant="outline">{r.status.replace('_', ' ')}</Badge>
               <ScopeBadge visibility={r.visibility} omitShared />
-              {r.workspace_id && <Badge variant="muted">ws: {r.workspace_id.slice(0, 8)}…</Badge>}
+              {r.project_folder_id && <Badge variant="muted">ws: {r.project_folder_id.slice(0, 8)}…</Badge>}
               {r.source_run_id && <Badge variant="muted">run: {r.source_run_id.slice(0, 8)}…</Badge>}
             </div>
 

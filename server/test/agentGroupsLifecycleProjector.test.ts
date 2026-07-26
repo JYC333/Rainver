@@ -19,7 +19,7 @@ function childRun(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "live",
     prompt: null,
     instruction: null,
-    workspace_id: "workspace-1",
+    project_folder_id: "workspace-1",
     session_id: null,
     project_id: null,
     parent_run_id: "run-parent",
@@ -54,6 +54,7 @@ function delegation(overrides: Partial<RunDelegationRecord> = {}): RunDelegation
     budget_json: {},
     context_policy_json: {},
     result_summary: null,
+    tool_call_id: null,
     created_at: "2026-07-05T00:00:00.000Z",
     updated_at: "2026-07-05T00:00:00.000Z",
     completed_at: null,
@@ -68,6 +69,11 @@ function group(overrides: Partial<AgentRunGroupRecord> = {}): AgentRunGroupRecor
     root_run_id: "run-root",
     manager_user_id: "user-1",
     manager_agent_id: "agent-manager",
+    room_id: null,
+    session_id: null,
+    trigger_message_id: null,
+    project_id: null,
+    project_folder_id: null,
     title: "Review room",
     goal: "Coordinate review work.",
     status: "active",
@@ -340,7 +346,7 @@ class FakeClient {
           agent_version_id: String(params[3]),
           runtime_profile_id: params[4] ? String(params[4]) : null,
           context_snapshot_id: String(params[5]),
-          workspace_id: params[6] ? String(params[6]) : null,
+          project_folder_id: params[6] ? String(params[6]) : null,
           session_id: params[7] ? String(params[7]) : null,
           parent_run_id: params[8] ? String(params[8]) : null,
           root_run_id: params[9] ? String(params[9]) : null,
@@ -361,7 +367,7 @@ class FakeClient {
         id: String(params[0]),
         space_id: String(params[1]),
         user_id: params[2] ? String(params[2]) : null,
-        workspace_id: params[3] ? String(params[3]) : null,
+        project_folder_id: params[3] ? String(params[3]) : null,
         agent_id: params[4] ? String(params[4]) : null,
         job_type: String(params[5]),
         status: "pending",
@@ -465,9 +471,9 @@ describe("AgentGroupRunLifecycleProjector", () => {
       delegation_id: null,
       trigger_origin: "manual",
       prompt: "Ask two reviewers to answer 1+1.",
-      workspace_id: null,
+      project_folder_id: null,
       status: "succeeded",
-      output_json: { output_text: "I will ask both reviewers and report back." },
+      output_json: canonicalOutput("I will ask both reviewers and report back."),
       ended_at: "2026-07-05T00:01:00.000Z",
     });
     const state: FakeState = {
@@ -502,7 +508,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
       trigger_origin: "manual",
       prompt: "@Coding Reviewer 354*568=?",
       status: "succeeded",
-      output_json: { output_text: "354 * 568 = 201072." },
+      output_json: canonicalOutput("354 * 568 = 201072."),
       ended_at: "2026-07-05T00:01:00.000Z",
     });
     const terminalCallbackRun = childRun({
@@ -551,7 +557,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
       trigger_origin: "manual",
       prompt: "@Manager @Reviewer compare notes.",
       status: "succeeded",
-      output_json: { output_text: "Reviewer result." },
+      output_json: canonicalOutput("Reviewer result."),
       ended_at: "2026-07-05T00:01:00.000Z",
     });
     const state: FakeState = {
@@ -595,9 +601,9 @@ describe("AgentGroupRunLifecycleProjector", () => {
       delegation_id: null,
       trigger_origin: "manual",
       prompt: "test",
-      workspace_id: null,
+      project_folder_id: null,
       status: "succeeded",
-      output_json: { output_text: "Reviewer test result." },
+      output_json: canonicalOutput("Reviewer test result."),
       ended_at: "2026-07-05T00:01:00.000Z",
     });
     const reviewerOneRun = childRun({
@@ -608,7 +614,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
       delegation_id: null,
       trigger_origin: "manual",
       prompt: "1+1",
-      workspace_id: null,
+      project_folder_id: null,
       status: "running",
       output_json: null,
     });
@@ -621,7 +627,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
       delegation_id: null,
       trigger_origin: "manual",
       prompt: "summarize their results",
-      workspace_id: null,
+      project_folder_id: null,
       status: "waiting_for_dependency",
       output_json: {
         waiting_for_results: {
@@ -643,7 +649,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
           parent_run_id: null,
           root_run_id: "run-root",
           delegation_id: null,
-          workspace_id: null,
+          project_folder_id: null,
         })],
         ["run-reviewer", reviewerRun],
         ["run-reviewer-1", reviewerOneRun],
@@ -676,7 +682,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
     const completedReviewerOneRun = {
       ...reviewerOneRun,
       status: "succeeded",
-      output_json: { output_text: "1 + 1 = 2." },
+      output_json: canonicalOutput("1 + 1 = 2."),
       ended_at: "2026-07-05T00:02:00.000Z",
     };
     state.runs.set("run-reviewer-1", completedReviewerOneRun);
@@ -713,7 +719,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
     const completedManagerRun = {
       ...resumedRun,
       status: "succeeded",
-      output_json: { output_text: "Both reviewers completed. The second result is 2." },
+      output_json: canonicalOutput("Both reviewers completed. The second result is 2."),
       ended_at: "2026-07-05T00:03:00.000Z",
     };
     state.runs.set("run-manager", completedManagerRun);
@@ -760,7 +766,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
   it("marks delegated child runs terminal, writes result message, and writes completed trace events once", async () => {
     const terminalRun = childRun({
       status: "succeeded",
-      output_json: { output_text: "Evidence summary is ready." },
+      output_json: canonicalOutput("Evidence summary is ready."),
       ended_at: "2026-07-05T00:01:00.000Z",
     });
     const state: FakeState = {
@@ -834,7 +840,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
       delegation_id: null,
       trigger_origin: "manual",
       prompt: "Ask two reviewers to answer 1+1.",
-      workspace_id: null,
+      project_folder_id: null,
       status: "waiting_for_dependency",
       output_json: {
         waiting_for_results: {
@@ -849,7 +855,7 @@ describe("AgentGroupRunLifecycleProjector", () => {
     });
     const terminalRun = childRun({
       status: "succeeded",
-      output_json: { output_text: "Reviewer A says 2." },
+      output_json: canonicalOutput("Reviewer A says 2."),
       ended_at: "2026-07-05T00:01:00.000Z",
     });
     const state: FakeState = {
@@ -901,3 +907,12 @@ describe("AgentGroupRunLifecycleProjector", () => {
     expect(resumedParent.prompt).toContain("Reviewer A says 2.");
   });
 });
+function canonicalOutput(summary: string): Record<string, unknown> {
+  return {
+    schema_version: "run_output.v1",
+    status: "succeeded",
+    summary,
+    result: {},
+    output_manifest: [],
+  };
+}

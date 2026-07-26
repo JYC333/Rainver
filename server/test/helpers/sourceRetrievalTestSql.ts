@@ -71,7 +71,7 @@ export function handleSourceRetrievalTestSql<Row = Record<string, unknown>>(
   if (norm.startsWith("SELECT DISTINCT object_type, object_id FROM retrieval_aliases")) {
     return empty<Row>();
   }
-  if (norm.startsWith("SELECT id, space_id, user_id, workspace_id, agent_id, job_type, status")) {
+  if (norm.startsWith("SELECT id, space_id, user_id, project_folder_id, agent_id, job_type, status")) {
     return empty<Row>();
   }
   if (norm.startsWith("INSERT INTO jobs")) {
@@ -97,7 +97,7 @@ function jobRow(params: readonly unknown[]): Record<string, unknown> {
     id: String(params[0]),
     space_id: String(params[1]),
     user_id: nullableString(params[2]),
-    workspace_id: nullableString(params[3]),
+    project_folder_id: nullableString(params[3]),
     agent_id: nullableString(params[4]),
     job_type: String(params[5]),
     status: "pending",

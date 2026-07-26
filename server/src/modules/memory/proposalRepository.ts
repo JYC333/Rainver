@@ -56,7 +56,7 @@ export class MemoryProposalPolicyError extends Error {
 
 interface TargetMemoryRow extends MemoryAuthFields {
   id: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   scope_type: string;
   namespace: string | null;
   memory_type: string;
@@ -65,7 +65,7 @@ interface TargetMemoryRow extends MemoryAuthFields {
   project_id: string | null;
 }
 
-const TARGET_MEMORY_COLUMNS = `id, space_id, owner_user_id, workspace_id,
+const TARGET_MEMORY_COLUMNS = `id, space_id, owner_user_id, project_folder_id,
   scope_type, namespace, memory_type, title, content, visibility,
   access_level, sensitivity_level, deleted_at, project_id`;
 
@@ -150,7 +150,7 @@ export class PgMemoryProposalRepository {
       spaceId: effectiveSpaceId,
       userId,
       proposalType: "memory_create",
-      workspaceId: command.workspace_id ?? null,
+      projectFolderId: command.project_folder_id ?? null,
       targetScope: scope,
       targetVisibility: visibility,
       targetMemoryId: null,
@@ -164,7 +164,7 @@ export class PgMemoryProposalRepository {
       title: command.title,
       payload,
       rationale: "Memory creation requested via public API.",
-      workspaceId: command.workspace_id ?? null,
+      projectFolderId: command.project_folder_id ?? null,
       targetMemoryId: null,
       targetScope: scope,
       targetVisibility: visibility,
@@ -176,7 +176,7 @@ export class PgMemoryProposalRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    workspaceId: string | null,
+    projectFolderId: string | null,
     command: MemoryProposalUpdateCommand,
   ): Promise<ProposalOut> {
     if (
@@ -192,7 +192,7 @@ export class PgMemoryProposalRepository {
       spaceId,
       userId,
       memoryId,
-      workspaceId,
+      projectFolderId,
     );
     if (!target) throw new MemoryProposalNotFoundError("Memory not found");
 
@@ -201,7 +201,7 @@ export class PgMemoryProposalRepository {
       "actor_user_id",
       "target_memory_id",
       "provenance_entries",
-      "workspace_id",
+      "project_folder_id",
       "memory_layer",
     ]);
     const payload: Record<string, unknown> = {
@@ -258,7 +258,7 @@ export class PgMemoryProposalRepository {
       spaceId,
       userId,
       proposalType: "memory_update",
-      workspaceId: workspaceId ?? target.workspace_id,
+      projectFolderId: projectFolderId ?? target.project_folder_id,
       targetScope,
       targetVisibility,
       targetMemoryId: memoryId,
@@ -272,7 +272,7 @@ export class PgMemoryProposalRepository {
       title,
       payload,
       rationale: "Memory update requested via public API.",
-      workspaceId: workspaceId ?? target.workspace_id,
+      projectFolderId: projectFolderId ?? target.project_folder_id,
       targetMemoryId: memoryId,
       targetScope,
       targetVisibility,
@@ -284,14 +284,14 @@ export class PgMemoryProposalRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    workspaceId: string | null,
+    projectFolderId: string | null,
     command: MemoryProposalArchiveCommand,
   ): Promise<ProposalOut> {
     const target = await this.getVisibleTargetMemory(
       spaceId,
       userId,
       memoryId,
-      workspaceId,
+      projectFolderId,
     );
     if (!target) throw new MemoryProposalNotFoundError("Memory not found");
 
@@ -314,7 +314,7 @@ export class PgMemoryProposalRepository {
       spaceId,
       userId,
       proposalType: "memory_archive",
-      workspaceId: workspaceId ?? target.workspace_id,
+      projectFolderId: projectFolderId ?? target.project_folder_id,
       targetScope: target.scope_type,
       targetVisibility: target.visibility,
       targetMemoryId: memoryId,
@@ -328,7 +328,7 @@ export class PgMemoryProposalRepository {
       title: `Archive: ${target.title || memoryId.slice(0, 8)}`,
       payload,
       rationale: "Memory archive requested via public API.",
-      workspaceId: workspaceId ?? target.workspace_id,
+      projectFolderId: projectFolderId ?? target.project_folder_id,
       targetMemoryId: memoryId,
       targetScope: target.scope_type,
       targetVisibility: target.visibility,
@@ -340,7 +340,7 @@ export class PgMemoryProposalRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    workspaceId: string | null,
+    projectFolderId: string | null,
   ): Promise<TargetMemoryRow | null> {
     const result = await this.db.query<TargetMemoryRow>(
       `SELECT ${TARGET_MEMORY_COLUMNS},
@@ -355,7 +355,7 @@ export class PgMemoryProposalRepository {
     const row = result.rows[0];
     if (!row) return null;
     const includeSystemScope = row.scope_type === "system";
-    if (!canReadMemory(row, { userId, spaceId, workspaceId, includeSystemScope })) return null;
+    if (!canReadMemory(row, { userId, spaceId, projectFolderId, includeSystemScope })) return null;
     if (row.project_id && !(await canAccessProject(this.db, spaceId, row.project_id, userId))) return null;
     return row;
   }
@@ -364,7 +364,7 @@ export class PgMemoryProposalRepository {
     spaceId: string;
     userId: string;
     proposalType: "memory_create" | "memory_update" | "memory_archive";
-    workspaceId: string | null;
+    projectFolderId: string | null;
     targetScope: string | null;
     targetVisibility: string | null;
     targetMemoryId: string | null;
@@ -390,7 +390,7 @@ export class PgMemoryProposalRepository {
       },
       metadata_json: {
         proposal_type: input.proposalType,
-        workspace_id: input.workspaceId,
+        project_folder_id: input.projectFolderId,
         target_memory_id: input.targetMemoryId,
         sensitivity_level: input.sensitivityLevel,
         urgency: "normal",
@@ -425,7 +425,7 @@ export class PgMemoryProposalRepository {
     title: string;
     payload: Record<string, unknown>;
     rationale: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     targetMemoryId: string | null;
     targetScope: string | null;
     targetVisibility: string | null;
@@ -438,7 +438,7 @@ export class PgMemoryProposalRepository {
       title: input.title,
       payload: input.payload,
       rationale: input.rationale,
-      workspaceId: input.workspaceId,
+      projectFolderId: input.projectFolderId,
       createdByUserId: input.userId,
       visibility: "space_shared",
       riskLevel: "low",

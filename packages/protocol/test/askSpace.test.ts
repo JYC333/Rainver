@@ -11,10 +11,10 @@ describe("Ask Space protocol contracts", () => {
     expect(request.domains).toEqual(["knowledge", "source"]);
   });
 
-  it("accepts all four fixed domains but rejects unknown domains", () => {
+  it("accepts all five fixed domains but rejects unknown domains", () => {
     expect(AskSpaceRequestSchema.safeParse({
       query: "alpha",
-      domains: ["knowledge", "memory", "project", "source"],
+      domains: ["knowledge", "memory", "project", "source", "inquiry"],
     }).success).toBe(true);
 
     expect(AskSpaceRequestSchema.safeParse({

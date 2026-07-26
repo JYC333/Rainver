@@ -9,7 +9,7 @@ export const retrievalObjects = pgTable("retrieval_objects", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	objectType: retrievalObjectType("object_type").notNull(),
 	objectId: varchar("object_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	visibility: varchar({ length: 32 }),
 	accessLevel: varchar("access_level", { length: 16 }),

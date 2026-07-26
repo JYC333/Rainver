@@ -1,6 +1,7 @@
 import type {
   Memory, Session, Message, Task,
-  ContextPackage, Feature, Workspace, WorkspaceCreateBody, WorkspaceUpdateBody, Page,
+  ContextPackage, Feature, ProjectFolder, ProjectFolderCreateBody, ProjectFolderUpdateBody,
+  ProjectFolderScanCandidate, ProjectFolderExecutionConfig, ProjectFolderExecutionConfigUpdate, Page,
   ReflectResult, ApiError,
   RuntimeToolDefinition, RuntimeToolInstallResult, RuntimeToolStatus, RuntimeToolLatest, SpaceRuntimeToolPolicyOut,
   CredentialLoginMethod, CredentialStatus, CliUsageEntry, CliUsageAutoRefreshSettings, LoginEvent,
@@ -9,21 +10,24 @@ import type {
   CurrentUser, SpaceWithMembership, SpaceOversightMode, SpaceMember, SpaceInvitationOut, SpaceSnapshotDefaults,
   SpaceRetrievalSettings, SpaceRetrievalSettingsUpdate,
   Job, JobEvent, ActivityInboxRecord,
-  Board, TaskRunCreateBody, Run, RunStatusOut, TaskRunListItem, RunAttempt, RunSupervisorDecision, RunEvaluation, RunVerificationResult, RunFinalization,
+  Board, TaskRunCreateBody, Run, RunLogicalIO, RunStatusOut, TaskRunListItem, RunAttempt, RunSupervisorDecision, RunEvaluation, RunVerificationResult, RunFinalization, AuthorizationRequest,
   AgentRunGroup, AgentRunGroupTimeline, AgentRunGroupTrace,
   CreateAgentRunGroupRequest, CreateAgentRunGroupResponse,
   UpdateAgentRunGroupRequest, UpdateAgentRunGroupResponse,
   SendAgentRunGroupMessageRequest, SendAgentRunGroupMessageResponse,
+  Room, RoomDetail, RoomConversation, RoomMessage, CreateRoomRequest,
+  SendRoomMessageRequest,
   TaskArtifact, TaskProposal, Artifact, Proposal, ProposalAcceptOut, AgentOut, AgentCreateBody, AgentUpdateBody, RunCreateBody,
   AgentRuntimeProfileCreateBody, AgentRuntimeProfileOut, AgentRuntimeProfileUpdateBody,
   AgentTemplateOut, AgentTemplateVersionOut, CreateAgentFromTemplateBody,
-  AgentVersionOut, AgentConfigUpdateBody, ChatTurnOut,
+  AgentVersionOut, AgentConfigUpdateBody, ChatTurnAccepted, ChatTurnOut,
+  ConversationBackendBinding, ConversationBackendCatalog,
   SpaceAssistantSettingsOut, SpaceAssistantSettingsUpdate,
   ActivityRecord, ActivitySourceType,
   KnowledgeCreateProposalBody, KnowledgeItem, KnowledgeItemSummary, KnowledgeRelation, KnowledgeRelationProposalBody, KnowledgeUpdateProposalBody,
   KnowledgeSummary, KnowledgeSourceSummary,
   Note, NoteSummary, NoteCreateBody, NoteUpdateBody, NotesTreeReorderBody, NotesTreeReorderResult, NoteRevision, NoteCollection, NoteCollectionCreateBody, NoteCollectionUpdateBody, EntityLink, NoteLinkCreateBody,
-  FileNode, FileContent, GitStatus, RuntimeInfo, ConsoleSession, WorkspaceInfo,
+  FileNode, FileContent, GitStatus,
   HomeSummaryOut, MeSummaryOut, MeTimelineEntry, MeTaskItem, MePendingProposalItem,
   PersonalMemoryGrantPreviewRequest, PersonalMemoryGrantPreviewResponse,
   PersonalMemoryGrantCreateRequest, PersonalMemoryGrantResponse,
@@ -38,10 +42,13 @@ import type {
   PromptDeploymentRef, PromptEvaluationRequest, PromptEvaluationResult,
   PromptPromotionRequest, PromptRenderPreviewRequest, PromptRenderPreviewResult,
   PromptRollbackRequest, PromptVersionCreateRequest,
-  Project, ProjectCreate, ProjectUpdate, ProjectWorkspaceLinkCreate, ProjectWorkspaceLinkOut, ProjectSummary,
+  Project, ProjectCreate, ProjectUpdate, ProjectSummary, ProjectOverview,
   ProjectOperation, ProjectResearchInitialIntakeResponse,
   CapabilityDefinition, CapabilityPackDescriptor, WorkflowTemplate, ProjectWorkflowProfile, WorkflowRunDraftRequest, WorkflowRunDraftResponse,
-  ProjectPresetDescriptor, ProjectPresetSelection,
+  ProjectTemplateDescriptor,
+  InquiryThread, InquiryThreadDetail, InquiryIteration, InquiryThreadRelation, InquiryThreadNoteLink,
+  InquiryCandidate, InquiryReviewPacket,
+  ExperimentDefinition, ExperimentVersion, ExperimentRun, ExperimentObservation, ExperimentInterpretation,
   ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchQuestionRefinement, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem, ProjectResearchProfile,
   ProjectResearchScreeningCriteria, ProjectResearchWorkflow,
   AcademicPaper, AcademicPaperAuthor, AcademicPaperCitation, AcademicPaperCreate, AcademicPaperUpdate,
@@ -96,7 +103,7 @@ import type {
   ReaderCreateProposalRequest, ReaderCreatedProposal,
   ContentAccessPolicy, ContentAccessUpdate,
   ResearchProviderKey, ResearchQueryStrategy, MaterializedResearchStrategy,
-  ResearchWorkspace, ResearchChecklistItem, ResearchPaperCard, ResearchReadingList,
+  ResearchArea, ResearchChecklistItem, ResearchPaperCard, ResearchReadingList,
 } from '../types/api'
 import type {
   ContentPublication,
@@ -205,6 +212,133 @@ const put   = <T>(path: string, body?: unknown, options?: RequestOptions) => req
 const patch = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PATCH',  path, body, options)
 const del   = <T>(path: string, options?: RequestOptions)                => request<T>('DELETE', path, undefined, options)
 
+async function postChatTurn(
+  path: string,
+  body: unknown,
+  options: RequestOptions & {
+    onAccepted?: (accepted: ChatTurnAccepted) => void
+    onLifecycle?: (event: {
+      event_type: string
+      status: string
+      summary?: string | null
+    }) => void
+    onTextDelta?: (delta: string) => void
+  } = {},
+): Promise<ChatTurnOut> {
+  const accepted = await post<ChatTurnAccepted>(path, body, options)
+  options.onAccepted?.(accepted)
+  const headers: Record<string, string> = {}
+  if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+  headers['X-Agent-Space-Id'] = options.spaceId ?? _spaceId
+  const response = await fetch(accepted.event_stream_url, { headers })
+  if (!response.ok || !response.body) {
+    throw new ApiRequestError(`Run event stream failed (${response.status})`, response.status)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const frames = buffer.split(/\r?\n\r?\n/)
+    buffer = frames.pop() ?? ''
+    for (const frame of frames) {
+      const event = frame.split(/\r?\n/).find(line => line.startsWith('event:'))?.slice(6).trim()
+      const data = frame.split(/\r?\n/).find(line => line.startsWith('data:'))?.slice(5).trim()
+      if (!data) continue
+      const payload = JSON.parse(data) as {
+        delta?: string
+        error?: string
+        message?: string
+        payload?: {
+          event?: {
+            event_type?: string
+            status?: string
+            summary?: string | null
+            error_code?: string | null
+            error_message?: string | null
+            metadata_json?: {
+              session_id?: string
+              assistant_message_id?: string | null
+            }
+          }
+        }
+      }
+      if (event === 'server.error') {
+        throw new ApiRequestError(payload.message ?? payload.error ?? 'Run event stream failed', 502)
+      }
+      if (event === 'chat.text_delta') {
+        if (typeof payload.delta === 'string' && payload.delta) {
+          options.onTextDelta?.(payload.delta)
+        }
+        continue
+      }
+      if (event !== 'run.event_appended') continue
+      const runEvent = payload.payload?.event
+      if (!runEvent?.event_type || !runEvent.status) continue
+      options.onLifecycle?.({
+        event_type: runEvent.event_type,
+        status: runEvent.status,
+        summary: runEvent.summary,
+      })
+      if (runEvent.event_type === 'chat_completed') {
+        await reader.cancel()
+        if (runEvent.status !== 'succeeded') {
+          return {
+            schema_version: 'chat_turn_completion.v1',
+            session_id: accepted.session_id,
+            run_id: accepted.run_id,
+            ok: false,
+            error: runEvent.error_message ?? 'The assistant could not complete this turn.',
+            error_code: runEvent.error_code ?? 'run_failed',
+            assistant_message: null,
+          }
+        }
+        const messages = await get<Message[]>(
+          `/sessions/${encodeURIComponent(accepted.session_id)}/messages`,
+          { spaceId: options.spaceId },
+        )
+        const assistant = messages.find(message =>
+          message.role === 'assistant' &&
+          (
+            message.id === runEvent.metadata_json?.assistant_message_id ||
+            message.metadata_json?.run_id === accepted.run_id
+          ))
+        if (!assistant) {
+          throw new ApiRequestError('Chat completion message is unavailable', 502)
+        }
+        const artifactRefs = Array.isArray(assistant.metadata_json?.artifact_refs)
+          ? assistant.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string')
+          : []
+        const actionPreviews = Array.isArray(assistant.metadata_json?.action_previews)
+          ? assistant.metadata_json.action_previews as ChatTurnOut['action_previews']
+          : undefined
+        return {
+          schema_version: 'chat_turn_completion.v1',
+          session_id: accepted.session_id,
+          run_id: accepted.run_id,
+          ok: true,
+          reply: assistant.content,
+          assistant_message: {
+            schema_version: 'assistant_message.v1',
+            id: assistant.id,
+            session_id: accepted.session_id,
+            run_id: accepted.run_id,
+            content: assistant.content,
+            artifact_refs: artifactRefs,
+            tool_call_refs: actionPreviews?.flatMap(preview =>
+              preview.tool_call_id ? [preview.tool_call_id] : []) ?? [],
+            created_at: assistant.created_at,
+          },
+          ...(actionPreviews ? { action_previews: actionPreviews } : {}),
+        }
+      }
+    }
+    if (done) break
+  }
+  throw new ApiRequestError('Run event stream ended without chat completion', 502)
+}
+
 // ── Content access and targeted publication ───────────────────────────────
 export const contentAccessApi = {
   get: (resourceType: string, resourceId: string) =>
@@ -233,7 +367,7 @@ export const memoryApi = {
     namespace?: string
     type?: string
     status?: string
-    workspace_id?: string
+    project_folder_id?: string
     include_system_archives?: boolean
     project_id?: string
     limit?: number
@@ -244,16 +378,16 @@ export const memoryApi = {
     if (params.namespace !== undefined) q.namespace = params.namespace
     if (params.type !== undefined) q.type = params.type
     if (params.status !== undefined) q.status = params.status
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     if (params.include_system_archives !== undefined) q.include_system_archives = String(params.include_system_archives)
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Memory>>('/memory?' + new URLSearchParams(q))
   },
-  get: (id: string, params: { workspace_id?: string } = {}) => {
+  get: (id: string, params: { project_folder_id?: string } = {}) => {
     const q: Record<string, string> = {}
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     const suffix = Object.keys(q).length ? '?' + new URLSearchParams(q) : ''
     return get<Memory>(`/memory/${id}${suffix}`)
   },
@@ -263,7 +397,7 @@ export const memoryApi = {
     patch<Proposal>(`/memory/${id}`, data),
   delete: (id: string) =>
     del<Proposal>(`/memory/${id}`),
-  search: (data: { query: string; scope?: string; namespace?: string; type?: string; workspace_id?: string; limit?: number }) =>
+  search: (data: { query: string; scope?: string; namespace?: string; type?: string; project_folder_id?: string; limit?: number }) =>
     // Memory search is identity-scoped server-side; do not send space_id/user_id.
     post<Memory[]>('/memory/search', data),
   retrievalSearch: (data: RetrievalSearchRequest) =>
@@ -280,13 +414,13 @@ export const memoryApi = {
     get<MemoryMaintenanceJob>(`/memory/maintenance/jobs/${jobId}`),
   runMaintenanceJob: (jobId: string) =>
     post<MemoryMaintenanceJobRunResponse>(`/memory/maintenance/jobs/${jobId}/run`, {}),
-  accessLogs: (params: { limit?: number; offset?: number; memory_id?: string; access_type?: string; workspace_id?: string; project_id?: string } = {}) => {
+  accessLogs: (params: { limit?: number; offset?: number; memory_id?: string; access_type?: string; project_folder_id?: string; project_id?: string } = {}) => {
     const q: Record<string, string> = {}
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     if (params.memory_id !== undefined) q.memory_id = params.memory_id
     if (params.access_type !== undefined) q.access_type = params.access_type
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     if (params.project_id !== undefined) q.project_id = params.project_id
     return get<MemoryAccessLogListResponse>('/memory/access-logs?' + new URLSearchParams(q))
   },
@@ -490,7 +624,7 @@ export const sessionsApi = {
   create:     (data: Partial<Session>)              => post<Session>('/sessions', data),
   get:        (id: string)                          => get<Session>(`/sessions/${id}`),
   messages:   (id: string)                          => get<Message[]>(`/sessions/${id}/messages`),
-  addMessage: (id: string, data: { role: string; content: string }) =>
+  addMessage: (id: string, data: { content: string }) =>
     post<Message>(`/sessions/${id}/messages`, data),
   reflect:    (id: string)                          => post<ReflectResult>(`/sessions/${id}/reflect`),
 }
@@ -586,7 +720,7 @@ export const runsApi = {
     status?: string
     mode?: string
     agent_id?: string
-    workspace_id?: string
+    project_folder_id?: string
     project_id?: string
     workflow_version_id?: string
     capability_id?: string
@@ -597,7 +731,7 @@ export const runsApi = {
     if (params.status !== undefined) q.status = params.status
     if (params.mode !== undefined) q.mode = params.mode
     if (params.agent_id !== undefined) q.agent_id = params.agent_id
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.workflow_version_id !== undefined) q.workflow_version_id = params.workflow_version_id
     if (params.capability_id !== undefined) q.capability_id = params.capability_id
@@ -606,6 +740,7 @@ export const runsApi = {
     return get<Run[]>('/runs?' + new URLSearchParams(q))
   },
   get:    (id: string) => get<Run>(`/runs/${id}`),
+  logicalIO: (id: string) => get<RunLogicalIO>(`/runs/${id}/io`),
   status: (id: string) => get<RunStatusOut>(`/runs/${id}/status`),
   stop:   (id: string) => patch<Record<string, unknown>>(`/runs/${id}/stop`),
   executeQueuedRun: (id: string) => post<Run>(`/runs/${id}/execute`),
@@ -617,11 +752,109 @@ export const runsApi = {
     get<Page<Artifact>>(`/runs/${id}/artifacts?` + new URLSearchParams(params)),
   proposals: (id: string, params: Record<string, string> = {}) =>
     get<Page<Proposal>>(`/runs/${id}/proposals?` + new URLSearchParams(params)),
+  authorizationRequests: (id: string) =>
+    get<AuthorizationRequest[]>(`/runs/${id}/authorization-requests`),
   attempts: (id: string) => get<{ attempts: RunAttempt[]; supervisor_decisions: RunSupervisorDecision[] }>(`/runs/${id}/attempts`),
   evaluations: (id: string) => get<RunEvaluation[]>(`/runs/${id}/evaluations`),
   verifications: (id: string) => get<RunVerificationResult[]>(`/runs/${id}/verifications`),
   finalizations: (id: string) => get<RunFinalization[]>(`/runs/${id}/finalizations`),
   routeDecision: (id: string) => get<Record<string, unknown>>(`/runs/${id}/route-decision`),
+  streamEvents: (
+    id: string,
+    options: {
+      spaceId?: string
+      signal?: AbortSignal
+      onLifecycle: (event: {
+        event_type: string
+        status: string
+        summary?: string | null
+      }) => void
+      onTextDelta?: (delta: string) => void
+    },
+  ) => streamRunLifecycle(id, options),
+}
+
+export const authorizationRequestsApi = {
+  approve: (id: string) => post<AuthorizationRequest>(`/authorization-requests/${id}/approve`, {}),
+  reject: (id: string) => post<AuthorizationRequest>(`/authorization-requests/${id}/reject`, {}),
+}
+
+async function streamRunLifecycle(
+  runId: string,
+  options: {
+    spaceId?: string
+    signal?: AbortSignal
+    onLifecycle: (event: {
+      event_type: string
+      status: string
+      summary?: string | null
+    }) => void
+    onTextDelta?: (delta: string) => void
+  },
+): Promise<void> {
+  const headers: Record<string, string> = {}
+  if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+  headers['X-Agent-Space-Id'] = options.spaceId ?? _spaceId
+  const response = await fetch(
+    `${BASE}/runs/${encodeURIComponent(runId)}/events/stream`,
+    { headers, signal: options.signal },
+  )
+  if (!response.ok || !response.body) {
+    throw new ApiRequestError(`Run event stream failed (${response.status})`, response.status)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) {
+        const eventType = frame.split(/\r?\n/).find(line => line.startsWith('event:'))?.slice(6).trim()
+        const data = frame.split(/\r?\n/).find(line => line.startsWith('data:'))?.slice(5).trim()
+        if (!data) continue
+        const payload = JSON.parse(data) as {
+          delta?: string
+          error?: string
+          message?: string
+          payload?: {
+            event?: {
+              event_type?: string
+              status?: string
+              summary?: string | null
+            }
+          }
+        }
+        if (eventType === 'server.error') {
+          throw new ApiRequestError(
+            payload.message ?? payload.error ?? 'Run event stream failed',
+            502,
+          )
+        }
+        if (eventType === 'chat.text_delta') {
+          if (payload.delta) options.onTextDelta?.(payload.delta)
+          continue
+        }
+        if (eventType !== 'run.event_appended') continue
+        const event = payload.payload?.event
+        if (!event?.event_type || !event.status) continue
+        options.onLifecycle({
+          event_type: event.event_type,
+          status: event.status,
+          summary: event.summary,
+        })
+        if (event.event_type === 'run_finalized') {
+          await reader.cancel()
+          return
+        }
+      }
+      if (done) return
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 // ── Plans / structured workflow execution ────────────────────────────────
@@ -638,7 +871,7 @@ export const plansApi = {
   reconcile: (id: string) => post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/reconcile`, {}),
 }
 
-// ── Agent Rooms / group runs ──────────────────────────────────────────────
+// ── Collaboration task groups (advanced audit/control) ────────────────────
 export const agentGroupsApi = {
   list: (params: { status?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -666,6 +899,49 @@ export const agentGroupsApi = {
   cancel: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/cancel`, {}),
 }
 
+export const roomsApi = {
+  list: (params: { project_id?: string; limit?: number; offset?: number } = {}) => {
+    const q: Record<string, string> = {}
+    if (params.project_id) q.project_id = params.project_id
+    if (params.limit !== undefined) q.limit = String(params.limit)
+    if (params.offset !== undefined) q.offset = String(params.offset)
+    return get<Page<Room>>('/rooms?' + new URLSearchParams(q))
+  },
+  create: (body: CreateRoomRequest) => post<RoomDetail>('/rooms', body),
+  get: (roomId: string) => get<RoomDetail>(`/rooms/${roomId}`),
+  conversations: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.limit !== undefined) q.set('limit', String(params.limit))
+    if (params.offset !== undefined) q.set('offset', String(params.offset))
+    return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`)
+  },
+  createConversation: (roomId: string, body: { title?: string | null }) =>
+    post<RoomConversation>(`/rooms/${roomId}/conversations`, body),
+  messages: (
+    roomId: string,
+    sessionId: string,
+    params: { limit?: number; offset?: number } = {},
+  ) => {
+    const q = new URLSearchParams()
+    if (params.limit !== undefined) q.set('limit', String(params.limit))
+    if (params.offset !== undefined) q.set('offset', String(params.offset))
+    return (
+    get<{
+      items: RoomMessage[]
+      task_group_ids: string[]
+      limit: number
+      offset: number
+    }>(`/rooms/${roomId}/conversations/${sessionId}/messages?${q}`)
+    )
+  },
+  sendMessage: (roomId: string, sessionId: string, body: SendRoomMessageRequest) =>
+    post<{
+      message: RoomMessage
+      task_group_ids: string[]
+      run_ids: string[]
+    }>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+}
+
 // ── Personal Memory Grants ─────────────────────────────────────────────────
 export const personalMemoryGrantsApi = {
   previewPersonalMemoryGrant: (input: PersonalMemoryGrantPreviewRequest) =>
@@ -689,37 +965,37 @@ export const artifactsApi = {
   list: (params: {
     artifact_type?: string
     project_id?: string
-    workspace_id?: string
+    project_folder_id?: string
     limit?: number
     offset?: number
   } = {}) => {
     const q: Record<string, string> = {}
     if (params.artifact_type !== undefined) q.artifact_type = params.artifact_type
     if (params.project_id !== undefined) q.project_id = params.project_id
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Artifact>>('/artifacts?' + new URLSearchParams(q))
   },
-  get: (id: string, params: { workspace_id?: string } = {}) => {
+  get: (id: string, params: { project_folder_id?: string } = {}) => {
     const q: Record<string, string> = {}
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     const suffix = new URLSearchParams(q).toString()
     return get<Artifact>(`/artifacts/${id}${suffix ? `?${suffix}` : ''}`)
   },
-  export: (id: string, params: { workspace_id?: string } = {}) => downloadArtifactExport(id, params),
+  export: (id: string, params: { project_folder_id?: string } = {}) => downloadArtifactExport(id, params),
 }
 
 async function downloadArtifactExport(
   artifactId: string,
-  params: { workspace_id?: string } = {},
+  params: { project_folder_id?: string } = {},
 ): Promise<void> {
   const headers: Record<string, string> = {}
   if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
   headers['X-Agent-Space-Id'] = _spaceId
   const sep = '/artifacts/' + artifactId + '/export'
   const query = new URLSearchParams()
-  if (params.workspace_id !== undefined) query.set('workspace_id', params.workspace_id)
+  if (params.project_folder_id !== undefined) query.set('project_folder_id', params.project_folder_id)
   const artifactParams = query.toString()
   const url = BASE + sep + (artifactParams ? `?${artifactParams}` : '')
   const r = await fetch(url, { method: 'GET', headers })
@@ -829,7 +1105,7 @@ export const evolutionApi = {
     agent_id?: string
     mode?: 'dry_run'
     runtime_profile_id?: string | null
-    workspace_id?: string | null
+    project_folder_id?: string | null
     project_id?: string | null
     context_artifact_ids?: string[]
   } = {}) =>
@@ -1001,9 +1277,16 @@ export const agentsApi = {
   updateRuntimeProfile: (agentId: string, profileId: string, data: AgentRuntimeProfileUpdateBody) =>
     patch<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles/${profileId}`, data),
   currentVersion: (agentId: string) => get<AgentVersionOut>(`/agents/${agentId}/current-version`),
-  // Per-space system-managed default Assistant (the Chat identity). ensure is idempotent.
-  getDefaultAssistant: () => get<AgentOut>('/agents/default-assistant'),
-  ensureDefaultAssistant: () => post<AgentOut>('/agents/default-assistant'),
+  conversationBackends: (
+    agentId: string,
+    options: { spaceId?: string; sessionId?: string } = {},
+  ) =>
+    get<ConversationBackendCatalog>(
+      `/agents/${agentId}/conversation-backends${options.sessionId
+        ? `?session_id=${encodeURIComponent(options.sessionId)}`
+        : ''}`,
+      { spaceId: options.spaceId },
+    ),
   // Assistant preferences (soft UI/context layer — never edits prompt or hard policy).
   getAssistantSettings: () => get<SpaceAssistantSettingsOut>('/agents/default-assistant/settings'),
   updateAssistantSettings: (data: SpaceAssistantSettingsUpdate) =>
@@ -1017,10 +1300,25 @@ export const agentsApi = {
     get<Proposal[]>(`/agents/${agentId}/proposals?status=${encodeURIComponent(status)}`),
   createRun: (agentId: string, body: RunCreateBody = {}) =>
     post<Run>(`/agents/${agentId}/runs`, body),
-  // Synchronous Personal Assistant chat turn. spaceId pins the request to the
-  // agent's space (the assistant may live in a space other than the active one).
-  chat: (agentId: string, body: { message: string; session_id?: string; project_id?: string }, options: { spaceId?: string } = {}) =>
-    post<ChatTurnOut>(`/agents/${agentId}/chat`, body, { spaceId: options.spaceId }),
+  // Queue the Chat Run, then subscribe to its canonical lifecycle stream.
+  chat: (
+    agentId: string,
+    body: {
+      message: string
+      session_id?: string
+      project_id?: string
+      backend?: Pick<
+        ConversationBackendBinding,
+        'runtime_profile_id' | 'credential_profile_id'
+      >
+    },
+    options: {
+      spaceId?: string
+      onAccepted?: (accepted: ChatTurnAccepted) => void
+      onLifecycle?: (event: { event_type: string; status: string; summary?: string | null }) => void
+      onTextDelta?: (delta: string) => void
+    } = {},
+  ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
   getRun:         (runId: string)     => get<Run>(`/agents/runs/${runId}`),
   listRunsForAgent:  (agentId: string)   => get<Run[]>(`/agents/${agentId}/runs`),
@@ -1057,16 +1355,41 @@ export const automationsApi = {
     get<WorkflowExecutionSummary[]>(`/spaces/${_spaceId}/automations/${encodeURIComponent(id)}/workflow-executions`),
 }
 
-// ── Workspaces ────────────────────────────────────────────────────────────
-export const workspacesApi = {
-  list:   (params: Record<string, string> = {}) =>
-    get<Page<Workspace>>('/workspaces?' + new URLSearchParams(params)),
-  create: (data: WorkspaceCreateBody) =>
-    post<Workspace>('/workspaces', data),
-  get:    (id: string)                          => get<Workspace>(`/workspaces/${id}`),
-  update: (id: string, data: WorkspaceUpdateBody) => patch<Workspace>(`/workspaces/${id}`, data),
-  archive:(id: string)                          => del<null>(`/workspaces/${id}`),
-  scan:   ()                                    => post<{ created: Workspace[]; marked_stale: string[] }>('/workspaces/scan'),
+// ── Project Folders ──────────────────────────────────────────────────────
+export const projectFoldersApi = {
+  list:    (projectId: string, params: Record<string, string> = {}) =>
+    get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params)),
+  create:  (projectId: string, data: ProjectFolderCreateBody) =>
+    post<ProjectFolder>(`/projects/${projectId}/folders`, data),
+  scan:    (projectId: string) =>
+    post<{ items: ProjectFolderScanCandidate[] }>(`/projects/${projectId}/folders/scan`),
+  get:     (projectId: string, folderId: string) =>
+    get<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`),
+  update:  (projectId: string, folderId: string, data: ProjectFolderUpdateBody) =>
+    patch<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`, data),
+  archive: (projectId: string, folderId: string) =>
+    del<null>(`/projects/${projectId}/folders/${folderId}`),
+  unregister: (projectId: string, folderId: string) =>
+    post<null>(`/projects/${projectId}/folders/${folderId}/unregister`),
+  tree:    (projectId: string, folderId: string) =>
+    get<FileNode>(`/projects/${projectId}/folders/${folderId}/tree`),
+  file:    (projectId: string, folderId: string, path: string) =>
+    get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}`),
+  gitStatus: (projectId: string, folderId: string) =>
+    get<GitStatus>(`/projects/${projectId}/folders/${folderId}/git/status`),
+  gitDiff: (projectId: string, folderId: string, path?: string) =>
+    get<{ diff: string; path: string | null; truncated: boolean; redacted: boolean }>(
+      `/projects/${projectId}/folders/${folderId}/git/diff` + (path ? `?path=${encodeURIComponent(path)}` : ''),
+    ),
+}
+
+export const projectFolderExecutionConfigsApi = {
+  get:    (projectId: string, folderId: string) =>
+    get<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`),
+  create: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
+    post<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
+  update: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
+    patch<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
 }
 
 export const capabilitiesFrameworkApi = {
@@ -1128,7 +1451,7 @@ export const projectWorkflowProfilesApi = {
 
 // ── Context ───────────────────────────────────────────────────────────────
 export const contextApi = {
-  build: (data: { workspace_id?: string | null; project_id?: string | null; session_id?: string | null; capability_id?: string | null; query?: string | null; context_artifact_ids?: string[] }) =>
+  build: (data: { project_folder_id?: string | null; project_id?: string | null; session_id?: string | null; capability_id?: string | null; query?: string | null; context_artifact_ids?: string[] }) =>
     post<ContextPackage>('/context/build', data),
   listProfiles: (params: { scope_type?: string; scope_id?: string; status?: string } = {}) => {
     const q: Record<string, string> = {}
@@ -1140,20 +1463,20 @@ export const contextApi = {
   },
   updateProfile: (data: ContextProfileUpsertRequest) =>
     put<ContextProfile>('/context/profiles', data),
-  getWorkspaceRouting: (workspaceId: string) =>
-    get<ContextEffectiveRoutingResponse>(`/context/workspaces/${encodeURIComponent(workspaceId)}/routing`),
-  updateWorkspaceRouting: (workspaceId: string, data: ContextRoutingUpdateRequest) =>
-    put<ContextEffectiveRoutingResponse>(`/context/workspaces/${encodeURIComponent(workspaceId)}/routing`, data),
-  listArtifactRevocations: (params: { workspace_id?: string | null; project_id?: string | null; artifact_ids?: string[] } = {}) => {
+  getFolderRouting: (projectFolderId: string) =>
+    get<ContextEffectiveRoutingResponse>(`/context/project-folders/${encodeURIComponent(projectFolderId)}/routing`),
+  updateFolderRouting: (projectFolderId: string, data: ContextRoutingUpdateRequest) =>
+    put<ContextEffectiveRoutingResponse>(`/context/project-folders/${encodeURIComponent(projectFolderId)}/routing`, data),
+  listArtifactRevocations: (params: { project_folder_id?: string | null; project_id?: string | null; artifact_ids?: string[] } = {}) => {
     const q: Record<string, string> = {}
-    if (params.workspace_id) q.workspace_id = params.workspace_id
+    if (params.project_folder_id) q.project_folder_id = params.project_folder_id
     if (params.project_id) q.project_id = params.project_id
     if (params.artifact_ids?.length) q.artifact_ids = params.artifact_ids.join(',')
     return get<ContextArtifactRevocationListResponse>(`/context/artifact-revocations?${new URLSearchParams(q).toString()}`)
   },
   revokeArtifact: (data: ContextArtifactRevocationCreateRequest) =>
     post<ContextArtifactRevocation>('/context/artifact-revocations', data),
-  unrevokeArtifact: (artifactId: string, params: { scope_type: 'workspace' | 'project'; scope_id: string }) => {
+  unrevokeArtifact: (artifactId: string, params: { scope_type: 'project_folder' | 'project'; scope_id: string }) => {
     const q = new URLSearchParams({ scope_type: params.scope_type, scope_id: params.scope_id })
     return del<null>(`/context/artifact-revocations/${encodeURIComponent(artifactId)}?${q.toString()}`)
   },
@@ -1377,7 +1700,7 @@ export const activityApi = {
   list: (params: {
     status?: string
     source_type?: string
-    workspace_id?: string
+    project_folder_id?: string
     project_id?: string
     limit?: number
     offset?: number
@@ -1385,28 +1708,28 @@ export const activityApi = {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
     if (params.source_type !== undefined) q.source_type = params.source_type
-    if (params.workspace_id !== undefined) q.workspace_id = params.workspace_id
+    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<ActivityInboxRecord[]>('/activity?' + new URLSearchParams(q))
   },
   create: (
-    data: { source_type: ActivitySourceType; content: string; title?: string; source_url?: string; workspace_id?: string; metadata_json?: Record<string, unknown> },
+    data: { source_type: ActivitySourceType; content: string; title?: string; source_url?: string; project_folder_id?: string; metadata_json?: Record<string, unknown> },
     options: { spaceId?: string } = {},
   ) =>
     post<ActivityInboxRecord>('/activity', data, { spaceId: options.spaceId }),
   // File / voice capture (store-only). Sends multipart; lands in the Activity Inbox.
   upload: (
     file: File,
-    options: { kind?: 'file' | 'voice'; title?: string; note?: string; workspace_id?: string; spaceId?: string } = {},
+    options: { kind?: 'file' | 'voice'; title?: string; note?: string; project_folder_id?: string; spaceId?: string } = {},
   ) => {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('kind', options.kind ?? 'file')
     if (options.title) fd.append('title', options.title)
     if (options.note) fd.append('note', options.note)
-    if (options.workspace_id) fd.append('workspace_id', options.workspace_id)
+    if (options.project_folder_id) fd.append('project_folder_id', options.project_folder_id)
     return post<ActivityInboxRecord>('/activity/upload', fd, { spaceId: options.spaceId })
   },
   get:    (id: string) => get<ActivityInboxRecord>(`/activity/${id}`),
@@ -1765,46 +2088,6 @@ export const readerApi = {
     ),
 }
 
-// ── Workspace Console ─────────────────────────────────────────────────────
-export const workspaceConsoleApi = {
-  listWorkspaces: () =>
-    get<{ items: WorkspaceInfo[] }>('/workspace-console/workspaces'),
-
-  fileTree: (workspaceId: string) =>
-    get<FileNode>(`/workspace-console/workspaces/${workspaceId}/tree`),
-
-  fileContent: (workspaceId: string, path: string) =>
-    get<FileContent>(`/workspace-console/workspaces/${workspaceId}/file?path=${encodeURIComponent(path)}`),
-
-  gitStatus: (workspaceId: string) =>
-    get<GitStatus>(`/workspace-console/workspaces/${workspaceId}/git/status`),
-
-  gitDiff: (workspaceId: string, path?: string) =>
-    get<{ diff: string; path: string | null }>(
-      `/workspace-console/workspaces/${workspaceId}/git/diff` + (path ? `?path=${encodeURIComponent(path)}` : ''),
-    ),
-
-  runtimes: () =>
-    get<{ runtimes: RuntimeInfo[] }>('/workspace-console/runtimes'),
-
-  listSessions: (workspaceId?: string) =>
-    get<{ items: ConsoleSession[] }>(
-      '/workspace-console/sessions' + (workspaceId ? `?workspace_id=${workspaceId}` : ''),
-    ),
-
-  createSession: (data: { workspace_id?: string; runtime: string; model?: string; prompt: string }) =>
-    post<ConsoleSession>('/workspace-console/sessions', data),
-
-  runTurn: (id: string, prompt: string) =>
-    post<ConsoleSession>(`/workspace-console/sessions/${id}/run`, { prompt }),
-
-  getSession: (id: string) =>
-    get<ConsoleSession>(`/workspace-console/sessions/${id}`),
-
-  stopSession: (id: string) =>
-    post<ConsoleSession>(`/workspace-console/sessions/${id}/stop`),
-}
-
 // ── Projects ──────────────────────────────────────────────────────────────
 export const projectsApi = {
   list: (params: { status?: string; limit?: number; offset?: number } = {}) => {
@@ -1819,6 +2102,9 @@ export const projectsApi = {
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
   getSummary: (id: string) => get<ProjectSummary>(`/projects/${id}/summary`),
+  getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
+  transitionMode: (id: string, toMode: string, reason?: string) =>
+    post(`/projects/${id}/mode-transitions`, { to_mode: toMode, reason }),
   operations: (id: string) => get<ProjectOperation[]>(`/projects/${id}/operations`),
   getOperation: (id: string, operationId: string) => get<ProjectOperation>(`/projects/${id}/operations/${operationId}`),
   createOperation: (id: string, body: { kind: ProjectOperation['kind']; title: string; intent_text?: string; steps?: Array<{ title: string; detail?: Record<string, unknown> }> }) =>
@@ -1872,29 +2158,289 @@ export const projectsApi = {
   }>) => patch<ProjectCorpusItem>(`/projects/${projectId}/corpus/${corpusItemId}`, data),
   backfillCorpusFromSources: (id: string) =>
     post<ProjectCorpusBackfillResult>(`/projects/${id}/corpus/backfill-source-items`),
-  listWorkspaces: (id: string) => get<ProjectWorkspaceLinkOut[]>(`/projects/${id}/workspaces`),
-  linkWorkspace: (id: string, data: ProjectWorkspaceLinkCreate) =>
-    post<ProjectWorkspaceLinkOut>(`/projects/${id}/workspaces`, data),
-  unlinkWorkspace: (id: string, workspaceId: string, role?: string) => {
-    const q = role ? `?role=${encodeURIComponent(role)}` : ''
-    return del<null>(`/projects/${id}/workspaces/${workspaceId}${q}`)
-  },
   publicSummaryFeedback: (data: RetrievalFeedbackRequest) =>
     post<RetrievalFeedbackResponse>('/projects/public-summaries/feedback', data),
   publicSummaryBrief: (data: RetrievalBriefRequest) =>
     post<RetrievalBriefResponse>('/projects/retrieval/brief', data),
 }
 
-export const projectPresetsApi = {
+export const projectTemplatesApi = {
   list: () =>
-    get<ProjectPresetDescriptor[]>('/project-presets'),
-  getProjectPreset: (projectId: string) =>
-    get<ProjectPresetSelection>(`/projects/${encodeURIComponent(projectId)}/preset`),
+    get<ProjectTemplateDescriptor[]>('/project-templates'),
+  getProjectTemplate: (projectId: string) =>
+    get<{ template_key: string }>(`/projects/${encodeURIComponent(projectId)}/template`),
+}
+
+export const inquiryApi = {
+  listThreads: (projectId: string) =>
+    get<InquiryThread[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`),
+  getThread: (projectId: string, threadId: string) =>
+    get<InquiryThreadDetail>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}`),
+  createThread: (projectId: string, data: Record<string, unknown>) =>
+    post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`, data),
+  recordIteration: (projectId: string, threadId: string, data: Record<string, unknown>) =>
+    post<InquiryIteration & { thread: InquiryThread }>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`, data,
+    ),
+  listIterations: (projectId: string, threadId: string) =>
+    get<InquiryIteration[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`),
+  reviseDefinition: (projectId: string, threadId: string, data: Record<string, unknown>) =>
+    post<{ thread: InquiryThread; superseded_by_thread_id: string | null }>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/definition-revisions`, data,
+    ),
+  updateWork: (projectId: string, threadId: string, data: Record<string, unknown>) =>
+    patch<InquiryThread & { wip_limit_exceeded: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/work-state`, data,
+    ),
+  transitionLifecycle: (projectId: string, threadId: string, lifecycleStatus: string, reason?: string) =>
+    post<InquiryThread>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/lifecycle-transitions`,
+      { lifecycle_status: lifecycleStatus, reason },
+    ),
+  addRelation: (projectId: string, data: Record<string, unknown>) =>
+    post<InquiryThreadRelation>(`/projects/${encodeURIComponent(projectId)}/inquiry/relations`, data),
+  removeRelation: (projectId: string, relationId: string) =>
+    del<null>(`/projects/${encodeURIComponent(projectId)}/inquiry/relations/${encodeURIComponent(relationId)}`),
+  setPrimaryParent: (projectId: string, threadId: string, parentThreadId: string | null) =>
+    put<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/primary-parent`, { parent_thread_id: parentThreadId }),
+  linkNote: (projectId: string, threadId: string, noteObjectId: string, linkKind?: string) =>
+    post<InquiryThreadNoteLink>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/notes`, { note_object_id: noteObjectId, link_kind: linkKind }),
+  unlinkNote: (projectId: string, threadId: string, noteObjectId: string) =>
+    del<null>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/notes/${encodeURIComponent(noteObjectId)}`),
+  setPersonalFocus: (projectId: string, threadId: string, inFocus: boolean) =>
+    put<null>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/personal-focus`, { in_focus: inFocus }),
+  getFocus: (projectId: string) =>
+    get<{ personal_focus: InquiryThread[]; shared_focus_wip_limit: number }>(`/projects/${encodeURIComponent(projectId)}/inquiry/focus`),
+  listCandidates: (projectId: string, status = 'pending') =>
+    get<InquiryCandidate[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/candidates?status=${encodeURIComponent(status)}`),
+  getCandidate: (projectId: string, candidateId: string) =>
+    get<InquiryCandidate>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}`,
+    ),
+  openReviewPacket: (projectId: string, limit = 5) =>
+    post<InquiryReviewPacket>(`/projects/${encodeURIComponent(projectId)}/inquiry/review-packets`, { limit }),
+  closeReviewPacket: (projectId: string, packetId: string) =>
+    post<{ id: string; status: 'closed'; closed_at: string }>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/review-packets/${encodeURIComponent(packetId)}/close`,
+      {},
+    ),
+  decideCandidate: (projectId: string, candidateId: string, data: Record<string, unknown>) =>
+    post<InquiryCandidate>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}/decision`,
+      data,
+    ),
+  reopenCandidate: (projectId: string, candidateId: string) =>
+    post<InquiryCandidate>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}/reopen`,
+      {},
+    ),
+  generateDeltaBrief: (projectId: string) =>
+    post<{ id: string; content: Record<string, unknown> }>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/delta-briefs`,
+      {},
+    ),
+}
+
+export const experimentsApi = {
+  listDefinitions: (projectId: string) =>
+    get<ExperimentDefinition[]>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions`),
+  createDefinition: (projectId: string, data: Record<string, unknown>) =>
+    post<ExperimentDefinition>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions`, data),
+  getDefinition: (projectId: string, definitionId: string) =>
+    get<ExperimentDefinition & { versions: ExperimentVersion[] }>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}`,
+    ),
+  updateDefinition: (projectId: string, definitionId: string, data: Record<string, unknown>) =>
+    patch<ExperimentDefinition>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}`,
+      data,
+    ),
+  createVersion: (projectId: string, definitionId: string, data: Record<string, unknown>) =>
+    post<ExperimentVersion>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions`,
+      data,
+    ),
+  approveVersion: (projectId: string, definitionId: string, versionId: string) =>
+    post<ExperimentVersion>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions/${encodeURIComponent(versionId)}/approve`,
+      {},
+    ),
+  listRuns: (projectId: string, definitionId: string) =>
+    get<ExperimentRun[]>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/runs`,
+    ),
+  createRun: (projectId: string, definitionId: string, versionId: string, data: Record<string, unknown>) =>
+    post<ExperimentRun>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions/${encodeURIComponent(versionId)}/runs`,
+      data,
+    ),
+  launchRun: (projectId: string, definitionId: string, versionId: string, data: {
+    agent_id: string
+    runtime_profile_id?: string
+    is_baseline?: boolean
+    hypothesis?: string
+  }) => post<ExperimentRun>(
+    `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions/${encodeURIComponent(versionId)}/runs/launch`,
+    data,
+  ),
+  completeRun: (projectId: string, definitionId: string, runId: string, data: Record<string, unknown>) =>
+    post<ExperimentRun & { observations: ExperimentObservation[] }>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}/complete`,
+      data,
+    ),
+  listInterpretations: (projectId: string, definitionId: string) =>
+    get<ExperimentInterpretation[]>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/interpretations`,
+    ),
+  createInterpretation: (projectId: string, definitionId: string, data: Record<string, unknown>) =>
+    post<ExperimentInterpretation>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/interpretations`,
+      data,
+    ),
+  reviewInterpretation: (projectId: string, interpretationId: string) =>
+    post<ExperimentInterpretation>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/interpretations/${encodeURIComponent(interpretationId)}/review`,
+      {},
+    ),
+  convertInterpretation: (projectId: string, interpretationId: string, confidence?: number) =>
+    post<ExperimentInterpretation & { signal: Record<string, unknown> }>(
+      `/projects/${encodeURIComponent(projectId)}/experiments/interpretations/${encodeURIComponent(interpretationId)}/convert-to-signal`,
+      confidence === undefined ? {} : { confidence },
+    ),
+}
+
+export interface KnowledgePromotionCandidate {
+  id: string
+  project_id: string
+  trigger: 'promotion' | 'revalidation'
+  source_kind: string
+  source_id: string
+  source_ref: Record<string, unknown>
+  candidate_kind: string
+  proposed_title: string
+  proposed_content: string
+  visibility: 'private' | 'space_shared'
+  owner_user_id: string | null
+  supersedes_knowledge_item_id: string | null
+  status: 'pending' | 'deferred' | 'promoted' | 'dismissed'
+  created_proposal_id: string | null
+  review_packet_id: string | null
+}
+
+export const knowledgePromotionApi = {
+  extract: (projectId: string, body: {
+    source_kind: 'note' | 'inquiry_thread' | 'experiment_interpretation'
+    source_id: string
+    agent_id: string
+    runtime_profile_id?: string
+  }) => post<{ run_id: string; status: string; source_ref: Record<string, unknown> }>(
+    `/projects/${encodeURIComponent(projectId)}/knowledge-candidate-extractions`,
+    body,
+  ),
+  list: (projectId: string, status?: string) =>
+    get<KnowledgePromotionCandidate[]>(
+      `/projects/${encodeURIComponent(projectId)}/knowledge-candidates${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+    ),
+  summary: (projectId: string) =>
+    get<{ pending: number; promotion: number; revalidation: number; no_impact: number; summary: string }>(
+      `/projects/${encodeURIComponent(projectId)}/knowledge-candidates-review-summary`,
+    ),
+  decide: (
+    projectId: string,
+    candidateId: string,
+    body: { decision: 'promote' | 'dismiss' | 'defer'; proposed_title?: string; proposed_content?: string },
+  ) => post<KnowledgePromotionCandidate>(
+    `/projects/${encodeURIComponent(projectId)}/knowledge-candidates/${encodeURIComponent(candidateId)}/decision`,
+    body,
+  ),
+  reopen: (projectId: string, candidateId: string) =>
+    post<KnowledgePromotionCandidate>(
+      `/projects/${encodeURIComponent(projectId)}/knowledge-candidates/${encodeURIComponent(candidateId)}/reopen`,
+      {},
+    ),
+  openPacket: (projectId: string, limit = 10) =>
+    post<{ id: string; status: string; created_at: string; candidates: KnowledgePromotionCandidate[] }>(
+      `/projects/${encodeURIComponent(projectId)}/knowledge-candidate-review-packets`,
+      { limit },
+    ),
+  closePacket: (projectId: string, packetId: string) =>
+    post<Record<string, unknown>>(
+      `/projects/${encodeURIComponent(projectId)}/knowledge-candidate-review-packets/${encodeURIComponent(packetId)}/close`,
+      {},
+    ),
+}
+
+export interface ProjectReviewSession {
+  project_id: string
+  created_at: string
+  summary: string
+  sections: {
+    inquiry: { packet: { id: string | null; candidates: unknown[] }; decision_href: string }
+    knowledge: { packet: { id: string | null; candidates: KnowledgePromotionCandidate[] }; decision_href: string }
+  }
+}
+
+export const projectReviewApi = {
+  open: (projectId: string, limit = 5) =>
+    post<ProjectReviewSession>(`/projects/${encodeURIComponent(projectId)}/review-sessions`, { limit }),
+}
+
+export interface DecisionCase {
+  id: string
+  project_id: string
+  title: string
+  framing: string | null
+  status: 'open' | 'decided' | 'archived'
+  decided_option_id: string | null
+  source_thread_ids?: string[]
+  options?: Array<{ id: string; title: string; description: string | null; status: string }>
+  criteria?: Array<{ id: string; name: string; weight: number }>
+  scores?: Array<{ id: string; option_id: string; criterion_id: string; score: number; rationale: string | null }>
+  commitments?: Array<{ id: string; statement: string; created_delivery_task_id: string | null }>
+}
+
+export const decisionCasesApi = {
+  list: (projectId: string) => get<DecisionCase[]>(`/projects/${encodeURIComponent(projectId)}/decision-cases`),
+  get: (projectId: string, caseId: string) => get<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}`),
+  create: (projectId: string, body: { title: string; framing?: string; source_thread_ids?: string[] }) => post<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases`, body),
+  addOption: (projectId: string, caseId: string, body: { title: string; description?: string }) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/options`, body),
+  addCriterion: (projectId: string, caseId: string, body: { name: string; weight: number }) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/criteria`, body),
+  score: (projectId: string, caseId: string, body: { option_id: string; criterion_id: string; score: number; rationale?: string }) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/scores`, body),
+  decide: (projectId: string, caseId: string, optionId: string) => post<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/decide`, { option_id: optionId }),
+  addCommitment: (projectId: string, caseId: string, statement: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments`, { statement }),
+  createDelivery: (projectId: string, caseId: string, commitmentId: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments/${encodeURIComponent(commitmentId)}/deliver`, {}),
+}
+
+export interface LearningObjective {
+  id: string
+  project_id: string | null
+  title: string
+  description: string | null
+  status: string
+}
+
+export interface LearningItem {
+  id: string
+  project_id: string | null
+  objective_id: string | null
+  knowledge_item_id: string
+  knowledge_item_version: number
+  item_kind: 'card' | 'exercise'
+  prompt: string
+  answer: string
+}
+
+export const learningApi = {
+  objectives: (projectId: string) => get<LearningObjective[]>(`/projects/${encodeURIComponent(projectId)}/learning-objectives`),
+  items: (projectId: string) => get<LearningItem[]>(`/projects/${encodeURIComponent(projectId)}/learning-items`),
+  createObjective: (body: { project_id: string; title: string; description?: string }) => post<LearningObjective>('/learning/objectives', body),
+  createItem: (body: { project_id: string; objective_id?: string; knowledge_item_id: string; item_kind: 'card' | 'exercise'; prompt: string; answer: string }) => post<LearningItem>('/learning/items', body),
+  review: (itemId: string, outcome: 'correct' | 'incorrect') => post<Record<string, unknown>>(`/learning/items/${encodeURIComponent(itemId)}/review`, { outcome }),
 }
 
 export const projectResearchApi = {
-  workspace: (projectId: string) => get<ResearchWorkspace>(`/projects/${encodeURIComponent(projectId)}/research/workspace`),
-  initializeWorkspace: (projectId: string) => post<ResearchWorkspace>(`/projects/${encodeURIComponent(projectId)}/research/workspace`, {}),
+  area: (projectId: string) => get<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`),
+  initializeArea: (projectId: string) => post<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`, {}),
   readingList: (projectId: string, params: { triage_status?: string; read_status?: string; q?: string } = {}) => get<ResearchReadingList>(`/projects/${encodeURIComponent(projectId)}/research/reading-list?${new URLSearchParams(params)}`),
   // Per-note editing/revisions/rollback go through the generic notesApi —
   // a project's notebook is just Notes filed under its auto-created folder.
@@ -1903,7 +2449,7 @@ export const projectResearchApi = {
   updateChecklistItem: (projectId: string, itemId: string, body: Partial<Pick<ResearchChecklistItem, 'text' | 'status' | 'sort_order'>>) => patch<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`, body),
   deleteChecklistItem: (projectId: string, itemId: string) => del<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`),
   // `section_key` is a legacy field name accepted for backward compatibility
-  // (see workspaceService.ts askAi): a known starter-note key maps to its
+  // (see areaService.ts askAi): a known starter-note key maps to its
   // title; any other value is used as a literal note title.
   askAi: (projectId: string, body: { prompt: string; section_key: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ run_id: string; job_id: string; status: string; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/ask-ai`, body),
   notebookChat: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ session_id: string; run_id: string; ok: boolean; reply?: string; error?: string; notebook_edit?: { note_id: string; version: number; conflict: boolean } | null; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/notebook-chat`, body),
@@ -1957,24 +2503,24 @@ export const projectResearchApi = {
       `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/history-backfill`,
       body,
     ),
-  updateInitialItemLimit: (projectId: string, max_items: number) =>
+  updateInitialItemLimit: (projectId: string, max_items: number, workflowId?: string | null) =>
     put<ProjectResearchWorkflow>(
       `/projects/${encodeURIComponent(projectId)}/research/item-limit`,
-      { max_items },
+      { max_items, ...(workflowId ? { workflow_id: workflowId } : {}) },
     ),
-  applyQuestionForward: (projectId: string) =>
+  applyQuestionForward: (projectId: string, workflowId: string) =>
     post<ProjectResearchWorkflow>(
       `/projects/${encodeURIComponent(projectId)}/research/question/apply-forward`,
-      {},
+      { workflow_id: workflowId },
     ),
-  questionChangeImpact: (projectId: string) =>
+  questionChangeImpact: (projectId: string, workflowId: string) =>
     get<import('../types/api').ProjectResearchQuestionImpact>(
-      `/projects/${encodeURIComponent(projectId)}/research/question/impact`,
+      `/projects/${encodeURIComponent(projectId)}/research/question/impact?workflow_id=${encodeURIComponent(workflowId)}`,
     ),
-  resolveQuestionChange: (projectId: string, strategy: import('../types/api').ProjectResearchQuestionResolutionStrategy) =>
+  resolveQuestionChange: (projectId: string, workflowId: string, strategy: import('../types/api').ProjectResearchQuestionResolutionStrategy) =>
     post<{ workflow: import('../types/api').ProjectResearchWorkflow; operation?: ProjectOperation } | import('../types/api').ProjectResearchWorkflow>(
       `/projects/${encodeURIComponent(projectId)}/research/question/resolve`,
-      { strategy },
+      { strategy, workflow_id: workflowId },
     ),
   retryOperation: (projectId: string, operationId: string) =>
     post<Record<string, unknown>>(

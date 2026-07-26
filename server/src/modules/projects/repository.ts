@@ -19,8 +19,11 @@ import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject } from ".
 import { assertProjectReadable } from "./access";
 import { projectRetrievalRegistry } from "./retrievalAdapter";
 import { contentReadSql } from "../access/contentAccessSql";
+import { projectFolderReadAccessSql } from "../projectFolders/access";
 import { memorySensitivityReadSql } from "../memory/memorySensitivitySql";
 import { PgRunRepository } from "../runs/repository";
+import { canonicalRunOutput } from "../runs/orchestrationResults";
+import { getBuiltInProjectTemplate, DEFAULT_PROJECT_TEMPLATE_KEY } from "../projectTemplates/registry";
 
 export interface ProjectRow {
   id: string;
@@ -31,19 +34,12 @@ export interface ProjectRow {
   status: string;
   current_focus: string | null;
   settings_json: unknown;
+  template_key: string;
+  primary_mode: string;
+  active_brief_version_id: string | null;
   created_at: unknown;
   updated_at: unknown;
   archived_at: unknown;
-}
-
-export interface ProjectWorkspaceLinkRow {
-  id: string;
-  space_id: string;
-  project_id: string;
-  workspace_id: string;
-  role: string;
-  created_at: unknown;
-  updated_at: unknown;
 }
 
 export interface ProjectMemberRow {
@@ -76,10 +72,10 @@ export interface ProjectPublicSummaryRow {
 
 const PROJECT_COLUMNS = `
   id, space_id, owner_user_id, name, description, status, current_focus,
-  settings_json, created_at, updated_at, archived_at
+  settings_json, template_key, primary_mode, active_brief_version_id,
+  created_at, updated_at, archived_at
 `;
 
-const LINK_COLUMNS = `id, space_id, project_id, workspace_id, role, created_at, updated_at`;
 const PUBLIC_SUMMARY_COLUMNS = `
   ps.id, ps.space_id, ps.project_id, p.name AS project_name, ps.summary_text,
   ps.topics_json, ps.highlights_json, ps.source_refs_json, ps.redaction_version,
@@ -88,14 +84,6 @@ const PUBLIC_SUMMARY_COLUMNS = `
 `;
 const PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
 const PUBLIC_SUMMARY_MAX_CHARS = 4000;
-const WORKSPACE_ROLES = new Set([
-  "primary_codebase",
-  "capability_library",
-  "docs",
-  "data",
-  "deployment",
-  "reference",
-]);
 
 const MEMBER_COLUMNS = `id, space_id, project_id, user_id, role, status, created_at, updated_at`;
 const PROJECT_MEMBER_ROLES = new Set(["owner", "member", "viewer"]);
@@ -138,27 +126,80 @@ export class PgProjectRepository {
     return page(items, countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
+  // Applies the requested (or default `blank`) Project Template at creation
+  // time: sets the initial Primary Mode and records an append-only Mode
+  // Transition (from=null) in the same transaction. Template selection is
+  // immutable creation-time provenance only — all installed Project Areas
+  // remain reachable regardless of which Template was applied.
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const name = requiredString(body.name, "name");
+    const requestedTemplateKey = optionalString(body.template_key);
+    const defaultTemplate = getBuiltInProjectTemplate(DEFAULT_PROJECT_TEMPLATE_KEY);
+    if (!defaultTemplate) {
+      // Only reachable if a caller overrides the registry (tests) without a
+      // `blank` entry — fail clearly rather than dereference null.
+      throw new HttpError(500, `Default project template '${DEFAULT_PROJECT_TEMPLATE_KEY}' is not registered`);
+    }
+    const resolvedTemplate = requestedTemplateKey ? getBuiltInProjectTemplate(requestedTemplateKey) : defaultTemplate;
+    if (!resolvedTemplate) {
+      throw new HttpError(422, `Unknown template_key: ${requestedTemplateKey}`);
+    }
     const now = new Date().toISOString();
-    const result = await this.db.query<ProjectRow>(
-      `INSERT INTO projects (
-         id, space_id, owner_user_id, name, description, status, current_focus,
-         settings_json, created_at, updated_at, archived_at, deleted_at
-       ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7::jsonb, $8, $8, NULL, NULL)
-       RETURNING ${PROJECT_COLUMNS}`,
-      [
-        randomUUID(),
-        identity.spaceId,
-        identity.userId,
-        name,
-        optionalString(body.description),
-        optionalString(body.current_focus),
-        JSON.stringify(optionalObject(body.settings_json) ?? {}),
-        now,
-      ],
-    );
-    return projectToOut(result.rows[0]!);
+    const projectId = randomUUID();
+    return withQueryableTransaction(this.db, async (db) => {
+      const result = await db.query<ProjectRow>(
+        `INSERT INTO projects (
+           id, space_id, owner_user_id, name, description, status, current_focus,
+           settings_json, template_key, template_applied_json, primary_mode,
+           created_at, updated_at, archived_at, deleted_at
+         ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7::jsonb, $8, $9::jsonb, $10, $11, $11, NULL, NULL)
+         RETURNING ${PROJECT_COLUMNS}`,
+        [
+          projectId,
+          identity.spaceId,
+          identity.userId,
+          name,
+          optionalString(body.description),
+          optionalString(body.current_focus),
+          JSON.stringify(optionalObject(body.settings_json) ?? {}),
+          resolvedTemplate.key,
+          JSON.stringify({ selected_key: requestedTemplateKey, resolved_key: resolvedTemplate.key, applied_at: now }),
+          resolvedTemplate.initial_primary_mode,
+          now,
+        ],
+      );
+      await db.query(
+        `INSERT INTO project_mode_transitions (
+           id, space_id, project_id, from_mode, to_mode, reason, trigger_ref, confirmed_by_user_id, created_at
+         ) VALUES ($1, $2, $3, NULL, $4, 'template_applied', $5, $6, $7)`,
+        [randomUUID(), identity.spaceId, projectId, resolvedTemplate.initial_primary_mode, resolvedTemplate.key, identity.userId, now],
+      );
+      const briefId = randomUUID();
+      await db.query(
+        `INSERT INTO project_brief_versions
+          (id,space_id,project_id,version,goal,scope_included,scope_excluded,success_definition,constraints,assumptions,created_by_user_id,created_at)
+         VALUES ($1,$2,$3,'v1',$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [
+          briefId,
+          identity.spaceId,
+          projectId,
+          optionalString(body.goal),
+          optionalString(body.scope_included),
+          optionalString(body.scope_excluded),
+          optionalString(body.success_definition),
+          optionalString(body.constraints),
+          optionalString(body.assumptions),
+          identity.userId,
+          now,
+        ],
+      );
+      await db.query(
+        `UPDATE projects SET active_brief_version_id=$1 WHERE id=$2 AND space_id=$3`,
+        [briefId, projectId, identity.spaceId],
+      );
+      result.rows[0]!.active_brief_version_id = briefId;
+      return projectToOut(result.rows[0]!);
+    });
   }
 
   async get(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown> | null> {
@@ -254,7 +295,7 @@ export class PgProjectRepository {
       activities,
       artifacts,
       pendingProposals,
-      workspaces,
+      projectFolders,
       activeRuns,
       memories,
     ] = await Promise.all([
@@ -275,12 +316,15 @@ export class PgProjectRepository {
         [identity.spaceId, projectId, identity.userId],
       ),
       this.db.query<{ total: string | number }>(
-        `SELECT count(pw.id)::text AS total
-           FROM project_workspaces pw
-           JOIN projects p ON p.id = pw.project_id
-           JOIN workspaces w ON w.id = pw.workspace_id AND w.space_id = p.space_id
-          WHERE p.space_id = $1 AND pw.project_id = $2 AND p.deleted_at IS NULL
-            AND ${contentReadSql("workspace", "w", "$3")}`,
+        `SELECT count(f.id)::text AS total
+           FROM project_folders f
+           JOIN projects p ON p.id = f.project_id AND p.space_id = f.space_id
+          WHERE p.space_id = $1 AND f.project_id = $2 AND p.deleted_at IS NULL
+            AND ${projectFolderReadAccessSql({
+              spaceExpr: "f.space_id",
+              projectFolderExpr: "f.id",
+              userExpr: "$3",
+            })}`,
         [identity.spaceId, projectId, identity.userId],
       ),
       this.db.query<{ total: string | number }>(
@@ -306,7 +350,7 @@ export class PgProjectRepository {
       activity_count: countFromRow(activities.rows[0]),
       artifact_count: countFromRow(artifacts.rows[0]),
       pending_proposal_count: countFromRow(pendingProposals.rows[0]),
-      workspace_count: countFromRow(workspaces.rows[0]),
+      project_folder_count: countFromRow(projectFolders.rows[0]),
       active_run_count: countFromRow(activeRuns.rows[0]),
       memory_entry_count: countFromRow(memories.rows[0]),
     };
@@ -444,62 +488,6 @@ export class PgProjectRepository {
     );
     await this.reindexPublicSummary(identity.spaceId, projectId);
     return projectPublicSummaryToOut(result.rows[0]!);
-  }
-
-  async listWorkspaces(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
-    await this.requireProject(identity.spaceId, projectId);
-    const rows = await this.db.query<ProjectWorkspaceLinkRow>(
-      `SELECT pw.${LINK_COLUMNS.replaceAll(", ", ", pw.")}
-         FROM project_workspaces pw
-        WHERE pw.project_id = $1
-          AND pw.space_id = $2
-        ORDER BY pw.created_at ASC, pw.id ASC`,
-      [projectId, identity.spaceId],
-    );
-    return rows.rows.map(projectWorkspaceLinkToOut);
-  }
-
-  async linkWorkspace(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    body: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const workspaceId = requiredString(body.workspace_id, "workspace_id");
-    const role = optionalString(body.role) ?? "reference";
-    if (!WORKSPACE_ROLES.has(role)) throw new HttpError(422, "invalid workspace role");
-    const workspace = await this.db.query<{ id: string }>(
-      `SELECT id FROM workspaces WHERE id = $1 AND space_id = $2 AND status = 'active'`,
-      [workspaceId, identity.spaceId],
-    );
-    if (!workspace.rows[0]) throw new HttpError(404, "Workspace not found");
-    const now = new Date().toISOString();
-    const result = await this.db.query<ProjectWorkspaceLinkRow>(
-      `INSERT INTO project_workspaces (id, space_id, project_id, workspace_id, role, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $6)
-       ON CONFLICT (space_id, project_id, workspace_id, role)
-       DO UPDATE SET updated_at = EXCLUDED.updated_at
-       RETURNING ${LINK_COLUMNS}`,
-      [randomUUID(), identity.spaceId, projectId, workspaceId, role, now],
-    );
-    return projectWorkspaceLinkToOut(result.rows[0]!);
-  }
-
-  async unlinkWorkspace(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    workspaceId: string,
-    role: string | null,
-  ): Promise<void> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    if (role && !WORKSPACE_ROLES.has(role)) throw new HttpError(422, "invalid workspace role");
-    const params: unknown[] = [identity.spaceId, projectId, workspaceId];
-    const clauses = ["space_id = $1", "project_id = $2", "workspace_id = $3"];
-    if (role) {
-      params.push(role);
-      clauses.push(`role = $${params.length}`);
-    }
-    await this.db.query(`DELETE FROM project_workspaces WHERE ${clauses.join(" AND ")}`, params);
   }
 
   // --- Project membership (the project-level memory access ACL) -------------
@@ -658,7 +646,11 @@ export class PgProjectRepository {
           run_id: runId,
           space_id: spaceId,
           status: "cancelled",
-          output_json: { project_id: projectId, cancellation_source: "project_archive" },
+          output_json: canonicalRunOutput({
+            success: false,
+            outputText: "",
+            outputJson: { project_id: projectId, cancellation_source: "project_archive" },
+          }),
           error_json: { error_code: "project_archived", error_text: "Workflow run cancelled because its Project was archived" },
           exit_code: null,
           completed_at: now,
@@ -787,6 +779,9 @@ function projectToOut(row: ProjectRow, includeSettings = true): Record<string, u
     settings_json: includeSettings
       ? (row.settings_json === null ? null : objectValue(row.settings_json))
       : null,
+    template_key: row.template_key,
+    primary_mode: row.primary_mode,
+    active_brief_version_id: row.active_brief_version_id,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
     archived_at: dateIso(row.archived_at),
@@ -820,17 +815,6 @@ function projectPublicSummaryToOut(row: ProjectPublicSummaryRow): Record<string,
     review_status: row.review_status,
     updated_by_user_id: row.updated_by_user_id,
     generated_by_run_id: row.generated_by_run_id,
-    created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
-    updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
-  };
-}
-
-function projectWorkspaceLinkToOut(row: ProjectWorkspaceLinkRow): Record<string, unknown> {
-  return {
-    id: row.id,
-    project_id: row.project_id,
-    workspace_id: row.workspace_id,
-    role: row.role,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
   };

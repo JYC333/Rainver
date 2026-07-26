@@ -181,7 +181,7 @@ CREATE TABLE public.proposals (
     updated_at timestamp with time zone NOT NULL,
     reviewed_at timestamp with time zone,
     reviewed_by character varying(36),
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     rationale text,
     created_by_agent_id character varying(36),
     created_by_user_id character varying(36),

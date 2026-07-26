@@ -272,10 +272,11 @@ describe("source post-processing repository queue helpers", () => {
 });
 
 describe("source post-processing repository (real Postgres)", () => {
-  it("reuses an Auto Research rule when a legacy channel name has trailing whitespace", async () => {
+  it("reuses a Thread-scoped Auto Research rule when a channel name has trailing whitespace", async () => {
     if (!available || !pool) return;
     const monitorName = `${"memory augmented research ".repeat(12).slice(0, 179)} `;
-    const ruleName = `Auto Research: ${monitorName}`.trim();
+    const threadScope = [{ thread_id: "12345678-1234-4123-8123-123456789abc", version: 1, kind: "question" as const, statement: "How should agents remember?" }];
+    const ruleName = `Auto Research 12345678: ${monitorName}`.trim();
     await pool.query(`UPDATE source_channels SET name=$3 WHERE id=$1 AND space_id=$2`, [CONNECTION, SPACE, monitorName]);
     const existing = await repo().createRule({
       spaceId: SPACE,
@@ -297,6 +298,7 @@ describe("source post-processing repository (real Postgres)", () => {
         CONNECTION,
         {
           researchQuestion: "How should agents remember?",
+          threadScope,
           agentId: AGENT,
           runtimeProfileId: "runtime-profile",
           researchScope: { sub_questions: [], in: [], out: [], must_have: [], nice_to_have: [] },

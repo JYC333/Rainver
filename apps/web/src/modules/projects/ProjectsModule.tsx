@@ -3,7 +3,7 @@ import { Routes, Route } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
 // Each project sub-route pulls in a genuinely separate page (and, for the
-// research workspace, its own large dependency tree — notebook, reading
+// research Area, its own large dependency tree — notebook, reading
 // list, checklist, chat panel). Without per-route lazy loading, opening the
 // plain project detail page forced the browser to also fetch and parse
 // every other sub-route's modules up front, competing with this page's own
@@ -11,9 +11,19 @@ import { Skeleton } from '../../components/ui/skeleton'
 const ProjectsPage = lazy(() => import('./ProjectsPage'))
 const ProjectDetailPage = lazy(() => import('./ProjectDetailPage'))
 const ProjectSourcesPage = lazy(() => import('./ProjectSourcesPage'))
-const ProjectChatPage = lazy(() => import('./ProjectChatPage'))
+const ProjectFilesPage = lazy(() => import('../project_files/ProjectFilesPage'))
+const ProjectFolderSettingsPage = lazy(() => import('../project_files/ProjectFolderSettingsPage'))
+const InquiryAreaPage = lazy(() => import('./InquiryAreaPage'))
+const ExperimentAreaPage = lazy(() => import('./ExperimentAreaPage'))
+const DecisionAreaPage = lazy(() => import('./DecisionAreaPage'))
+const LearningAreaPage = lazy(() => import('./LearningAreaPage'))
+const KnowledgeReviewPage = lazy(() => import('./KnowledgeReviewPage'))
 const ResearchReportPage = lazy(() => import('./ResearchReportPage'))
-const ResearchWorkspacePage = lazy(() => import('./ResearchWorkspacePage'))
+const ResearchAreaPage = lazy(() => import('./ResearchAreaPage'))
+const ProjectAreaLayout = lazy(() => import('./ProjectAreaLayout'))
+const DeliveryAreaPage = lazy(() => import('./DeliveryAreaPage'))
+const OperationsAreaPage = lazy(() => import('./OperationsAreaPage'))
+const ProjectRoomsPage = lazy(() => import('../agent_groups/AgentGroupsPage'))
 
 function PageFallback() {
   return (
@@ -28,11 +38,22 @@ export default function ProjectsModule() {
   return (
     <Routes>
       <Route index element={<Suspense fallback={<PageFallback />}><ProjectsPage /></Suspense>} />
-      <Route path=":projectId/sources" element={<Suspense fallback={<PageFallback />}><ProjectSourcesPage /></Suspense>} />
-      <Route path=":projectId/chat" element={<Suspense fallback={<PageFallback />}><ProjectChatPage /></Suspense>} />
-      <Route path=":projectId/research/reports/:reportId" element={<Suspense fallback={<PageFallback />}><ResearchReportPage /></Suspense>} />
-      <Route path=":projectId/research" element={<Suspense fallback={<PageFallback />}><ResearchWorkspacePage /></Suspense>} />
-      <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
+      <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectAreaLayout /></Suspense>}>
+        <Route index element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
+        <Route path="sources" element={<Suspense fallback={<PageFallback />}><ProjectSourcesPage /></Suspense>} />
+        <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
+        <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
+        <Route path="inquiry" element={<Suspense fallback={<PageFallback />}><InquiryAreaPage /></Suspense>} />
+        <Route path="experiments" element={<Suspense fallback={<PageFallback />}><ExperimentAreaPage /></Suspense>} />
+        <Route path="decisions" element={<Suspense fallback={<PageFallback />}><DecisionAreaPage /></Suspense>} />
+        <Route path="learning" element={<Suspense fallback={<PageFallback />}><LearningAreaPage /></Suspense>} />
+        <Route path="knowledge-review" element={<Suspense fallback={<PageFallback />}><KnowledgeReviewPage /></Suspense>} />
+        <Route path="delivery" element={<Suspense fallback={<PageFallback />}><DeliveryAreaPage /></Suspense>} />
+        <Route path="operations" element={<Suspense fallback={<PageFallback />}><OperationsAreaPage /></Suspense>} />
+        <Route path="rooms" element={<Suspense fallback={<PageFallback />}><ProjectRoomsPage /></Suspense>} />
+        <Route path="research/reports/:reportId" element={<Suspense fallback={<PageFallback />}><ResearchReportPage /></Suspense>} />
+        <Route path="research" element={<Suspense fallback={<PageFallback />}><ResearchAreaPage /></Suspense>} />
+      </Route>
     </Routes>
   )
 }

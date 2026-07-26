@@ -10,7 +10,7 @@ export interface AutomationRow {
   space_id: string;
   owner_user_id: string;
   agent_id: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
   name: string;
   description: string | null;
@@ -42,7 +42,7 @@ export interface AutomationRepositoryPort {
     name: string;
     description?: string | null;
     agentId: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
     triggerType: string;
     configJson: Record<string, unknown>;
@@ -75,7 +75,7 @@ export interface AutomationRepositoryPort {
 }
 
 const AUTOMATION_COLUMNS = `
-  id, space_id, owner_user_id, agent_id, workspace_id, project_id, name, description,
+  id, space_id, owner_user_id, agent_id, project_folder_id, project_id, name, description,
   trigger_type, status, preflight_snapshot_json, config_json, created_at, updated_at
 `;
 const AUTOMATION_SCHEDULER_TASK_TYPE = "automation";
@@ -173,7 +173,7 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
     name: string;
     description?: string | null;
     agentId: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
     triggerType: string;
     configJson: Record<string, unknown>;
@@ -189,7 +189,7 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
     name: string;
     description?: string | null;
     agentId: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
     triggerType: string;
     configJson: Record<string, unknown>;
@@ -204,7 +204,7 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
         : null;
     const result = await this.db.query<AutomationRow>(
       `INSERT INTO automations (
-         id, space_id, owner_user_id, agent_id, workspace_id, project_id, name, description,
+         id, space_id, owner_user_id, agent_id, project_folder_id, project_id, name, description,
          trigger_type, status, preflight_snapshot_json, config_json,
          created_at, updated_at
        ) VALUES (
@@ -218,7 +218,7 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
         input.spaceId,
         input.ownerUserId,
         input.agentId,
-        input.workspaceId ?? null,
+        input.projectFolderId ?? null,
         input.projectId ?? null,
         input.name,
         input.description ?? null,
@@ -536,7 +536,7 @@ export function automationToOut(row: AutomationRow): Record<string, unknown> {
     space_id: row.space_id,
     owner_user_id: row.owner_user_id,
     agent_id: row.agent_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     project_id: row.project_id,
     name: row.name,
     description: row.description,

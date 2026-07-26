@@ -153,7 +153,7 @@ export interface CanonicalObject {
   objectId: string;
   title: string;
   slug: string | null;
-  workspaceId: string | null;
+  projectFolderId: string | null;
   ownerUserId: string | null;
   visibility: string | null;
   status: string;

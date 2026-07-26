@@ -66,7 +66,7 @@ export async function assertBudgetSourcesAvailable(
       db,
       spaceId,
       source.source,
-      source.source.kind === "task" ? null : options.excludeExecutionRootId ?? null,
+      options.excludeExecutionRootId ?? null,
     ),
   })));
   const exceeded = counts.find(({ source, total }) => total >= (source.max_runs as number));
@@ -149,7 +149,7 @@ export async function checkRunBudget(
       db,
       run.space_id,
       source.source,
-      source.source.kind === "task" ? run.id : executionRootId,
+      executionRootId,
     ),
   })));
   const exceeded = counts.find(({ source, total }) => total >= (source.max_runs as number));
@@ -270,15 +270,30 @@ async function budgetSourceExists(
                 OR (
                   a.owner_scope_type = 'user'
                   AND a.owner_scope_id IS NOT NULL
-                  AND EXISTS (SELECT 1 FROM users au WHERE au.id = a.owner_scope_id)
+                  AND EXISTS (
+                    SELECT 1
+                      FROM space_memberships owner_membership
+                     WHERE owner_membership.space_id = $2
+                       AND owner_membership.user_id = a.owner_scope_id
+                       AND owner_membership.status = 'active'
+                  )
                 )
               )
               AND v.space_id = $2
               AND (
-                (v.scope_type = 'system' AND v.scope_id IS NULL)
-                OR (v.scope_type = 'space' AND v.scope_id = $2)
+                (
+                  a.owner_scope_type <> 'user'
+                  AND v.scope_type = 'system'
+                  AND v.scope_id IS NULL
+                )
                 OR (
-                  v.scope_type = 'project'
+                  a.owner_scope_type <> 'user'
+                  AND v.scope_type = 'space'
+                  AND v.scope_id = $2
+                )
+                OR (
+                  a.owner_scope_type <> 'user'
+                  AND v.scope_type = 'project'
                   AND v.scope_id IS NOT NULL
                   AND EXISTS (
                     SELECT 1 FROM projects p
@@ -286,7 +301,8 @@ async function budgetSourceExists(
                   )
                 )
                 OR (
-                  v.scope_type = 'agent'
+                  a.owner_scope_type <> 'user'
+                  AND v.scope_type = 'agent'
                   AND v.scope_id IS NOT NULL
                   AND EXISTS (
                     SELECT 1 FROM agents ag
@@ -296,6 +312,16 @@ async function budgetSourceExists(
                 OR (
                   v.scope_type = 'user'
                   AND v.scope_id IS NOT NULL
+                  AND (
+                    (
+                      a.owner_scope_type = 'user'
+                      AND a.owner_scope_id = v.scope_id
+                    )
+                    OR (
+                      a.owner_scope_type <> 'user'
+                      AND a.metadata_json->>'allow_user_override' = 'true'
+                    )
+                  )
                   AND EXISTS (
                     SELECT 1
                       FROM space_memberships sm
@@ -325,48 +351,42 @@ async function countSourceRuns(
     "budget_source_id_required",
     `Budget source kind '${source.kind}' cannot be counted without a source id.`,
   );
-  if (source.kind === "task") {
-    const result = executionRootId
-      ? await db.query<{ total: string }>(
-          `SELECT count(*) FILTER (WHERE run_id <> $3)::text AS total
-             FROM task_runs
-            WHERE space_id = $1 AND task_id = $2`,
-          [spaceId, source.id, executionRootId],
-        )
-      : await db.query<{ total: string }>(
-          `SELECT count(*)::text AS total FROM task_runs WHERE space_id = $1 AND task_id = $2`,
-          [spaceId, source.id],
-        );
-    return Number(result.rows[0]?.total ?? 0);
-  }
-  if (source.kind === "automation") {
-    const result = await db.query<{ total: string }>(
-      `SELECT count(*) FILTER (WHERE ar.run_id <> COALESCE($3, ''))::text AS total
-         FROM automation_runs ar
-        WHERE ar.automation_id = $2
-          AND EXISTS (SELECT 1 FROM automations a WHERE a.id = ar.automation_id AND a.space_id = $1)`,
-      [spaceId, source.id, executionRootId],
-    );
-    return Number(result.rows[0]?.total ?? 0);
-  }
-  if (source.kind === "workflow" || source.kind === "plan") {
-    const result = await db.query<{ total: string }>(
-      `SELECT count(*)::text AS total
+  const nativeExecutions = source.kind === "task"
+    ? `SELECT tr.run_id AS execution_root_id
+         FROM task_runs tr
+        WHERE tr.space_id = $1 AND tr.task_id = $3`
+    : source.kind === "automation"
+      ? `SELECT ar.run_id AS execution_root_id
+           FROM automation_runs ar
+           JOIN automations a ON a.id = ar.automation_id AND a.space_id = $1
+          WHERE ar.automation_id = $3`
+      : `SELECT NULL::varchar AS execution_root_id WHERE false`;
+  const result = await db.query<{ total: string }>(
+    `WITH source_executions AS (
+       ${nativeExecutions}
+       UNION
+       SELECT COALESCE(r.root_run_id, r.id) AS execution_root_id
          FROM runs r
         WHERE r.space_id = $1
-          AND r.parent_run_id IS NULL
-          AND r.id <> COALESCE($4, '')
-          AND EXISTS (
-            SELECT 1
-              FROM jsonb_array_elements(COALESCE(r.contract_snapshot_json->'budget_sources', '[]'::jsonb)) budget
-             WHERE budget->'source'->>'kind' = $2
-               AND budget->'source'->>'id' = $3
-          )`,
-      [spaceId, source.kind, source.id, executionRootId],
-    );
-    return Number(result.rows[0]?.total ?? 0);
-  }
-  return 0;
+          AND (
+            (
+              r.contract_snapshot_json->'source'->>'kind' = $2
+              AND r.contract_snapshot_json->'source'->>'id' = $3
+            )
+            OR EXISTS (
+              SELECT 1
+                FROM jsonb_array_elements(COALESCE(r.contract_snapshot_json->'budget_sources', '[]'::jsonb)) budget
+               WHERE budget->'source'->>'kind' = $2
+                 AND budget->'source'->>'id' = $3
+            )
+          )
+     )
+     SELECT count(*)::text AS total
+       FROM source_executions
+      WHERE execution_root_id <> COALESCE($4, '')`,
+    [spaceId, source.kind, source.id, executionRootId],
+  );
+  return Number(result.rows[0]?.total ?? 0);
 }
 
 function isBudgetSource(value: unknown): value is RunBudgetSource {

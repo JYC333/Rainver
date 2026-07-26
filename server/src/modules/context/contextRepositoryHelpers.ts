@@ -31,7 +31,7 @@ export function resolveReadableScopes(
     "system",
     "space",
     "user",
-    "workspace",
+    "project_folder",
     "capability",
     "agent",
   ]);
@@ -49,7 +49,7 @@ export function hardFilterRows(
   input: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     includeSystemScope: boolean;
     oversightLevel?: OversightMode;
     // When present, project cutting is active: only project-free memory
@@ -63,7 +63,7 @@ export function hardFilterRows(
       !canReadMemory(row, {
         userId: input.userId,
         spaceId: input.spaceId,
-        workspaceId: input.workspaceId,
+        projectFolderId: input.projectFolderId,
         includeSystemScope:
           input.includeSystemScope && row.scope_type === "system",
         oversightLevel: input.oversightLevel,
@@ -84,7 +84,7 @@ export function hardFilterRows(
 export function assignSection(row: ContextMemoryRow): "stable_prefix" | "dynamic_tail" {
   if (row.memory_layer === "episodic") return "dynamic_tail";
   const scope = row.scope_type ?? "";
-  return ["system", "space", "workspace", "user", "capability", "agent"].includes(
+  return ["system", "space", "project_folder", "user", "capability", "agent"].includes(
     scope,
   )
     ? "stable_prefix"

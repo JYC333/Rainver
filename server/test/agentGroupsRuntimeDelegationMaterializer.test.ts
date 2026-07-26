@@ -12,7 +12,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "live",
     prompt: null,
     instruction: null,
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "model_api",
@@ -29,6 +29,46 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 }
 
 describe("AgentGroupRuntimeDelegationMaterializer", () => {
+  it("uses a stable runtime-output idempotency key across physical retries", async () => {
+    const keys: Array<string | null | undefined> = [];
+    const materializer = new AgentGroupRuntimeDelegationMaterializer({
+      async spawnChildRun(_identity, input) {
+        keys.push(input.tool_call_id);
+        return {
+          delegation: {
+            id: "delegation-1",
+            child_run_id: "run-child",
+            status: "queued",
+          } as never,
+          child_run_id: "run-child",
+          policy_decision_record_id: "policy-1",
+        };
+      },
+    });
+    const output = {
+      delegations: [{
+        target_agent_id: "agent-reader",
+        instruction: "Summarize the evidence.",
+        budget: { max_cost: 2, max_steps: 4 },
+      }],
+    };
+
+    await materializer.materialize({ run: run(), output_json: output });
+    await materializer.materialize({
+      run: run(),
+      output_json: {
+        delegations: [{
+          ...output.delegations[0],
+          budget: { max_steps: 4, max_cost: 2 },
+        }],
+      },
+    });
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^runtime_output:[a-f0-9]{64}$/);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
   it("spawns child runs from structured runtime delegation output", async () => {
     const calls: unknown[] = [];
     const materializer = new AgentGroupRuntimeDelegationMaterializer({
@@ -52,6 +92,7 @@ describe("AgentGroupRuntimeDelegationMaterializer", () => {
             budget_json: input.budget_json ?? null,
             context_policy_json: input.context_policy_json ?? null,
             result_summary: null,
+            tool_call_id: null,
             created_at: "2026-07-05T00:00:00.000Z",
             updated_at: "2026-07-05T00:00:00.000Z",
             completed_at: null,
@@ -152,6 +193,7 @@ describe("AgentGroupRuntimeDelegationMaterializer", () => {
             budget_json: input.budget_json ?? null,
             context_policy_json: input.context_policy_json ?? null,
             result_summary: null,
+            tool_call_id: null,
             created_at: "2026-07-05T00:00:00.000Z",
             updated_at: "2026-07-05T00:00:00.000Z",
             completed_at: "2026-07-05T00:00:00.000Z",

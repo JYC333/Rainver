@@ -46,7 +46,7 @@ Current Knowledge-adjacent tables:
 | `retrieval_objects` | Derived retrieval index with closed object types: `knowledge_item`, `note`, `source`, `claim`, `memory_entry`, `project_public_summary`. |
 
 Current independent roots that should not be folded into Knowledge include
-`projects`, `workspaces`, `activity_records`, `runs`, `artifacts`, `proposals`,
+`projects`, `project_folders`, `activity_records`, `runs`, `artifacts`, `proposals`,
 and `memory_entries`.
 
 ### Current dependencies
@@ -179,7 +179,7 @@ Implemented fields:
 - `visibility`
 - `owner_user_id`
 - `primary_project_id`
-- `workspace_id`
+- `project_folder_id`
 - `created_by_user_id`
 - `created_by_agent_id`
 - `created_by_run_id`
@@ -469,7 +469,7 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 ### Phase 3: move common fields out of Knowledge extensions
 
 - Implemented: moved shared fields such as title, summary/excerpt, status, visibility, owner,
-  project/workspace refs, created-by fields, timestamps, archive/delete fields
+  project/Project Folder refs, created-by fields, timestamps, archive/delete fields
   to `space_objects`.
 - Keep content, slug, aliases, tags, verification/reflection, versioning, and
   Knowledge provenance fields in `knowledge_items`.

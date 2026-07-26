@@ -34,9 +34,17 @@ environment. Fields it owns:
 
 - `adapter_type` — which runtime adapter executes the agent (model_api, claude_code, etc.)
 - `model_provider_id`, `model_name` — production override (wins over version defaults)
-- `credential_profile_id` — which credential set to use at execution time
-- `runtime_config_json` — adapter-specific execution parameters (timeouts, sandbox config)
+- `runtime_config_json` — adapter-specific execution parameters (timeouts, sandbox config,
+  and an optional `credential_profile_id` default hint for non-conversation CLI runs)
 - `runtime_policy_json` — execution-time risk and rate limits (may tighten version ceiling)
+
+The profile does not own a dedicated credential column. A CLI conversation turn
+resolves its credential profile from the signed-in user's own selection on the
+session's conversation backend binding, never from a space-shared profile —
+see [CLI Surfaces](../decisions/0007-multi-cli-mvp.md) and the credential
+channel isolation ADR. Non-conversation CLI runs (Task/Plan/Workflow dispatch)
+fall back to the profile's `runtime_config_json.credential_profile_id` hint,
+then to the active-space default grant for that runtime.
 
 Profiles are mutable and may be changed without creating a new version. An agent
 may have multiple profiles (e.g. dev vs prod) controlled by `enabled` and

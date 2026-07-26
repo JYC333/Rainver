@@ -62,6 +62,7 @@ export * from "./runOrchestration.js";
 
 // Agent group run / delegation contracts
 export * from "./agentGroupRuns.js";
+export * from "./rooms.js";
 
 // Policy enforcement contracts
 export * from "./policy.js";
@@ -84,7 +85,7 @@ export * from "./projects.js";
 // Memory + sessions contracts
 export * from "./memorySessions.js";
 
-// Context workspace/profile contracts
+// Context Project Folder/profile contracts
 export * from "./contextProfiles.js";
 
 // Context Ops read-model contracts
@@ -113,6 +114,7 @@ export * from "./capabilities.js";
 export * from "./workflows.js";
 export * from "./skills.js";
 export * from "./projectResearch.js";
+export * from "./inquiry.js";
 export * from "./researchDiscovery.js";
 export * from "./reader.js";
 

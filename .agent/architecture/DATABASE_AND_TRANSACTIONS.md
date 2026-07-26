@@ -26,7 +26,7 @@ Existing clients join the caller's transaction without issuing a nested
 - Workflow/service layer owns commit for multi-object workflows.
 - Repository/store helpers may query and write, but must not commit unless
   explicitly documented as a standalone operation.
-- Low-level helpers must not commit invisibly when used by proposal apply, run execution, job terminal state, or workspace lifecycle workflows.
+- Low-level helpers must not commit invisibly when used by proposal apply, run execution, job terminal state, or Project Folder lifecycle workflows.
 - `commit()` should appear only in approved transaction-owner modules or explicit standalone operations.
 - `rollback()` belongs at workflow boundaries and failed transaction recovery
   paths, not inside unrelated low-level helpers.
@@ -45,7 +45,7 @@ Existing clients join the caller's transaction without issuing a nested
 - MemoryEntry creation, update, archive, and provenance/source fields
 - Policy row creation and supersession
 - Job terminal state
-- Workspace lifecycle state
+- Project Folder lifecycle state
 - Backup manifest/archive state
 
 If a transaction fails, callers must not continue as though the transaction were clean.
@@ -249,7 +249,7 @@ When adding a new scheduler:
 - Runtime/model/deployer/backup calls inside long DB transactions.
 - Persisting raw secrets in inspectable DB fields or backup manifests.
 - Shell scripts writing business DB state directly.
-- Hard-deleting workspace metadata because a path is missing.
+- Hard-deleting Project Folder metadata because a path is missing.
 
 ## Transaction Audit Summary
 
@@ -266,7 +266,7 @@ When adding a new scheduler:
 | Sources daily briefing Activity pointer | Source post-processing repository short upsert after successful run; auxiliary failure logged | None |
 | Activity consolidation | One short commit per activity outcome | Low (consolidation model call possible) |
 | Job queue / handlers | Short standalone commits; auxiliary events isolated | Handler execution |
-| Workspace scan | Stale-pass/create-pass commits; filesystem scan | Filesystem scan |
+| Project Folder archive/unregister | Single-row status update commit; physical directory left untouched | None |
 | BackupService | Independent from ORM — no business commits | Tar/snapshot/file IO |
 | Deployment/deployer client | No durable DB job state currently | High: socket/network |
 

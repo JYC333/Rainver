@@ -42,7 +42,7 @@ interface PersistSelectedRunRequestInput {
   targetId: string;
   runMode: string;
   runtimeProfileId: string | null;
-  workspaceId: string | null;
+  projectFolderId: string | null;
   projectId: string | null;
   contextArtifactIds: string[];
   target: EvolutionTargetRow;
@@ -504,7 +504,7 @@ export class EvolutionRepository {
       targetId,
       runMode: boundedRunMode(body.mode),
       runtimeProfileId: optionalString(body.runtime_profile_id),
-      workspaceId: optionalString(body.workspace_id),
+      projectFolderId: optionalString(body.project_folder_id),
       projectId: optionalString(body.project_id),
       contextArtifactIds: optionalStringArray(body.context_artifact_ids),
       target,
@@ -546,7 +546,7 @@ export class EvolutionRepository {
       trigger_origin: "manual",
       runtime_profile_id: input.runtimeProfileId,
       runtime_profile_selection_source: "default",
-      workspace_id: input.workspaceId,
+      project_folder_id: input.projectFolderId,
       project_id: input.projectId,
       prompt: initialPrompt.user,
       instruction: initialPrompt.system,

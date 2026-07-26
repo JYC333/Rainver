@@ -216,7 +216,7 @@ Run these after structural module changes:
 
 ```bash
 cd server
-COREPACK_ENABLE_AUTO_PIN=0 pnpm exec vitest run test/boundaries.test.ts
+npx vitest run test/boundaries.test.ts
 ```
 
 Add or run registry-specific tests when changing scheduler/job/space/run/proposal extension

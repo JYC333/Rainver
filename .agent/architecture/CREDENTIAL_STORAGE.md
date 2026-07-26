@@ -47,7 +47,13 @@ configuration in `model_providers.config_json`. Default provider selection and
 NetworkProfile routing are active-space grant fields.
 
 CLI login state is a distinct credential class: it is **never pooled or rotated**, and
-the pool tables never reference it.
+the pool tables never reference it. A user × session conversation backend
+binding selects the user's enabled active-space CLI grant; shared Agent
+profiles never hold a user credential id. At execution, the broker creates a
+clean run-private `HOME` and copies only the runtime's credential file. It does
+not share CLI sessions, transcripts, databases, or general configuration.
+Quota probe homes are unique and short-lived, and their cache is keyed by both
+runtime and credential profile id.
 
 ## Save flow
 
@@ -79,9 +85,10 @@ Codex OpenAI-compatible CLI provider bindings follow the same invariant. For a
 selected Codex provider, the server writes only a run-scoped temporary
 `CODEX_HOME/config.toml`; its `experimental_bearer_token` is a short-lived
 provider-proxy lease token, not the ModelProvider API key. `CODEX_HOME` points
-at the run's temporary Codex profile directory. The proxy resolves the real key
-inside the server process and forwards the request to the configured
-`openai_compatible_base_url`.
+at the run's temporary Codex profile directory. Login-backed Codex runs copy
+only `auth.json`; they do not link the user's shared Codex sessions or config.
+The proxy resolves the real key inside the server process and forwards the
+request to the configured `openai_compatible_base_url`.
 
 ## Invariants
 

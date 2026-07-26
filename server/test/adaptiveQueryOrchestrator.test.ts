@@ -396,7 +396,7 @@ class FakeStore {
     const compiled = { schema_version: "research_compiled_query.v1" as const, provider_key: providerKey, query: { q: "agent memory" }, fingerprint: `seed-${providerKey}-selected` };
     this.attempts.push({ id, providerPlanId: plan.id, round: 0, sequence: 1, direction: "initial", semanticQuery: semantic, compiledQuery: compiled, providerKey });
     plan.attempts = [{
-      id, round: 0, sequence: 1, direction: "initial", semantic_query: semantic, compiled_query: compiled,
+      id, provider_plan_id: plan.id, round: 0, sequence: 1, direction: "initial", semantic_query: semantic, compiled_query: compiled,
       observation: observation(50), score: 0.8, decision: "accept", decision_reason: null, error_class: null,
       created_at: new Date().toISOString(), completed_at: new Date().toISOString(),
     }];
@@ -413,7 +413,7 @@ class FakeStore {
     const compiled = { schema_version: "research_compiled_query.v1" as const, provider_key: providerKey, query: { q: "agent memory" }, fingerprint: `seed-${providerKey}-unavailable` };
     this.attempts.push({ id, providerPlanId: plan.id, round: 0, sequence: 1, direction: "initial", semanticQuery: semantic, compiledQuery: compiled, providerKey });
     plan.attempts = [{
-      id, round: 0, sequence: 1, direction: "initial", semantic_query: semantic, compiled_query: compiled,
+      id, provider_plan_id: plan.id, round: 0, sequence: 1, direction: "initial", semantic_query: semantic, compiled_query: compiled,
       observation: null, score: null, decision: null, decision_reason: null, error_class: "http_503",
       created_at: new Date().toISOString(), completed_at: new Date().toISOString(),
     }];
@@ -423,7 +423,7 @@ class FakeStore {
   seedMaterialized() {
     const plan = this.strategy.provider_plans[0]!;
     const attempt = {
-      id: "selected-attempt", sequence: 1, direction: "initial" as const, semantic_query: semanticIntent(),
+      id: "selected-attempt", provider_plan_id: plan.id, round: 0, sequence: 1, direction: "initial" as const, semantic_query: semanticIntent(),
       compiled_query: { schema_version: "research_compiled_query.v1" as const, provider_key: plan.provider_key, query: { q: "agent memory" }, fingerprint: "1234567890abcdef" },
       observation: observation(50), score: 0.8, decision: "accept" as const, decision_reason: null, error_class: null,
       created_at: new Date().toISOString(), completed_at: new Date().toISOString(),
@@ -450,7 +450,7 @@ class FakeStore {
     const stored = { ...attempt, id: `attempt-${this.attempts.length + 1}`, providerKey: plan.provider_key };
     this.attempts.push(stored);
     return {
-      id: stored.id, sequence: attempt.sequence, direction: attempt.direction, semantic_query: attempt.semanticQuery,
+      id: stored.id, provider_plan_id: attempt.providerPlanId, round: attempt.round, sequence: attempt.sequence, direction: attempt.direction, semantic_query: attempt.semanticQuery,
       compiled_query: attempt.compiledQuery, observation: null, score: null, decision: null, decision_reason: null,
       error_class: null, created_at: new Date().toISOString(), completed_at: null,
     };

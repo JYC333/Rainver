@@ -29,7 +29,7 @@ export interface RunRecord {
   mode: string;
   prompt: string | null;
   instruction: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   session_id: string | null;
   parent_run_id?: string | null;
   root_run_id?: string | null;
@@ -73,7 +73,7 @@ export interface RunListFilters {
   status?: string | null;
   mode?: string | null;
   agent_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   project_id?: string | null;
   workflow_version_id?: string | null;
   capability_id?: string | null;
@@ -113,7 +113,7 @@ export interface ContextSnapshotRecord {
   token_budget_json: unknown;
   policy_bundle_version: string | null;
   memory_digest_version: string | null;
-  workspace_digest_version: string | null;
+  project_folder_digest_version: string | null;
   included_memory_refs_json: unknown;
   included_evidence_refs_json: unknown;
   included_file_refs_json: unknown;
@@ -173,7 +173,7 @@ export interface RunStepDetailRecord {
   step_type: string;
   status: string;
   title: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   session_id: string | null;
   task_id: string | null;
   artifact_id: string | null;
@@ -202,7 +202,7 @@ export interface RunEventDetailRecord {
   summary: string | null;
   error_code: string | null;
   error_message: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   artifact_id: string | null;
   proposal_id: string | null;
   data_exposure_level: string | null;
@@ -260,7 +260,7 @@ export interface RunCreateInput {
   run_type: string;
   trigger_origin: string;
   session_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;
@@ -275,6 +275,8 @@ export interface RunCreateInput {
   context_artifact_ids?: string[] | null;
   contract_snapshot?: import("./contractSnapshot").RunContractSnapshotInput;
   workflow_version_id?: string | null;
+  visibility?: "private" | "space_shared" | "selected_users";
+  grantee_user_ids?: string[];
 }
 
 export interface DelegatedChildRunCreateInput {
@@ -287,7 +289,7 @@ export interface DelegatedChildRunCreateInput {
   delegation_id: string;
   instructed_by_agent_id: string;
   session_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;
@@ -300,6 +302,8 @@ export interface DelegatedChildRunCreateInput {
   context_artifact_ids?: string[] | null;
   budget_json?: Record<string, unknown> | null;
   context_policy_json?: Record<string, unknown> | null;
+  visibility?: "private" | "space_shared" | "selected_users";
+  grantee_user_ids?: string[];
 }
 
 export class RunCreateValidationError extends Error {
@@ -321,6 +325,15 @@ export interface RunTerminalUpdate {
   error_json?: unknown;
   exit_code?: number | null;
   completed_at: string;
+}
+
+export interface ConversationRuntimeTerminalSync {
+  binding_id: string;
+  runtime_state_key: string;
+  keep_session: boolean;
+  runtime_session_id: string | null;
+  context_fingerprint: string | null;
+  message_cursor_id?: string | null;
 }
 
 export interface RunAttemptRecord {
@@ -369,7 +382,7 @@ export interface RunEventInput {
   metadata_json?: unknown;
   error_code?: string | null;
   error_message?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   artifact_id?: string | null;
   proposal_id?: string | null;
   data_exposure_level?: string | null;
@@ -393,7 +406,7 @@ export interface RunStepInput {
   status: "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
   title?: string | null;
   parent_step_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   session_id?: string | null;
   task_id?: string | null;
   artifact_id?: string | null;

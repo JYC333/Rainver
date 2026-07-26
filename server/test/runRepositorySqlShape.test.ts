@@ -27,7 +27,10 @@ class RunCreateSqlShapeDb implements Queryable {
       };
     }
     if (sql.includes("FROM agent_versions")) {
-      return { rows: [{ id: "version-1" }] as Row[], rowCount: 1 };
+      return {
+        rows: [{ id: "version-1", tool_permissions_json: {} }] as Row[],
+        rowCount: 1,
+      };
     }
     if (sql.includes("FROM agent_runtime_profiles")) {
       return {
@@ -64,7 +67,7 @@ class RunCreateSqlShapeDb implements Queryable {
         mode: "live",
         prompt: "root",
         instruction: null,
-        workspace_id: "workspace-1",
+        project_folder_id: "workspace-1",
         session_id: "session-1",
         parent_run_id: null,
         root_run_id: "run-root",
@@ -81,7 +84,7 @@ class RunCreateSqlShapeDb implements Queryable {
       return { rows: [row as RunRecord as Row], rowCount: 1 };
     }
     if (
-      sql.includes("FROM workspaces") ||
+      sql.includes("FROM project_folders") ||
       sql.includes("FROM sessions") ||
       sql.includes("FROM projects")
     ) {
@@ -102,7 +105,7 @@ class RunCreateSqlShapeDb implements Queryable {
         mode: String(params[18]),
         prompt: params[19] === null ? null : String(params[19]),
         instruction: params[20] === null ? null : String(params[20]),
-        workspace_id: params[8] === null ? null : String(params[8]),
+        project_folder_id: params[8] === null ? null : String(params[8]),
         session_id: params[9] === null ? null : String(params[9]),
         parent_run_id: params[10] === null ? null : String(params[10]),
         root_run_id: params[11] === null ? null : String(params[11]),
@@ -144,7 +147,7 @@ class RunCreateSqlShapeDb implements Queryable {
         mode: "live",
         prompt: "hello",
         instruction: null,
-        workspace_id: null,
+        project_folder_id: null,
         session_id: null,
         parent_run_id: null,
         root_run_id: null,
@@ -193,8 +196,10 @@ describe("PgRunRepository SQL shape", () => {
     expect(runInsert).toBeTruthy();
     const { columns, values } = insertColumnsAndValues(runInsert!.sql);
     expect(values).toHaveLength(columns.length);
-    expect(runInsert!.params).toHaveLength(36);
+    expect(runInsert!.params).toHaveLength(37);
     expect(runInsert!.params[35]).toBe("default");
+    expect(runInsert!.params[36]).toBe('{"tool_grants":[]}');
+    expect(columns.at(-1)).toBe("permission_snapshot_json");
     expect(columns.slice(16, 19)).toEqual(["run_type", "trigger_origin", "status"]);
     expect(values.slice(16, 19)).toEqual(["$17", "$18", "'queued'"]);
     expect(runInsert!.params.slice(16, 19)).toEqual(["agent", "manual", "live"]);
@@ -248,7 +253,7 @@ describe("PgRunRepository SQL shape", () => {
       parent_run_id: "run-root",
       root_run_id: "run-root",
       run_group_id: "group-1",
-      workspace_id: "workspace-1",
+      project_folder_id: "workspace-1",
       session_id: "session-1",
       project_id: "project-1",
       prompt: "Continue the room",
@@ -277,6 +282,32 @@ describe("PgRunRepository SQL shape", () => {
     });
   });
 
+  it("snapshots tool grants through the delegated child creation path", async () => {
+    const db = new RunCreateSqlShapeDb();
+    const run = await new PgRunRepository(db).createDelegatedChildRun({
+      agent_id: "agent-1",
+      space_id: "space-1",
+      user_id: "user-1",
+      parent_run_id: "run-root",
+      root_run_id: "run-root",
+      run_group_id: "group-1",
+      delegation_id: "delegation-1",
+      instructed_by_agent_id: "manager-agent",
+      prompt: "Review the result",
+      capabilities_json: ["agent.delegate"],
+    });
+
+    expect(run).toMatchObject({
+      parent_run_id: "run-root",
+      root_run_id: "run-root",
+      run_group_id: "group-1",
+      delegation_id: "delegation-1",
+      trigger_origin: "delegation",
+    });
+    const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
+    expect(runInsert?.params[36]).toBe('{"tool_grants":[]}');
+  });
+
   it("keeps agent identity fields on the running run returned for execution", async () => {
     const db = new RunCreateSqlShapeDb();
     const run = await new PgRunRepository(db).markRunRunning({
@@ -289,6 +320,7 @@ describe("PgRunRepository SQL shape", () => {
     expect(runUpdate?.sql).toContain("a.name AS agent_name");
     expect(runUpdate?.sql).toContain("av.system_prompt AS system_prompt");
     expect(runUpdate?.sql).toContain("model_override_json");
+    expect(runUpdate?.sql).toContain("permission_snapshot_json");
     expect(run).toMatchObject({
       agent_id: "agent-1",
       agent_name: "Coding Reviewer",

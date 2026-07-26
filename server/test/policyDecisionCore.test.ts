@@ -65,6 +65,30 @@ describe("roles", () => {
   });
 });
 
+describe("managed grantable system actions", () => {
+  it("denies a requestable action until the exact Run grant exists", () => {
+    const denied = engineCheck(registry, req("project.source.bind", {
+      surface: "managed_run_system_action_gateway",
+      action_id: "project.source.propose_bind",
+      has_action_approval_grant: false,
+    }));
+    expect(denied).toMatchObject({
+      decision: "deny",
+      policy_rule_id: "managed_system_action_grant_required",
+    });
+
+    const allowed = engineCheck(registry, req("project.source.bind", {
+      surface: "managed_run_system_action_gateway",
+      action_id: "project.source.propose_bind",
+      has_action_approval_grant: true,
+    }));
+    expect(allowed).toMatchObject({
+      decision: "allow",
+      policy_rule_id: "managed_system_action_granted",
+    });
+  });
+});
+
 describe("hard invariants", () => {
   it("denies cross-space memory read without grant", () => {
     const d = checkHardInvariants({

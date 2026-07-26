@@ -4,7 +4,7 @@ import { agents } from "./agents";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { projects } from "./projects";
 import { personalMemoryGrants } from "./personalMemoryGrants";
 import { actionApprovalGrants } from "./actionApprovalGrants";
@@ -28,7 +28,7 @@ export const proposals = pgTable("proposals", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	reviewedAt: timestamp("reviewed_at", { withTimezone: true, mode: 'string' }),
 	reviewedBy: varchar("reviewed_by", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	rationale: text(),
 	createdByAgentId: varchar("created_by_agent_id", { length: 36 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }),
@@ -46,7 +46,7 @@ export const proposals = pgTable("proposals", {
 	index("ix_proposals_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_proposals_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_proposals_urgency").using("btree", table.urgency.asc().nullsLast()),
-	index("ix_proposals_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_proposals_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	unique("uq_proposals_id_space_id").on(table.id, table.spaceId),
 	uniqueIndex("uq_proposals_run_action_idempotency").on(table.createdByRunId,table.proposalType,table.actionIdempotencyKey).where(sql`action_idempotency_key IS NOT NULL`),
 	uniqueIndex("uq_proposals_pending_research_query_strategy").on(table.spaceId, table.projectId, table.proposalType).where(sql`status='pending' AND proposal_type='research_query_strategy_activation'`),
@@ -91,9 +91,9 @@ export const proposals = pgTable("proposals", {
 			name: "proposals_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "proposals_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "proposals_project_folder_id_fkey"
 		}),
 	check("ck_proposals_risk_level", sql`(risk_level)::text = ANY (ARRAY[('low'::character varying)::text, ('medium'::character varying)::text, ('high'::character varying)::text, ('critical'::character varying)::text])`),
 	check("ck_proposals_urgency", sql`(urgency)::text = ANY (ARRAY[('low'::character varying)::text, ('normal'::character varying)::text, ('high'::character varying)::text, ('critical'::character varying)::text])`),

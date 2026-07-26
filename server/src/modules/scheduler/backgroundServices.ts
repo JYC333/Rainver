@@ -27,6 +27,8 @@ import { OperationalAlertService } from "../notifications/operationalAlerts";
 import { ExecutionGraphRecoveryService } from "../execution/executionGraphRecoveryService";
 import { ProjectResearchPipelineService } from "../projectResearch";
 import { enqueueDueResearchIntegrityChecks } from "../projectResearch/integrityMonitorService";
+import { processAllUnclaimedDomainChangeEvents } from "../knowledgePromotion/revalidationService";
+import { sweepConversationRuntimeState } from "../runs/conversationRuntimeState";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -46,6 +48,38 @@ export function startBackgroundServices(
   const tasks: ScheduledTask[] = [
     // Plugin-contributed scheduler tasks (fan out to enabled users internally).
     ...(pluginHost?.getSchedulerTasks() ?? []),
+    {
+      name: "conversation_runtime_state_retention",
+      intervalSeconds: 3600,
+      runOnStart: false,
+      run: async () => {
+        const protectedRows = config.databaseUrl
+          ? await getDbPool(config.databaseUrl).query<{ runtime_state_key: string }>(
+              `SELECT runtime_state_key
+                 FROM session_conversation_backends
+               UNION
+               SELECT model_override_json->'conversation_runtime'->>'runtime_state_key'
+                 FROM runs
+                WHERE status IN (
+                  'queued', 'running', 'cancelling',
+                  'waiting_for_review', 'waiting_for_dependency'
+                )
+                  AND model_override_json->'conversation_runtime'->>'schema_version'
+                      = 'conversation_runtime.v1'`,
+            )
+          : { rows: [] };
+        const removed = await sweepConversationRuntimeState({
+          agent_space_home: config.agentSpaceHome,
+          sandbox_root: config.sandboxRoot,
+          protected_state_keys: new Set(
+            protectedRows.rows.map((row) => row.runtime_state_key),
+          ),
+        });
+        if (removed > 0) {
+          log?.info(`[scheduler] conversation runtime state pruned ${removed} session(s)`);
+        }
+      },
+    },
   ];
 
   if (config.databaseUrl) {
@@ -67,7 +101,7 @@ export function startBackgroundServices(
     });
 
     tasks.push({
-      name: "project_research_reconciler",
+      name: "project_research_execution_nudger",
       intervalSeconds: Math.max(5, Math.min(15, config.sourceExtractionSchedulerIntervalSeconds)),
       runOnStart: true,
       run: async () => {
@@ -82,6 +116,16 @@ export function startBackgroundServices(
       run: async () => {
         const enqueued = await enqueueDueResearchIntegrityChecks(getDbPool(config.databaseUrl!));
         if (enqueued > 0) log?.info(`[scheduler] project research integrity enqueued ${enqueued} job(s)`);
+      },
+    });
+
+    tasks.push({
+      name: "knowledge_promotion_revalidation",
+      intervalSeconds: 30,
+      runOnStart: true,
+      run: async () => {
+        const processed = await processAllUnclaimedDomainChangeEvents(getDbPool(config.databaseUrl!));
+        if (processed > 0) log?.info(`[scheduler] knowledge promotion revalidation processed ${processed} domain change event(s)`);
       },
     });
   }

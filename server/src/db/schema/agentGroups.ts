@@ -1,10 +1,13 @@
-import { pgTable, index, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
 import { policyDecisionRecords } from "./policy";
+import { rooms } from "./rooms";
+import { projectFolders } from "./projectFolders";
+import { messages, sessions } from "./sessions";
 
 export const agentRunGroups = pgTable("agent_run_groups", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -12,6 +15,11 @@ export const agentRunGroups = pgTable("agent_run_groups", {
 	rootRunId: varchar("root_run_id", { length: 36 }),
 	managerUserId: varchar("manager_user_id", { length: 36 }).notNull(),
 	managerAgentId: varchar("manager_agent_id", { length: 36 }),
+	roomId: varchar("room_id", { length: 36 }),
+	sessionId: varchar("session_id", { length: 36 }),
+	triggerMessageId: varchar("trigger_message_id", { length: 36 }),
+	projectId: varchar("project_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	title: text().notNull(),
 	goal: text().notNull(),
 	status: varchar({ length: 32 }).notNull(),
@@ -23,6 +31,7 @@ export const agentRunGroups = pgTable("agent_run_groups", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_agent_run_groups_manager_user_updated").using("btree", table.spaceId.asc().nullsLast(), table.managerUserId.asc().nullsLast(), table.updatedAt.asc().nullsLast()),
 	index("ix_agent_run_groups_root_run").using("btree", table.spaceId.asc().nullsLast(), table.rootRunId.asc().nullsLast()),
+	index("ix_agent_run_groups_room_session").on(table.spaceId, table.roomId, table.sessionId, table.createdAt),
 	index("ix_agent_run_groups_status_updated").using("btree", table.spaceId.asc().nullsLast(), table.status.asc().nullsLast(), table.updatedAt.asc().nullsLast()),
 	foreignKey({
 			columns: [table.managerAgentId],
@@ -43,11 +52,41 @@ export const agentRunGroups = pgTable("agent_run_groups", {
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
 			name: "agent_run_groups_space_id_fkey"
-		}).onDelete("cascade"),
+	}).onDelete("cascade"),
+	foreignKey({
+		columns: [table.projectFolderId, table.spaceId],
+		foreignColumns: [projectFolders.id, projectFolders.spaceId],
+		name: "agent_run_groups_project_folder_scope_fkey",
+	}).onDelete("restrict"),
 	foreignKey({
 			columns: [table.managerAgentId, table.spaceId],
 			foreignColumns: [agents.id, agents.spaceId],
 			name: "fk_agent_run_groups_manager_agent_same_space"
+	}),
+	foreignKey({
+			columns: [table.roomId, table.spaceId, table.projectId],
+			foreignColumns: [rooms.id, rooms.spaceId, rooms.projectId],
+			name: "agent_run_groups_room_scope_fkey",
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [
+				table.sessionId,
+				table.spaceId,
+				table.roomId,
+				table.projectId,
+			],
+			foreignColumns: [
+				sessions.id,
+				sessions.spaceId,
+				sessions.roomId,
+				sessions.projectId,
+			],
+			name: "agent_run_groups_room_session_scope_fkey",
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.triggerMessageId, table.spaceId, table.sessionId],
+			foreignColumns: [messages.id, messages.spaceId, messages.sessionId],
+			name: "agent_run_groups_trigger_message_scope_fkey",
 		}),
 	foreignKey({
 			columns: [table.rootRunId, table.spaceId],
@@ -55,6 +94,27 @@ export const agentRunGroups = pgTable("agent_run_groups", {
 			name: "fk_agent_run_groups_root_run_same_space"
 		}),
 	unique("uq_agent_run_groups_space_id_id").on(table.id, table.spaceId),
+	unique("uq_agent_run_groups_run_scope").on(
+		table.id,
+		table.spaceId,
+		table.sessionId,
+		table.projectId,
+	),
+	check("ck_agent_run_groups_room_links", sql`
+		(
+			room_id IS NULL
+			AND session_id IS NULL
+			AND trigger_message_id IS NULL
+			AND project_id IS NULL
+			AND project_folder_id IS NULL
+		)
+		OR (
+			room_id IS NOT NULL
+			AND session_id IS NOT NULL
+			AND trigger_message_id IS NOT NULL
+			AND project_id IS NOT NULL
+		)
+	`),
 	check("ck_agent_run_groups_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('paused'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
 
@@ -191,10 +251,12 @@ export const runDelegations = pgTable("run_delegations", {
 	budgetJson: jsonb("budget_json"),
 	contextPolicyJson: jsonb("context_policy_json"),
 	resultSummary: text("result_summary"),
+	toolCallId: varchar("tool_call_id", { length: 128 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	completedAt: timestamp("completed_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_run_delegations_parent_tool_call").using("btree", table.spaceId.asc().nullsLast(), table.parentRunId.asc().nullsLast(), table.toolCallId.asc().nullsLast()).where(sql`(tool_call_id IS NOT NULL)`),
 	index("ix_run_delegations_child_run").using("btree", table.spaceId.asc().nullsLast(), table.childRunId.asc().nullsLast()),
 	index("ix_run_delegations_group_created").using("btree", table.spaceId.asc().nullsLast(), table.groupId.asc().nullsLast(), table.createdAt.asc().nullsLast()),
 	index("ix_run_delegations_parent_run").using("btree", table.spaceId.asc().nullsLast(), table.parentRunId.asc().nullsLast()),

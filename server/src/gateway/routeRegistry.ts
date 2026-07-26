@@ -35,7 +35,13 @@ import { usageModule } from "../modules/usage";
 import { runsModule } from "../modules/runs";
 import { artifactsModule } from "../modules/artifacts";
 import { projectsModule } from "../modules/projects";
-import { projectPresetsModule } from "../modules/projectPresets";
+import { inquiryModule } from "../modules/inquiry";
+import { experimentsModule } from "../modules/experiments";
+import { knowledgePromotionModule } from "../modules/knowledgePromotion";
+import { projectReviewModule } from "../modules/projectReview";
+import { decisionsModule } from "../modules/decisions";
+import { learningModule } from "../modules/learning";
+import { projectTemplatesModule } from "../modules/projectTemplates";
 import { projectResearchModule } from "../modules/projectResearch";
 import { researchModule } from "../modules/research";
 import { policyModule } from "../modules/policy";
@@ -45,6 +51,7 @@ import { sessionsModule } from "../modules/sessions";
 import { agentTemplatesModule } from "../modules/agentTemplates";
 import { agentsModule } from "../modules/agents";
 import { agentGroupsModule } from "../modules/agentGroups";
+import { roomsModule } from "../modules/rooms";
 import { personalMemoryGrantsModule } from "../modules/personalMemoryGrants";
 import { memoryModule } from "../modules/memory";
 import { contextModule } from "../modules/context";
@@ -61,8 +68,8 @@ import { graphModule } from "../modules/graph";
 import { evolutionModule } from "../modules/evolution";
 import { promptsModule } from "../modules/prompts";
 import { tasksModule } from "../modules/tasks";
-import { workspaceProfilesModule } from "../modules/workspaceProfiles";
-import { workspacesModule } from "../modules/workspaces";
+import { projectFolderExecutionConfigsModule } from "../modules/projectFolderExecutionConfigs";
+import { projectFoldersModule } from "../modules/projectFolders";
 import { deploymentModule } from "../modules/deployment";
 import { frontendSupportModule } from "../modules/frontendSupport";
 // Official optional module control plane — registered before optional product modules.
@@ -117,7 +124,13 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   runsModule,
   artifactsModule,
   projectsModule,
-  projectPresetsModule,
+  inquiryModule,
+  experimentsModule,
+  knowledgePromotionModule,
+  projectReviewModule,
+  decisionsModule,
+  learningModule,
+  projectTemplatesModule,
   projectResearchModule,
   researchModule,
   policyModule,
@@ -127,6 +140,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   agentTemplatesModule,
   agentsModule,
   agentGroupsModule,
+  roomsModule,
   personalMemoryGrantsModule,
   memoryModule,
   contextModule,
@@ -143,8 +157,8 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   evolutionModule,
   promptsModule,
   tasksModule,
-  workspaceProfilesModule,
-  workspacesModule,
+  projectFolderExecutionConfigsModule,
+  projectFoldersModule,
   jobsModule,
   automationsModule,
   dailyReportsModule,

@@ -2,7 +2,7 @@
 
 Status: current implementation after A2 (2026-07-11). The engine is the
 completion authority for deterministic checks declared by a Run contract or a
-workspace validation plan. `RunEvaluation` remains the post-run classifier;
+Project Folder validation plan. `RunEvaluation` remains the post-run classifier;
 it must consume verification facts rather than infer completion from exit code.
 
 ## Ownership and lifecycle
@@ -34,7 +34,7 @@ credentials, and file contents are not persisted.
 The current engine supports:
 
 - `command`, `test`, `lint`, `typecheck`: argv commands from an enabled
-  `ValidationRecipe` or workspace profile, executed without a shell with a
+  `ValidationRecipe` or Project Folder Execution Config, executed without a shell with a
   bounded timeout and a temporary `HOME` under the run sandbox; the server
   process user's real HOME is not inherited;
 - `file_exists`, `file_changed`, `diff_scope`, `no_forbidden_change`: safe
@@ -44,8 +44,8 @@ The current engine supports:
 - `proposal_created`: proposal materialization evidence.
 
 Code-patch collection records structural validation metadata. The engine then
-checks that a collected patch changed files and did not touch workspace
-profile-forbidden paths. A patch proposal is never marked as validated merely
+checks that a collected patch changed files and did not touch Project Folder
+Execution Config-forbidden paths. A patch proposal is never marked as validated merely
 because git text collection succeeded.
 
 `manual_review` and `model_judge` are declared verifier types with explicit

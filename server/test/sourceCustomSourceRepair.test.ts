@@ -261,7 +261,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
     if (result.status !== "pending_approval") throw new Error("unreachable");
     expect(result.deltas).toEqual([]);
 
-    const proposalColumns = `id, space_id, proposal_type, title, payload_json, workspace_id, visibility,
+    const proposalColumns = `id, space_id, proposal_type, title, payload_json, project_folder_id, visibility,
               created_by_user_id, created_by_run_id, project_id`;
     const proposalRow = await pool!.query<{
       id: string;
@@ -269,7 +269,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
       proposal_type: string;
       title: string | null;
       payload_json: Record<string, unknown>;
-      workspace_id: string | null;
+      project_folder_id: string | null;
       visibility: string | null;
       created_by_user_id: string | null;
       created_by_run_id: string | null;

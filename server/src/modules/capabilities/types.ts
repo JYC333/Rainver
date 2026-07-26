@@ -65,6 +65,9 @@ export interface WorkflowTemplate {
   output_artifact_types: string[];
   proposal_policy: Record<string, unknown>;
   recommended_runtime_adapters: string[];
+  execution_shape?: "conversational" | "structured_generation" | "agentic_files" | "code_execution";
+  required_capabilities?: string[];
+  required_tools?: string[];
   prompt_asset_keys: string[];
 }
 
@@ -96,7 +99,7 @@ export interface WorkflowRunDraft {
     workflow_config_json: Record<string, unknown>;
     agent_id: string | null;
     runtime_profile_id?: string | null;
-    workspace_id?: string | null;
+    project_folder_id?: string | null;
     session_id?: string | null;
     prompt: string;
     instruction?: string | null;

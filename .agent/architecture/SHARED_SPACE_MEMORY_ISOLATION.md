@@ -3,7 +3,7 @@
 ## Invariant
 
 A Space is the outer collaboration boundary, not a shared mind. Every Memory
-read first requires active Space membership, then workspace/project scope
+read first requires active Space membership, then Project Folder/project scope
 access, then canonical content access.
 
 ## Access model
@@ -27,9 +27,9 @@ requires `private` visibility and remains owner-only except for an eligible
 owner/admin in a `full`-oversight Space. It remains excluded from shared context
 blends, digests, public summaries, and maintenance outputs.
 
-Workspace and project placement are scope gates, not visibility values. A
-workspace-scoped `space_shared` memory is only considered after the caller
-passes the workspace/project access check.
+Project Folder and project placement are scope gates, not visibility values. A
+Project Folder-scoped `space_shared` memory is only considered after the caller
+passes the Project Folder/project access check.
 
 ## Writes
 

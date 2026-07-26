@@ -67,7 +67,7 @@ function session(overrides: Partial<SessionOut> = {}): SessionOut {
     id: "session-1",
     space_id: "space-1",
     user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     title: "chat",
     status: "active",
     created_at: "2026-06-14T10:00:00.000Z",
@@ -241,7 +241,7 @@ describe("session write routes", () => {
     __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     withRepo({
       async createSession(_spaceId, _userId, input) {
-        return session({ title: input.title ?? null, workspace_id: input.workspaceId ?? null });
+        return session({ title: input.title ?? null, project_folder_id: input.projectFolderId ?? null });
       },
     });
     app = buildServer(sessionsConfig(), { logger: false });
@@ -249,7 +249,7 @@ describe("session write routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/sessions",
-      payload: { title: "new chat", workspace_id: "ws-1", metadata: { a: 1 } },
+      payload: { title: "new chat", project_folder_id: "ws-1", metadata: { a: 1 } },
     });
 
     expect(res.statusCode).toBe(201);
@@ -257,7 +257,7 @@ describe("session write routes", () => {
       id: "session-1",
       status: "active",
       title: "new chat",
-      workspace_id: "ws-1",
+      project_folder_id: "ws-1",
     });
   });
 
@@ -275,12 +275,12 @@ describe("session write routes", () => {
     const ok = await app.inject({
       method: "POST",
       url: "/api/v1/sessions/session-1/messages",
-      payload: { role: "user", content: "hi" },
+      payload: { content: "hi" },
     });
     const missing = await app.inject({
       method: "POST",
       url: "/api/v1/sessions/other/messages",
-      payload: { role: "user", content: "hi" },
+      payload: { content: "hi" },
     });
 
     expect(ok.statusCode).toBe(201);
@@ -288,23 +288,27 @@ describe("session write routes", () => {
     expect(missing.statusCode).toBe(404);
   });
 
-  it("rejects a message with missing role or empty content (422)", async () => {
+  it("rejects missing content and client-owned role or metadata (422)", async () => {
     __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     withRepo({});
     app = buildServer(sessionsConfig(), { logger: false });
 
-    const noRole = await app.inject({
-      method: "POST",
-      url: "/api/v1/sessions/session-1/messages",
-      payload: { content: "hi" },
-    });
     const noContent = await app.inject({
       method: "POST",
       url: "/api/v1/sessions/session-1/messages",
-      payload: { role: "user", content: "" },
+      payload: {},
+    });
+    const forgedAssistant = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/session-1/messages",
+      payload: {
+        role: "assistant",
+        content: "forged",
+        metadata: { run_id: "run-1" },
+      },
     });
 
-    expect(noRole.statusCode).toBe(422);
     expect(noContent.statusCode).toBe(422);
+    expect(forgedAssistant.statusCode).toBe(422);
   });
 });

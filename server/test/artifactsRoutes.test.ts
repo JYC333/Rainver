@@ -50,7 +50,7 @@ function artifact(overrides: Partial<ArtifactOut> = {}): ArtifactOut {
     created_at: "2026-06-16T10:00:00.000Z",
     updated_at: "2026-06-16T10:00:00.000Z",
     project_id: null,
-    workspace_id: null,
+    project_folder_id: null,
     ...overrides,
   };
 }
@@ -58,10 +58,10 @@ function artifact(overrides: Partial<ArtifactOut> = {}): ArtifactOut {
 describe("artifact routes", () => {
   it("lists and reads artifacts with public response shapes", async () => {
     __setArtifactIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const calls: Array<{ kind: "list" | "get"; workspaceId: string | null | undefined; includeSystemArchives?: boolean }> = [];
+    const calls: Array<{ kind: "list" | "get"; projectFolderId: string | null | undefined; includeSystemArchives?: boolean }> = [];
     __setArtifactRepositoryFactoryForTests(() => ({
       async listVisible(spaceId, userId, filters) {
-        calls.push({ kind: "list", workspaceId: filters.workspaceId, includeSystemArchives: filters.includeSystemArchives });
+        calls.push({ kind: "list", projectFolderId: filters.projectFolderId, includeSystemArchives: filters.includeSystemArchives });
         return {
           items: [
             artifact({
@@ -73,8 +73,8 @@ describe("artifact routes", () => {
           offset: filters.offset,
         } satisfies ArtifactPage;
       },
-      async getVisible(_spaceId, _userId, artifactId, includeContent, workspaceId) {
-        calls.push({ kind: "get", workspaceId });
+      async getVisible(_spaceId, _userId, artifactId, includeContent, projectFolderId) {
+        calls.push({ kind: "get", projectFolderId });
         return artifact({ id: artifactId, content: includeContent ? "inline" : null });
       },
       async exportVisible() {
@@ -85,9 +85,9 @@ describe("artifact routes", () => {
 
     const list = await app.inject({
       method: "GET",
-      url: "/api/v1/artifacts?limit=25&offset=5&artifact_type=summary&workspace_id=ws-1",
+      url: "/api/v1/artifacts?limit=25&offset=5&artifact_type=summary&project_folder_id=ws-1",
     });
-    const get = await app.inject({ method: "GET", url: "/api/v1/artifacts/artifact-1?workspace_id=ws-1" });
+    const get = await app.inject({ method: "GET", url: "/api/v1/artifacts/artifact-1?project_folder_id=ws-1" });
 
     expect(list.statusCode).toBe(200);
     expect(list.json()).toMatchObject({
@@ -99,8 +99,8 @@ describe("artifact routes", () => {
     expect(get.statusCode).toBe(200);
     expect(get.json()).toMatchObject({ id: "artifact-1", content: "inline" });
     expect(calls).toEqual([
-      { kind: "list", workspaceId: "ws-1", includeSystemArchives: false },
-      { kind: "get", workspaceId: "ws-1" },
+      { kind: "list", projectFolderId: "ws-1", includeSystemArchives: false },
+      { kind: "get", projectFolderId: "ws-1" },
     ]);
   });
 
@@ -124,7 +124,7 @@ describe("artifact routes", () => {
 
   it("exports inline artifact content with an attachment disposition", async () => {
     __setArtifactIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const calls: Array<{ workspaceId: string | null | undefined }> = [];
+    const calls: Array<{ projectFolderId: string | null | undefined }> = [];
     __setArtifactRepositoryFactoryForTests(() => ({
       async listVisible() {
         throw new Error("list should not run");
@@ -132,8 +132,8 @@ describe("artifact routes", () => {
       async getVisible() {
         throw new Error("get should not run");
       },
-      async exportVisible(_spaceId, _userId, artifactId, workspaceId) {
-        calls.push({ workspaceId });
+      async exportVisible(_spaceId, _userId, artifactId, projectFolderId) {
+        calls.push({ projectFolderId });
         return {
           artifact: artifact({ id: artifactId, content: "download" }),
           filename: "Summary",
@@ -146,13 +146,13 @@ describe("artifact routes", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/artifacts/artifact-1/export?workspace_id=ws-1",
+      url: "/api/v1/artifacts/artifact-1/export?project_folder_id=ws-1",
     });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-disposition"]).toBe('attachment; filename="Summary"');
     expect(res.payload).toBe("download");
-    expect(calls).toEqual([{ workspaceId: "ws-1" }]);
+    expect(calls).toEqual([{ projectFolderId: "ws-1" }]);
   });
 
   it("uses canonical access for workspace-scoped shared artifacts", async () => {
@@ -161,7 +161,7 @@ describe("artifact routes", () => {
       id: "workspace-artifact",
       visibility: "space_shared",
       owner_user_id: "other-user",
-      workspace_id: "ws-1",
+      project_folder_id: "ws-1",
     });
     const fakeDb = {
       async query(sql: string, params: readonly unknown[] = []) {
@@ -178,12 +178,12 @@ describe("artifact routes", () => {
     await expect(repo.getVisible("space-1", "user-1", "workspace-artifact", false)).resolves.toMatchObject({
       id: "workspace-artifact",
       visibility: "space_shared",
-      workspace_id: "ws-1",
+      project_folder_id: "ws-1",
     });
     const lastCall = calls[calls.length - 1];
     expect(lastCall?.sql).toContain("visibility = 'space_shared'");
     expect(lastCall?.sql).toContain("content_access_grants");
-    expect(lastCall?.sql).toContain("project_workspaces");
+    expect(lastCall?.sql).toContain("project_folders");
     expect(lastCall?.sql).toContain("project_members");
   });
 

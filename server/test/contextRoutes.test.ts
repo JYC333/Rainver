@@ -48,7 +48,7 @@ describe("context routes", () => {
               visibility: "private",
               owner_user_id: params[2],
               project_id: null,
-              workspace_id: null,
+              project_folder_id: null,
               created_at: "2026-06-25T00:00:00.000Z",
             },
           ],
@@ -120,7 +120,7 @@ describe("context routes", () => {
               id: "revocation-1",
               space_id: "space-1",
               artifact_id: "brief-1",
-              scope_type: "workspace",
+              scope_type: "project_folder",
               scope_id: "workspace-1",
               reason: "superseded",
               created_by_user_id: "user-1",
@@ -140,7 +140,7 @@ describe("context routes", () => {
               id: "revocation-1",
               space_id: "space-1",
               artifact_id: "brief-1",
-              scope_type: "workspace",
+              scope_type: "project_folder",
               scope_id: "workspace-1",
               reason: "superseded",
               created_by_user_id: "user-1",
@@ -150,7 +150,7 @@ describe("context routes", () => {
           rowCount: 1,
         };
       }
-      if (/FROM workspaces w\b/.test(norm)) {
+      if (/FROM project_folders w\b/.test(norm)) {
         return { rows: [{ one: 1 }], rowCount: 1 };
       }
       if (/FROM artifacts/.test(norm)) {
@@ -168,7 +168,7 @@ describe("context routes", () => {
               visibility: "private",
               owner_user_id: "user-1",
               project_id: null,
-              workspace_id: "workspace-1",
+              project_folder_id: "workspace-1",
               created_at: "2026-06-25T00:00:00.000Z",
             },
           ],
@@ -186,7 +186,7 @@ describe("context routes", () => {
       headers: { "content-type": "application/json" },
       payload: JSON.stringify({
         artifact_id: "brief-1",
-        scope_type: "workspace",
+        scope_type: "project_folder",
         scope_id: "workspace-1",
         reason: "superseded",
       }),
@@ -194,20 +194,20 @@ describe("context routes", () => {
     expect(create.statusCode).toBe(201);
     expect(create.json()).toMatchObject({
       artifact_id: "brief-1",
-      scope_type: "workspace",
+      scope_type: "project_folder",
       scope_id: "workspace-1",
     });
 
     const list = await app.inject({
       method: "GET",
-      url: "/api/v1/context/artifact-revocations?workspace_id=workspace-1&artifact_ids=brief-1",
+      url: "/api/v1/context/artifact-revocations?project_folder_id=workspace-1&artifact_ids=brief-1",
     });
     expect(list.statusCode).toBe(200);
     expect(list.json().items).toHaveLength(1);
 
     const remove = await app.inject({
       method: "DELETE",
-      url: "/api/v1/context/artifact-revocations/brief-1?scope_type=workspace&scope_id=workspace-1",
+      url: "/api/v1/context/artifact-revocations/brief-1?scope_type=project_folder&scope_id=workspace-1",
     });
     expect(remove.statusCode).toBe(204);
   });

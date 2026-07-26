@@ -99,6 +99,8 @@ export class LocalCliConformanceProbeRunner implements ConformanceProbeRunner {
       this.identity.spaceId,
       spec.credentials.credential_runtime_name,
       "docker",
+      null,
+      { user_id: this.identity.userId },
     );
     if (!credential.granted) {
       await rm(sandbox, { recursive: true, force: true });
@@ -120,7 +122,7 @@ export class LocalCliConformanceProbeRunner implements ConformanceProbeRunner {
         permission_bypass: false,
         runtime_policy_json: {},
         risk_level: "low",
-        workspace_id: null,
+        project_folder_id: null,
         sandbox_cwd: sandbox,
       });
       const executor = this.deps.executor ?? new DockerCliCommandExecutor();

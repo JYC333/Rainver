@@ -20,6 +20,7 @@ import {
 import { readSpaceRetrievalSettings } from "../retrieval/settings";
 import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
 import { PgRunRepository } from "../runs/repository";
+import { canonicalRunOutput } from "../runs/orchestrationResults";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
 import { contractRouteHints, type RunBudgetSource } from "../runs/contractSnapshot";
 import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters";
@@ -50,7 +51,7 @@ const VALID_AUTOMATION_TARGETS = new Set([
 const CREATE_KEYS = new Set([
   "name",
   "agent_id",
-  "workspace_id",
+  "project_folder_id",
   "project_id",
   "description",
   "trigger_type",
@@ -120,7 +121,7 @@ export class AutomationService {
     rejectExtraKeys(input.body, CREATE_KEYS);
     const name = requiredString(input.body.name, "name", 256);
     const agentId = requiredString(input.body.agent_id, "agent_id");
-    const workspaceId = optionalString(input.body.workspace_id, "workspace_id");
+    const projectFolderId = optionalString(input.body.project_folder_id, "project_folder_id");
     const projectId = optionalString(input.body.project_id, "project_id");
     const triggerType = optionalString(input.body.trigger_type, "trigger_type") ?? "manual";
     if (!VALID_TRIGGER_TYPES.has(triggerType)) {
@@ -163,7 +164,7 @@ export class AutomationService {
       spaceId: input.spaceId,
       actorUserId: input.ownerUserId,
       agentId,
-      workspaceId,
+      projectFolderId,
       projectId,
       automationPreAuthorized: isUnattendedTrigger(triggerType),
       configJson,
@@ -174,7 +175,7 @@ export class AutomationService {
       name,
       description: optionalNullableString(input.body.description, "description"),
       agentId,
-      workspaceId,
+      projectFolderId,
       projectId,
       triggerType,
       configJson,
@@ -244,7 +245,7 @@ export class AutomationService {
         spaceId: input.spaceId,
         actorUserId: input.actorUserId,
         agentId: existing.agent_id,
-        workspaceId: existing.workspace_id,
+        projectFolderId: existing.project_folder_id,
         projectId: nextTargetType === AUTOMATION_TARGET_WORKFLOW ? nextProjectId : null,
         automationPreAuthorized: isUnattendedTrigger(existing.trigger_type),
         configJson: configJson ?? existing.config_json,
@@ -301,7 +302,7 @@ export class AutomationService {
       spaceId: input.spaceId,
       actorUserId: input.actorUserId,
       agentId: auto.agent_id,
-      workspaceId: auto.workspace_id,
+      projectFolderId: auto.project_folder_id,
       projectId: auto.project_id,
       automationPreAuthorized: preAuthorized,
       configJson: auto.config_json,
@@ -378,7 +379,7 @@ export class AutomationService {
           spaceId: auto.space_id,
           actorUserId: auto.owner_user_id,
           agentId: auto.agent_id,
-          workspaceId: auto.workspace_id,
+          projectFolderId: auto.project_folder_id,
           projectId: auto.project_id,
           automationPreAuthorized: preAuthorized,
           configJson: auto.config_json,
@@ -414,6 +415,7 @@ export class AutomationService {
           dedupeKey: `automation_fire_failed:${auto.id}`,
           spaceId: auto.space_id,
           userId: auto.owner_user_id,
+          projectId: auto.project_id,
           payload: {
             automation_id: auto.id,
             automation_name: auto.name,
@@ -454,7 +456,7 @@ export class AutomationService {
       space_id: input.spaceId,
       user_id: input.actorUserId,
       agent_id: auto.agent_id,
-      workspace_id: auto.workspace_id,
+      project_folder_id: auto.project_folder_id,
       project_id: auto.project_id,
       prompt,
       instruction,
@@ -469,7 +471,7 @@ export class AutomationService {
       space_id: input.spaceId,
       user_id: input.actorUserId,
       agent_id: auto.agent_id,
-      workspace_id: auto.workspace_id,
+      project_folder_id: auto.project_folder_id,
     });
     const automationRunId = await automations.createAutomationRun({
       automationId: auto.id,
@@ -571,7 +573,7 @@ export class AutomationService {
         space_id: input.spaceId,
         user_id: input.actorUserId,
         agent_id: auto.agent_id,
-        workspace_id: auto.workspace_id,
+        project_folder_id: auto.project_folder_id,
         trigger_origin: "automation",
         prompt: "Run Knowledge retrieval maintenance scan.",
         instruction: "Persist an owner-private maintenance report and optionally create a review packet.",
@@ -628,7 +630,10 @@ export class AutomationService {
           space_id: input.spaceId,
           status: "succeeded",
           output_text: `Knowledge retrieval maintenance scan completed with ${report.findings.length} finding(s).`,
-          output_json: {
+          output_json: canonicalRunOutput({
+            success: true,
+            outputText: `Knowledge retrieval maintenance scan completed with ${report.findings.length} finding(s).`,
+            outputJson: {
             automation_target: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE,
             retrieval_maintenance_report: {
               artifact_id: artifactId,
@@ -638,7 +643,8 @@ export class AutomationService {
               counts: report.counts,
               truncated: report.truncated,
             },
-          },
+            },
+          }),
           exit_code: 0,
           completed_at: new Date().toISOString(),
         });
@@ -666,9 +672,11 @@ export class AutomationService {
           space_id: input.spaceId,
           status: "failed",
           output_text: "Knowledge retrieval maintenance scan failed.",
-          output_json: {
-            automation_target: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE,
-          },
+          output_json: canonicalRunOutput({
+            success: false,
+            outputText: "Knowledge retrieval maintenance scan failed.",
+            outputJson: { automation_target: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE },
+          }),
           error_json: {
             error_code: "retrieval_maintenance_automation_failed",
             error_text: error instanceof Error ? error.message : "Maintenance scan failed",
@@ -709,7 +717,7 @@ export class AutomationService {
         space_id: input.spaceId,
         user_id: input.actorUserId,
         agent_id: auto.agent_id,
-        workspace_id: auto.workspace_id,
+        project_folder_id: auto.project_folder_id,
         trigger_origin: "automation",
         prompt: "Run Context Review Cycle.",
         instruction: "Persist aggregate Context Ops reports and review packets without direct canonical writes.",
@@ -745,10 +753,16 @@ export class AutomationService {
           output_text: reviewResult.degraded
             ? "Context Review Cycle completed with warnings."
             : "Context Review Cycle completed.",
-          output_json: {
+          output_json: canonicalRunOutput({
+            success: true,
+            outputText: reviewResult.degraded
+              ? "Context Review Cycle completed with warnings."
+              : "Context Review Cycle completed.",
+            outputJson: {
             automation_target: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE,
             context_ops_review_cycle: reviewResult,
-          },
+            },
+          }),
           exit_code: 0,
           completed_at: new Date().toISOString(),
         });
@@ -797,9 +811,11 @@ export class AutomationService {
           space_id: input.spaceId,
           status: "failed",
           output_text: "Context Review Cycle failed.",
-          output_json: {
-            automation_target: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE,
-          },
+          output_json: canonicalRunOutput({
+            success: false,
+            outputText: "Context Review Cycle failed.",
+            outputJson: { automation_target: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE },
+          }),
           error_json: {
             error_code: "context_ops_review_cycle_automation_failed",
             error_text: error instanceof Error ? error.message : "Context review cycle failed",
@@ -849,7 +865,7 @@ export class AutomationService {
     spaceId: string,
     actorUserId: string,
     agentId: string,
-    workspaceId: string | null | undefined,
+    projectFolderId: string | null | undefined,
     projectId: string | null | undefined,
     automationPreAuthorized: boolean,
   ): Promise<Record<string, unknown>> {
@@ -902,18 +918,22 @@ export class AutomationService {
           runtimeErrors.push(`Runtime adapter '${adapterType}' does not support one_shot_docker sandbox execution`);
         }
       }
-      if (spec?.sandbox.requires_workspace_for_execution && !workspaceId) {
-        runtimeErrors.push(`Runtime adapter '${adapterType}' requires workspace_id`);
+      if (spec?.sandbox.requires_workspace_for_execution && !projectFolderId) {
+        runtimeErrors.push(`Runtime adapter '${adapterType}' requires project_folder_id`);
       }
-      if (spec?.sandbox.requires_file_access && requiredSandboxLevel === "worktree" && !workspaceId) {
-        runtimeErrors.push("workspace_id is required for worktree-level runs");
+      if (
+        spec?.sandbox.requires_file_access
+        && (requiredSandboxLevel === "read_only" || requiredSandboxLevel === "worktree")
+        && !projectFolderId
+      ) {
+        runtimeErrors.push("project_folder_id is required for worktree-level runs");
       }
-      if (workspaceId) {
-        const workspace = await db.query<{ id: string }>(
-          `SELECT id FROM workspaces WHERE space_id = $1 AND id = $2`,
-          [spaceId, workspaceId],
+      if (projectFolderId) {
+        const folder = await db.query<{ id: string }>(
+          `SELECT id FROM project_folders WHERE space_id = $1 AND id = $2`,
+          [spaceId, projectFolderId],
         );
-        if (!workspace.rows[0]) runtimeErrors.push("Workspace not found");
+        if (!folder.rows[0]) runtimeErrors.push("Project Folder not found");
       }
       if (projectId) {
         const projectExists = await this.repo.projectInSpace(spaceId, projectId);
@@ -991,7 +1011,7 @@ export class AutomationService {
           has_personal_grant_context: false,
         },
         metadata_json: {
-          workspace_id: workspaceId ?? null,
+          project_folder_id: projectFolderId ?? null,
           adapter_type: adapterType,
         },
         force_record: false,
@@ -1030,7 +1050,7 @@ export class AutomationService {
     spaceId: string;
     actorUserId: string;
     agentId: string;
-    workspaceId: string | null | undefined;
+    projectFolderId: string | null | undefined;
     projectId: string | null | undefined;
     automationPreAuthorized: boolean;
     configJson: Record<string, unknown> | null | undefined;
@@ -1058,7 +1078,7 @@ export class AutomationService {
       input.spaceId,
       input.actorUserId,
       input.agentId,
-      input.workspaceId,
+      input.projectFolderId,
       input.projectId,
       input.automationPreAuthorized,
     );
@@ -1173,7 +1193,7 @@ export class AutomationService {
     spaceId: string;
     actorUserId: string;
     agentId: string;
-    workspaceId: string | null | undefined;
+    projectFolderId: string | null | undefined;
     projectId: string | null | undefined;
     automationPreAuthorized: boolean;
     configJson: Record<string, unknown> | null | undefined;
@@ -1191,7 +1211,7 @@ export class AutomationService {
       input.spaceId,
       input.actorUserId,
       input.agentId,
-      input.workspaceId,
+      input.projectFolderId,
       input.projectId,
       input.automationPreAuthorized,
     );
@@ -1513,8 +1533,8 @@ function requiredSandboxFor(
   spec: ReturnType<typeof runtimeAdapterSpec>,
 ): string {
   if (riskLevel === "critical") return "one_shot_docker";
-  if (spec?.sandbox.requires_file_access) return "worktree";
   if (riskLevel === "high") return "worktree";
+  if (spec?.sandbox.requires_file_access) return "read_only";
   return "none";
 }
 
@@ -1570,7 +1590,7 @@ function automationContract(auto: AutomationRow) {
   return {
     source: { kind: "automation" as const, id: auto.id },
     project_id: auto.project_id,
-    workspace_id: auto.workspace_id,
+    project_folder_id: auto.project_folder_id,
     acceptance_criteria_json: value("acceptance_criteria_json"),
     definition_of_done: typeof definitionOfDone === "string" ? definitionOfDone : null,
     required_outputs_json: value("required_outputs_json"),

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Database, FileCode2, Search, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
-import { providersApi, spacesApi, type ModelProviderOut, type ProviderTaskPolicyOut } from '../../api/client'
+import { artifactsApi, providersApi, spacesApi, type ModelProviderOut, type ProviderTaskPolicyOut } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { errMsg } from '../../lib/utils'
@@ -15,6 +15,7 @@ import type {
   RetrievalSearchMode,
   RetrievalToolMode,
   SpaceRetrievalSettings,
+  Artifact,
 } from '../../types/api'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -290,6 +291,7 @@ export default function RetrievalSettingsPage() {
   const [embeddingDimensions, setEmbeddingDimensions] = useState('2560')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [calibrationArtifacts, setCalibrationArtifacts] = useState<Artifact[]>([])
 
   const load = useCallback(async () => {
     if (!activeSpaceId) {
@@ -300,12 +302,13 @@ export default function RetrievalSettingsPage() {
     }
     setLoading(true)
     try {
-      const [next, policies] = await Promise.all([
+      const [next, policies, artifacts] = await Promise.all([
         spacesApi.getRetrievalSettings(activeSpaceId),
         providersApi.taskPolicies().catch(error => {
           toast.error(errMsg(error))
           return []
         }),
+        artifactsApi.list({ limit: 200 }).then(page => page.items).catch(() => []),
       ])
       const policyMap = Object.fromEntries(
         RETRIEVAL_TASKS
@@ -323,6 +326,7 @@ export default function RetrievalSettingsPage() {
       setTaskSelections(selections)
       setMaxResults(String(next.max_results_default))
       setEmbeddingDimensions(String(next.embedding_dimensions))
+      setCalibrationArtifacts(artifacts)
     } catch (error) {
       toast.error(errMsg(error))
       setSettings(null)
@@ -611,12 +615,12 @@ export default function RetrievalSettingsPage() {
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <Label>Calibration artifact id</Label>
-                        <Input
+                        <Label>Calibration evidence</Label>
+                        <Select
                           value={cfg.calibration_artifact_id ?? ''}
                           disabled={readOnly || saving}
-                          onChange={event => patchMechanic(mechanic, { calibration_artifact_id: event.target.value.trim() || null })}
-                          className="font-mono"
+                          onChange={value => patchMechanic(mechanic, { calibration_artifact_id: value || null })}
+                          options={[{ value: '', label: 'No calibration evidence' }, ...calibrationArtifacts.map(artifact => ({ value: artifact.id, label: artifact.title || artifact.artifact_type }))]}
                         />
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">

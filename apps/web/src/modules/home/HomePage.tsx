@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Send, Sparkles, ChevronRight, Inbox, ListTodo, AlertTriangle,
-  Loader2, Clock, Cpu,
+  ChevronRight, Inbox, ListTodo, AlertTriangle, Cpu, Clock,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { meApi, agentsApi, spacesApi } from '../../api/client'
+import { meApi, spacesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { useAuth } from '../../contexts/AuthContext'
 import { spacePath } from '../../core/navigation'
@@ -46,95 +45,6 @@ function Eyebrow({ children, count }: { children: React.ReactNode; count?: numbe
         </span>
       )}
     </div>
-  )
-}
-
-/* ── Personal Assistant entry (not naked chat) ───────────────────────────────── */
-function PersonalAssistantEntry() {
-  const navigate = useNavigate()
-  const { personalSpaceId, writeTargetSpaceId, preferredSpaceId } = useSpace()
-  const [draft, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  function assistantTargetSpace() {
-    return personalSpaceId ?? writeTargetSpaceId ?? preferredSpaceId
-  }
-
-  async function openAssistant() {
-    setBusy(true)
-    try {
-      // The Personal Assistant is the user's Personal Space default assistant. Open its
-      // dedicated Chat page inside that Space's URL. The draft is carried in the URL (?draft=)
-      // so the destination is deep-linkable; the Chat page auto-sends it on arrival.
-      const target = assistantTargetSpace()
-      const agent = await agentsApi.ensureDefaultAssistant()
-      const q = draft.trim() ? `?draft=${encodeURIComponent(draft.trim())}` : ''
-      navigate(spacePath(target, `/agents/${agent.id}/chat${q}`))
-    } catch (err) {
-      toast.error(errMsg(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  function openHistory() {
-    const target = assistantTargetSpace()
-    if (!target) {
-      toast.error('No space is available for chat history')
-      return
-    }
-    navigate(spacePath(target, '/sessions'))
-  }
-
-  return (
-    <Card className="border-primary/30 p-4">
-      <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, var(--primary) 12%, transparent)', border: '1px solid color-mix(in oklch, var(--primary) 30%, transparent)' }}>
-          <Sparkles className="size-4 text-accent-foreground" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="text-[15px] font-semibold tracking-tight">Personal Assistant</h2>
-            <Badge variant="secondary">space-aware</Badge>
-          </div>
-          <p className="text-[13px] text-muted-foreground mt-0.5">
-            Ask about your memory, projects, notes, wiki, captures, runs, and proposals. The assistant is aware of your
-            spaces and context — it is not a raw chat box.
-          </p>
-
-          <form
-            className="mt-3 flex items-center gap-2"
-            onSubmit={(e) => { e.preventDefault(); openAssistant() }}
-          >
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Ask your assistant…"
-              className="flex-1 h-9 rounded-md border border-border bg-input px-3 text-[14px] text-foreground placeholder:text-muted-foreground outline-none focus:ring-1 focus:ring-ring"
-            />
-            <button
-              type="submit"
-              disabled={busy}
-              className="flex items-center gap-1.5 h-9 px-3.5 rounded-md text-[13px] font-medium transition-opacity disabled:opacity-50"
-              style={{ background: 'var(--primary)', border: '1px solid var(--primary)', color: 'var(--primary-foreground)' }}
-            >
-              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-              Ask
-            </button>
-          </form>
-          <p className="text-[11px] text-muted-foreground mt-1.5">
-            Opens your assistant's Chat and sends your question. Long-term changes always come back as proposals you approve.
-          </p>
-          <button
-            type="button"
-            onClick={openHistory}
-            className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
-          >
-            <Clock className="size-3.5" /> Chat history
-          </button>
-        </div>
-      </div>
-    </Card>
   )
 }
 
@@ -579,7 +489,6 @@ export default function HomePage() {
           </p>
         </div>
 
-        <PersonalAssistantEntry />
 
         {loading || !s ? (
           <div className="flex flex-col gap-3">

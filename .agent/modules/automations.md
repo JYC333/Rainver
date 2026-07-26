@@ -27,7 +27,7 @@ continue to require their own explicit pre-authorization.
 
 ## Owns
 
-- `automations` rows (name, agent, optional workspace/project, trigger, config).
+- `automations` rows (name, agent, optional Project Folder/project, trigger, config).
 - `automation_runs` fire audit rows (`trigger_type`, preflight snapshot,
   `trigger_context_json` when a target needs structured audit context).
 - `automation_credential_grants` pre-authorization for unattended schedule

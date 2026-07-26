@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { PgRunRepository } from "../src/modules/runs/repository";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository";
 import { contextSnapshotToOut } from "../src/modules/runs/runReadModel";
 import {
@@ -371,7 +372,7 @@ describe("runs repositories against real PostgreSQL", () => {
     });
 
     expect(run.adapter_type).toBeNull();
-    expect(run.workspace_id).toBeNull();
+    expect(run.project_folder_id).toBeNull();
     expect(run.required_sandbox_level).toBe("none");
   });
 
@@ -698,7 +699,7 @@ describe("runs repositories against real PostgreSQL", () => {
     ).rejects.toBeInstanceOf(NonTerminalRunError);
   });
 
-  it("folds output_text into output_json on the terminal write", async (ctx) => {
+  it("persists the canonical run_output.v1 summary on the terminal write", async (ctx) => {
     if (!available) return ctx.skip();
     const repo = new PgRunRepository(pool!);
     const runId = await seedRun();
@@ -713,14 +714,20 @@ describe("runs repositories against real PostgreSQL", () => {
       space_id: "space-1",
       status: "succeeded",
       output_text: "final answer",
+      output_json: canonicalRunOutput({
+        success: true,
+        outputText: "final answer",
+        outputJson: {},
+      }),
       completed_at: new Date().toISOString(),
     });
 
-    const row = await pool!.query<{ output_json: { output_text?: string } }>(
+    const row = await pool!.query<{ output_json: { schema_version?: string; summary?: string } }>(
       "SELECT output_json FROM runs WHERE id = $1",
       [runId],
     );
-    expect(row.rows[0].output_json.output_text).toBe("final answer");
+    expect(row.rows[0].output_json.schema_version).toBe("run_output.v1");
+    expect(row.rows[0].output_json.summary).toBe("final answer");
   });
 
   it("acquires the execution lock once (ON CONFLICT DO NOTHING)", async (ctx) => {
@@ -793,5 +800,35 @@ describe("runs repositories against real PostgreSQL", () => {
       [retryableId]: "pending",
       [exhaustedId]: "failed",
     });
+  });
+
+  it("deduplicates concurrent session condense jobs by source Run", async (ctx) => {
+    if (!available) return ctx.skip();
+    const jobs = new PgJobQueueRepository(pool!);
+    const input = {
+      job_type: "session_condense",
+      space_id: "space-1",
+      user_id: "user-1",
+      agent_id: "agent-1",
+      payload: {
+        session_id: "session-1",
+        source_run_id: "run-1",
+      },
+    };
+
+    const [first, concurrent] = await Promise.all([
+      jobs.enqueue(input),
+      jobs.enqueue(input),
+    ]);
+
+    expect(concurrent.id).toBe(first.id);
+    const rows = await pool!.query<{ id: string }>(
+      `SELECT id
+         FROM jobs
+        WHERE space_id = 'space-1'
+          AND job_type = 'session_condense'
+          AND payload_json->>'source_run_id' = 'run-1'`,
+    );
+    expect(rows.rows).toEqual([{ id: first.id }]);
   });
 });

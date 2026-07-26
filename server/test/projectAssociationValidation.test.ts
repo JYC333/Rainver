@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { PgActivityRepository } from "../src/modules/activity/repository";
-import { PgProjectRepository } from "../src/modules/projects/repository";
 import { PgProposalRepository } from "../src/modules/proposals/repository";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import type { QueryResult, Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -92,24 +91,5 @@ describe("Project association validation", () => {
         offset: 0,
       }),
     ).rejects.toMatchObject({ statusCode: 422, message: "Project not found" });
-  });
-
-  it("removes project workspace links without mutating project source bindings", async () => {
-    const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-    const db = new FakeDb((sql, params) => {
-      calls.push({ sql, params });
-      if (sql.includes("FROM projects")) {
-        return [{ id: "project-1", owner_user_id: "user-1", status: "active" }];
-      }
-      if (sql.startsWith("DELETE FROM project_workspaces")) return [];
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    await new PgProjectRepository(db).unlinkWorkspace(identity, "project-1", "workspace-1", null);
-
-    const deleteCall = calls.find((call) => call.sql.startsWith("DELETE FROM project_workspaces"));
-    expect(deleteCall?.sql).toContain("space_id = $1");
-    expect(deleteCall?.params).toEqual(["space-1", "project-1", "workspace-1"]);
-    expect(calls.some((call) => call.sql.includes("project_source_bindings"))).toBe(false);
   });
 });

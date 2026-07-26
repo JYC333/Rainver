@@ -164,26 +164,26 @@ export class PgContextProfileRepository {
     return contextProfileOut(inserted.rows[0]!);
   }
 
-  async getWorkspaceRouting(
+  async getFolderRouting(
     identity: SpaceUserIdentity,
-    workspaceId: string,
+    projectFolderId: string,
   ): Promise<{
-    workspace_id: string;
+    project_folder_id: string;
     profiles: ContextProfile[];
     effective_manifest: ContextRoutingManifest;
     selected_agent_doc_paths: string[];
   }> {
-    await this.ensureScopeExists(identity, "workspace", workspaceId);
+    await this.ensureScopeExists(identity, "project_folder", projectFolderId);
     const profiles = await this.loadProfilesForScopes(identity.spaceId, [
       { scopeType: "space", scopeId: null },
-      { scopeType: "workspace", scopeId: workspaceId },
+      { scopeType: "project_folder", scopeId: projectFolderId },
     ]);
     const effective = mergeContextRoutingManifests([
       DEFAULT_CONTEXT_ROUTING_MANIFEST,
       ...profiles.map((profile) => profile.routing_manifest_json),
     ]);
     return {
-      workspace_id: workspaceId,
+      project_folder_id: projectFolderId,
       profiles,
       effective_manifest: effective,
       selected_agent_doc_paths: selectAgentDocPaths({ manifest: effective }),
@@ -198,7 +198,7 @@ export class PgContextProfileRepository {
       { scopeType: "space", scopeId: null },
     ];
     if (run.project_id) scopes.push({ scopeType: "project", scopeId: run.project_id });
-    if (run.workspace_id) scopes.push({ scopeType: "workspace", scopeId: run.workspace_id });
+    if (run.project_folder_id) scopes.push({ scopeType: "project_folder", scopeId: run.project_folder_id });
     if (run.agent_id) scopes.push({ scopeType: "agent", scopeId: run.agent_id });
     if (userId) scopes.push({ scopeType: "user", scopeId: userId });
     const profiles = await this.loadProfilesForScopes(run.space_id, scopes);
@@ -228,7 +228,7 @@ export class PgContextProfileRepository {
         ORDER BY CASE scope_type
           WHEN 'space' THEN 10
           WHEN 'project' THEN 20
-          WHEN 'workspace' THEN 30
+          WHEN 'project_folder' THEN 30
           WHEN 'agent' THEN 40
           WHEN 'user' THEN 50
           ELSE 100
@@ -250,8 +250,8 @@ export class PgContextProfileRepository {
       return;
     }
     const table =
-      scopeType === "workspace"
-        ? "workspaces"
+      scopeType === "project_folder"
+        ? "project_folders"
         : scopeType === "project"
           ? "projects"
           : scopeType === "agent"
@@ -261,7 +261,7 @@ export class PgContextProfileRepository {
     const statusPredicate =
       scopeType === "project"
         ? "AND status <> 'deleted'"
-        : scopeType === "workspace"
+        : scopeType === "project_folder"
           ? "AND status <> 'archived'"
           : "AND status <> 'archived'";
     const found = await this.db.query<{ id: string }>(
@@ -298,10 +298,10 @@ function contextProfileOut(row: ContextProfileRow): ContextProfile {
 }
 
 function ensureScopeType(value: string): ContextProfileScope {
-  if (["space", "project", "workspace", "agent", "user"].includes(value)) {
+  if (["space", "project", "project_folder", "agent", "user"].includes(value)) {
     return value as ContextProfileScope;
   }
-  throw new HttpError(422, "scope_type must be one of space, project, workspace, agent, user");
+  throw new HttpError(422, "scope_type must be one of space, project, project_folder, agent, user");
 }
 
 function ensureStatus(value: string): ContextProfileStatus {

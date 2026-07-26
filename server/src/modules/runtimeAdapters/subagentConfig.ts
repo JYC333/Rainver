@@ -113,13 +113,18 @@ function setValueAtPath(value: Record<string, unknown>, path: string[], next: un
 function setRequiredValue(
   document: Record<string, unknown>,
   path: string[],
-  expected: string | Record<string, string>,
+  expected: string | number | boolean | Record<string, string>,
   mode: "array_contains" | "exact" | undefined = undefined,
 ): void {
-  if (typeof expected === "string") {
+  if (typeof expected !== "object") {
     if (mode === "exact") {
       setValueAtPath(document, path, expected);
       return;
+    }
+    if (typeof expected !== "string") {
+      throw new RuntimeSubagentConfigError(
+        "Non-string runtime configuration values require exact matching.",
+      );
     }
     const existing = valueAtPath(document, path);
     const values = Array.isArray(existing)
@@ -138,12 +143,14 @@ function setRequiredValue(
 
 function matchesRequiredValue(
   actual: unknown,
-  expected: string | Record<string, string>,
+  expected: string | number | boolean | Record<string, string>,
   mode: "array_contains" | "exact" | undefined = undefined,
 ): boolean {
-  if (typeof expected === "string") return mode === "exact"
-    ? actual === expected
-    : Array.isArray(actual) && actual.includes(expected);
+  if (typeof expected !== "object") {
+    return mode === "exact"
+      ? actual === expected
+      : typeof expected === "string" && Array.isArray(actual) && actual.includes(expected);
+  }
   if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
   return Object.entries(expected).every(([key, value]) => (actual as Record<string, unknown>)[key] === value);
 }

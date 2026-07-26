@@ -60,7 +60,7 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     space_id: "space-1",
     subject_user_id: null,
     owner_user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     scope_type: "user",
     namespace: "user.default",
     memory_type: "fact",

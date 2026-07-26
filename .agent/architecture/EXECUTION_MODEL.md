@@ -2,7 +2,7 @@
 
 ## Core Objects
 
-**Run** — the central execution object. Every formal agent execution has a durable Run. A run is created by user request, task, automation trigger, API call, or scheduled job. Run produces RunSteps, RunEvents, artifacts, and proposals. A Run also stores an immutable-at-creation `contract_snapshot_json` containing the source, project/workspace, acceptance and required-output declarations, risk, budget caps, and route hints used for that execution.
+**Run** — the central execution object. Every formal agent execution has a durable Run. A run is created by user request, task, automation trigger, API call, or scheduled job. Run produces RunSteps, RunEvents, artifacts, and proposals. A Run also stores an immutable-at-creation `contract_snapshot_json` containing the source, project/Project Folder, acceptance and required-output declarations, risk, budget caps, and route hints used for that execution.
 
 `runs.run_role` separates executable Runs from orchestration aggregates. An
 `execution` Run owns physical `run_attempts` and may enter routing, adapter,
@@ -23,7 +23,14 @@ source.
 
 **RunEvent** — structured append-only harness evidence records within a run. Finer-grained than RunStep but coarser than raw adapter logs. Each RunEvent captures one significant phase (context compilation, runtime selection, sandbox creation, adapter invocation/completion, governed action invocation/completion, artifact ingestion, patch collection, validation, proposal creation, evaluation, finalization). Used by run finalization as the primary structured evidence source.
 
-**RunFinalization** — canonical post-run record created by `PostRunFinalizationService` after a Run reaches a terminal state. Idempotent per `(run_id, attempt_number, finalizer_version)`, so a successful retry receives a fresh evaluation and downstream projection. Records run evaluation outcome, task evaluation bridge result, and skipped reasons. Append-only.
+**RunFinalization** — canonical post-run record created by the materialization
+finalization boundary after a Run reaches a terminal state. Idempotent per
+`(run_id, attempt_number, finalizer_version)`, so a successful retry receives a
+fresh evaluation and downstream projection. Records run evaluation outcome,
+task evaluation bridge result, and skipped reasons. Its evidence is
+append-only; `metadata_json.completion_gate_committed` has one permitted
+monotonic transition from absent to true after delegation reconciliation,
+Supervisor decision, and execution-graph reconciliation all commit.
 
 **RunAttempt** — one physical runtime execution under a logical Run. A queued
 execution Run creates queued attempt 1 atomically; Supervisor retries create
@@ -67,17 +74,52 @@ pause evidence; a dispatch that finds no reusable attempt backfills one marked
 9. A terminal Attempt (succeeded/failed/degraded/cancelled/orphaned) never
    returns to a non-terminal status; only a `waiting_for_review` policy pause
    resumes the same Attempt, and it must retain the pause evidence.
-10. Finalization/evaluation/verification records are append-only per
-    `(run_id, attempt_number)`.
+10. Finalization/evaluation/verification evidence is append-only per
+    `(run_id, attempt_number)`. The finalization completion gate is the sole
+    allowed monotonic metadata update and never rewrites evaluation evidence.
 
 **RunSupervisorDecision** — an idempotent durable policy decision for a terminal
 attempt. The MVP aggregates `token_usage_events` across the logical Run,
-classifies retryable structured error codes, enforces the contract attempt/cost
-caps, and queues either a same-route retry or a C2 fallback-chain reroute. When
-no eligible retry remains it moves the Run to `waiting_for_review`; explicit
-runtime-profile selections remain hard pins and therefore cannot be rerouted.
+classifies retryable structured error codes, including explicit semantic
+rejection and deterministic acceptance/Run Exchange validation failure,
+enforces the contract attempt/cost caps, and queues either a same-route retry
+or a C2 fallback-chain reroute. The next physical Attempt receives bounded
+failure-reason context without changing the original contract. There is no
+natural-language failure classifier and no retry authority alongside
+`RunEvaluation → RunSupervisorDecision`. When no eligible retry remains it
+moves the Run to `waiting_for_review`; explicit runtime-profile selections
+remain hard pins and therefore cannot be rerouted.
+
+The worker records bounded completion evidence and usage and cleans Run-scoped
+runtime state before publication. The repository then publishes the terminal
+Run/Attempt state, synchronizes conversation state, resolves staged proposals,
+and removes the execution lock in one database statement. A cancellation that
+reaches `cancelling` first forces the execution owner to publish `cancelled`;
+public cancellation cannot remove an active execution lock. Crash recovery
+orphans the Attempt, rejects its proposals, and removes its stale lock in the
+same recovery statement. Consequently, neither automatic nor explicit
+finalization can queue the next physical Attempt while the previous Attempt
+still owns its execution authority.
+
+Runtime-output delegation has one execution entry: terminal finalization
+replays the durable canonical output with a stable idempotency key before
+creating RunEvaluation/Supervisor evidence. Explicit finalization uses the same
+materializer path. Chat/Room completion recovery only projects Runs that have a
+completed current-version finalization for the latest Attempt whose
+`completion_gate_committed` marker confirms delegation reconciliation and the
+Supervisor decision both committed.
 
 **Job** — background system task (import, consolidation, backup, agent-run dispatch). Separate from Run. Job handlers create or dispatch Runs; jobs themselves are not product execution records.
+
+Terminal Run follow-up is contract-dispatched. The agent-run handler reads the
+immutable `workflow_input_json` and queues exactly one applicable reconciliation
+job for Project Research, Knowledge Candidate extraction, or a managed
+Experiment. Domain reconcilers remain idempotent and own projection updates;
+Job retries and the Run Supervisor remain the shared retry authorities. A
+feature does not reopen a completed WorkflowExecution or add its own cyclic
+retry state machine. Failure to enqueue the terminal reconciliation propagates
+from the agent-run handler: retrying that Job observes the already-terminal Run
+as a no-op and retries only the contract dispatch.
 
 Project Research is a workflow-level consumer of these execution primitives.
 Its `baseline`, `historical_backfill`, and `incremental` run kinds are persisted
@@ -112,6 +154,24 @@ for decomposition/delegation instead of direct fan-out.
 
 **Proposal** — requested durable change. Created by runs; reviewed by humans; applied by `ProposalApplyService`.
 
+## Runtime-neutral input contract
+
+`RunOrchestrationService` computes a protocol-owned `run_input.v1` envelope
+from the immutable Run contract, Context Snapshot reference, Run binding, and
+permission snapshot. The envelope is not persisted as a second authority.
+
+It carries the semantic instruction/task goal, canonical conversation
+messages, direct/Workflow/upstream inputs, attachment references, optional
+Project Folder access descriptor, output declarations, granted action subset,
+and execution shape/risk/policy/budget references. It contains logical
+references rather than physical Project Folder paths, credentials, rendered
+private context, or raw file bodies. Secret-shaped keys and escaping declared
+output paths fail closed during assembly.
+
+Managed API execution includes the envelope in the internal runtime-host
+request. Local CLI execution receives the same typed envelope at its adapter
+boundary; CLI-specific file projection is owned by the Run Exchange lifecycle.
+
 ## RunStep Taxonomy
 
 ## Run contract snapshot
@@ -129,6 +189,17 @@ the caller's intent. The current `runtime_profile_id`, `adapter_type`,
 execution state. Public DTOs expose them with `selected_*` and
 `active_route_decision_id` names. Routing and fallback retries may replace
 selected state but never requested state; an explicit request remains a hard pin.
+
+Route hints carry a runtime-neutral execution shape:
+`conversational`, `structured_generation`, `agentic_files`, or
+`code_execution`, plus required capabilities/tools. Conversational Runs
+(including session-backed Chat) and structured generation score Managed API as
+the default. File/code shapes reject tool-free Managed API and score OpenCode
+as the default only when its conformance status is `passed`. An explicit
+Runtime Profile remains a hard pin but still must pass capability, tool,
+sandbox, trust, credential, and shape compatibility filters. Fallback chains
+contain only candidates that passed those same hard filters; the selected
+profile/adapter/provider and decision id are stamped as route evidence.
 
 TaskRun creation copies the Task contract and project binding. Automation fire
 copies the automation's validated contract configuration. Workflow run drafts
@@ -150,6 +221,12 @@ enforced against the sum of `token_usage_events.estimated_cost_usd` before a
 retry. The snapshot is exposed by the Run read model, while Task API mappings
 expose the source contract fields.
 
+After acquiring the execution lock and before resolving credentials, context,
+or a sandbox, dispatch revalidates the instructing user's active Space,
+Project, and Room membership. A bound Project Folder must also still be active,
+belong to that Project, and remain execution-enabled; disabling it revokes
+future execution even for an already queued Room turn.
+
 When multiple sources occupy the effective `max_runs` precedence tier and
 declare the same effective cap, admission locks and checks every such source;
 the Task admission path performs this resolution before inserting either the
@@ -157,11 +234,17 @@ Run or its `task_runs` link. A dispatch check repeats the same source set from
 the immutable snapshot, so inherited Automation/Workflow limits cannot first
 fail after Task admission has already consumed a run count.
 
+Source execution counts combine the owning domain's durable link
+(`task_runs`/`automation_runs`) with immutable Run snapshots and deduplicate by
+logical root Run. This lets a Plan child consume an inherited Task or
+Automation allowance without creating a false domain-owned link, while every
+child in the same Plan execution still counts as one admission.
+
 Every budget source carrying a cap is validated before admission: Task,
 Automation, and Plan IDs must resolve to a current-space record, Workflow IDs
 must resolve to an approved version under an active Workflow Asset whose
-space and version scope are consistent with the current space, and missing or
-foreign references fail closed. A direct Workflow Run
+version scope is valid in the current Space and allowed by the parent Asset's
+ownership/user-override rules, and missing or foreign references fail closed. A direct Workflow Run
 uses the same transaction for source validation, advisory-lock admission,
 context snapshot, Run row, and initial attempt; a rejected cap therefore
 cannot return a queued Run that will fail only when dispatched. Dispatch
@@ -219,7 +302,7 @@ RunEvent statuses: `pending`, `running`, `succeeded`, `failed`, `skipped`, `warn
 
 **Never stored in RunEvent metadata:** raw credentials, stdout/stderr content, full rendered context text, full patch body, raw private memory text, complete file contents.
 
-### Registry actions and Project Chat
+### Registry actions and Room tasks
 
 Managed model tools dispatch through `AgentToolGateway` and
 `SystemActionGateway`; see [SYSTEM_ACTIONS.md](SYSTEM_ACTIONS.md). Registry
@@ -230,19 +313,29 @@ call id as their idempotency key. Best-effort `action_invoked` /
 their persistence failure does not block or roll back the action. Required
 PolicyDecisionRecord persistence remains the fail-closed audit boundary.
 
-Project Chat reuses the same session -> managed Run -> orchestration pipeline.
-The session and Run persist the validated `project_id`; the prepared prompt
-includes bounded Project name/description/focus context, and the run capability
-set enables only proposal-producing source actions. Generated proposals are
-returned as structured `action_previews` and persisted in assistant-message
-metadata. A failed run also persists and returns any proposals already created
-before failure. This preview is a pointer/read model, not proof of approval or
-an alternate apply path.
+Room dispatch reuses the canonical session -> queued Run -> orchestration
+pipeline. A Room is project-bound and may own multiple sessions. Every human
+message opens exactly one `agent_run_group` collaboration task; recipient Runs
+persist the Room session, Project, trigger message, task group, and the
+message sender as `instructed_by_user_id`. A Room has one nullable
+`project_folder_id`; when bound, it is validated as active,
+execution-enabled, Project-scoped, and readable, then propagated unchanged
+through the session, task group, and every recipient/delegated Run. Terminal top-level results are
+projected back into the Room session, while task trace and lifecycle evidence
+remain available on the canonical Run/group read surfaces.
 
-Project Chat candidate collection suppresses the ordinary space-wide memory,
-Knowledge, Source, and Activity selectors. It may include only the requested
-Project's approved public summary in addition to the separately ACL-validated
-bounded Project preamble.
+Each recipient backend resolves from the signed-in speaker's
+user × session × agent binding. Local CLI recipients use hybrid resume:
+the first turn uses a condensed summary plus a bounded recent tail; later turns
+resume and inject every message after that binding's cursor. Only output from
+the same recipient agent instructed by the same human is excluded as
+already-known; output from the same agent under another human's binding remains
+part of the increment. Missing cursor, backend/context change, or invalidation
+falls back to replay. `room_conversation.v1` keeps the persistent CLI HOME and
+vendor session while retaining context, governed tool grants, and Run Exchange.
+Folder-backed work keeps normal Project sandbox preparation. A Room without a
+Project Folder uses the persistent conversation cwd so cwd-partitioned vendors
+such as Claude can resume reliably without introducing a second execution path.
 
 RunStep error/metadata is filtered by `server/src/modules/runs/evidenceRedaction.ts` before persisting. Raw credential values are never stored in RunStep rows.
 
@@ -267,7 +360,7 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   internal `POST /internal/runs/execute` port, server execution locks, and
   `agent_run` job dispatch (the server entrypoint runs the worker loop;
   The agents module owns run creation subresources (`POST /agents/{id}/runs`
-  and the singular legacy alias). Runtime context preparation, workspace
+  and the singular legacy alias). Runtime context preparation, Project Folder
   sandbox preparation, artifact/proposal materialization, and finalization are
   native server.
 - **Generic local CLI execution:** server `runs/vendorCliAdapter.ts`
@@ -433,7 +526,10 @@ that called `agent.wait_for_results`. The worker releases the execution lock and
 the lifecycle projector requeues the same run after every declared dependency
 run reaches a hard terminal state.
 
-**Finalized** means `PostRunFinalizationService` has performed deterministic post-run evaluation and, when applicable, task-level evaluation bridging.
+**Finalized** means the canonical materializer has reconciled durable
+runtime-output delegation, `PostRunFinalizationService` has performed
+deterministic evaluation and Supervisor handling, and the completion gate is
+committed.
 
 Before finalization, the A2 Verification Engine evaluates declared
 deterministic checks in the live run sandbox and persists attempt-scoped
@@ -441,7 +537,7 @@ deterministic checks in the live run sandbox and persists attempt-scoped
 verifier version; reads return the current attempt's rows). The execution
 path emits `validation_started` and
 `validation_completed` RunEvents. The verifier is server-owned and uses
-`ValidationRecipe`/workspace profile command declarations plus Run contract
+`ValidationRecipe`/Project Folder Execution Config command declarations plus Run contract
 checks; it executes argv without a shell and bounds command time. The result
 rows, not the runtime exit code, are the completion evidence for declared
 checks. `manual_review` and `model_judge` are declared-but-skipped types until
@@ -449,9 +545,20 @@ their later phases implement the corresponding authority.
 
 Automation should create Runs and call `POST /runs/{id}/finalize` after the run reaches a terminal state. Do not call internal evaluation services directly.
 
-## PostRunFinalizationService — Canonical Post-Run Boundary
+## Materialization Finalization — Canonical Post-Run Boundary
 
-`PostRunFinalizationService` is the canonical post-run write boundary. It is the only service that should be called to trigger post-run evaluation and task bridging.
+`RunMaterializationService.finalizeRun` is the canonical entry. It replays
+runtime-output delegation idempotently, then invokes
+`PostRunFinalizationService` for evaluation, task bridging, Supervisor policy,
+and the monotonic completion gate. API, worker, recovery, and explicit
+finalization use this same entry. A PostgreSQL session advisory lock keyed by
+space, Run, Attempt, and finalizer version serializes the evidence-writing
+boundary, preventing concurrent recovery/API calls from creating duplicate
+evaluations before the finalization uniqueness check. Contenders use
+`pg_try_advisory_lock` on short-lived dedicated lock connections; an
+unacquired contender closes that connection before retrying. Neither lock
+owners nor waiters consume the business-pool connections needed by
+finalization dependencies.
 
 ### API
 
@@ -468,10 +575,12 @@ The finalize endpoint is the single write surface.
 
 ### What finalization does
 
-1. Creates one `RunEvaluation`.
-2. Dispatches the run-finalized hooks through the server finalization service. The tasks-owned `task_evaluation_bridge` hook creates one `TaskEvaluation` bridge row when a `TaskRun` link exists (`runs` never imports `tasks`; `tasks` registers the hook through the module registry).
-3. Creates one `RunFinalization` row with `status=completed`.
-4. Appends one `run_finalized` `RunEvent`.
+1. Replays durable runtime-output delegation with stable idempotency keys.
+2. Creates one `RunEvaluation`.
+3. Dispatches the run-finalized hooks through the server finalization service. The tasks-owned `task_evaluation_bridge` hook creates one `TaskEvaluation` bridge row when a `TaskRun` link exists (`runs` never imports `tasks`; `tasks` registers the hook through the module registry).
+4. Creates one `RunFinalization` row with `status=completed`.
+5. Commits the Supervisor/execution-graph work and the monotonic completion gate.
+6. Appends one `run_finalized` `RunEvent`.
 
 When a Run has declared checks, finalization also includes the verification
 summary in `RunEvaluation.evidence_json`; failed/error results map to the
@@ -479,8 +588,9 @@ summary in `RunEvaluation.evidence_json`; failed/error results map to the
 
 ### What finalization does NOT do
 
-- Does not mutate Run terminal status.
-- Does not write MemoryEntry, Policy, WorkspaceProfile, ValidationRecipe, Capability, Artifact, or Proposal.
+- Does not mutate Run status outside the canonical Supervisor decision; that
+  decision may requeue the logical Run or move it to `waiting_for_review`.
+- Does not write MemoryEntry, Policy, ProjectFolderExecutionConfig, ValidationRecipe, Capability, Artifact, or Proposal.
 - Does not create RunReflection.
 - Does not create learning proposals.
 - Does not auto-apply anything.
@@ -571,7 +681,7 @@ Materialization error codes → `tool` failure_layer (all via exact map):
 
 ### What evaluation does NOT do
 
-- Does not write MemoryEntry, Policy, Proposal, Capability, WorkspaceProfile, or ValidationRecipe.
+- Does not write MemoryEntry, Policy, Proposal, Capability, ProjectFolderExecutionConfig, or ValidationRecipe.
 - Run finalization does not create RunReflection; task-level evaluation is created through the task evaluation bridge.
 - Does not mutate Run, Artifact, or Proposal rows.
 - Does not auto-apply any Proposal.
@@ -627,8 +737,12 @@ recording cannot forge a passed engine evaluation.
 - **RunEvaluation bridge.** The task evaluation bridge maps an existing `RunEvaluation` to a new `TaskEvaluation` row during finalization when `TaskRun` linkage exists — do not call it directly from API routes.
 - **Does not mutate Task.status.**
 - **Does not write MemoryEntry, Policy, Proposal, RunReflection, or any learning object.**
-- **Invoked by finalization.** `POST /runs/{id}/finalize` orchestrates both RunEvaluation and TaskEvaluation bridge through `PostRunFinalizationService`. There is no separate public API for creating TaskEvaluation bridge rows from a Run.
-- **ValidationRecipe is an input/criteria source.** It flows in at the top of the execution loop alongside `WorkspaceProfile` and informs `RunEvaluation` classification. It is not downstream of `TaskEvaluation`.
+- **Invoked by finalization.** `POST /runs/{id}/finalize` enters
+  `RunMaterializationService.finalizeRun`, which invokes
+  `PostRunFinalizationService` to orchestrate RunEvaluation and the
+  TaskEvaluation bridge. There is no separate public API for creating
+  TaskEvaluation bridge rows from a Run.
+- **ValidationRecipe is an input/criteria source.** It flows in at the top of the execution loop alongside `ProjectFolderExecutionConfig` and informs `RunEvaluation` classification. It is not downstream of `TaskEvaluation`.
 
 ### Evidence artifact linkage rule
 
@@ -665,7 +779,7 @@ create `TaskArtifact` rows as a side effect.
 - `follow_up_task` — accepted proposal creates a `Task` row. This is the first low-risk learning apply path.
 
 **Unsupported apply types (remain pending-only):**
-- `workspace_profile_update`, `validation_recipe_update`, `capability_update`, `policy_update` — accepted proposals raise `UnsupportedProposalTypeError`.
+- `project_folder_execution_config_update`, `validation_recipe_update`, `capability_update`, `policy_update` — accepted proposals raise `UnsupportedProposalTypeError`.
 
 Automation manual and schedule-triggered fire queue runs through the existing
 runtime gates. The `/automations` UI supports agent-run, maintenance, and
@@ -682,7 +796,7 @@ implemented. No proposal type auto-applies without user acceptance.
 - Runtime session checkpoint/fork/resume semantics remain open under A3.1;
   the current Run Detail Resume action only resumes a `waiting_for_review` Run
   through the existing server endpoint and is not a runtime-session checkpoint.
-- Apply handlers for `workspace_profile_update`, `validation_recipe_update`, `capability_update`, `policy_update`.
+- Apply handlers for `project_folder_execution_config_update`, `validation_recipe_update`, `capability_update`, `policy_update`.
 
 ## What Is Intentionally Not Modeled Yet
 

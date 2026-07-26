@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS "vector";
 --> statement-breakpoint
-CREATE TYPE "public"."retrieval_object_type" AS ENUM('knowledge_item', 'note', 'source', 'claim', 'memory_entry', 'project_public_summary', 'source_item', 'extracted_evidence');--> statement-breakpoint
+CREATE TYPE "public"."retrieval_object_type" AS ENUM('knowledge_item', 'note', 'source', 'claim', 'memory_entry', 'project_public_summary', 'source_item', 'extracted_evidence', 'inquiry_thread');--> statement-breakpoint
 CREATE TABLE "academic_papers" (
 	"object_id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -27,7 +27,7 @@ CREATE TABLE "activity_records" (
 	"source_run_id" varchar(36),
 	"session_id" varchar(36),
 	"user_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"agent_id" varchar(36),
 	"source_task_id" varchar(36),
 	"source_url" text,
@@ -51,7 +51,7 @@ CREATE TABLE "activity_records" (
 	"owner_user_id" varchar(36),
 	"project_id" varchar(36),
 	"aggregate_key" varchar(128),
-	CONSTRAINT "ck_activity_records_source_kind" CHECK ((source_kind IS NULL) OR ((source_kind)::text = ANY (ARRAY[('user_capture'::character varying)::text, ('chat_message'::character varying)::text, ('external_chat'::character varying)::text, ('file_import'::character varying)::text, ('web_capture'::character varying)::text, ('run_event'::character varying)::text, ('workspace_event'::character varying)::text, ('system_event'::character varying)::text, ('external_source'::character varying)::text, ('source'::character varying)::text]))),
+	CONSTRAINT "ck_activity_records_source_kind" CHECK ((source_kind IS NULL) OR ((source_kind)::text = ANY (ARRAY[('user_capture'::character varying)::text, ('chat_message'::character varying)::text, ('external_chat'::character varying)::text, ('file_import'::character varying)::text, ('web_capture'::character varying)::text, ('run_event'::character varying)::text, ('project_folder_event'::character varying)::text, ('system_event'::character varying)::text, ('external_source'::character varying)::text, ('source'::character varying)::text]))),
 	CONSTRAINT "ck_activity_records_source_trust" CHECK ((source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))),
 	CONSTRAINT "ck_activity_records_status" CHECK ((status)::text = ANY (ARRAY[('raw'::character varying)::text, ('processed'::character varying)::text, ('proposals_generated'::character varying)::text, ('failed'::character varying)::text, ('archived'::character varying)::text])),
 	CONSTRAINT "ck_activity_records_visibility" CHECK (visibility IN ('private', 'space_shared', 'selected_users')),
@@ -64,6 +64,7 @@ CREATE TABLE "action_approval_grants" (
 	"space_id" varchar(36) NOT NULL,
 	"agent_id" varchar(36) NOT NULL,
 	"action_id" varchar(128) NOT NULL,
+	"target_run_id" varchar(36),
 	"project_id" varchar(36),
 	"resource_kind" varchar(64),
 	"resource_id" varchar(256),
@@ -75,6 +76,7 @@ CREATE TABLE "action_approval_grants" (
 	"last_used_at" timestamp with time zone,
 	"created_at" timestamp with time zone NOT NULL,
 	"revoked_at" timestamp with time zone,
+	CONSTRAINT "uq_action_approval_grants_request_binding" UNIQUE("id","space_id","agent_id","action_id","target_run_id"),
 	CONSTRAINT "ck_action_approval_grants_status" CHECK (status IN ('active', 'revoked', 'expired')),
 	CONSTRAINT "ck_action_approval_grants_use_count" CHECK (use_count >= 0 AND (max_uses IS NULL OR (max_uses > 0 AND use_count <= max_uses)))
 );
@@ -101,6 +103,11 @@ CREATE TABLE "agent_run_groups" (
 	"root_run_id" varchar(36),
 	"manager_user_id" varchar(36) NOT NULL,
 	"manager_agent_id" varchar(36),
+	"room_id" varchar(36),
+	"session_id" varchar(36),
+	"trigger_message_id" varchar(36),
+	"project_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"title" text NOT NULL,
 	"goal" text NOT NULL,
 	"status" varchar(32) NOT NULL,
@@ -110,6 +117,22 @@ CREATE TABLE "agent_run_groups" (
 	"updated_at" timestamp with time zone NOT NULL,
 	"ended_at" timestamp with time zone,
 	CONSTRAINT "uq_agent_run_groups_space_id_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_agent_run_groups_run_scope" UNIQUE("id","space_id","session_id","project_id"),
+	CONSTRAINT "ck_agent_run_groups_room_links" CHECK (
+		(
+			room_id IS NULL
+			AND session_id IS NULL
+			AND trigger_message_id IS NULL
+			AND project_id IS NULL
+			AND project_folder_id IS NULL
+		)
+		OR (
+			room_id IS NOT NULL
+			AND session_id IS NOT NULL
+			AND trigger_message_id IS NOT NULL
+			AND project_id IS NOT NULL
+		)
+	),
 	CONSTRAINT "ck_agent_run_groups_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('paused'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('archived'::character varying)::text]))
 );
 --> statement-breakpoint
@@ -148,6 +171,7 @@ CREATE TABLE "run_delegations" (
 	"budget_json" jsonb,
 	"context_policy_json" jsonb,
 	"result_summary" text,
+	"tool_call_id" varchar(128),
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	"completed_at" timestamp with time zone,
@@ -179,13 +203,13 @@ CREATE TABLE "agent_runtime_profiles" (
 	"adapter_type" varchar(64) NOT NULL,
 	"model_provider_id" varchar(36),
 	"model_name" varchar(256),
-	"credential_profile_id" varchar(36),
 	"runtime_config_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"runtime_policy_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
 	"is_default" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_agent_runtime_profiles_id_space_agent" UNIQUE("id","space_id","agent_id"),
 	CONSTRAINT "uq_agent_runtime_profiles_agent_name" UNIQUE("agent_id","name")
 );
 --> statement-breakpoint
@@ -268,6 +292,7 @@ CREATE TABLE "cli_credential_profiles" (
 	"notes" text NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_cli_credential_profiles_id_owner" UNIQUE("id","owner_user_id"),
 	CONSTRAINT "uq_cli_credential_profiles_owner_runtime_name" UNIQUE("name","owner_user_id","runtime")
 );
 --> statement-breakpoint
@@ -311,7 +336,7 @@ CREATE TABLE "artifacts" (
 	"owner_user_id" varchar(36),
 	"trust_level" varchar(32),
 	"project_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	CONSTRAINT "artifacts_id_space_id_key" UNIQUE("id","space_id"),
 	CONSTRAINT "ck_artifacts_storage_path_relative" CHECK ((storage_path IS NULL) OR ((storage_path)::text !~~ '/%'::text)),
 	CONSTRAINT "ck_artifacts_trust_level" CHECK ((trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))),
@@ -353,6 +378,29 @@ CREATE TABLE "users" (
 	CONSTRAINT "ck_users_status" CHECK (status IN ('active', 'disabled'))
 );
 --> statement-breakpoint
+CREATE TABLE "authorization_requests" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"run_id" varchar(36) NOT NULL,
+	"agent_id" varchar(36) NOT NULL,
+	"instructed_by_user_id" varchar(36) NOT NULL,
+	"policy_decision_record_id" varchar(36) NOT NULL,
+	"action_id" varchar(128) NOT NULL,
+	"policy_action" varchar(128) NOT NULL,
+	"project_id" varchar(36),
+	"resource_kind" varchar(64),
+	"resource_id" varchar(256),
+	"reason" varchar(1000) NOT NULL,
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"resulting_action_grant_id" varchar(36),
+	"decided_by_user_id" varchar(36),
+	"requested_at" timestamp with time zone NOT NULL,
+	"decided_at" timestamp with time zone,
+	CONSTRAINT "uq_authorization_requests_decision" UNIQUE("space_id","policy_decision_record_id"),
+	CONSTRAINT "ck_authorization_requests_status" CHECK ("authorization_requests"."status" IN ('pending', 'approved', 'rejected')),
+	CONSTRAINT "ck_authorization_requests_decision" CHECK (("authorization_requests"."status" = 'pending' AND "authorization_requests"."decided_by_user_id" IS NULL AND "authorization_requests"."decided_at" IS NULL AND "authorization_requests"."resulting_action_grant_id" IS NULL) OR ("authorization_requests"."status" = 'rejected' AND "authorization_requests"."decided_by_user_id" IS NOT NULL AND "authorization_requests"."decided_at" IS NOT NULL AND "authorization_requests"."resulting_action_grant_id" IS NULL) OR ("authorization_requests"."status" = 'approved' AND "authorization_requests"."decided_by_user_id" IS NOT NULL AND "authorization_requests"."decided_at" IS NOT NULL AND "authorization_requests"."resulting_action_grant_id" IS NOT NULL))
+);
+--> statement-breakpoint
 CREATE TABLE "automation_credential_grants" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -382,7 +430,7 @@ CREATE TABLE "automations" (
 	"space_id" varchar(36) NOT NULL,
 	"owner_user_id" varchar(36) NOT NULL,
 	"agent_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"project_id" varchar(36),
 	"name" varchar(256) NOT NULL,
 	"description" text,
@@ -458,6 +506,7 @@ CREATE TABLE "workflow_executions" (
 	"resolution_trace_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"contract_snapshot_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"budget_snapshot_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"research_operation_id" varchar(36),
 	"created_at" timestamp with time zone NOT NULL,
 	"started_at" timestamp with time zone,
 	"ended_at" timestamp with time zone,
@@ -565,7 +614,7 @@ CREATE TABLE "skill_local_overlays" (
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "ck_skill_local_overlays_overlay_object" CHECK (jsonb_typeof(overlay_json) = 'object'::text),
 	CONSTRAINT "ck_skill_local_overlays_scope_id" CHECK ((((scope_type)::text = 'space'::text) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'space'::text) AND (scope_id IS NOT NULL))),
-	CONSTRAINT "ck_skill_local_overlays_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('workspace'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])),
+	CONSTRAINT "ck_skill_local_overlays_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('project_folder'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])),
 	CONSTRAINT "ck_skill_local_overlays_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text]))
 );
 --> statement-breakpoint
@@ -687,7 +736,7 @@ CREATE TABLE "context_artifact_revocations" (
 	"deleted_by_user_id" varchar(36),
 	"created_at" timestamp with time zone NOT NULL,
 	"deleted_at" timestamp with time zone,
-	CONSTRAINT "ck_context_artifact_revocations_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('workspace'::character varying)::text, ('project'::character varying)::text]))
+	CONSTRAINT "ck_context_artifact_revocations_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('project_folder'::character varying)::text, ('project'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "context_digests" (
@@ -711,7 +760,7 @@ CREATE TABLE "context_digests" (
 	"created_from_run_id" varchar(36),
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "ck_context_digests_digest_type" CHECK ((digest_type)::text = ANY (ARRAY[('policy_bundle'::character varying)::text, ('workspace'::character varying)::text, ('agent'::character varying)::text])),
+	CONSTRAINT "ck_context_digests_digest_type" CHECK ((digest_type)::text = ANY (ARRAY[('policy_bundle'::character varying)::text, ('project_folder'::character varying)::text, ('agent'::character varying)::text])),
 	CONSTRAINT "ck_context_digests_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('dirty'::character varying)::text, ('superseded'::character varying)::text, ('disabled'::character varying)::text]))
 );
 --> statement-breakpoint
@@ -731,7 +780,7 @@ CREATE TABLE "context_profiles" (
 	CONSTRAINT "ck_context_profiles_context_pack_object" CHECK (jsonb_typeof(context_pack_json) = 'object'::text),
 	CONSTRAINT "ck_context_profiles_routing_manifest_object" CHECK (jsonb_typeof(routing_manifest_json) = 'object'::text),
 	CONSTRAINT "ck_context_profiles_scope_id" CHECK ((((scope_type)::text = 'space'::text) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'space'::text) AND (scope_id IS NOT NULL))),
-	CONSTRAINT "ck_context_profiles_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('workspace'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])),
+	CONSTRAINT "ck_context_profiles_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('project_folder'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])),
 	CONSTRAINT "ck_context_profiles_version_positive" CHECK (version >= 1)
 );
 --> statement-breakpoint
@@ -747,7 +796,7 @@ CREATE TABLE "context_snapshot_items" (
 	"token_count" integer,
 	"metadata_json" jsonb NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "ck_context_snapshot_items_item_type" CHECK ((item_type)::text = ANY (ARRAY[('memory'::character varying)::text, ('knowledge_item'::character varying)::text, ('source'::character varying)::text, ('activity_record'::character varying)::text, ('project_public_summary'::character varying)::text, ('task'::character varying)::text, ('idea'::character varying)::text, ('project'::character varying)::text, ('workspace'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('manual_context'::character varying)::text]))
+	CONSTRAINT "ck_context_snapshot_items_item_type" CHECK ((item_type)::text = ANY (ARRAY[('memory'::character varying)::text, ('knowledge_item'::character varying)::text, ('source'::character varying)::text, ('activity_record'::character varying)::text, ('project_public_summary'::character varying)::text, ('task'::character varying)::text, ('idea'::character varying)::text, ('project'::character varying)::text, ('project_folder'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('manual_context'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "context_snapshots" (
@@ -770,7 +819,7 @@ CREATE TABLE "context_snapshots" (
 	"token_budget_json" jsonb,
 	"policy_bundle_version" varchar(64),
 	"memory_digest_version" varchar(64),
-	"workspace_digest_version" varchar(64),
+	"project_folder_digest_version" varchar(64),
 	"included_memory_refs_json" jsonb,
 	"included_evidence_refs_json" jsonb,
 	"included_file_refs_json" jsonb,
@@ -800,6 +849,112 @@ CREATE TABLE "content_access_grants" (
 	"revoked_by_user_id" varchar(36),
 	CONSTRAINT "uq_content_access_grants_resource_grantee" UNIQUE("space_id","resource_type","resource_id","grantee_user_id"),
 	CONSTRAINT "ck_content_access_grants_access_level" CHECK (access_level IN ('full', 'summary'))
+);
+--> statement-breakpoint
+CREATE TABLE "decision_case_sources" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"decision_case_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_decision_case_sources_case_thread" UNIQUE("decision_case_id","thread_id")
+);
+--> statement-breakpoint
+CREATE TABLE "decision_cases" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"title" varchar(512) NOT NULL,
+	"framing" text,
+	"status" varchar(16) DEFAULT 'open' NOT NULL,
+	"decided_option_id" varchar(36),
+	"decided_at" timestamp with time zone,
+	"decided_by_user_id" varchar(36),
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_decision_cases_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_decision_cases_id_project_space" UNIQUE("id","project_id","space_id"),
+	CONSTRAINT "ck_decision_cases_status" CHECK ((status)::text = ANY (ARRAY[('open'::character varying)::text, ('decided'::character varying)::text, ('archived'::character varying)::text])),
+	CONSTRAINT "ck_decision_cases_decided_pairing" CHECK ((status)::text <> 'decided'::text OR (decided_option_id IS NOT NULL AND decided_at IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "decision_commitments" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"decision_case_id" varchar(36) NOT NULL,
+	"statement" text NOT NULL,
+	"committed_by_user_id" varchar(36),
+	"committed_at" timestamp with time zone NOT NULL,
+	"created_delivery_task_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "decision_criteria" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"decision_case_id" varchar(36) NOT NULL,
+	"name" varchar(256) NOT NULL,
+	"weight" integer DEFAULT 3 NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_decision_criteria_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_decision_criteria_id_case_space" UNIQUE("id","decision_case_id","space_id"),
+	CONSTRAINT "ck_decision_criteria_weight" CHECK (weight BETWEEN 1 AND 5)
+);
+--> statement-breakpoint
+CREATE TABLE "decision_option_scores" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"decision_case_id" varchar(36) NOT NULL,
+	"option_id" varchar(36) NOT NULL,
+	"criterion_id" varchar(36) NOT NULL,
+	"score" integer NOT NULL,
+	"rationale" text,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_decision_option_scores_option_criterion" UNIQUE("option_id","criterion_id"),
+	CONSTRAINT "ck_decision_option_scores_score" CHECK (score BETWEEN 1 AND 5)
+);
+--> statement-breakpoint
+CREATE TABLE "decision_options" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"decision_case_id" varchar(36) NOT NULL,
+	"title" varchar(512) NOT NULL,
+	"description" text,
+	"status" varchar(16) DEFAULT 'active' NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_decision_options_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_decision_options_id_case_space" UNIQUE("id","decision_case_id","space_id"),
+	CONSTRAINT "ck_decision_options_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('withdrawn'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "domain_change_outbox" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"source_kind" varchar(32) NOT NULL,
+	"source_id" varchar(36) NOT NULL,
+	"source_ref_json" jsonb NOT NULL,
+	"change_kind" varchar(48) NOT NULL,
+	"change_significance" varchar(16),
+	"occurred_at" timestamp with time zone NOT NULL,
+	"claimed_at" timestamp with time zone,
+	"claim_token" varchar(36),
+	"claim_expires_at" timestamp with time zone,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"last_error" text,
+	"processed_at" timestamp with time zone,
+	CONSTRAINT "uq_domain_change_outbox_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_domain_change_outbox_source_kind" CHECK ((source_kind)::text = ANY (ARRAY[('note'::character varying)::text, ('inquiry_thread'::character varying)::text, ('experiment_interpretation'::character varying)::text])),
+	CONSTRAINT "ck_domain_change_outbox_significance" CHECK (change_significance IS NULL OR (change_significance)::text = ANY (ARRAY[('trivial'::character varying)::text, ('material'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "evolution_bundle_members" (
@@ -925,7 +1080,7 @@ CREATE TABLE "evolution_strategy_assets" (
 	CONSTRAINT "ck_evolution_strategy_assets_provenance_type" CHECK ((provenance_type)::text = ANY (ARRAY[('built_in'::character varying)::text, ('user_authored'::character varying)::text, ('imported'::character varying)::text, ('evolved'::character varying)::text, ('distilled'::character varying)::text])),
 	CONSTRAINT "ck_evolution_strategy_assets_risk_level" CHECK ((risk_level)::text = ANY (ARRAY[('low'::character varying)::text, ('medium'::character varying)::text, ('high'::character varying)::text, ('critical'::character varying)::text])),
 	CONSTRAINT "ck_evolution_strategy_assets_status" CHECK ((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('disabled'::character varying)::text, ('archived'::character varying)::text])),
-	CONSTRAINT "ck_evolution_strategy_assets_target_type" CHECK ((target_type)::text = ANY (ARRAY[('agent_version'::character varying)::text, ('capability'::character varying)::text, ('runtime_skill_binding'::character varying)::text, ('memory'::character varying)::text, ('knowledge'::character varying)::text, ('workflow'::character varying)::text, ('workspace'::character varying)::text, ('system'::character varying)::text]))
+	CONSTRAINT "ck_evolution_strategy_assets_target_type" CHECK ((target_type)::text = ANY (ARRAY[('agent_version'::character varying)::text, ('capability'::character varying)::text, ('runtime_skill_binding'::character varying)::text, ('memory'::character varying)::text, ('knowledge'::character varying)::text, ('workflow'::character varying)::text, ('project_folder'::character varying)::text, ('system'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "evolution_targets" (
@@ -956,7 +1111,7 @@ CREATE TABLE "run_reflections" (
 	"what_failed" text,
 	"reusable_rules_json" jsonb,
 	"reusable_commands_json" jsonb,
-	"workspace_facts_json" jsonb,
+	"project_folder_facts_json" jsonb,
 	"memory_candidates_json" jsonb,
 	"capability_candidates_json" jsonb,
 	"policy_candidates_json" jsonb,
@@ -1075,6 +1230,104 @@ CREATE TABLE "evolvable_assets" (
 	CONSTRAINT "ck_evolvable_assets_metadata_object" CHECK (jsonb_typeof(metadata_json) = 'object'::text)
 );
 --> statement-breakpoint
+CREATE TABLE "experiment_definitions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"name" varchar(256) NOT NULL,
+	"objective" text,
+	"primary_hypothesis_thread_id" varchar(36),
+	"status" varchar(16) DEFAULT 'draft' NOT NULL,
+	"baseline_run_id" varchar(36),
+	"best_run_id" varchar(36),
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_experiment_definitions_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_experiment_definitions_id_project_space" UNIQUE("id","project_id","space_id"),
+	CONSTRAINT "ck_experiment_definitions_status" CHECK ((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('paused'::character varying)::text, ('completed'::character varying)::text, ('archived'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "experiment_interpretations" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"definition_id" varchar(36) NOT NULL,
+	"run_ids_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"verdict" varchar(16) NOT NULL,
+	"conclusion" text,
+	"negative_results" text,
+	"limitations" text,
+	"repro_lock_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"status" varchar(16) DEFAULT 'draft' NOT NULL,
+	"resulting_signal_id" varchar(36),
+	"reviewed_by_user_id" varchar(36),
+	"reviewed_at" timestamp with time zone,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_experiment_interpretations_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_experiment_interpretations_id_project_space" UNIQUE("id","project_id","space_id"),
+	CONSTRAINT "ck_experiment_interpretations_verdict" CHECK ((verdict)::text = ANY (ARRAY[('supports'::character varying)::text, ('contradicts'::character varying)::text, ('inconclusive'::character varying)::text])),
+	CONSTRAINT "ck_experiment_interpretations_status" CHECK ((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('reviewed'::character varying)::text, ('converted'::character varying)::text])),
+	CONSTRAINT "ck_experiment_interpretations_run_ids_array" CHECK (jsonb_typeof(run_ids_json) = 'array'::text),
+	CONSTRAINT "ck_experiment_interpretations_converted_has_signal" CHECK ((status)::text <> 'converted'::text OR resulting_signal_id IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "experiment_observations" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"run_id" varchar(36) NOT NULL,
+	"metric_name" varchar(128) NOT NULL,
+	"value_number" double precision,
+	"value_text" text,
+	"value_json" jsonb,
+	"is_primary" boolean DEFAULT false NOT NULL,
+	"source" varchar(16) DEFAULT 'manual' NOT NULL,
+	"recorded_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_experiment_observations_source" CHECK ((source)::text = ANY (ARRAY[('manual'::character varying)::text, ('parsed'::character varying)::text, ('agent'::character varying)::text])),
+	CONSTRAINT "ck_experiment_observations_value_present" CHECK (value_number IS NOT NULL OR value_text IS NOT NULL OR value_json IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "experiment_runs" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"version_id" varchar(36) NOT NULL,
+	"run_id" varchar(36),
+	"is_baseline" boolean DEFAULT false NOT NULL,
+	"hypothesis" text,
+	"patch_summary" text,
+	"commit_ref" varchar(128),
+	"status" varchar(16) DEFAULT 'queued' NOT NULL,
+	"config_snapshot_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"artifact_ids_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_experiment_runs_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_experiment_runs_status" CHECK ((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text])),
+	CONSTRAINT "ck_experiment_runs_artifact_ids_array" CHECK (jsonb_typeof(artifact_ids_json) = 'array'::text)
+);
+--> statement-breakpoint
+CREATE TABLE "experiment_versions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"definition_id" varchar(36) NOT NULL,
+	"version" integer NOT NULL,
+	"executor_type" varchar(32) NOT NULL,
+	"config_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"planned_summary" text,
+	"status" varchar(16) DEFAULT 'draft' NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_experiment_versions_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_experiment_versions_executor_type" CHECK ((executor_type)::text = ANY (ARRAY[('manual'::character varying)::text, ('managed_code_comparison'::character varying)::text])),
+	CONSTRAINT "ck_experiment_versions_status" CHECK ((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])),
+	CONSTRAINT "ck_experiment_versions_config_object" CHECK (jsonb_typeof(config_json) = 'object'::text)
+);
+--> statement-breakpoint
 CREATE TABLE "graph_view_states" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -1085,6 +1338,275 @@ CREATE TABLE "graph_view_states" (
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_graph_view_states_scope" UNIQUE("scope_key","space_id","user_id"),
 	CONSTRAINT "ck_graph_view_states_state_object" CHECK (jsonb_typeof(state_json) = 'object'::text)
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_hypothesis_states" (
+	"thread_id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"proposed_claim" text,
+	"predictions" text,
+	"falsification_criteria" text,
+	"evaluation_state" varchar(16) DEFAULT 'untested' NOT NULL,
+	"confidence" integer,
+	"confidence_method" varchar(32),
+	CONSTRAINT "ck_inquiry_hypothesis_states_evaluation_state" CHECK ((evaluation_state)::text = ANY (ARRAY[('untested'::character varying)::text, ('supported'::character varying)::text, ('challenged'::character varying)::text, ('contradicted'::character varying)::text, ('inconclusive'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_hypothesis_states_confidence" CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 100))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_iterations" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"trigger_kind" varchar(32) DEFAULT 'user_edit' NOT NULL,
+	"trigger_ref" varchar(128),
+	"input_refs_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"previous_position_json" jsonb NOT NULL,
+	"new_position_json" jsonb NOT NULL,
+	"confidence_delta" integer,
+	"change_summary" text NOT NULL,
+	"reasoning_summary" text,
+	"unresolved_gaps" text,
+	"confirmed_next_focus" varchar(32),
+	"created_by_user_id" varchar(36),
+	"created_by_run_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_inquiry_iterations_id_project_space" UNIQUE("id","project_id","space_id")
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_project_settings" (
+	"project_id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"shared_focus_wip_limit" integer DEFAULT 3 NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_project_settings_wip_limit" CHECK (shared_focus_wip_limit >= 1)
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_question_states" (
+	"thread_id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"current_answer_summary" text,
+	"answer_state" varchar(16) DEFAULT 'open' NOT NULL,
+	"known_gaps" text,
+	"answerability" text,
+	"resolution_criteria" text,
+	CONSTRAINT "ck_inquiry_question_states_answer_state" CHECK ((answer_state)::text = ANY (ARRAY[('open'::character varying)::text, ('partial'::character varying)::text, ('answered'::character varying)::text, ('unanswerable'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_lifecycle_events" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"from_status" varchar(24) NOT NULL,
+	"to_status" varchar(24) NOT NULL,
+	"reason" text,
+	"actor_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_note_links" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"note_object_id" varchar(36) NOT NULL,
+	"link_kind" varchar(24) DEFAULT 'linked_note' NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_thread_note_links_kind" CHECK ((link_kind)::text = ANY (ARRAY[('primary_working_note'::character varying)::text, ('linked_note'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_personal_focus" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_relations" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"from_thread_id" varchar(36) NOT NULL,
+	"to_thread_id" varchar(36) NOT NULL,
+	"relation_kind" varchar(24) NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_thread_relations_kind" CHECK ((relation_kind)::text = ANY (ARRAY[('decomposes_into'::character varying)::text, ('proposes'::character varying)::text, ('depends_on'::character varying)::text, ('supports'::character varying)::text, ('contradicts'::character varying)::text, ('supersedes'::character varying)::text, ('related_to'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_thread_relations_no_self_edge" CHECK (from_thread_id <> to_thread_id)
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_revisions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"version" integer NOT NULL,
+	"kind" varchar(16) NOT NULL,
+	"statement" text NOT NULL,
+	"answer_state" varchar(16),
+	"evaluation_state" varchar(16),
+	"confidence" integer,
+	"state_snapshot_json" jsonb NOT NULL,
+	"content_hash" varchar(64) NOT NULL,
+	"change_significance" varchar(16) NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_thread_revisions_kind" CHECK ((kind)::text = ANY (ARRAY[('question'::character varying)::text, ('hypothesis'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_thread_revisions_significance" CHECK ((change_significance)::text = ANY (ARRAY[('trivial'::character varying)::text, ('material'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_statement_revisions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"revision_kind" varchar(16) NOT NULL,
+	"previous_statement" text NOT NULL,
+	"new_statement" text NOT NULL,
+	"structure_action" varchar(16),
+	"impact_note" text,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_thread_statement_revisions_kind" CHECK ((revision_kind)::text = ANY (ARRAY[('wording_only'::character varying)::text, ('semantic_change'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_thread_statement_revisions_structure_action" CHECK (structure_action IS NULL OR (structure_action)::text = ANY (ARRAY[('narrow'::character varying)::text, ('child'::character varying)::text, ('supersede'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_structure_events" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"action_kind" varchar(32) NOT NULL,
+	"from_value_json" jsonb,
+	"to_value_json" jsonb,
+	"actor_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_thread_structure_events_action" CHECK ((action_kind)::text = ANY (ARRAY[('relation_added'::character varying)::text, ('relation_removed'::character varying)::text, ('primary_parent_changed'::character varying)::text, ('definition_child_created'::character varying)::text, ('definition_superseded'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_thread_work_events" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"action_kind" varchar(32) NOT NULL,
+	"from_value" text,
+	"to_value" text,
+	"actor_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_threads" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"kind" varchar(16) NOT NULL,
+	"statement" text NOT NULL,
+	"lifecycle_status" varchar(24) DEFAULT 'active' NOT NULL,
+	"attention_state" varchar(16) DEFAULT 'backlog' NOT NULL,
+	"priority" integer DEFAULT 0 NOT NULL,
+	"primary_parent_id" varchar(36),
+	"owner_user_id" varchar(36),
+	"next_focus_kind" varchar(32),
+	"next_focus_note" text,
+	"blocked_reason" text,
+	"version" integer DEFAULT 1 NOT NULL,
+	"created_from" varchar(32) DEFAULT 'user' NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_inquiry_threads_space_id_id" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_inquiry_threads_id_project_space" UNIQUE("id","project_id","space_id"),
+	CONSTRAINT "ck_inquiry_threads_kind" CHECK ((kind)::text = ANY (ARRAY[('question'::character varying)::text, ('hypothesis'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_threads_lifecycle_status" CHECK ((lifecycle_status)::text = ANY (ARRAY[('active'::character varying)::text, ('resolved'::character varying)::text, ('rejected'::character varying)::text, ('superseded'::character varying)::text, ('archived'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_threads_attention_state" CHECK ((attention_state)::text = ANY (ARRAY[('focused'::character varying)::text, ('monitoring'::character varying)::text, ('backlog'::character varying)::text, ('blocked'::character varying)::text, ('resolved'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_threads_created_from" CHECK ((created_from)::text = ANY (ARRAY[('user'::character varying)::text, ('ai_candidate'::character varying)::text, ('decomposition'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_threads_focused_next_focus" CHECK (attention_state <> 'focused' OR ((next_focus_kind IS NULL) <> (blocked_reason IS NULL))),
+	CONSTRAINT "ck_inquiry_threads_lifecycle_attention" CHECK (
+		(lifecycle_status = 'active' AND attention_state IN ('focused', 'monitoring', 'backlog', 'blocked'))
+		OR (lifecycle_status = 'resolved' AND attention_state = 'resolved')
+		OR (lifecycle_status = 'rejected' AND attention_state = 'rejected')
+		OR (lifecycle_status IN ('superseded', 'archived') AND attention_state = 'archived')
+	)
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_delta_briefs" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"coverage_start" timestamp with time zone,
+	"coverage_end" timestamp with time zone NOT NULL,
+	"content_json" jsonb NOT NULL,
+	"generated_by_user_id" varchar(36),
+	"generated_by_run_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_evidence_signals" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"corpus_item_id" varchar(36),
+	"experiment_interpretation_id" varchar(36),
+	"classification" varchar(16) NOT NULL,
+	"is_material" boolean DEFAULT false NOT NULL,
+	"confidence" double precision,
+	"model_version" varchar(64),
+	"source_provenance_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"dedupe_key" varchar(64) NOT NULL,
+	"producer_idempotency_key" varchar(128),
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"candidate_id" varchar(36),
+	"created_by_user_id" varchar(36),
+	"created_by_run_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_inquiry_evidence_signals_classification" CHECK ((classification)::text = ANY (ARRAY[('supports'::character varying)::text, ('contradicts'::character varying)::text, ('adds_context'::character varying)::text, ('adds_method'::character varying)::text, ('fills_gap'::character varying)::text, ('raises_gap'::character varying)::text, ('unrelated'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_evidence_signals_status" CHECK ((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('auto_attached'::character varying)::text, ('consolidated'::character varying)::text, ('dismissed'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_evidence_signals_confidence" CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+	CONSTRAINT "ck_inquiry_evidence_signals_one_source" CHECK ((corpus_item_id IS NOT NULL) <> (experiment_interpretation_id IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_review_packets" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"status" varchar(16) DEFAULT 'open' NOT NULL,
+	"opened_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"closed_at" timestamp with time zone,
+	CONSTRAINT "uq_inquiry_review_packets_id_project_space" UNIQUE("id","project_id","space_id"),
+	CONSTRAINT "ck_inquiry_review_packets_status" CHECK ((status)::text = ANY (ARRAY[('open'::character varying)::text, ('closed'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "inquiry_signal_candidates" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"thread_id" varchar(36) NOT NULL,
+	"candidate_kind" varchar(32) NOT NULL,
+	"semantic_key" varchar(128) NOT NULL,
+	"title" text NOT NULL,
+	"summary" text,
+	"proposed_change_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"review_packet_id" varchar(36),
+	"resulting_iteration_id" varchar(36),
+	"resulting_thread_id" varchar(36),
+	"merged_into_candidate_id" varchar(36),
+	"decision_reason" text,
+	"defer_until" timestamp with time zone,
+	"decided_by_user_id" varchar(36),
+	"decided_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_inquiry_signal_candidates_id_project_space" UNIQUE("id","project_id","space_id"),
+	CONSTRAINT "ck_inquiry_signal_candidates_kind" CHECK ((candidate_kind)::text = ANY (ARRAY[('new_thread'::character varying)::text, ('contradiction'::character varying)::text, ('confidence_tier_crossing'::character varying)::text, ('state_change'::character varying)::text, ('next_focus_replacement'::character varying)::text, ('scope_change'::character varying)::text, ('knowledge_promotion_ready'::character varying)::text])),
+	CONSTRAINT "ck_inquiry_signal_candidates_status" CHECK ((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('accepted'::character varying)::text, ('merged'::character varying)::text, ('deferred'::character varying)::text, ('dismissed'::character varying)::text, ('gap'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "job_events" (
@@ -1116,7 +1638,7 @@ CREATE TABLE "jobs" (
 	"updated_at" timestamp with time zone NOT NULL,
 	"heartbeat_at" timestamp with time zone,
 	"user_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"agent_id" varchar(36),
 	CONSTRAINT "ck_jobs_attempts_nonneg" CHECK (attempts >= 0),
 	CONSTRAINT "ck_jobs_max_attempts_positive" CHECK (max_attempts > 0),
@@ -1200,7 +1722,7 @@ CREATE TABLE "evidence_links" (
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "ck_evidence_links_link_type" CHECK ((link_type)::text = ANY (ARRAY[('supports'::character varying)::text, ('contradicts'::character varying)::text, ('derived_from'::character varying)::text, ('mentions'::character varying)::text, ('context_candidate'::character varying)::text, ('used_in_context'::character varying)::text])),
 	CONSTRAINT "ck_evidence_links_status" CHECK ((status)::text = ANY (ARRAY[('candidate'::character varying)::text, ('active'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])),
-	CONSTRAINT "ck_evidence_links_target_type" CHECK ((target_type)::text = ANY (ARRAY[('space'::character varying)::text, ('workspace'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('agent'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('knowledge'::character varying)::text, ('memory'::character varying)::text, ('task'::character varying)::text]))
+	CONSTRAINT "ck_evidence_links_target_type" CHECK ((target_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project_folder'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('agent'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('knowledge'::character varying)::text, ('memory'::character varying)::text, ('task'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "extracted_evidence" (
@@ -1282,6 +1804,7 @@ CREATE TABLE "knowledge_items" (
 	"redirect_to_item_id" varchar(36),
 	"version" integer NOT NULL,
 	"deprecated_at" timestamp with time zone,
+	"pinned_source_ref_json" jsonb,
 	CONSTRAINT "knowledge_items_object_id_space_id_key" UNIQUE("object_id","space_id"),
 	CONSTRAINT "ck_knowledge_items_confidence" CHECK ((confidence IS NULL) OR ((confidence >= (0)::double precision) AND (confidence <= (1)::double precision))),
 	CONSTRAINT "ck_knowledge_items_content_format" CHECK ((content_format)::text = ANY (ARRAY[('markdown'::character varying)::text, ('plain'::character varying)::text, ('prosemirror_json'::character varying)::text])),
@@ -1491,7 +2014,7 @@ CREATE TABLE "space_objects" (
 	"access_level" varchar(16) DEFAULT 'full' NOT NULL,
 	"owner_user_id" varchar(36),
 	"primary_project_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"created_by_user_id" varchar(36),
 	"created_by_agent_id" varchar(36),
 	"created_by_run_id" varchar(36),
@@ -1512,6 +2035,106 @@ END),
 	CONSTRAINT "ck_space_objects_visibility" CHECK (visibility IN ('private', 'space_shared', 'selected_users')),
 	CONSTRAINT "ck_space_objects_access_level" CHECK (access_level IN ('full', 'summary')),
 	CONSTRAINT "ck_space_objects_private_owner" CHECK (visibility = 'space_shared' OR owner_user_id IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "knowledge_promotion_candidates" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36),
+	"trigger" varchar(16) NOT NULL,
+	"source_kind" varchar(32) NOT NULL,
+	"source_id" varchar(36) NOT NULL,
+	"source_ref_json" jsonb NOT NULL,
+	"candidate_kind" varchar(32) NOT NULL,
+	"proposed_title" varchar(512) NOT NULL,
+	"proposed_content" text NOT NULL,
+	"visibility" varchar(32) DEFAULT 'space_shared' NOT NULL,
+	"owner_user_id" varchar(36),
+	"supersedes_knowledge_item_id" varchar(36),
+	"review_packet_id" varchar(36),
+	"status" varchar(16) DEFAULT 'pending' NOT NULL,
+	"created_proposal_id" varchar(36),
+	"created_by_user_id" varchar(36),
+	"decided_by_user_id" varchar(36),
+	"decided_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_knowledge_promotion_candidates_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_knowledge_promotion_candidates_trigger" CHECK ((trigger)::text = ANY (ARRAY[('promotion'::character varying)::text, ('revalidation'::character varying)::text])),
+	CONSTRAINT "ck_knowledge_promotion_candidates_source_kind" CHECK ((source_kind)::text = ANY (ARRAY[('note'::character varying)::text, ('inquiry_thread'::character varying)::text, ('experiment_interpretation'::character varying)::text])),
+	CONSTRAINT "ck_knowledge_promotion_candidates_kind" CHECK ((candidate_kind)::text = ANY (ARRAY[('concept'::character varying)::text, ('lesson'::character varying)::text, ('procedure'::character varying)::text, ('decision'::character varying)::text, ('summary'::character varying)::text])),
+	CONSTRAINT "ck_knowledge_promotion_candidates_status" CHECK ((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('deferred'::character varying)::text, ('promoted'::character varying)::text, ('dismissed'::character varying)::text])),
+	CONSTRAINT "ck_knowledge_promotion_candidates_revalidation_target" CHECK ((trigger)::text <> 'revalidation'::text OR supersedes_knowledge_item_id IS NOT NULL),
+	CONSTRAINT "ck_knowledge_promotion_candidates_visibility" CHECK (visibility IN ('private', 'space_shared')),
+	CONSTRAINT "ck_knowledge_promotion_candidates_private_owner" CHECK (visibility='space_shared' OR owner_user_id IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "knowledge_promotion_review_packets" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"status" varchar(16) DEFAULT 'open' NOT NULL,
+	"opened_by_user_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"closed_at" timestamp with time zone,
+	CONSTRAINT "uq_knowledge_promotion_review_packets_id_space" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_knowledge_promotion_review_packets_status" CHECK (status IN ('open', 'closed'))
+);
+--> statement-breakpoint
+CREATE TABLE "knowledge_revalidation_outcomes" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"knowledge_item_id" varchar(36) NOT NULL,
+	"event_id" varchar(36) NOT NULL,
+	"outcome" varchar(24) NOT NULL,
+	"resulting_candidate_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_knowledge_revalidation_outcomes_outcome" CHECK ((outcome)::text = ANY (ARRAY[('no_impact'::character varying)::text, ('candidate_created'::character varying)::text, ('already_superseded'::character varying)::text])),
+	CONSTRAINT "ck_knowledge_revalidation_outcomes_candidate_pairing" CHECK ((outcome)::text <> 'candidate_created'::text OR resulting_candidate_id IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "learning_item_mastery" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"learning_item_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"mastery_state" varchar(16) DEFAULT 'new' NOT NULL,
+	"correct_streak" integer DEFAULT 0 NOT NULL,
+	"last_reviewed_at" timestamp with time zone,
+	"next_review_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_learning_item_mastery_state" CHECK ((mastery_state)::text = ANY (ARRAY[('new'::character varying)::text, ('learning'::character varying)::text, ('mastered'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "learning_items" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36),
+	"objective_id" varchar(36),
+	"knowledge_item_id" varchar(36) NOT NULL,
+	"knowledge_item_version" integer NOT NULL,
+	"item_kind" varchar(16) DEFAULT 'card' NOT NULL,
+	"prompt" text NOT NULL,
+	"answer" text NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_learning_items_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_learning_items_kind" CHECK ((item_kind)::text = ANY (ARRAY[('card'::character varying)::text, ('exercise'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "learning_objectives" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36),
+	"title" varchar(512) NOT NULL,
+	"description" text,
+	"status" varchar(16) DEFAULT 'active' NOT NULL,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_learning_objectives_id_space_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_learning_objectives_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "memory_access_logs" (
@@ -1541,7 +2164,7 @@ CREATE TABLE "memory_entries" (
 	"owner_user_id" varchar(36),
 	"sensitivity_level" varchar(32) DEFAULT 'normal' NOT NULL,
 	"last_confirmed_at" timestamp with time zone,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"agent_id" varchar(36),
 	"namespace" varchar(255),
 	"title" varchar(512),
@@ -1683,7 +2306,7 @@ CREATE TABLE "code_patch_snapshots" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"proposal_id" varchar(36) NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36) NOT NULL,
+	"project_folder_id" varchar(36) NOT NULL,
 	"files_json" jsonb NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
@@ -1800,6 +2423,7 @@ CREATE TABLE "plan_nodes" (
 	"max_duration_seconds" integer,
 	"policy_json" jsonb,
 	"verification_recipe_refs_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"budget_sources_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"metadata_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"blocked_reason" text,
 	"content_hash" varchar(128) NOT NULL,
@@ -1838,7 +2462,7 @@ CREATE TABLE "plan_versions" (
 CREATE TABLE "plans" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"project_id" varchar(36),
 	"source_task_id" varchar(36) NOT NULL,
 	"root_run_id" varchar(36),
@@ -1966,80 +2590,6 @@ CREATE TABLE "project_corpus_items" (
 	CONSTRAINT "ck_project_corpus_items_role" CHECK ((role)::text = ANY (ARRAY[('candidate'::character varying)::text, ('reference'::character varying)::text, ('primary'::character varying)::text, ('related'::character varying)::text, ('background'::character varying)::text])),
 	CONSTRAINT "ck_project_corpus_items_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text])),
 	CONSTRAINT "ck_project_corpus_items_triage_status" CHECK ((triage_status)::text = ANY (ARRAY[('new'::character varying)::text, ('relevant'::character varying)::text, ('maybe'::character varying)::text, ('excluded'::character varying)::text, ('included'::character varying)::text]))
-);
---> statement-breakpoint
-CREATE TABLE "project_experiment_campaigns" (
-	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"space_id" varchar(36) NOT NULL,
-	"project_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36) NOT NULL,
-	"name" varchar(256) NOT NULL,
-	"research_question" text,
-	"hypothesis_scope" text,
-	"status" varchar(16) DEFAULT 'draft' NOT NULL,
-	"editable_scope_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"protected_scope_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"setup_commands_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"run_command" text,
-	"metric_parser_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"time_budget_seconds" integer,
-	"timeout_seconds" integer,
-	"resource_budget_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"baseline_run_id" varchar(36),
-	"best_run_id" varchar(36),
-	"created_by_user_id" varchar(36),
-	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "uq_project_experiment_campaigns_id_space_id" UNIQUE("id","space_id"),
-	CONSTRAINT "ck_project_experiment_campaigns_status" CHECK ((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('paused'::character varying)::text, ('completed'::character varying)::text, ('archived'::character varying)::text])),
-	CONSTRAINT "ck_project_experiment_campaigns_editable_scope_array" CHECK (jsonb_typeof(editable_scope_json) = 'array'::text),
-	CONSTRAINT "ck_project_experiment_campaigns_protected_scope_array" CHECK (jsonb_typeof(protected_scope_json) = 'array'::text),
-	CONSTRAINT "ck_project_experiment_campaigns_setup_commands_array" CHECK (jsonb_typeof(setup_commands_json) = 'array'::text)
-);
---> statement-breakpoint
-CREATE TABLE "project_experiment_provenance" (
-	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"space_id" varchar(36) NOT NULL,
-	"project_id" varchar(36) NOT NULL,
-	"campaign_id" varchar(36),
-	"experiment_key" varchar(160) NOT NULL,
-	"planned_summary" text,
-	"executed_summary" text,
-	"negative_results" text,
-	"limitations" text,
-	"repro_lock_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"linked_artifact_ids_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"linked_run_ids_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"created_by_user_id" varchar(36),
-	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "ck_project_experiment_provenance_linked_artifact_ids_array" CHECK (jsonb_typeof(linked_artifact_ids_json) = 'array'::text),
-	CONSTRAINT "ck_project_experiment_provenance_linked_run_ids_array" CHECK (jsonb_typeof(linked_run_ids_json) = 'array'::text)
-);
---> statement-breakpoint
-CREATE TABLE "project_experiment_runs" (
-	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"space_id" varchar(36) NOT NULL,
-	"campaign_id" varchar(36) NOT NULL,
-	"run_id" varchar(36),
-	"workspace_id" varchar(36) NOT NULL,
-	"is_baseline" boolean DEFAULT false NOT NULL,
-	"hypothesis" text,
-	"patch_summary" text,
-	"commit_ref" varchar(128),
-	"status" varchar(16) DEFAULT 'queued' NOT NULL,
-	"metrics_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"primary_metric_name" varchar(128),
-	"primary_metric_value" double precision,
-	"decision_reason" text,
-	"artifact_ids_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"created_by_user_id" varchar(36),
-	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "uq_project_experiment_runs_id_space_id" UNIQUE("id","space_id"),
-	CONSTRAINT "ck_project_experiment_runs_status" CHECK ((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('keep'::character varying)::text, ('discard'::character varying)::text, ('crash'::character varying)::text, ('cancelled'::character varying)::text])),
-	CONSTRAINT "ck_project_experiment_runs_metrics_object" CHECK (jsonb_typeof(metrics_json) = 'object'::text),
-	CONSTRAINT "ck_project_experiment_runs_artifact_ids_array" CHECK (jsonb_typeof(artifact_ids_json) = 'array'::text)
 );
 --> statement-breakpoint
 CREATE TABLE "project_research_checkpoints" (
@@ -2463,13 +3013,45 @@ CREATE TABLE "project_operations" (
 	"plan_artifact_id" varchar(36),
 	"progress_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"version" integer DEFAULT 1 NOT NULL,
+	"current_execution_id" varchar(36),
+	"generation" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_project_operations_space_id_id" UNIQUE("id","space_id"),
 	CONSTRAINT "uq_project_operations_id_project_space" UNIQUE("id","project_id","space_id"),
 	CONSTRAINT "ck_project_operations_kind" CHECK (kind IN ('source_setup','source_backfill','research','custom')),
 	CONSTRAINT "ck_project_operations_status" CHECK (status IN ('draft','active','waiting_review','completed','failed','cancelled')),
-	CONSTRAINT "ck_project_operations_version" CHECK (version >= 1)
+	CONSTRAINT "ck_project_operations_version" CHECK (version >= 1),
+	CONSTRAINT "ck_project_operations_generation" CHECK (generation >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "project_attention_user_states" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"source_type" varchar(64) NOT NULL,
+	"source_id" varchar(36) NOT NULL,
+	"seen_at" timestamp with time zone,
+	"snoozed_until" timestamp with time zone,
+	"pinned_at" timestamp with time zone,
+	"updated_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "project_brief_versions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"version" varchar(16) NOT NULL,
+	"goal" text,
+	"scope_included" text,
+	"scope_excluded" text,
+	"success_definition" text,
+	"constraints" text,
+	"assumptions" text,
+	"created_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_project_brief_versions_id_project_space" UNIQUE("id","project_id","space_id")
 );
 --> statement-breakpoint
 CREATE TABLE "project_members" (
@@ -2483,6 +3065,19 @@ CREATE TABLE "project_members" (
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "ck_project_members_role" CHECK ((role)::text = ANY (ARRAY[('owner'::character varying)::text, ('member'::character varying)::text, ('viewer'::character varying)::text])),
 	CONSTRAINT "ck_project_members_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('invited'::character varying)::text, ('revoked'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "project_mode_transitions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"from_mode" varchar(32),
+	"to_mode" varchar(32) NOT NULL,
+	"reason" text,
+	"trigger_ref" varchar(128),
+	"confirmed_by_user_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_project_mode_transitions_to_mode" CHECK ((to_mode)::text = ANY (ARRAY[('inquiry'::character varying)::text, ('decision'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "project_public_summaries" (
@@ -2514,12 +3109,17 @@ CREATE TABLE "projects" (
 	"status" varchar(32) NOT NULL,
 	"current_focus" text,
 	"settings_json" jsonb,
+	"template_key" varchar(64) DEFAULT 'blank' NOT NULL,
+	"template_applied_json" jsonb,
+	"primary_mode" varchar(32) DEFAULT 'inquiry' NOT NULL,
+	"active_brief_version_id" varchar(36),
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	"archived_at" timestamp with time zone,
 	"deleted_at" timestamp with time zone,
 	CONSTRAINT "uq_projects_space_id_id" UNIQUE("id","space_id"),
-	CONSTRAINT "ck_projects_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text]))
+	CONSTRAINT "ck_projects_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])),
+	CONSTRAINT "ck_projects_primary_mode" CHECK ((primary_mode)::text = ANY (ARRAY[('inquiry'::character varying)::text, ('decision'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "proposal_approvals" (
@@ -2557,7 +3157,7 @@ CREATE TABLE "proposals" (
 	"updated_at" timestamp with time zone NOT NULL,
 	"reviewed_at" timestamp with time zone,
 	"reviewed_by" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"rationale" text,
 	"created_by_agent_id" varchar(36),
 	"created_by_user_id" varchar(36),
@@ -2747,6 +3347,50 @@ CREATE TABLE "route_decisions" (
 	CONSTRAINT "uq_route_decisions_run_attempt" UNIQUE("space_id","run_id","attempt_number")
 );
 --> statement-breakpoint
+CREATE TABLE "room_agent_members" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"agent_id" varchar(36) NOT NULL,
+	"role" varchar(32) NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_agent_members_room_agent" UNIQUE("room_id","agent_id"),
+	CONSTRAINT "ck_room_agent_members_role" CHECK (role IN ('manager', 'member')),
+	CONSTRAINT "ck_room_agent_members_status" CHECK (status IN ('active', 'removed'))
+);
+--> statement-breakpoint
+CREATE TABLE "room_user_members" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"role" varchar(32) NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_user_members_room_user" UNIQUE("room_id","user_id"),
+	CONSTRAINT "ck_room_user_members_role" CHECK (role IN ('owner', 'member')),
+	CONSTRAINT "ck_room_user_members_status" CHECK (status IN ('active', 'removed'))
+);
+--> statement-breakpoint
+CREATE TABLE "rooms" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"project_folder_id" varchar(36),
+	"created_by_user_id" varchar(36) NOT NULL,
+	"title" varchar(256) NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	"archived_at" timestamp with time zone,
+	CONSTRAINT "uq_rooms_id_space" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_rooms_id_space_project" UNIQUE("id","space_id","project_id"),
+	CONSTRAINT "ck_rooms_status" CHECK (status IN ('active', 'archived'))
+);
+--> statement-breakpoint
 CREATE TABLE "retrieval_aliases" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"retrieval_object_id" varchar(36) NOT NULL,
@@ -2822,7 +3466,7 @@ CREATE TABLE "retrieval_objects" (
 	"space_id" varchar(36) NOT NULL,
 	"object_type" "retrieval_object_type" NOT NULL,
 	"object_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"owner_user_id" varchar(36),
 	"visibility" varchar(32),
 	"access_level" varchar(16),
@@ -2917,7 +3561,7 @@ CREATE TABLE "run_events" (
 	"summary" text,
 	"error_code" varchar(128),
 	"error_message" text,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"artifact_id" varchar(36),
 	"proposal_id" varchar(36),
 	"data_exposure_level" varchar(64),
@@ -2926,7 +3570,7 @@ CREATE TABLE "run_events" (
 	"created_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_run_events_space_run_event_index" UNIQUE("event_index","run_id","space_id"),
 	CONSTRAINT "ck_run_events_data_exposure_level" CHECK ((data_exposure_level IS NULL) OR ((data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))),
-	CONSTRAINT "ck_run_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('context_compiled'::character varying)::text, ('runtime_selected'::character varying)::text, ('credential_granted'::character varying)::text, ('sandbox_created'::character varying)::text, ('policy_checked'::character varying)::text, ('adapter_invoked'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_ingested'::character varying)::text, ('patch_collected'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('proposal_created'::character varying)::text, ('evaluation_created'::character varying)::text, ('run_finalized'::character varying)::text, ('delegation_requested'::character varying)::text, ('delegation_policy_denied'::character varying)::text, ('delegation_queued'::character varying)::text, ('delegation_started'::character varying)::text, ('delegation_completed'::character varying)::text, ('action_invoked'::character varying)::text, ('action_completed'::character varying)::text])),
+	CONSTRAINT "ck_run_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('context_compiled'::character varying)::text, ('runtime_selected'::character varying)::text, ('credential_granted'::character varying)::text, ('sandbox_created'::character varying)::text, ('policy_checked'::character varying)::text, ('adapter_invoked'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_ingested'::character varying)::text, ('patch_collected'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('proposal_created'::character varying)::text, ('evaluation_created'::character varying)::text, ('run_finalized'::character varying)::text, ('chat_completed'::character varying)::text, ('delegation_requested'::character varying)::text, ('delegation_policy_denied'::character varying)::text, ('delegation_queued'::character varying)::text, ('delegation_started'::character varying)::text, ('delegation_completed'::character varying)::text, ('action_invoked'::character varying)::text, ('action_completed'::character varying)::text, ('assistant_message_completed'::character varying)::text, ('tool_call_started'::character varying)::text, ('tool_call_completed'::character varying)::text, ('tool_call_failed'::character varying)::text, ('approval_requested'::character varying)::text, ('approval_resolved'::character varying)::text, ('artifact_produced'::character varying)::text, ('output_validation_completed'::character varying)::text, ('warning'::character varying)::text, ('error'::character varying)::text, ('state_transition'::character varying)::text])),
 	CONSTRAINT "ck_run_events_status" CHECK ((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('warning'::character varying)::text, ('cancelled'::character varying)::text])),
 	CONSTRAINT "ck_run_events_trust_level" CHECK ((trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text])))
 );
@@ -2975,7 +3619,7 @@ CREATE TABLE "run_steps" (
 	"step_type" varchar(64) NOT NULL,
 	"status" varchar(32) NOT NULL,
 	"title" varchar(512),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"session_id" varchar(36),
 	"task_id" varchar(36),
 	"artifact_id" varchar(36),
@@ -3020,9 +3664,8 @@ CREATE TABLE "runs" (
 	"runtime_profile_id" varchar(36),
 	"runtime_profile_selection_source" varchar(16),
 	"context_snapshot_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"session_id" varchar(36),
-	"working_dir_id" varchar(36),
 	"parent_run_id" varchar(36),
 	"root_run_id" varchar(36),
 	"run_group_id" varchar(36),
@@ -3076,7 +3719,7 @@ CREATE TABLE "runs" (
 	CONSTRAINT "ck_runs_mode" CHECK ((mode)::text = ANY (ARRAY[('live'::character varying)::text, ('dry_run'::character varying)::text])),
 	CONSTRAINT "ck_runs_run_role" CHECK ((run_role)::text = ANY (ARRAY[('execution'::character varying)::text, ('coordinator'::character varying)::text])),
 	CONSTRAINT "ck_runs_observability_level" CHECK ((observability_level IS NULL) OR ((observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text]))),
-	CONSTRAINT "ck_runs_required_sandbox_level" CHECK ((required_sandbox_level)::text = ANY (ARRAY[('none'::character varying)::text, ('dry_run'::character varying)::text, ('ephemeral'::character varying)::text, ('worktree'::character varying)::text, ('one_shot_docker'::character varying)::text])),
+	CONSTRAINT "ck_runs_required_sandbox_level" CHECK ((required_sandbox_level)::text = ANY (ARRAY[('none'::character varying)::text, ('dry_run'::character varying)::text, ('ephemeral'::character varying)::text, ('read_only'::character varying)::text, ('worktree'::character varying)::text, ('one_shot_docker'::character varying)::text])),
 	CONSTRAINT "ck_runs_run_type" CHECK ((run_type)::text = ANY (ARRAY[('agent'::character varying)::text, ('planning'::character varying)::text, ('system'::character varying)::text, ('workflow'::character varying)::text, ('validation'::character varying)::text, ('reflection'::character varying)::text, ('export'::character varying)::text, ('evolution'::character varying)::text])),
 	CONSTRAINT "ck_runs_source" CHECK ((source IS NULL) OR ((source)::text = ANY (ARRAY[('managed'::character varying)::text, ('ide_assist'::character varying)::text, ('manual_import'::character varying)::text, ('remote_import'::character varying)::text, ('scheduled'::character varying)::text, ('webhook'::character varying)::text]))),
 	CONSTRAINT "ck_runs_status" CHECK ((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])),
@@ -3139,7 +3782,7 @@ CREATE TABLE "verification_results" (
 CREATE TABLE "runtime_tool_bindings" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"agent_id" varchar(36),
 	"capability_id" varchar(128),
 	"runtime_adapter_type" varchar(64) NOT NULL,
@@ -3202,11 +3845,32 @@ CREATE TABLE "messages" (
 	"space_id" varchar(36) NOT NULL,
 	"session_id" varchar(36) NOT NULL,
 	"user_id" varchar(36),
+	"sender_agent_id" varchar(36),
 	"role" varchar(32) NOT NULL,
 	"content" text NOT NULL,
 	"metadata_json" jsonb,
 	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_messages_id_space_session" UNIQUE("id","space_id","session_id"),
 	CONSTRAINT "ck_messages_role" CHECK ((role)::text = ANY (ARRAY[('user'::character varying)::text, ('assistant'::character varying)::text, ('system'::character varying)::text, ('tool'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "session_conversation_backends" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"session_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"agent_id" varchar(36) NOT NULL,
+	"runtime_profile_id" varchar(36) NOT NULL,
+	"credential_profile_id" varchar(36),
+	"runtime_state_key" varchar(36) NOT NULL,
+	"runtime_session_id" varchar(512),
+	"runtime_context_fingerprint" varchar(64),
+	"runtime_message_cursor_id" varchar(36),
+	"runtime_session_updated_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_session_conversation_backends_session_user_agent" UNIQUE("session_id","user_id","agent_id"),
+	CONSTRAINT "uq_session_conversation_backends_runtime_state_key" UNIQUE("runtime_state_key")
 );
 --> statement-breakpoint
 CREATE TABLE "session_summaries" (
@@ -3234,13 +3898,21 @@ CREATE TABLE "sessions" (
 	"space_id" varchar(36) NOT NULL,
 	"user_id" varchar(36),
 	"agent_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"project_id" varchar(36),
+	"room_id" varchar(36),
 	"title" varchar(512),
 	"status" varchar(32) NOT NULL,
 	"metadata_json" jsonb,
 	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_sessions_id_space" UNIQUE("id","space_id"),
+	CONSTRAINT "uq_sessions_id_space_room_project" UNIQUE("id","space_id","room_id","project_id"),
+	CONSTRAINT "uq_sessions_id_space_user_agent" UNIQUE("id","space_id","user_id","agent_id"),
+	CONSTRAINT "ck_sessions_conversation_owner" CHECK (
+		(room_id IS NOT NULL AND project_id IS NOT NULL AND user_id IS NULL AND agent_id IS NULL)
+		OR (room_id IS NULL AND user_id IS NOT NULL)
+	)
 );
 --> statement-breakpoint
 CREATE TABLE "settings" (
@@ -3889,11 +4561,11 @@ CREATE TABLE "board_columns" (
 CREATE TABLE "boards" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"project_id" varchar(36),
 	"name" varchar(512) NOT NULL,
 	"description" text,
-	"board_type" varchar(64) DEFAULT 'workspace' NOT NULL,
+	"board_type" varchar(64) DEFAULT 'project_folder' NOT NULL,
 	"status" varchar(32) DEFAULT 'active' NOT NULL,
 	"default_view" varchar(64),
 	"sort_order" integer,
@@ -3940,7 +4612,7 @@ CREATE TABLE "task_proposals" (
 CREATE TABLE "tasks" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"project_id" varchar(36),
 	"board_id" varchar(36),
 	"column_id" varchar(36),
@@ -3996,7 +4668,7 @@ CREATE TABLE "tasks" (
 CREATE TABLE "validation_recipes" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"name" varchar(256) NOT NULL,
 	"task_type" varchar(64),
 	"risk_level" varchar(32) DEFAULT 'low' NOT NULL,
@@ -4101,7 +4773,7 @@ CREATE TABLE "token_usage_events" (
 	"session_name" varchar(256),
 	"agent_id" varchar(36),
 	"project_id" varchar(36),
-	"workspace_id" varchar(36),
+	"project_folder_id" varchar(36),
 	"trigger_origin" varchar(64),
 	"occurred_at" timestamp with time zone NOT NULL,
 	"recorded_at" timestamp with time zone NOT NULL,
@@ -4133,7 +4805,7 @@ CREATE TABLE "token_usage_events" (
 	CONSTRAINT "uq_token_usage_events_space_idempotency" UNIQUE("space_id","idempotency_key"),
 	CONSTRAINT "ck_token_usage_events_source_type" CHECK ((source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('llm.generation'::character varying)::text, ('llm.embedding'::character varying)::text, ('llm.rerank'::character varying)::text, ('cli.history_usage'::character varying)::text, ('usage.adjustment'::character varying)::text])),
-	CONSTRAINT "ck_token_usage_events_execution_channel" CHECK ((execution_channel)::text = ANY (ARRAY[('managed_api'::character varying)::text, ('provider_proxy'::character varying)::text, ('local_cli_transcript'::character varying)::text, ('manual_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('unknown'::character varying)::text])),
+	CONSTRAINT "ck_token_usage_events_execution_channel" CHECK ((execution_channel)::text = ANY (ARRAY[('managed_api'::character varying)::text, ('provider_proxy'::character varying)::text, ('local_cli'::character varying)::text, ('local_cli_transcript'::character varying)::text, ('manual_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('unknown'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_total_tokens_source" CHECK ((total_tokens_source)::text = ANY (ARRAY[('provider_total'::character varying)::text, ('sum_of_buckets'::character varying)::text, ('estimated'::character varying)::text, ('unknown'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_usage_accuracy" CHECK ((usage_accuracy)::text = ANY (ARRAY[('provider_reported'::character varying)::text, ('proxy_observed'::character varying)::text, ('transcript_lower_bound'::character varying)::text, ('estimated'::character varying)::text, ('quota_snapshot'::character varying)::text, ('unknown'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_dedupe_confidence" CHECK ((dedupe_confidence)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text])),
@@ -4165,40 +4837,10 @@ CREATE TABLE "usage_import_batches" (
 	CONSTRAINT "ck_usage_import_batches_status" CHECK ((status)::text = ANY (ARRAY[('previewed'::character varying)::text, ('importing'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text]))
 );
 --> statement-breakpoint
-CREATE TABLE "project_workspaces" (
+CREATE TABLE "project_folder_execution_configs" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
-	"project_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36) NOT NULL,
-	"role" varchar(64) NOT NULL,
-	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "uq_project_workspaces_project_workspace_role" UNIQUE("project_id","role","space_id","workspace_id"),
-	CONSTRAINT "ck_project_workspaces_role" CHECK ((role)::text = ANY (ARRAY[('primary_codebase'::character varying)::text, ('capability_library'::character varying)::text, ('docs'::character varying)::text, ('data'::character varying)::text, ('deployment'::character varying)::text, ('reference'::character varying)::text]))
-);
---> statement-breakpoint
-CREATE TABLE "working_dirs" (
-	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"space_id" varchar(36) NOT NULL,
-	"scope" varchar(16) NOT NULL,
-	"session_id" varchar(36),
-	"project_id" varchar(36),
-	"rel_path" varchar(1024) NOT NULL,
-	"status" varchar(16) DEFAULT 'active' NOT NULL,
-	"metadata_json" jsonb,
-	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL,
-	"last_used_at" timestamp with time zone,
-	"cleaned_at" timestamp with time zone,
-	CONSTRAINT "ck_working_dirs_owner" CHECK ((((scope)::text = 'session'::text) AND (session_id IS NOT NULL) AND (project_id IS NULL)) OR (((scope)::text = 'project'::text) AND (project_id IS NOT NULL) AND (session_id IS NULL))),
-	CONSTRAINT "ck_working_dirs_scope" CHECK ((scope)::text = ANY (ARRAY[('session'::character varying)::text, ('project'::character varying)::text])),
-	CONSTRAINT "ck_working_dirs_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('cleaning'::character varying)::text, ('cleaned'::character varying)::text]))
-);
---> statement-breakpoint
-CREATE TABLE "workspace_profiles" (
-	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"space_id" varchar(36) NOT NULL,
-	"workspace_id" varchar(36) NOT NULL,
+	"project_folder_id" varchar(36) NOT NULL,
 	"repo_type" varchar(64),
 	"tech_stack_json" jsonb,
 	"important_paths_json" jsonb,
@@ -4206,22 +4848,21 @@ CREATE TABLE "workspace_profiles" (
 	"test_commands_json" jsonb,
 	"build_commands_json" jsonb,
 	"architecture_boundaries_json" jsonb,
-	"current_focus" text,
-	"known_failures_json" jsonb,
 	"validation_recipe_id" varchar(36),
 	"cloud_allowed" boolean DEFAULT false NOT NULL,
 	"max_data_exposure_level" varchar(64),
 	"min_observability_level" varchar(64),
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "uq_workspace_profiles_workspace" UNIQUE("workspace_id"),
-	CONSTRAINT "ck_workspace_profiles_max_data_exposure_level" CHECK ((max_data_exposure_level IS NULL) OR ((max_data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))),
-	CONSTRAINT "ck_workspace_profiles_min_observability_level" CHECK ((min_observability_level IS NULL) OR ((min_observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text])))
+	CONSTRAINT "uq_project_folder_execution_configs_project_folder" UNIQUE("project_folder_id"),
+	CONSTRAINT "ck_project_folder_execution_configs_max_data_exposure_level" CHECK ((max_data_exposure_level IS NULL) OR ((max_data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))),
+	CONSTRAINT "ck_project_folder_execution_configs_min_observability_level" CHECK ((min_observability_level IS NULL) OR ((min_observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text])))
 );
 --> statement-breakpoint
-CREATE TABLE "workspaces" (
+CREATE TABLE "project_folders" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
 	"name" varchar(256) NOT NULL,
 	"description" text,
 	"root_path" varchar(1024),
@@ -4230,13 +4871,11 @@ CREATE TABLE "workspaces" (
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	"created_by_user_id" varchar(36),
-	"owner_user_id" varchar(36),
 	"slug" varchar(256),
-	"workspace_type" varchar(32) NOT NULL,
-	"kind" varchar(32) NOT NULL,
+	"kind" varchar(16) NOT NULL,
+	"is_primary" boolean DEFAULT false NOT NULL,
+	"execution_enabled" boolean DEFAULT true NOT NULL,
 	"default_branch" varchar(256),
-	"visibility" varchar(32) NOT NULL,
-	"access_level" varchar(16) DEFAULT 'full' NOT NULL,
 	"protected" boolean NOT NULL,
 	"system_managed" boolean NOT NULL,
 	"registered_from" varchar(32),
@@ -4244,12 +4883,9 @@ CREATE TABLE "workspaces" (
 	"allow_external_root" boolean DEFAULT false NOT NULL,
 	"snapshot_retention_days" integer,
 	"snapshot_max_count" integer,
-	CONSTRAINT "uq_workspaces_space_id_id" UNIQUE("id","space_id"),
-	CONSTRAINT "ck_workspaces_workspace_type" CHECK ((workspace_type)::text = ANY (ARRAY['project'::text, 'repo'::text, 'knowledge_base'::text, 'personal'::text, 'team'::text, 'system_core'::text])),
-	CONSTRAINT "ck_workspaces_status" CHECK ((status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text])),
-	CONSTRAINT "ck_workspaces_visibility" CHECK (visibility IN ('private', 'space_shared', 'selected_users')),
-	CONSTRAINT "ck_workspaces_access_level" CHECK (access_level IN ('full', 'summary')),
-	CONSTRAINT "ck_workspaces_private_owner" CHECK (visibility = 'space_shared' OR owner_user_id IS NOT NULL)
+	CONSTRAINT "uq_project_folders_space_id_id" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_project_folders_kind" CHECK (kind IN ('code', 'data', 'docs')),
+	CONSTRAINT "ck_project_folders_status" CHECK ((status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text]))
 );
 --> statement-breakpoint
 ALTER TABLE "academic_papers" ADD CONSTRAINT "academic_papers_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4260,7 +4896,7 @@ ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_session_id_fkey"
 ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_source_run_id_fkey" FOREIGN KEY ("source_run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "activity_records" ADD CONSTRAINT "activity_records_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "activity_records" ADD CONSTRAINT "fk_activity_records_project_id_projects" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "activity_records" ADD CONSTRAINT "fk_activity_records_source_task_id_tasks" FOREIGN KEY ("source_task_id") REFERENCES "public"."tasks"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -4269,6 +4905,7 @@ ALTER TABLE "action_approval_grants" ADD CONSTRAINT "action_approval_grants_spac
 ALTER TABLE "action_approval_grants" ADD CONSTRAINT "action_approval_grants_agent_id_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "action_approval_grants" ADD CONSTRAINT "action_approval_grants_granted_by_user_id_fkey" FOREIGN KEY ("granted_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "action_approval_grants" ADD CONSTRAINT "action_approval_grants_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "action_approval_grants" ADD CONSTRAINT "action_approval_grants_target_run_id_fkey" FOREIGN KEY ("target_run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "agent_run_group_members_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "agent_run_group_members_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES "public"."agent_run_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "agent_run_group_members_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -4278,7 +4915,11 @@ ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_manager_agent_id
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_manager_user_id_fkey" FOREIGN KEY ("manager_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_root_run_id_fkey" FOREIGN KEY ("root_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_project_folder_scope_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "fk_agent_run_groups_manager_agent_same_space" FOREIGN KEY ("manager_agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_room_scope_fkey" FOREIGN KEY ("room_id","space_id","project_id") REFERENCES "public"."rooms"("id","space_id","project_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_room_session_scope_fkey" FOREIGN KEY ("session_id","space_id","room_id","project_id") REFERENCES "public"."sessions"("id","space_id","room_id","project_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_trigger_message_scope_fkey" FOREIGN KEY ("trigger_message_id","space_id","session_id") REFERENCES "public"."messages"("id","space_id","session_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "fk_agent_run_groups_root_run_same_space" FOREIGN KEY ("root_run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_messages" ADD CONSTRAINT "agent_run_messages_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES "public"."agent_run_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_messages" ADD CONSTRAINT "agent_run_messages_parent_message_id_fkey" FOREIGN KEY ("parent_message_id") REFERENCES "public"."agent_run_messages"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -4309,8 +4950,7 @@ ALTER TABLE "run_delegations" ADD CONSTRAINT "fk_run_delegations_target_agent_sa
 ALTER TABLE "actors" ADD CONSTRAINT "actors_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "actors" ADD CONSTRAINT "actors_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "actors" ADD CONSTRAINT "actors_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_credential_profile_id_fkey" FOREIGN KEY ("credential_profile_id") REFERENCES "public"."cli_credential_profiles"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_versions" ADD CONSTRAINT "agent_versions_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4333,11 +4973,19 @@ ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_owner_user_id_fkey" FOREIGN KE
 ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_proposal_id_fkey" FOREIGN KEY ("proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "artifacts" ADD CONSTRAINT "artifacts_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "artifacts" ADD CONSTRAINT "fk_artifacts_project_id_projects" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "auth_accounts" ADD CONSTRAINT "auth_accounts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_sessions" ADD CONSTRAINT "user_sessions_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_run_id_fkey" FOREIGN KEY ("run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_agent_id_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_policy_decision_record_id_fkey" FOREIGN KEY ("policy_decision_record_id","space_id") REFERENCES "public"."policy_decision_records"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_instructed_by_user_id_fkey" FOREIGN KEY ("instructed_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "authorization_requests" ADD CONSTRAINT "authorization_requests_resulting_action_grant_binding_fkey" FOREIGN KEY ("resulting_action_grant_id","space_id","agent_id","action_id","run_id") REFERENCES "public"."action_approval_grants"("id","space_id","agent_id","action_id","target_run_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "automation_credential_grants" ADD CONSTRAINT "automation_credential_grants_automation_id_fkey" FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "automation_credential_grants" ADD CONSTRAINT "automation_credential_grants_granted_by_user_id_fkey" FOREIGN KEY ("granted_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "automation_credential_grants" ADD CONSTRAINT "automation_credential_grants_revoked_by_user_id_fkey" FOREIGN KEY ("revoked_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4351,7 +4999,7 @@ ALTER TABLE "automations" ADD CONSTRAINT "automations_owner_user_id_fkey" FOREIG
 ALTER TABLE "automations" ADD CONSTRAINT "automations_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "automations" ADD CONSTRAINT "automations_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "automations" ADD CONSTRAINT "automations_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "automations" ADD CONSTRAINT "automations_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "automations" ADD CONSTRAINT "automations_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_execution_dependencies" ADD CONSTRAINT "workflow_execution_dependencies_execution_space_fkey" FOREIGN KEY ("execution_id","space_id") REFERENCES "public"."workflow_executions"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_execution_dependencies" ADD CONSTRAINT "workflow_execution_dependencies_node_space_fkey" FOREIGN KEY ("node_id","space_id") REFERENCES "public"."workflow_execution_nodes"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_execution_dependencies" ADD CONSTRAINT "workflow_execution_dependencies_depends_on_space_fkey" FOREIGN KEY ("depends_on_node_id","space_id") REFERENCES "public"."workflow_execution_nodes"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4409,6 +5057,27 @@ ALTER TABLE "content_access_grants" ADD CONSTRAINT "content_access_grants_space_
 ALTER TABLE "content_access_grants" ADD CONSTRAINT "content_access_grants_grantee_membership_fkey" FOREIGN KEY ("space_id","grantee_user_id") REFERENCES "public"."space_memberships"("space_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_access_grants" ADD CONSTRAINT "content_access_grants_grantor_membership_fkey" FOREIGN KEY ("space_id","granted_by_user_id") REFERENCES "public"."space_memberships"("space_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_access_grants" ADD CONSTRAINT "content_access_grants_revoked_by_user_id_fkey" FOREIGN KEY ("revoked_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_case_sources" ADD CONSTRAINT "decision_case_sources_case_fkey" FOREIGN KEY ("decision_case_id","space_id") REFERENCES "public"."decision_cases"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_case_sources" ADD CONSTRAINT "decision_case_sources_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_case_sources" ADD CONSTRAINT "decision_case_sources_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_cases" ADD CONSTRAINT "decision_cases_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_cases" ADD CONSTRAINT "decision_cases_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_cases" ADD CONSTRAINT "decision_cases_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_cases" ADD CONSTRAINT "decision_cases_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_commitments" ADD CONSTRAINT "decision_commitments_case_fkey" FOREIGN KEY ("decision_case_id","space_id") REFERENCES "public"."decision_cases"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_commitments" ADD CONSTRAINT "decision_commitments_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_commitments" ADD CONSTRAINT "decision_commitments_committed_by_user_id_fkey" FOREIGN KEY ("committed_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_criteria" ADD CONSTRAINT "decision_criteria_case_fkey" FOREIGN KEY ("decision_case_id","space_id") REFERENCES "public"."decision_cases"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_criteria" ADD CONSTRAINT "decision_criteria_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_criteria" ADD CONSTRAINT "decision_criteria_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_option_scores" ADD CONSTRAINT "decision_option_scores_option_fkey" FOREIGN KEY ("option_id","decision_case_id","space_id") REFERENCES "public"."decision_options"("id","decision_case_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_option_scores" ADD CONSTRAINT "decision_option_scores_criterion_fkey" FOREIGN KEY ("criterion_id","decision_case_id","space_id") REFERENCES "public"."decision_criteria"("id","decision_case_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_option_scores" ADD CONSTRAINT "decision_option_scores_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_option_scores" ADD CONSTRAINT "decision_option_scores_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_options" ADD CONSTRAINT "decision_options_case_fkey" FOREIGN KEY ("decision_case_id","space_id") REFERENCES "public"."decision_cases"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_options" ADD CONSTRAINT "decision_options_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decision_options" ADD CONSTRAINT "decision_options_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "domain_change_outbox" ADD CONSTRAINT "domain_change_outbox_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "evolution_bundle_members" ADD CONSTRAINT "evolution_bundle_members_bundle_id_fkey" FOREIGN KEY ("bundle_id") REFERENCES "public"."evolution_bundles"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "evolution_bundle_members" ADD CONSTRAINT "evolution_bundle_members_proposal_id_fkey" FOREIGN KEY ("proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "evolution_bundle_members" ADD CONSTRAINT "evolution_bundle_members_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -4456,13 +5125,90 @@ ALTER TABLE "evolvable_asset_versions" ADD CONSTRAINT "evolvable_asset_versions_
 ALTER TABLE "evolvable_asset_versions" ADD CONSTRAINT "evolvable_asset_versions_approved_by_user_id_fkey" FOREIGN KEY ("approved_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "evolvable_assets" ADD CONSTRAINT "evolvable_assets_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "evolvable_assets" ADD CONSTRAINT "evolvable_assets_current_system_version_id_fkey" FOREIGN KEY ("current_system_version_id") REFERENCES "public"."evolvable_asset_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_thread_fkey" FOREIGN KEY ("primary_hypothesis_thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_baseline_run_delete_fkey" FOREIGN KEY ("baseline_run_id") REFERENCES "public"."experiment_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_baseline_run_id_fkey" FOREIGN KEY ("baseline_run_id","space_id") REFERENCES "public"."experiment_runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_best_run_delete_fkey" FOREIGN KEY ("best_run_id") REFERENCES "public"."experiment_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_definitions" ADD CONSTRAINT "experiment_definitions_best_run_id_fkey" FOREIGN KEY ("best_run_id","space_id") REFERENCES "public"."experiment_runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_interpretations" ADD CONSTRAINT "experiment_interpretations_definition_fkey" FOREIGN KEY ("definition_id","space_id") REFERENCES "public"."experiment_definitions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_interpretations" ADD CONSTRAINT "experiment_interpretations_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_interpretations" ADD CONSTRAINT "experiment_interpretations_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_interpretations" ADD CONSTRAINT "experiment_interpretations_reviewed_by_user_id_fkey" FOREIGN KEY ("reviewed_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_interpretations" ADD CONSTRAINT "experiment_interpretations_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_observations" ADD CONSTRAINT "experiment_observations_run_fkey" FOREIGN KEY ("run_id","space_id") REFERENCES "public"."experiment_runs"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_observations" ADD CONSTRAINT "experiment_observations_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_observations" ADD CONSTRAINT "experiment_observations_recorded_by_user_id_fkey" FOREIGN KEY ("recorded_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_runs" ADD CONSTRAINT "experiment_runs_version_fkey" FOREIGN KEY ("version_id","space_id") REFERENCES "public"."experiment_versions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_runs" ADD CONSTRAINT "experiment_runs_run_delete_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_runs" ADD CONSTRAINT "experiment_runs_run_id_fkey" FOREIGN KEY ("run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_runs" ADD CONSTRAINT "experiment_runs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_runs" ADD CONSTRAINT "experiment_runs_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_versions" ADD CONSTRAINT "experiment_versions_definition_fkey" FOREIGN KEY ("definition_id","space_id") REFERENCES "public"."experiment_definitions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_versions" ADD CONSTRAINT "experiment_versions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "experiment_versions" ADD CONSTRAINT "experiment_versions_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "graph_view_states" ADD CONSTRAINT "graph_view_states_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "graph_view_states" ADD CONSTRAINT "graph_view_states_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_hypothesis_states" ADD CONSTRAINT "inquiry_hypothesis_states_thread_fkey" FOREIGN KEY ("thread_id","space_id") REFERENCES "public"."inquiry_threads"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_iterations" ADD CONSTRAINT "inquiry_iterations_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_iterations" ADD CONSTRAINT "inquiry_iterations_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_iterations" ADD CONSTRAINT "inquiry_iterations_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_iterations" ADD CONSTRAINT "inquiry_iterations_created_by_run_id_fkey" FOREIGN KEY ("created_by_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_project_settings" ADD CONSTRAINT "inquiry_project_settings_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_project_settings" ADD CONSTRAINT "inquiry_project_settings_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_question_states" ADD CONSTRAINT "inquiry_question_states_thread_fkey" FOREIGN KEY ("thread_id","space_id") REFERENCES "public"."inquiry_threads"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_lifecycle_events" ADD CONSTRAINT "inquiry_thread_lifecycle_events_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_lifecycle_events" ADD CONSTRAINT "inquiry_thread_lifecycle_events_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_note_links" ADD CONSTRAINT "inquiry_thread_note_links_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_note_links" ADD CONSTRAINT "inquiry_thread_note_links_note_fkey" FOREIGN KEY ("note_object_id","space_id") REFERENCES "public"."notes"("object_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_note_links" ADD CONSTRAINT "inquiry_thread_note_links_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_personal_focus" ADD CONSTRAINT "inquiry_thread_personal_focus_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_personal_focus" ADD CONSTRAINT "inquiry_thread_personal_focus_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_personal_focus" ADD CONSTRAINT "inquiry_thread_personal_focus_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_personal_focus" ADD CONSTRAINT "inquiry_thread_personal_focus_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_relations" ADD CONSTRAINT "inquiry_thread_relations_from_fkey" FOREIGN KEY ("from_thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_relations" ADD CONSTRAINT "inquiry_thread_relations_to_fkey" FOREIGN KEY ("to_thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_relations" ADD CONSTRAINT "inquiry_thread_relations_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_revisions" ADD CONSTRAINT "inquiry_thread_revisions_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_revisions" ADD CONSTRAINT "inquiry_thread_revisions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_statement_revisions" ADD CONSTRAINT "inquiry_thread_statement_revisions_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_statement_revisions" ADD CONSTRAINT "inquiry_thread_statement_revisions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_structure_events" ADD CONSTRAINT "inquiry_thread_structure_events_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_structure_events" ADD CONSTRAINT "inquiry_thread_structure_events_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_work_events" ADD CONSTRAINT "inquiry_thread_work_events_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_work_events" ADD CONSTRAINT "inquiry_thread_work_events_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_threads" ADD CONSTRAINT "inquiry_threads_space_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_threads" ADD CONSTRAINT "inquiry_threads_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_threads" ADD CONSTRAINT "inquiry_threads_primary_parent_fkey" FOREIGN KEY ("primary_parent_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_threads" ADD CONSTRAINT "inquiry_threads_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_threads" ADD CONSTRAINT "inquiry_threads_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_delta_briefs" ADD CONSTRAINT "inquiry_delta_briefs_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_delta_briefs" ADD CONSTRAINT "inquiry_delta_briefs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_delta_briefs" ADD CONSTRAINT "inquiry_delta_briefs_generated_by_run_id_fkey" FOREIGN KEY ("generated_by_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_corpus_item_fkey" FOREIGN KEY ("corpus_item_id","project_id","space_id") REFERENCES "public"."project_corpus_items"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_experiment_interpretation_fkey" FOREIGN KEY ("experiment_interpretation_id","project_id","space_id") REFERENCES "public"."experiment_interpretations"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_created_by_run_id_fkey" FOREIGN KEY ("created_by_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_evidence_signals" ADD CONSTRAINT "inquiry_evidence_signals_candidate_fkey" FOREIGN KEY ("candidate_id","project_id","space_id") REFERENCES "public"."inquiry_signal_candidates"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_review_packets" ADD CONSTRAINT "inquiry_review_packets_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_review_packets" ADD CONSTRAINT "inquiry_review_packets_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_review_packet_fkey" FOREIGN KEY ("review_packet_id","project_id","space_id") REFERENCES "public"."inquiry_review_packets"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_iteration_fkey" FOREIGN KEY ("resulting_iteration_id","project_id","space_id") REFERENCES "public"."inquiry_iterations"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_result_thread_fkey" FOREIGN KEY ("resulting_thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_signal_candidates" ADD CONSTRAINT "inquiry_signal_candidates_merge_target_fkey" FOREIGN KEY ("merged_into_candidate_id","project_id","space_id") REFERENCES "public"."inquiry_signal_candidates"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "job_events" ADD CONSTRAINT "job_events_job_id_fkey" FOREIGN KEY ("job_id") REFERENCES "public"."jobs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "jobs" ADD CONSTRAINT "jobs_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "jobs" ADD CONSTRAINT "jobs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "jobs" ADD CONSTRAINT "jobs_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "jobs" ADD CONSTRAINT "jobs_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "jobs" ADD CONSTRAINT "jobs_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "claim_sources" ADD CONSTRAINT "claim_sources_claim_id_fkey" FOREIGN KEY ("claim_id","space_id") REFERENCES "public"."claims"("object_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "claim_sources" ADD CONSTRAINT "claim_sources_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "claim_sources" ADD CONSTRAINT "claim_sources_source_connection_id_fkey" FOREIGN KEY ("source_connection_id","space_id") REFERENCES "public"."source_connections"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4551,7 +5297,32 @@ ALTER TABLE "space_objects" ADD CONSTRAINT "space_objects_created_by_user_id_fke
 ALTER TABLE "space_objects" ADD CONSTRAINT "space_objects_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "space_objects" ADD CONSTRAINT "space_objects_primary_project_id_fkey" FOREIGN KEY ("primary_project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "space_objects" ADD CONSTRAINT "space_objects_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "space_objects" ADD CONSTRAINT "space_objects_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "space_objects" ADD CONSTRAINT "space_objects_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_supersedes_fkey" FOREIGN KEY ("supersedes_knowledge_item_id","space_id") REFERENCES "public"."knowledge_items"("object_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_review_packet_fkey" FOREIGN KEY ("review_packet_id","space_id") REFERENCES "public"."knowledge_promotion_review_packets"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_decided_by_user_id_fkey" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_candidates" ADD CONSTRAINT "knowledge_promotion_candidates_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_review_packets" ADD CONSTRAINT "knowledge_promotion_review_packets_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_review_packets" ADD CONSTRAINT "knowledge_promotion_review_packets_space_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_promotion_review_packets" ADD CONSTRAINT "knowledge_promotion_review_packets_opened_by_fkey" FOREIGN KEY ("opened_by_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_revalidation_outcomes" ADD CONSTRAINT "knowledge_revalidation_outcomes_item_fkey" FOREIGN KEY ("knowledge_item_id","space_id") REFERENCES "public"."knowledge_items"("object_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_revalidation_outcomes" ADD CONSTRAINT "knowledge_revalidation_outcomes_event_fkey" FOREIGN KEY ("event_id","space_id") REFERENCES "public"."domain_change_outbox"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_revalidation_outcomes" ADD CONSTRAINT "knowledge_revalidation_outcomes_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "knowledge_revalidation_outcomes" ADD CONSTRAINT "knowledge_revalidation_outcomes_candidate_fkey" FOREIGN KEY ("resulting_candidate_id","space_id") REFERENCES "public"."knowledge_promotion_candidates"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_item_mastery" ADD CONSTRAINT "learning_item_mastery_item_fkey" FOREIGN KEY ("learning_item_id","space_id") REFERENCES "public"."learning_items"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_item_mastery" ADD CONSTRAINT "learning_item_mastery_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_item_mastery" ADD CONSTRAINT "learning_item_mastery_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_items" ADD CONSTRAINT "learning_items_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_items" ADD CONSTRAINT "learning_items_objective_fkey" FOREIGN KEY ("objective_id","space_id") REFERENCES "public"."learning_objectives"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_items" ADD CONSTRAINT "learning_items_knowledge_item_fkey" FOREIGN KEY ("knowledge_item_id","space_id") REFERENCES "public"."knowledge_items"("object_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_items" ADD CONSTRAINT "learning_items_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_items" ADD CONSTRAINT "learning_items_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_objectives" ADD CONSTRAINT "learning_objectives_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_objectives" ADD CONSTRAINT "learning_objectives_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "learning_objectives" ADD CONSTRAINT "learning_objectives_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_access_logs" ADD CONSTRAINT "memory_access_logs_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_access_logs" ADD CONSTRAINT "memory_access_logs_memory_id_fkey" FOREIGN KEY ("memory_id") REFERENCES "public"."memory_entries"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_access_logs" ADD CONSTRAINT "memory_access_logs_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4566,7 +5337,7 @@ ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_created_from_proposa
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_subject_user_id_fkey" FOREIGN KEY ("subject_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_maintenance_jobs" ADD CONSTRAINT "memory_maintenance_jobs_last_packet_proposal_id_fkey" FOREIGN KEY ("last_packet_proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_maintenance_jobs" ADD CONSTRAINT "memory_maintenance_jobs_last_report_artifact_id_fkey" FOREIGN KEY ("last_report_artifact_id") REFERENCES "public"."artifacts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_maintenance_jobs" ADD CONSTRAINT "memory_maintenance_jobs_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4606,7 +5377,7 @@ ALTER TABLE "plan_versions" ADD CONSTRAINT "plan_versions_created_by_agent_id_fk
 ALTER TABLE "plan_versions" ADD CONSTRAINT "plan_versions_planning_run_space_fkey" FOREIGN KEY ("planning_run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plan_versions" ADD CONSTRAINT "plan_versions_reference_workflow_version_fkey" FOREIGN KEY ("reference_workflow_version_id") REFERENCES "public"."evolvable_asset_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plans" ADD CONSTRAINT "plans_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "plans" ADD CONSTRAINT "plans_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "plans" ADD CONSTRAINT "plans_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plans" ADD CONSTRAINT "plans_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plans" ADD CONSTRAINT "plans_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plans" ADD CONSTRAINT "plans_source_task_space_fkey" FOREIGN KEY ("source_task_id","space_id") REFERENCES "public"."tasks"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4630,25 +5401,6 @@ ALTER TABLE "project_corpus_items" ADD CONSTRAINT "project_corpus_items_source_c
 ALTER TABLE "project_corpus_items" ADD CONSTRAINT "project_corpus_items_source_decision_id_fkey" FOREIGN KEY ("source_decision_id","space_id") REFERENCES "public"."source_post_processing_item_decisions"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_corpus_items" ADD CONSTRAINT "project_corpus_items_source_item_id_fkey" FOREIGN KEY ("source_item_id","space_id") REFERENCES "public"."source_items"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_corpus_items" ADD CONSTRAINT "project_corpus_items_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_baseline_run_delete_fkey" FOREIGN KEY ("baseline_run_id") REFERENCES "public"."project_experiment_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_baseline_run_id_fkey" FOREIGN KEY ("baseline_run_id","space_id") REFERENCES "public"."project_experiment_runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_best_run_delete_fkey" FOREIGN KEY ("best_run_id") REFERENCES "public"."project_experiment_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_campaigns" ADD CONSTRAINT "project_experiment_campaigns_best_run_id_fkey" FOREIGN KEY ("best_run_id","space_id") REFERENCES "public"."project_experiment_runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_provenance" ADD CONSTRAINT "project_experiment_provenance_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_provenance" ADD CONSTRAINT "project_experiment_provenance_campaign_delete_fkey" FOREIGN KEY ("campaign_id") REFERENCES "public"."project_experiment_campaigns"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_provenance" ADD CONSTRAINT "project_experiment_provenance_campaign_id_fkey" FOREIGN KEY ("campaign_id","space_id") REFERENCES "public"."project_experiment_campaigns"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_provenance" ADD CONSTRAINT "project_experiment_provenance_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_provenance" ADD CONSTRAINT "project_experiment_provenance_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_runs" ADD CONSTRAINT "project_experiment_runs_campaign_id_fkey" FOREIGN KEY ("campaign_id","space_id") REFERENCES "public"."project_experiment_campaigns"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_runs" ADD CONSTRAINT "project_experiment_runs_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_runs" ADD CONSTRAINT "project_experiment_runs_run_delete_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_runs" ADD CONSTRAINT "project_experiment_runs_run_id_fkey" FOREIGN KEY ("run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_runs" ADD CONSTRAINT "project_experiment_runs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_experiment_runs" ADD CONSTRAINT "project_experiment_runs_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_research_checkpoints" ADD CONSTRAINT "project_research_checkpoints_workflow_id_fkey" FOREIGN KEY ("workflow_id","space_id") REFERENCES "public"."project_research_workflows"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_research_checkpoints" ADD CONSTRAINT "project_research_checkpoints_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_research_checkpoints" ADD CONSTRAINT "project_research_checkpoints_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4729,16 +5481,27 @@ ALTER TABLE "project_operations" ADD CONSTRAINT "project_operations_space_fkey" 
 ALTER TABLE "project_operations" ADD CONSTRAINT "project_operations_user_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_operations" ADD CONSTRAINT "project_operations_run_fkey" FOREIGN KEY ("initiating_run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_operations" ADD CONSTRAINT "project_operations_artifact_fkey" FOREIGN KEY ("plan_artifact_id","space_id") REFERENCES "public"."artifacts"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_operations" ADD CONSTRAINT "project_operations_current_execution_fkey" FOREIGN KEY ("current_execution_id","space_id") REFERENCES "public"."workflow_executions"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_attention_user_states" ADD CONSTRAINT "project_attention_user_states_space_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_attention_user_states" ADD CONSTRAINT "project_attention_user_states_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_attention_user_states" ADD CONSTRAINT "project_attention_user_states_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_brief_versions" ADD CONSTRAINT "project_brief_versions_space_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_brief_versions" ADD CONSTRAINT "project_brief_versions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_brief_versions" ADD CONSTRAINT "project_brief_versions_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_members" ADD CONSTRAINT "project_members_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_members" ADD CONSTRAINT "project_members_space_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_members" ADD CONSTRAINT "project_members_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_members" ADD CONSTRAINT "project_members_space_membership_fkey" FOREIGN KEY ("space_id","user_id") REFERENCES "public"."space_memberships"("space_id","user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_mode_transitions" ADD CONSTRAINT "project_mode_transitions_space_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_mode_transitions" ADD CONSTRAINT "project_mode_transitions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_mode_transitions" ADD CONSTRAINT "project_mode_transitions_confirmed_by_user_id_fkey" FOREIGN KEY ("confirmed_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_public_summaries" ADD CONSTRAINT "project_public_summaries_generated_by_run_id_fkey" FOREIGN KEY ("generated_by_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_public_summaries" ADD CONSTRAINT "project_public_summaries_space_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_public_summaries" ADD CONSTRAINT "project_public_summaries_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_public_summaries" ADD CONSTRAINT "project_public_summaries_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "projects" ADD CONSTRAINT "projects_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "projects" ADD CONSTRAINT "projects_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "projects" ADD CONSTRAINT "projects_active_brief_version_fkey" FOREIGN KEY ("active_brief_version_id","id","space_id") REFERENCES "public"."project_brief_versions"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_approver_user_id_fkey" FOREIGN KEY ("approver_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_grant_id_fkey" FOREIGN KEY ("grant_id") REFERENCES "public"."personal_memory_grants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_action_grant_id_fkey" FOREIGN KEY ("action_grant_id") REFERENCES "public"."action_approval_grants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4752,7 +5515,7 @@ ALTER TABLE "proposals" ADD CONSTRAINT "proposals_created_by_user_id_fkey" FOREI
 ALTER TABLE "proposals" ADD CONSTRAINT "proposals_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposals" ADD CONSTRAINT "proposals_reviewed_by_fkey" FOREIGN KEY ("reviewed_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposals" ADD CONSTRAINT "proposals_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "proposals" ADD CONSTRAINT "proposals_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "proposals" ADD CONSTRAINT "proposals_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "credentials" ADD CONSTRAINT "credentials_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "credentials" ADD CONSTRAINT "credentials_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "model_provider_credentials" ADD CONSTRAINT "model_provider_credentials_credential_id_fkey" FOREIGN KEY ("credential_id") REFERENCES "public"."credentials"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4791,6 +5554,14 @@ ALTER TABLE "relation_source_links" ADD CONSTRAINT "relation_source_links_source
 ALTER TABLE "relation_source_links" ADD CONSTRAINT "relation_source_links_evidence_id_fkey" FOREIGN KEY ("evidence_id") REFERENCES "public"."extracted_evidence"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "route_decisions" ADD CONSTRAINT "route_decisions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "route_decisions" ADD CONSTRAINT "route_decisions_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_members" ADD CONSTRAINT "room_agent_members_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_members" ADD CONSTRAINT "room_agent_members_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_user_members" ADD CONSTRAINT "room_user_members_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_user_members" ADD CONSTRAINT "room_user_members_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_project_folder_scope_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_project_scope_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retrieval_aliases" ADD CONSTRAINT "retrieval_aliases_retrieval_object_id_fkey" FOREIGN KEY ("retrieval_object_id") REFERENCES "public"."retrieval_objects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retrieval_aliases" ADD CONSTRAINT "retrieval_aliases_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retrieval_chunks" ADD CONSTRAINT "retrieval_chunks_retrieval_object_id_fkey" FOREIGN KEY ("retrieval_object_id") REFERENCES "public"."retrieval_objects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -4811,7 +5582,7 @@ ALTER TABLE "run_events" ADD CONSTRAINT "run_events_proposal_id_fkey" FOREIGN KE
 ALTER TABLE "run_events" ADD CONSTRAINT "run_events_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_events" ADD CONSTRAINT "run_events_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_events" ADD CONSTRAINT "run_events_step_id_fkey" FOREIGN KEY ("step_id") REFERENCES "public"."run_steps"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_events" ADD CONSTRAINT "run_events_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_events" ADD CONSTRAINT "run_events_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_execution_locks" ADD CONSTRAINT "fk_run_execution_locks_job_id_jobs" FOREIGN KEY ("job_id") REFERENCES "public"."jobs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_execution_locks" ADD CONSTRAINT "run_execution_locks_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_finalizations" ADD CONSTRAINT "run_finalizations_run_evaluation_id_fkey" FOREIGN KEY ("run_evaluation_id") REFERENCES "public"."run_evaluations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4826,7 +5597,7 @@ ALTER TABLE "run_steps" ADD CONSTRAINT "run_steps_proposal_id_fkey" FOREIGN KEY 
 ALTER TABLE "run_steps" ADD CONSTRAINT "run_steps_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_steps" ADD CONSTRAINT "run_steps_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_steps" ADD CONSTRAINT "run_steps_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "run_steps" ADD CONSTRAINT "run_steps_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_steps" ADD CONSTRAINT "run_steps_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_supervisor_decisions" ADD CONSTRAINT "run_supervisor_decisions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_supervisor_decisions" ADD CONSTRAINT "run_supervisor_decisions_run_space_fkey" FOREIGN KEY ("run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_supervisor_decisions" ADD CONSTRAINT "run_supervisor_decisions_attempt_space_fkey" FOREIGN KEY ("attempt_id","space_id") REFERENCES "public"."run_attempts"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -4834,7 +5605,6 @@ ALTER TABLE "runs" ADD CONSTRAINT "runs_workflow_version_fkey" FOREIGN KEY ("wor
 ALTER TABLE "runs" ADD CONSTRAINT "runs_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_project_id_projects" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_working_dir_id" FOREIGN KEY ("working_dir_id") REFERENCES "public"."working_dirs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_version_id_fkey" FOREIGN KEY ("agent_version_id","agent_id","space_id") REFERENCES "public"."agent_versions"("id","agent_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_context_snapshot_id_fkey" FOREIGN KEY ("context_snapshot_id") REFERENCES "public"."context_snapshots"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4846,15 +5616,15 @@ ALTER TABLE "runs" ADD CONSTRAINT "runs_selected_runtime_profile_id_fkey" FOREIG
 ALTER TABLE "runs" ADD CONSTRAINT "runs_requested_runtime_profile_id_fkey" FOREIGN KEY ("requested_runtime_profile_id") REFERENCES "public"."agent_runtime_profiles"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_parent_run_id_fkey" FOREIGN KEY ("parent_run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_root_run_id_fkey" FOREIGN KEY ("root_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runs" ADD CONSTRAINT "runs_run_group_id_fkey" FOREIGN KEY ("run_group_id") REFERENCES "public"."agent_run_groups"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runs" ADD CONSTRAINT "runs_run_group_id_fkey" FOREIGN KEY ("run_group_id") REFERENCES "public"."agent_run_groups"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runs" ADD CONSTRAINT "runs_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runs" ADD CONSTRAINT "runs_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_delegation_same_space" FOREIGN KEY ("delegation_id","space_id") REFERENCES "public"."run_delegations"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_instructed_by_agent_same_space" FOREIGN KEY ("instructed_by_agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_parent_run_same_space" FOREIGN KEY ("parent_run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_root_run_same_space" FOREIGN KEY ("root_run_id","space_id") REFERENCES "public"."runs"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_run_group_same_space" FOREIGN KEY ("run_group_id","space_id") REFERENCES "public"."agent_run_groups"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runs" ADD CONSTRAINT "runs_run_group_scope_fkey" FOREIGN KEY ("run_group_id","space_id","session_id","project_id") REFERENCES "public"."agent_run_groups"("id","space_id","session_id","project_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_evaluations" ADD CONSTRAINT "task_evaluations_evaluator_agent_id_fkey" FOREIGN KEY ("evaluator_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_evaluations" ADD CONSTRAINT "task_evaluations_evaluator_user_id_fkey" FOREIGN KEY ("evaluator_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_evaluations" ADD CONSTRAINT "task_evaluations_run_evaluation_id_fkey" FOREIGN KEY ("run_evaluation_id") REFERENCES "public"."run_evaluations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -4868,24 +5638,32 @@ ALTER TABLE "verification_results" ADD CONSTRAINT "verification_results_run_id_f
 ALTER TABLE "verification_results" ADD CONSTRAINT "verification_results_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "space_runtime_tool_policies" ADD CONSTRAINT "space_runtime_tool_policies_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "space_runtime_tool_policies" ADD CONSTRAINT "space_runtime_tool_policies_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scheduler_tasks" ADD CONSTRAINT "scheduler_tasks_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scheduler_tasks" ADD CONSTRAINT "scheduler_tasks_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "messages" ADD CONSTRAINT "messages_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_sender_agent_id_fkey" FOREIGN KEY ("sender_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_sender_agent_scope_fkey" FOREIGN KEY ("sender_agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session_conversation_backends" ADD CONSTRAINT "session_conversation_backends_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session_conversation_backends" ADD CONSTRAINT "session_conversation_backends_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session_conversation_backends" ADD CONSTRAINT "session_conversation_backends_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session_conversation_backends" ADD CONSTRAINT "session_conversation_backends_runtime_scope_fkey" FOREIGN KEY ("runtime_profile_id","space_id","agent_id") REFERENCES "public"."agent_runtime_profiles"("id","space_id","agent_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session_conversation_backends" ADD CONSTRAINT "session_conversation_backends_credential_owner_fkey" FOREIGN KEY ("credential_profile_id","user_id") REFERENCES "public"."cli_credential_profiles"("id","owner_user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session_summaries" ADD CONSTRAINT "fk_session_summaries_source_first_message_id_messages" FOREIGN KEY ("source_first_message_id") REFERENCES "public"."messages"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session_summaries" ADD CONSTRAINT "fk_session_summaries_source_last_message_id_messages" FOREIGN KEY ("source_last_message_id") REFERENCES "public"."messages"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session_summaries" ADD CONSTRAINT "session_summaries_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session_summaries" ADD CONSTRAINT "session_summaries_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session_summaries" ADD CONSTRAINT "session_summaries_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sessions" ADD CONSTRAINT "sessions_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sessions" ADD CONSTRAINT "sessions_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_room_scope_fkey" FOREIGN KEY ("room_id","space_id","project_id") REFERENCES "public"."rooms"("id","space_id","project_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "settings" ADD CONSTRAINT "settings_updated_by_user_id_fkey" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_publication_imports" ADD CONSTRAINT "content_publication_imports_publication_id_fkey" FOREIGN KEY ("publication_id") REFERENCES "public"."content_publications"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_publication_imports" ADD CONSTRAINT "content_publication_imports_target_fkey" FOREIGN KEY ("publication_id","target_space_id") REFERENCES "public"."content_publication_targets"("publication_id","target_space_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -4997,7 +5775,7 @@ ALTER TABLE "board_columns" ADD CONSTRAINT "board_columns_space_id_fkey" FOREIGN
 ALTER TABLE "boards" ADD CONSTRAINT "boards_created_by_agent_id_fkey" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "boards" ADD CONSTRAINT "boards_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "boards" ADD CONSTRAINT "boards_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "boards" ADD CONSTRAINT "boards_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "boards" ADD CONSTRAINT "boards_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "boards" ADD CONSTRAINT "boards_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "boards" ADD CONSTRAINT "boards_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_artifacts" ADD CONSTRAINT "task_artifacts_artifact_id_fkey" FOREIGN KEY ("artifact_id") REFERENCES "public"."artifacts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -5025,11 +5803,11 @@ ALTER TABLE "tasks" ADD CONSTRAINT "tasks_source_artifact_id_fkey" FOREIGN KEY (
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_source_proposal_id_fkey" FOREIGN KEY ("source_proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_source_run_id_fkey" FOREIGN KEY ("source_run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "tasks" ADD CONSTRAINT "tasks_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tasks" ADD CONSTRAINT "tasks_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_project_id_delete_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "validation_recipes" ADD CONSTRAINT "validation_recipes_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "validation_recipes" ADD CONSTRAINT "validation_recipes_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "validation_recipes" ADD CONSTRAINT "validation_recipes_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cli_usage_import_cursors" ADD CONSTRAINT "cli_usage_import_cursors_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cli_usage_import_cursors" ADD CONSTRAINT "cli_usage_import_cursors_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cli_usage_import_cursors" ADD CONSTRAINT "cli_usage_import_cursors_credential_profile_id_fkey" FOREIGN KEY ("credential_profile_id") REFERENCES "public"."cli_credential_profiles"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -5045,23 +5823,17 @@ ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_parent_run_i
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_workspace_id_fkey" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_project_folder_id_fkey" FOREIGN KEY ("project_folder_id") REFERENCES "public"."project_folders"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_import_batch_id_fkey" FOREIGN KEY ("import_batch_id") REFERENCES "public"."usage_import_batches"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_pricing_rule_id_fkey" FOREIGN KEY ("pricing_rule_id") REFERENCES "public"."model_pricing_rules"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_target_space_id_fkey" FOREIGN KEY ("target_space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_workspaces" ADD CONSTRAINT "project_workspaces_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_workspaces" ADD CONSTRAINT "project_workspaces_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "project_workspaces" ADD CONSTRAINT "project_workspaces_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "working_dirs" ADD CONSTRAINT "working_dirs_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "working_dirs" ADD CONSTRAINT "working_dirs_session_id_fkey" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "working_dirs" ADD CONSTRAINT "working_dirs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_profiles" ADD CONSTRAINT "workspace_profiles_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_profiles" ADD CONSTRAINT "workspace_profiles_validation_recipe_id_fkey" FOREIGN KEY ("validation_recipe_id") REFERENCES "public"."validation_recipes"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_profiles" ADD CONSTRAINT "workspace_profiles_workspace_id_fkey" FOREIGN KEY ("workspace_id","space_id") REFERENCES "public"."workspaces"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspaces" ADD CONSTRAINT "workspaces_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspaces" ADD CONSTRAINT "workspaces_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspaces" ADD CONSTRAINT "workspaces_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_validation_recipe_id_fkey" FOREIGN KEY ("validation_recipe_id") REFERENCES "public"."validation_recipes"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "ix_academic_papers_space_id" ON "academic_papers" USING btree ("space_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_academic_papers_space_doi" ON "academic_papers" USING btree ("space_id","doi") WHERE (doi IS NOT NULL);--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_academic_papers_space_arxiv_id" ON "academic_papers" USING btree ("space_id","arxiv_id") WHERE (arxiv_id IS NOT NULL);--> statement-breakpoint
@@ -5080,18 +5852,20 @@ CREATE INDEX "ix_activity_records_space_id" ON "activity_records" USING btree ("
 CREATE INDEX "ix_activity_records_status" ON "activity_records" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_activity_records_subject_user_id" ON "activity_records" USING btree ("subject_user_id");--> statement-breakpoint
 CREATE INDEX "ix_activity_records_user_id" ON "activity_records" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "ix_activity_records_workspace_id" ON "activity_records" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_activity_records_project_folder_id" ON "activity_records" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_activity_records_space_aggregate_key" ON "activity_records" USING btree ("space_id","aggregate_key") WHERE (aggregate_key IS NOT NULL);--> statement-breakpoint
 CREATE INDEX "ix_action_approval_grants_space_agent_action" ON "action_approval_grants" USING btree ("space_id","agent_id","action_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_action_approval_grants_active_scope" ON "action_approval_grants" USING btree ("space_id","agent_id","action_id",coalesce("project_id", ''),coalesce("resource_kind", ''),coalesce("resource_id", '')) WHERE status = 'active';--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_action_approval_grants_active_scope" ON "action_approval_grants" USING btree ("space_id","agent_id","action_id",coalesce("target_run_id", ''),coalesce("project_id", ''),coalesce("resource_kind", ''),coalesce("resource_id", '')) WHERE status = 'active';--> statement-breakpoint
 CREATE INDEX "ix_agent_run_group_members_agent" ON "agent_run_group_members" USING btree ("space_id","agent_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_group_members_group" ON "agent_run_group_members" USING btree ("space_id","group_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_groups_manager_user_updated" ON "agent_run_groups" USING btree ("space_id","manager_user_id","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_groups_root_run" ON "agent_run_groups" USING btree ("space_id","root_run_id");--> statement-breakpoint
+CREATE INDEX "ix_agent_run_groups_room_session" ON "agent_run_groups" USING btree ("space_id","room_id","session_id","created_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_groups_status_updated" ON "agent_run_groups" USING btree ("space_id","status","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_messages_group_created" ON "agent_run_messages" USING btree ("space_id","group_id","created_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_messages_run_created" ON "agent_run_messages" USING btree ("space_id","run_id","created_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_messages_sender_agent_created" ON "agent_run_messages" USING btree ("space_id","sender_agent_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_run_delegations_parent_tool_call" ON "run_delegations" USING btree ("space_id","parent_run_id","tool_call_id") WHERE (tool_call_id IS NOT NULL);--> statement-breakpoint
 CREATE INDEX "ix_run_delegations_child_run" ON "run_delegations" USING btree ("space_id","child_run_id");--> statement-breakpoint
 CREATE INDEX "ix_run_delegations_group_created" ON "run_delegations" USING btree ("space_id","group_id","created_at");--> statement-breakpoint
 CREATE INDEX "ix_run_delegations_parent_run" ON "run_delegations" USING btree ("space_id","parent_run_id");--> statement-breakpoint
@@ -5105,7 +5879,6 @@ CREATE INDEX "ix_actors_space_id" ON "actors" USING btree ("space_id");--> state
 CREATE INDEX "ix_actors_status" ON "actors" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_actors_user_id" ON "actors" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_runtime_profiles_agent_id" ON "agent_runtime_profiles" USING btree ("agent_id");--> statement-breakpoint
-CREATE INDEX "ix_agent_runtime_profiles_credential_profile_id" ON "agent_runtime_profiles" USING btree ("credential_profile_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_runtime_profiles_model_provider_id" ON "agent_runtime_profiles" USING btree ("model_provider_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_runtime_profiles_space_id" ON "agent_runtime_profiles" USING btree ("space_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_agent_runtime_profiles_default_per_agent" ON "agent_runtime_profiles" USING btree ("agent_id") WHERE (is_default = true);--> statement-breakpoint
@@ -5137,11 +5910,13 @@ CREATE INDEX "ix_artifacts_project_id" ON "artifacts" USING btree ("project_id")
 CREATE INDEX "ix_artifacts_proposal_id" ON "artifacts" USING btree ("proposal_id");--> statement-breakpoint
 CREATE INDEX "ix_artifacts_run_id" ON "artifacts" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_artifacts_space_id" ON "artifacts" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_artifacts_workspace_id" ON "artifacts" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_artifacts_project_folder_id" ON "artifacts" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_auth_accounts_user_id" ON "auth_accounts" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "ix_user_sessions_user_id" ON "user_sessions" USING btree ("user_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "ix_users_email" ON "users" USING btree ("email");--> statement-breakpoint
 CREATE INDEX "ix_users_status" ON "users" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "ix_authorization_requests_run" ON "authorization_requests" USING btree ("space_id","run_id","requested_at");--> statement-breakpoint
+CREATE INDEX "ix_authorization_requests_reviewer" ON "authorization_requests" USING btree ("space_id","status","instructed_by_user_id");--> statement-breakpoint
 CREATE INDEX "ix_automation_credential_grants_automation_id" ON "automation_credential_grants" USING btree ("automation_id");--> statement-breakpoint
 CREATE INDEX "ix_automation_credential_grants_granted_by_user_id" ON "automation_credential_grants" USING btree ("granted_by_user_id");--> statement-breakpoint
 CREATE INDEX "ix_automation_credential_grants_lookup" ON "automation_credential_grants" USING btree ("space_id","automation_id","status");--> statement-breakpoint
@@ -5157,7 +5932,7 @@ CREATE INDEX "ix_automations_owner_user_id" ON "automations" USING btree ("owner
 CREATE INDEX "ix_automations_space_id" ON "automations" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_automations_space_project" ON "automations" USING btree ("space_id","project_id");--> statement-breakpoint
 CREATE INDEX "ix_automations_status" ON "automations" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "ix_automations_workspace_id" ON "automations" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_automations_project_folder_id" ON "automations" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_workflow_execution_dependencies_node" ON "workflow_execution_dependencies" USING btree ("space_id","node_id");--> statement-breakpoint
 CREATE INDEX "ix_workflow_execution_dependencies_depends_on" ON "workflow_execution_dependencies" USING btree ("space_id","depends_on_node_id");--> statement-breakpoint
 CREATE INDEX "ix_workflow_execution_node_runs_node" ON "workflow_execution_node_runs" USING btree ("space_id","node_id");--> statement-breakpoint
@@ -5167,6 +5942,7 @@ CREATE INDEX "ix_workflow_execution_nodes_capability" ON "workflow_execution_nod
 CREATE INDEX "ix_workflow_executions_automation_created" ON "workflow_executions" USING btree ("space_id","automation_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_workflow_executions_status" ON "workflow_executions" USING btree ("space_id","status");--> statement-breakpoint
 CREATE INDEX "ix_workflow_executions_root_run" ON "workflow_executions" USING btree ("space_id","root_run_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_workflow_executions_active_research_operation" ON "workflow_executions" USING btree ("research_operation_id") WHERE research_operation_id IS NOT NULL AND status IN ('queued', 'running');--> statement-breakpoint
 CREATE INDEX "ix_runtime_conformance_adapter_status" ON "runtime_conformance_results" USING btree ("runtime_adapter_type","status");--> statement-breakpoint
 CREATE INDEX "ix_runtime_conformance_updated_at" ON "runtime_conformance_results" USING btree ("updated_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_capability_enablements_agent_id" ON "capability_enablements" USING btree ("agent_id");--> statement-breakpoint
@@ -5239,6 +6015,15 @@ CREATE INDEX "ix_context_snapshots_session_id" ON "context_snapshots" USING btre
 CREATE INDEX "ix_context_snapshots_space_id" ON "context_snapshots" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_content_access_grants_grantee" ON "content_access_grants" USING btree ("space_id","grantee_user_id","revoked_at");--> statement-breakpoint
 CREATE INDEX "ix_content_access_grants_resource" ON "content_access_grants" USING btree ("space_id","resource_type","resource_id");--> statement-breakpoint
+CREATE INDEX "ix_decision_case_sources_case" ON "decision_case_sources" USING btree ("decision_case_id");--> statement-breakpoint
+CREATE INDEX "ix_decision_cases_project_status" ON "decision_cases" USING btree ("project_id","status");--> statement-breakpoint
+CREATE INDEX "ix_decision_cases_decided_option_id" ON "decision_cases" USING btree ("decided_option_id");--> statement-breakpoint
+CREATE INDEX "ix_decision_commitments_case" ON "decision_commitments" USING btree ("decision_case_id");--> statement-breakpoint
+CREATE INDEX "ix_decision_criteria_case" ON "decision_criteria" USING btree ("decision_case_id");--> statement-breakpoint
+CREATE INDEX "ix_decision_option_scores_case" ON "decision_option_scores" USING btree ("decision_case_id");--> statement-breakpoint
+CREATE INDEX "ix_decision_options_case" ON "decision_options" USING btree ("decision_case_id");--> statement-breakpoint
+CREATE INDEX "ix_domain_change_outbox_pending" ON "domain_change_outbox" USING btree ("space_id","claim_expires_at","occurred_at") WHERE processed_at IS NULL;--> statement-breakpoint
+CREATE INDEX "ix_domain_change_outbox_source" ON "domain_change_outbox" USING btree ("space_id","source_kind","source_id");--> statement-breakpoint
 CREATE INDEX "ix_evolution_bundle_members_bundle_position" ON "evolution_bundle_members" USING btree ("bundle_id","position");--> statement-breakpoint
 CREATE INDEX "ix_evolution_bundle_members_proposal_id" ON "evolution_bundle_members" USING btree ("proposal_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_evolution_bundle_members_proposal" ON "evolution_bundle_members" USING btree ("proposal_id");--> statement-breakpoint
@@ -5290,8 +6075,47 @@ CREATE INDEX "ix_evolvable_assets_asset_type" ON "evolvable_assets" USING btree 
 CREATE INDEX "ix_evolvable_assets_current_system_version_id" ON "evolvable_assets" USING btree ("current_system_version_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_evolvable_assets_space_key" ON "evolvable_assets" USING btree ("space_id","asset_key") WHERE (space_id IS NOT NULL);--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_evolvable_assets_system_key" ON "evolvable_assets" USING btree ("asset_key") WHERE (space_id IS NULL);--> statement-breakpoint
+CREATE INDEX "ix_experiment_definitions_project_id" ON "experiment_definitions" USING btree ("space_id","project_id");--> statement-breakpoint
+CREATE INDEX "ix_experiment_definitions_thread_id" ON "experiment_definitions" USING btree ("primary_hypothesis_thread_id");--> statement-breakpoint
+CREATE INDEX "ix_experiment_interpretations_definition_id" ON "experiment_interpretations" USING btree ("space_id","definition_id");--> statement-breakpoint
+CREATE INDEX "ix_experiment_interpretations_project_id" ON "experiment_interpretations" USING btree ("space_id","project_id");--> statement-breakpoint
+CREATE INDEX "ix_experiment_observations_run_id" ON "experiment_observations" USING btree ("space_id","run_id");--> statement-breakpoint
+CREATE INDEX "ix_experiment_runs_version_id" ON "experiment_runs" USING btree ("space_id","version_id");--> statement-breakpoint
+CREATE INDEX "ix_experiment_versions_definition_id" ON "experiment_versions" USING btree ("space_id","definition_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_experiment_versions_definition_version" ON "experiment_versions" USING btree ("definition_id","version");--> statement-breakpoint
 CREATE INDEX "ix_graph_view_states_scope_key" ON "graph_view_states" USING btree ("scope_key");--> statement-breakpoint
 CREATE INDEX "ix_graph_view_states_space_user" ON "graph_view_states" USING btree ("space_id","user_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_iterations_thread_id" ON "inquiry_iterations" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_iterations_project_id" ON "inquiry_iterations" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_lifecycle_events_thread_id" ON "inquiry_thread_lifecycle_events" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_note_links_thread_id" ON "inquiry_thread_note_links" USING btree ("thread_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_thread_note_links_thread_note" ON "inquiry_thread_note_links" USING btree ("thread_id","note_object_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_thread_personal_focus_scope" ON "inquiry_thread_personal_focus" USING btree ("user_id","thread_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_personal_focus_project_id" ON "inquiry_thread_personal_focus" USING btree ("project_id","user_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_relations_from" ON "inquiry_thread_relations" USING btree ("from_thread_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_relations_to" ON "inquiry_thread_relations" USING btree ("to_thread_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_thread_relations_edge" ON "inquiry_thread_relations" USING btree ("from_thread_id","to_thread_id","relation_kind");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_revisions_thread_id" ON "inquiry_thread_revisions" USING btree ("thread_id","version" DESC NULLS LAST);--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_thread_revisions_thread_version" ON "inquiry_thread_revisions" USING btree ("thread_id","version");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_statement_revisions_thread_id" ON "inquiry_thread_statement_revisions" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_structure_events_thread_id" ON "inquiry_thread_structure_events" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_thread_work_events_thread_id" ON "inquiry_thread_work_events" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_threads_project_id" ON "inquiry_threads" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_threads_space_id" ON "inquiry_threads" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_threads_primary_parent_id" ON "inquiry_threads" USING btree ("primary_parent_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_threads_attention_state" ON "inquiry_threads" USING btree ("project_id","attention_state");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_delta_briefs_project_id" ON "inquiry_delta_briefs" USING btree ("project_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_evidence_signals_thread_id" ON "inquiry_evidence_signals" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_inquiry_evidence_signals_project_id" ON "inquiry_evidence_signals" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_evidence_signals_candidate_id" ON "inquiry_evidence_signals" USING btree ("candidate_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_evidence_signals_corpus_item_id" ON "inquiry_evidence_signals" USING btree ("corpus_item_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_evidence_signals_dedupe" ON "inquiry_evidence_signals" USING btree ("project_id","dedupe_key");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_evidence_signals_producer_key" ON "inquiry_evidence_signals" USING btree ("project_id","producer_idempotency_key") WHERE producer_idempotency_key IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "ix_inquiry_review_packets_project_status" ON "inquiry_review_packets" USING btree ("project_id","status");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_signal_candidates_project_status" ON "inquiry_signal_candidates" USING btree ("project_id","status");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_signal_candidates_thread_id" ON "inquiry_signal_candidates" USING btree ("thread_id");--> statement-breakpoint
+CREATE INDEX "ix_inquiry_signal_candidates_review_packet_id" ON "inquiry_signal_candidates" USING btree ("review_packet_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_inquiry_signal_candidates_open_semantic" ON "inquiry_signal_candidates" USING btree ("thread_id","candidate_kind","semantic_key") WHERE (status)::text = 'pending'::text;--> statement-breakpoint
 CREATE INDEX "ix_job_events_job_id" ON "job_events" USING btree ("job_id");--> statement-breakpoint
 CREATE INDEX "ix_jobs_agent_id" ON "jobs" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "ix_jobs_claim_pending" ON "jobs" USING btree ("priority" DESC NULLS FIRST,"scheduled_at") WHERE ((status)::text = 'pending'::text);--> statement-breakpoint
@@ -5300,7 +6124,8 @@ CREATE INDEX "ix_jobs_space_id" ON "jobs" USING btree ("space_id");--> statement
 CREATE INDEX "ix_jobs_status" ON "jobs" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_jobs_type_claim_pending" ON "jobs" USING btree ("job_type","priority" DESC NULLS FIRST,"scheduled_at") WHERE ((status)::text = 'pending'::text);--> statement-breakpoint
 CREATE INDEX "ix_jobs_user_id" ON "jobs" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "ix_jobs_workspace_id" ON "jobs" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_jobs_project_folder_id" ON "jobs" USING btree ("project_folder_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_jobs_session_condense_source_run" ON "jobs" USING btree ("space_id",(payload_json->>'source_run_id')) WHERE job_type = 'session_condense' AND payload_json->>'source_run_id' IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "ix_claim_sources_claim_id" ON "claim_sources" USING btree ("claim_id");--> statement-breakpoint
 CREATE INDEX "ix_claim_sources_source_connection_id" ON "claim_sources" USING btree ("source_connection_id");--> statement-breakpoint
 CREATE INDEX "ix_claim_sources_source_object_id" ON "claim_sources" USING btree ("source_object_id");--> statement-breakpoint
@@ -5403,7 +6228,17 @@ CREATE INDEX "ix_space_objects_primary_project_id" ON "space_objects" USING btre
 CREATE INDEX "ix_space_objects_space_type" ON "space_objects" USING btree ("space_id","object_type");--> statement-breakpoint
 CREATE INDEX "ix_space_objects_status" ON "space_objects" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_space_objects_visibility" ON "space_objects" USING btree ("visibility");--> statement-breakpoint
-CREATE INDEX "ix_space_objects_workspace_id" ON "space_objects" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_space_objects_project_folder_id" ON "space_objects" USING btree ("project_folder_id");--> statement-breakpoint
+CREATE INDEX "ix_knowledge_promotion_candidates_space_status" ON "knowledge_promotion_candidates" USING btree ("space_id","status");--> statement-breakpoint
+CREATE INDEX "ix_knowledge_promotion_candidates_supersedes" ON "knowledge_promotion_candidates" USING btree ("supersedes_knowledge_item_id");--> statement-breakpoint
+CREATE INDEX "ix_knowledge_promotion_review_packets_project_status" ON "knowledge_promotion_review_packets" USING btree ("project_id","status");--> statement-breakpoint
+CREATE INDEX "ix_knowledge_revalidation_outcomes_item" ON "knowledge_revalidation_outcomes" USING btree ("space_id","knowledge_item_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_knowledge_revalidation_outcomes_item_event" ON "knowledge_revalidation_outcomes" USING btree ("knowledge_item_id","event_id");--> statement-breakpoint
+CREATE INDEX "ix_learning_item_mastery_user_next_review" ON "learning_item_mastery" USING btree ("user_id","next_review_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_learning_item_mastery_item_user" ON "learning_item_mastery" USING btree ("learning_item_id","user_id");--> statement-breakpoint
+CREATE INDEX "ix_learning_items_space_project" ON "learning_items" USING btree ("space_id","project_id");--> statement-breakpoint
+CREATE INDEX "ix_learning_items_objective_id" ON "learning_items" USING btree ("objective_id");--> statement-breakpoint
+CREATE INDEX "ix_learning_objectives_space_project" ON "learning_objectives" USING btree ("space_id","project_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_access_logs_accessed_at" ON "memory_access_logs" USING btree ("accessed_at");--> statement-breakpoint
 CREATE INDEX "ix_memory_access_logs_agent_id" ON "memory_access_logs" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_access_logs_memory_id" ON "memory_access_logs" USING btree ("memory_id");--> statement-breakpoint
@@ -5425,7 +6260,7 @@ CREATE INDEX "ix_memory_entries_status" ON "memory_entries" USING btree ("status
 CREATE INDEX "ix_memory_entries_subject_user_id" ON "memory_entries" USING btree ("subject_user_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_entries_supersedes_memory_id" ON "memory_entries" USING btree ("supersedes_memory_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_entries_visibility" ON "memory_entries" USING btree ("visibility");--> statement-breakpoint
-CREATE INDEX "ix_memory_entries_workspace_id" ON "memory_entries" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_memory_entries_project_folder_id" ON "memory_entries" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_maintenance_jobs_due" ON "memory_maintenance_jobs" USING btree ("status","run_after","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_memory_maintenance_jobs_owner" ON "memory_maintenance_jobs" USING btree ("space_id","owner_user_id","status","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_memory_relations_created_from_proposal_id" ON "memory_relations" USING btree ("created_from_proposal_id");--> statement-breakpoint
@@ -5453,7 +6288,7 @@ CREATE INDEX "ix_personal_memory_grants_target_space_id" ON "personal_memory_gra
 CREATE UNIQUE INDEX "ix_personal_memory_grants_unique_active_consuming" ON "personal_memory_grants" USING btree ("granting_user_id","target_run_id") WHERE ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('consuming'::character varying)::text]));--> statement-breakpoint
 CREATE INDEX "ix_code_patch_snapshots_expires_at" ON "code_patch_snapshots" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "ix_code_patch_snapshots_proposal_id" ON "code_patch_snapshots" USING btree ("proposal_id");--> statement-breakpoint
-CREATE INDEX "ix_code_patch_snapshots_workspace_id" ON "code_patch_snapshots" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_code_patch_snapshots_project_folder_id" ON "code_patch_snapshots" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "official_plugin_enablements_plugin_space_idx" ON "official_plugin_enablements" USING btree ("plugin_id","space_id") WHERE (space_id IS NOT NULL);--> statement-breakpoint
 CREATE INDEX "official_plugin_enablements_space_idx" ON "official_plugin_enablements" USING btree ("space_id") WHERE (space_id IS NOT NULL);--> statement-breakpoint
 CREATE UNIQUE INDEX "official_plugin_enablements_space_unique" ON "official_plugin_enablements" USING btree ("plugin_id","space_id") WHERE ((space_id IS NOT NULL) AND (user_id IS NULL));--> statement-breakpoint
@@ -5515,13 +6350,6 @@ CREATE INDEX "ix_project_corpus_items_status" ON "project_corpus_items" USING bt
 CREATE UNIQUE INDEX "uq_project_corpus_items_project_evidence" ON "project_corpus_items" USING btree ("space_id","project_id","evidence_id") WHERE evidence_id IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_project_corpus_items_project_object" ON "project_corpus_items" USING btree ("space_id","project_id","object_id") WHERE object_id IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_project_corpus_items_project_source_item" ON "project_corpus_items" USING btree ("space_id","project_id","source_item_id") WHERE source_item_id IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "ix_project_experiment_campaigns_space_id" ON "project_experiment_campaigns" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_project_experiment_campaigns_project_id" ON "project_experiment_campaigns" USING btree ("space_id","project_id");--> statement-breakpoint
-CREATE INDEX "ix_project_experiment_provenance_space_id" ON "project_experiment_provenance" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_project_experiment_provenance_project_id" ON "project_experiment_provenance" USING btree ("space_id","project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_project_experiment_provenance_project_key" ON "project_experiment_provenance" USING btree ("space_id","project_id","experiment_key");--> statement-breakpoint
-CREATE INDEX "ix_project_experiment_runs_space_id" ON "project_experiment_runs" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_project_experiment_runs_campaign_id" ON "project_experiment_runs" USING btree ("space_id","campaign_id");--> statement-breakpoint
 CREATE INDEX "ix_project_research_checkpoints_space_id" ON "project_research_checkpoints" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_project_research_checkpoints_project_id" ON "project_research_checkpoints" USING btree ("space_id","project_id");--> statement-breakpoint
 CREATE INDEX "ix_project_research_checkpoints_workflow_stage" ON "project_research_checkpoints" USING btree ("space_id","workflow_id","stage_key");--> statement-breakpoint
@@ -5572,9 +6400,16 @@ CREATE INDEX "ix_project_source_item_links_status" ON "project_source_item_links
 CREATE INDEX "ix_project_operation_links_target" ON "project_operation_links" USING btree ("space_id","target_type","target_id");--> statement-breakpoint
 CREATE INDEX "ix_project_operations_project_status" ON "project_operations" USING btree ("project_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_project_operations_active_research_workflow" ON "project_operations" USING btree ("space_id",(progress_json->>'workflow_id')) WHERE kind = 'research' AND status IN ('active', 'waiting_review') AND progress_json->>'workflow_id' IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_project_attention_user_states_scope" ON "project_attention_user_states" USING btree ("user_id","project_id","source_type","source_id");--> statement-breakpoint
+CREATE INDEX "ix_project_attention_user_states_project_id" ON "project_attention_user_states" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_project_brief_versions_project_id" ON "project_brief_versions" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_project_brief_versions_space_id" ON "project_brief_versions" USING btree ("space_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_project_brief_versions_project_version" ON "project_brief_versions" USING btree ("project_id","version");--> statement-breakpoint
 CREATE UNIQUE INDEX "ix_project_members_project_user_unique" ON "project_members" USING btree ("project_id","user_id");--> statement-breakpoint
 CREATE INDEX "ix_project_members_space_id" ON "project_members" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_project_members_user_id" ON "project_members" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "ix_project_mode_transitions_project_id" ON "project_mode_transitions" USING btree ("project_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_project_mode_transitions_space_id" ON "project_mode_transitions" USING btree ("space_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "ix_project_public_summaries_project_unique" ON "project_public_summaries" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "ix_project_public_summaries_review_status" ON "project_public_summaries" USING btree ("review_status");--> statement-breakpoint
 CREATE INDEX "ix_project_public_summaries_space_id" ON "project_public_summaries" USING btree ("space_id");--> statement-breakpoint
@@ -5599,7 +6434,7 @@ CREATE INDEX "ix_proposals_risk_level" ON "proposals" USING btree ("risk_level")
 CREATE INDEX "ix_proposals_space_id" ON "proposals" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_proposals_status" ON "proposals" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_proposals_urgency" ON "proposals" USING btree ("urgency");--> statement-breakpoint
-CREATE INDEX "ix_proposals_workspace_id" ON "proposals" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_proposals_project_folder_id" ON "proposals" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_proposals_run_action_idempotency" ON "proposals" USING btree ("created_by_run_id","proposal_type","action_idempotency_key") WHERE action_idempotency_key IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_proposals_pending_research_query_strategy" ON "proposals" USING btree ("space_id","project_id","proposal_type") WHERE status='pending' AND proposal_type='research_query_strategy_activation';--> statement-breakpoint
 CREATE INDEX "ix_credentials_owner_user_id" ON "credentials" USING btree ("owner_user_id");--> statement-breakpoint
@@ -5631,6 +6466,11 @@ CREATE INDEX "ix_relation_source_links_source_item_id" ON "relation_source_links
 CREATE INDEX "ix_relation_source_links_evidence_id" ON "relation_source_links" USING btree ("evidence_id");--> statement-breakpoint
 CREATE INDEX "ix_route_decisions_space_created" ON "route_decisions" USING btree ("space_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_route_decisions_selected_profile" ON "route_decisions" USING btree ("selected_runtime_profile_id");--> statement-breakpoint
+CREATE INDEX "ix_room_agent_members_agent" ON "room_agent_members" USING btree ("space_id","agent_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_room_agent_members_manager" ON "room_agent_members" USING btree ("room_id") WHERE role = 'manager' AND status = 'active';--> statement-breakpoint
+CREATE INDEX "ix_room_user_members_user" ON "room_user_members" USING btree ("space_id","user_id","status");--> statement-breakpoint
+CREATE INDEX "ix_rooms_project_updated" ON "rooms" USING btree ("space_id","project_id","updated_at");--> statement-breakpoint
+CREATE INDEX "ix_rooms_space_updated" ON "rooms" USING btree ("space_id","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_normalized_alias" ON "retrieval_aliases" USING btree ("normalized_alias");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_object" ON "retrieval_aliases" USING btree ("object_type","object_id");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_space_id" ON "retrieval_aliases" USING btree ("space_id");--> statement-breakpoint
@@ -5674,7 +6514,8 @@ CREATE INDEX "ix_run_events_run_id" ON "run_events" USING btree ("run_id");--> s
 CREATE INDEX "ix_run_events_space_id" ON "run_events" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_run_events_status" ON "run_events" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_run_events_step_id" ON "run_events" USING btree ("step_id");--> statement-breakpoint
-CREATE INDEX "ix_run_events_workspace_id" ON "run_events" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_run_events_project_folder_id" ON "run_events" USING btree ("project_folder_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_run_events_chat_completed" ON "run_events" USING btree ("space_id","run_id") WHERE event_type = 'chat_completed';--> statement-breakpoint
 CREATE INDEX "ix_run_finalizations_finalized_at" ON "run_finalizations" USING btree ("finalized_at");--> statement-breakpoint
 CREATE INDEX "ix_run_finalizations_run_evaluation_id" ON "run_finalizations" USING btree ("run_evaluation_id");--> statement-breakpoint
 CREATE INDEX "ix_run_finalizations_run_id" ON "run_finalizations" USING btree ("run_id");--> statement-breakpoint
@@ -5691,7 +6532,7 @@ CREATE INDEX "ix_run_steps_space_run_index" ON "run_steps" USING btree ("space_i
 CREATE INDEX "ix_run_steps_status" ON "run_steps" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_run_steps_step_type" ON "run_steps" USING btree ("step_type");--> statement-breakpoint
 CREATE INDEX "ix_run_steps_task_id" ON "run_steps" USING btree ("task_id");--> statement-breakpoint
-CREATE INDEX "ix_run_steps_workspace_id" ON "run_steps" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_run_steps_project_folder_id" ON "run_steps" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_run_supervisor_decisions_run" ON "run_supervisor_decisions" USING btree ("space_id","run_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_runs_agent_id" ON "runs" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "ix_runs_agent_version_id" ON "runs" USING btree ("agent_version_id");--> statement-breakpoint
@@ -5715,8 +6556,7 @@ CREATE INDEX "ix_runs_session_id" ON "runs" USING btree ("session_id");--> state
 CREATE INDEX "ix_runs_space_id" ON "runs" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_runs_status" ON "runs" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_runs_trigger_origin" ON "runs" USING btree ("trigger_origin");--> statement-breakpoint
-CREATE INDEX "ix_runs_working_dir_id" ON "runs" USING btree ("working_dir_id");--> statement-breakpoint
-CREATE INDEX "ix_runs_workspace_id" ON "runs" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_runs_project_folder_id" ON "runs" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_task_evaluations_run_evaluation_id" ON "task_evaluations" USING btree ("run_evaluation_id");--> statement-breakpoint
 CREATE INDEX "ix_task_evaluations_run_id" ON "task_evaluations" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_task_evaluations_space_id" ON "task_evaluations" USING btree ("space_id");--> statement-breakpoint
@@ -5733,7 +6573,7 @@ CREATE INDEX "ix_runtime_tool_bindings_capability_id" ON "runtime_tool_bindings"
 CREATE INDEX "ix_runtime_tool_bindings_enabled" ON "runtime_tool_bindings" USING btree ("enabled");--> statement-breakpoint
 CREATE INDEX "ix_runtime_tool_bindings_runtime_adapter_type" ON "runtime_tool_bindings" USING btree ("runtime_adapter_type");--> statement-breakpoint
 CREATE INDEX "ix_runtime_tool_bindings_space_id" ON "runtime_tool_bindings" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_runtime_tool_bindings_workspace_id" ON "runtime_tool_bindings" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_runtime_tool_bindings_project_folder_id" ON "runtime_tool_bindings" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_space_runtime_tool_policies_runtime" ON "space_runtime_tool_policies" USING btree ("runtime");--> statement-breakpoint
 CREATE INDEX "ix_space_runtime_tool_policies_space_id" ON "space_runtime_tool_policies" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_space_runtime_tool_policies_updated_by_user_id" ON "space_runtime_tool_policies" USING btree ("updated_by_user_id");--> statement-breakpoint
@@ -5743,6 +6583,11 @@ CREATE INDEX "ix_scheduler_tasks_user_id" ON "scheduler_tasks" USING btree ("use
 CREATE INDEX "ix_messages_session_id" ON "messages" USING btree ("session_id");--> statement-breakpoint
 CREATE INDEX "ix_messages_space_id" ON "messages" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_messages_user_id" ON "messages" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "ix_messages_sender_agent_id" ON "messages" USING btree ("sender_agent_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_messages_assistant_run" ON "messages" USING btree ("space_id",(metadata_json->>'run_id')) WHERE role = 'assistant' AND metadata_json->>'run_id' IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "ix_session_conversation_backends_space_id" ON "session_conversation_backends" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "ix_session_conversation_backends_runtime_profile_id" ON "session_conversation_backends" USING btree ("runtime_profile_id");--> statement-breakpoint
+CREATE INDEX "ix_session_conversation_backends_credential_profile_id" ON "session_conversation_backends" USING btree ("credential_profile_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "ix_session_summaries_one_active_per_session" ON "session_summaries" USING btree ("session_id") WHERE ((status)::text = 'active'::text);--> statement-breakpoint
 CREATE INDEX "ix_session_summaries_session_id" ON "session_summaries" USING btree ("session_id");--> statement-breakpoint
 CREATE INDEX "ix_session_summaries_session_status" ON "session_summaries" USING btree ("session_id","status");--> statement-breakpoint
@@ -5754,8 +6599,9 @@ CREATE INDEX "ix_sessions_agent_id" ON "sessions" USING btree ("agent_id");--> s
 CREATE INDEX "ix_sessions_space_id" ON "sessions" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_sessions_status" ON "sessions" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_sessions_user_id" ON "sessions" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "ix_sessions_workspace_id" ON "sessions" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_sessions_project_folder_id" ON "sessions" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_sessions_project_id" ON "sessions" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_sessions_room_id" ON "sessions" USING btree ("room_id");--> statement-breakpoint
 CREATE INDEX "ix_settings_key" ON "settings" USING btree ("settings_key");--> statement-breakpoint
 CREATE INDEX "ix_settings_scope" ON "settings" USING btree ("scope_type","scope_id");--> statement-breakpoint
 CREATE INDEX "ix_content_publication_imports_resource" ON "content_publication_imports" USING btree ("target_space_id","imported_resource_type","imported_resource_id");--> statement-breakpoint
@@ -5881,7 +6727,7 @@ CREATE INDEX "ix_board_columns_board_id" ON "board_columns" USING btree ("board_
 CREATE INDEX "ix_board_columns_space_id" ON "board_columns" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_boards_project_id" ON "boards" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "ix_boards_space_id" ON "boards" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_boards_workspace_id" ON "boards" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_boards_project_folder_id" ON "boards" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_task_artifacts_artifact_id" ON "task_artifacts" USING btree ("artifact_id");--> statement-breakpoint
 CREATE INDEX "ix_task_artifacts_run_id" ON "task_artifacts" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_task_artifacts_space_id" ON "task_artifacts" USING btree ("space_id");--> statement-breakpoint
@@ -5899,11 +6745,11 @@ CREATE INDEX "ix_tasks_role" ON "tasks" USING btree ("space_id","task_role");-->
 CREATE INDEX "ix_tasks_owner_user_id" ON "tasks" USING btree ("owner_user_id");--> statement-breakpoint
 CREATE INDEX "ix_tasks_project_id" ON "tasks" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "ix_tasks_space_id" ON "tasks" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_tasks_workspace_id" ON "tasks" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_tasks_project_folder_id" ON "tasks" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_validation_recipes_enabled" ON "validation_recipes" USING btree ("enabled");--> statement-breakpoint
 CREATE INDEX "ix_validation_recipes_space_id" ON "validation_recipes" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_validation_recipes_task_type" ON "validation_recipes" USING btree ("task_type");--> statement-breakpoint
-CREATE INDEX "ix_validation_recipes_workspace_id" ON "validation_recipes" USING btree ("workspace_id");--> statement-breakpoint
+CREATE INDEX "ix_validation_recipes_project_folder_id" ON "validation_recipes" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_cli_usage_import_cursors_scope" ON "cli_usage_import_cursors" USING btree ("instance_id","space_id",COALESCE(user_id, '__none__'::character varying),"runtime",COALESCE(credential_profile_id, '__none__'::character varying),"source_fingerprint");--> statement-breakpoint
 CREATE INDEX "ix_cli_usage_import_cursors_space_runtime" ON "cli_usage_import_cursors" USING btree ("space_id","runtime");--> statement-breakpoint
 CREATE INDEX "ix_cli_usage_import_cursors_credential_profile" ON "cli_usage_import_cursors" USING btree ("credential_profile_id");--> statement-breakpoint
@@ -5924,17 +6770,11 @@ CREATE INDEX "ix_token_usage_events_import_batch_id" ON "token_usage_events" USI
 CREATE INDEX "ix_usage_import_batches_instance_id" ON "usage_import_batches" USING btree ("instance_id");--> statement-breakpoint
 CREATE INDEX "ix_usage_import_batches_target_space_id" ON "usage_import_batches" USING btree ("target_space_id");--> statement-breakpoint
 CREATE INDEX "ix_usage_import_batches_owner_user_id" ON "usage_import_batches" USING btree ("owner_user_id");--> statement-breakpoint
-CREATE INDEX "ix_project_workspaces_project_id" ON "project_workspaces" USING btree ("project_id");--> statement-breakpoint
-CREATE INDEX "ix_project_workspaces_workspace_id" ON "project_workspaces" USING btree ("workspace_id");--> statement-breakpoint
-CREATE INDEX "ix_working_dirs_project_id" ON "working_dirs" USING btree ("project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "ix_working_dirs_project_uniq" ON "working_dirs" USING btree ("project_id") WHERE (project_id IS NOT NULL);--> statement-breakpoint
-CREATE INDEX "ix_working_dirs_session_id" ON "working_dirs" USING btree ("session_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "ix_working_dirs_session_uniq" ON "working_dirs" USING btree ("session_id") WHERE (session_id IS NOT NULL);--> statement-breakpoint
-CREATE INDEX "ix_working_dirs_space_id" ON "working_dirs" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_working_dirs_status" ON "working_dirs" USING btree ("status");--> statement-breakpoint
-CREATE INDEX "ix_workspace_profiles_space_id" ON "workspace_profiles" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_workspace_profiles_workspace_id" ON "workspace_profiles" USING btree ("workspace_id");--> statement-breakpoint
-CREATE INDEX "ix_workspaces_slug" ON "workspaces" USING btree ("slug");--> statement-breakpoint
-CREATE INDEX "ix_workspaces_owner_user_id" ON "workspaces" USING btree ("owner_user_id");--> statement-breakpoint
-CREATE INDEX "ix_workspaces_space_id" ON "workspaces" USING btree ("space_id");--> statement-breakpoint
-CREATE INDEX "ix_workspaces_status" ON "workspaces" USING btree ("status");
+CREATE INDEX "ix_project_folder_execution_configs_space_id" ON "project_folder_execution_configs" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "ix_project_folder_execution_configs_project_folder_id" ON "project_folder_execution_configs" USING btree ("project_folder_id");--> statement-breakpoint
+CREATE INDEX "ix_project_folders_slug" ON "project_folders" USING btree ("slug");--> statement-breakpoint
+CREATE INDEX "ix_project_folders_project_id" ON "project_folders" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_project_folders_space_id" ON "project_folders" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "ix_project_folders_status" ON "project_folders" USING btree ("status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_project_folders_space_root_path" ON "project_folders" USING btree ("space_id","root_path") WHERE root_path IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_project_folders_one_primary_per_project" ON "project_folders" USING btree ("project_id") WHERE is_primary;

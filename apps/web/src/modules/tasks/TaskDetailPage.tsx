@@ -248,7 +248,7 @@ export default function TaskDetailPage() {
           description="Selected artifacts will be attached to the queued task run."
           selectedArtifactIds={contextArtifactIds}
           onChange={setContextArtifactIds}
-          workspaceId={task.workspace_id}
+          projectFolderId={task.project_folder_id}
         />
         {task.task_role === 'source' && (
           <Card className="mt-3 border-primary/30 bg-primary/5 p-4">

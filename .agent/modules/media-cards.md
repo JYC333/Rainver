@@ -30,7 +30,7 @@ Extend the spaced repetition card system to support rich-media cards: image occl
 
 ```
 MediaCard:
-  id, space_id, user_id, workspace_id
+  id, space_id, user_id, project_folder_id
   base_card_id    — FK → FlashCard (null if standalone)
   type            — image_occlusion | audio_cloze | screenshot_note | video_clip
   media_url       — reference to stored file

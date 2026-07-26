@@ -122,6 +122,56 @@ export interface ProjectCorpusBackfillResult {
 export class ProjectCorpusRepository {
   constructor(private readonly db: Queryable) {}
 
+  /**
+   * Public owning-domain access boundary for Project Corpus references.
+   * Consumers such as Inquiry must not infer that Project membership grants
+   * access to the Source/Object/Evidence behind a Corpus row.
+   */
+  async canReadItem(identity: SpaceUserIdentity, projectId: string, corpusItemId: string): Promise<boolean> {
+    return (await this.readableItemIds(identity, projectId, [corpusItemId])).has(corpusItemId);
+  }
+
+  async readableItemIds(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    corpusItemIds: readonly string[],
+  ): Promise<Set<string>> {
+    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    const ids = [...new Set(corpusItemIds)];
+    if (ids.length === 0) return new Set();
+    const result = await this.db.query<{ id: string }>(
+      `SELECT pci.id
+         FROM project_corpus_items pci
+         LEFT JOIN space_objects so ON so.id = pci.object_id AND so.space_id = pci.space_id
+         ${corpusPrimarySourceJoin("$4")}
+         LEFT JOIN extracted_evidence ev ON ev.id = pci.evidence_id AND ev.space_id = pci.space_id
+         LEFT JOIN source_items evidence_source
+           ON evidence_source.id = COALESCE(ev.source_item_id, ev.origin_source_item_id)
+          AND evidence_source.space_id = ev.space_id
+          AND evidence_source.deleted_at IS NULL
+        WHERE pci.space_id=$1 AND pci.project_id=$2 AND pci.id=ANY($3::varchar[])
+          AND (pci.object_id IS NULL OR (so.id IS NOT NULL AND ${contentReadSql("space_object", "so", "$4")}))
+          AND (pci.source_item_id IS NULL OR si.id IS NOT NULL)
+          AND (
+            pci.evidence_id IS NULL
+            OR (
+              ev.id IS NOT NULL
+              AND ${contentReadSql("extracted_evidence", "ev", "$4")}
+              AND (
+                COALESCE(ev.source_item_id, ev.origin_source_item_id) IS NULL
+                OR (
+                  evidence_source.id IS NOT NULL
+                  AND ${sourceItemReadableClause("evidence_source", "$4", false)}
+                )
+              )
+              AND ${sourceSnapshotReadableForEvidenceClause("ev", "$4")}
+            )
+          )`,
+      [identity.spaceId, projectId, ids, identity.userId],
+    );
+    return new Set(result.rows.map((row) => row.id));
+  }
+
   async list(
     identity: SpaceUserIdentity,
     projectId: string,

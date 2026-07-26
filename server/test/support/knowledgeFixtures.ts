@@ -14,7 +14,7 @@ export async function insertKnowledgeItem(
     visibility?: string;
     ownerUserId?: string | null;
     createdByUserId?: string | null;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
     updatedAt?: string;
   },
@@ -27,7 +27,7 @@ export async function insertKnowledgeItem(
     `WITH obj AS (
        INSERT INTO space_objects (
          id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, workspace_id, created_by_user_id,
+         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
          created_at, updated_at
        ) VALUES (
          $1, $2, 'knowledge_item', $3, left($4, 200), $5, $6,
@@ -53,7 +53,7 @@ export async function insertKnowledgeItem(
       visibility,
       input.ownerUserId ?? null,
       input.projectId ?? null,
-      input.workspaceId ?? null,
+      input.projectFolderId ?? null,
       input.createdByUserId ?? null,
       input.knowledgeKind ?? "concept",
       input.slug ?? null,

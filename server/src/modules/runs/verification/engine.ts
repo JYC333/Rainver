@@ -40,6 +40,10 @@ const KNOWN_VERIFIER_TYPES = new Set<string>([
   "manual_review",
   "model_judge",
 ]);
+const POST_MATERIALIZATION_VERIFIER_TYPES = new Set([
+  "artifact_exists",
+  "proposal_created",
+]);
 
 interface RawVerificationResult {
   verifier_type: string;
@@ -73,9 +77,24 @@ export class PgVerificationEngine {
     return new PgVerificationEngine(getDbPool(config.databaseUrl));
   }
 
-  async verify(input: VerificationInput): Promise<VerificationResultRecord[]> {
+  async verify(
+    input: VerificationInput,
+    phase: "all" | "pre_materialization" | "post_materialization" = "all",
+  ): Promise<VerificationResultRecord[]> {
     const plan = await this.planReader.getPlan(input.run);
-    const declarations = buildVerificationDeclarations(input.run, plan, input.materialization_items);
+    const declarations = buildVerificationDeclarations(
+      input.run,
+      plan,
+      input.materialization_items,
+    ).filter((declaration) => {
+      const postMaterialization =
+        POST_MATERIALIZATION_VERIFIER_TYPES.has(declaration.verifier_type)
+        || declaration.key.startsWith("code_patch:");
+      if (phase === "all") return true;
+      return phase === "post_materialization"
+        ? postMaterialization
+        : !postMaterialization;
+    });
     if (declarations.length === 0) return [];
 
     const changed = await changedFiles(input.sandbox_cwd, input.base_commit_sha);

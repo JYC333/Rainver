@@ -236,11 +236,11 @@ export default function TasksPage() {
                 {task.due_at && (
                   <p className="text-xs text-muted-foreground mb-1">Due {fmt(task.due_at)}</p>
                 )}
-                {(b || task.workspace_id) && (
+                {(b || task.project_folder_id) && (
                   <p className="text-xs text-muted-foreground mb-1">
                     {b && <span>Board: {b.name}</span>}
-                    {b && task.workspace_id && ' · '}
-                    {task.workspace_id && <span className="font-mono">ws {task.workspace_id.slice(0, 8)}…</span>}
+                    {b && task.project_folder_id && ' · '}
+                    {task.project_folder_id && <span className="font-mono">ws {task.project_folder_id.slice(0, 8)}…</span>}
                   </p>
                 )}
                 {preview && (

@@ -41,7 +41,7 @@ describe("usage access contracts", () => {
       session_name: null,
       agent_id: null,
       project_id: null,
-      workspace_id: null,
+      project_folder_id: null,
       occurred_at: "2026-07-10T00:00:00.000Z",
       recorded_at: "2026-07-10T00:00:00.000Z",
       usage_details: { total: 3 },

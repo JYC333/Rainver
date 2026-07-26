@@ -86,7 +86,7 @@ runtime-agent:
     - server/src/modules/runs
     - server/src/modules/runtimeAdapters
     - server/src/modules/runtimeHost
-    - server/src/modules/workspaces
+    - server/src/modules/projectFolders
     - server/test/runOrchestrationService.test.ts
     - server/test/runsWorkerRuntime.test.ts
 
@@ -109,17 +109,17 @@ memory-activity-proposal:
     - server/test/frontendSupport.test.ts
     - server/test/runMaterializationService.test.ts
 
-workspace-artifact:
+project-folder-artifact:
   docs:
     - .agent/architecture/ARTIFACTS.md
     - .agent/architecture/EXECUTION_MODEL.md
     - .agent/modules/sandbox.md
-    - .agent/modules/workspace-console.md
+    - .agent/modules/project-files.md
     - .agent/modules/context-compiler.md
     - .agent/decisions/0004-context-wrapper.md
     - .agent/BOUNDARIES.md
   code_roots:
-    - server/src/modules/workspaces
+    - server/src/modules/projectFolders
     - server/src/modules/artifacts
     - server/src/modules/runs
     - server/src/modules/runtimeAdapters
@@ -164,7 +164,7 @@ agents:
   code_roots:
     - server/src/modules/agents
     - server/src/modules/runs
-    - server/src/modules/workspaces
+    - server/src/modules/projectFolders
     - server/src/gateway/routeRegistry.ts
     - server/test/runOrchestrationService.test.ts
 
@@ -203,20 +203,20 @@ sandbox:
     - .agent/modules/context-compiler.md
     - .agent/decisions/0004-context-wrapper.md
   code_roots:
-    - server/src/modules/workspaces
+    - server/src/modules/projectFolders
     - server/src/modules/runtimeAdapters
     - server/src/modules/runs
     - sandbox
 
-workspace-console:
+project-files:
   docs:
-    - .agent/modules/workspace-console.md
+    - .agent/modules/project-files.md
     - .agent/modules/git-diff-review.md
     - .agent/modules/sandbox.md
     - .agent/BOUNDARIES.md
   code_roots:
-    - server/src/modules/workspaces
-    - apps/web/src/modules/workspace    # TODO: not yet created
+    - server/src/modules/projectFolders
+    - apps/web/src/modules/project_files
 
 activity:
   docs:
@@ -248,7 +248,7 @@ relations:
   code_roots:
     - server/src/modules/relations
     - server/src/modules/academic
-    - server/src/modules/projectPresets
+    - server/src/modules/projectTemplates
     - server/src/modules/projectResearch
     - server/src/modules/graph
     - server/src/db/schema/relations.ts
@@ -342,7 +342,7 @@ credentials:
     - server/src/modules/providers
     - server/src/modules/runtimeHost
     - server/src/modules/runs
-    - server/src/modules/workspaces
+    - server/src/modules/projectFolders
 
 runtime_tools:
   docs:

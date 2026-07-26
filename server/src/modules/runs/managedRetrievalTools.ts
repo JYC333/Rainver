@@ -477,6 +477,7 @@ export async function runRetrievalToolCall(
     }
     const service = binding.services[spec.domain];
     if (!service) {
+      let policyDecisionRecordId: string | null = null;
       try {
         await enforceRetrievalToolCallPolicy({
           databaseUrl: binding.policyDatabaseUrl,
@@ -486,17 +487,24 @@ export async function runRetrievalToolCall(
           domainEnabled: false,
           surface: spec.serviceSurface,
         });
-      } catch {
+      } catch (error) {
+        policyDecisionRecordId = policyDecisionRecordIdFromError(error);
         // The policy denial is expected here and has already been audited when
         // audit persistence is available. Keep the model-facing error stable.
       }
       return {
-        modelResult: { ok: false, tool: call.name, error: "Retrieval tool domain is not enabled for this run." },
+        modelResult: {
+          ok: false,
+          tool: call.name,
+          error: "Retrieval tool domain is not enabled for this run.",
+          ...(policyDecisionRecordId ? { policy_decision_record_id: policyDecisionRecordId } : {}),
+        },
         summary: {
           tool_name: call.name,
           domain: spec.domain,
           ok: false,
           error_code: "retrieval_tool_domain_not_enabled",
+          ...(policyDecisionRecordId ? { policy_decision_record_id: policyDecisionRecordId } : {}),
         },
         artifact: null,
       };
@@ -556,20 +564,29 @@ export async function runRetrievalToolCall(
     }
     throw new Error("Tool name does not match its retrieval domain.");
   } catch (error) {
+    const policyDecisionRecordId = policyDecisionRecordIdFromError(error);
     return {
       modelResult: {
         ok: false,
         tool: call.name,
         error: error instanceof Error ? error.message : "Retrieval tool call failed.",
+        ...(policyDecisionRecordId ? { policy_decision_record_id: policyDecisionRecordId } : {}),
       },
       summary: {
         tool_name: call.name,
         ok: false,
         error_code: "retrieval_tool_call_failed",
+        ...(policyDecisionRecordId ? { policy_decision_record_id: policyDecisionRecordId } : {}),
       },
       artifact: null,
     };
   }
+}
+
+function policyDecisionRecordIdFromError(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const value = (error as { policy_decision_record_id?: unknown }).policy_decision_record_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 export function validateRetrievalToolInput(actionId: string, input: unknown): void {

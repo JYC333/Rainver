@@ -90,7 +90,7 @@ describe("PgContextSnapshotRepository against real Postgres", () => {
           metadata: { k: "v" },
         },
         {
-          item_type: "workspace",
+          item_type: "project_folder",
           item_id: null,
           title: "WS",
           excerpt: null,
@@ -122,7 +122,7 @@ describe("PgContextSnapshotRepository against real Postgres", () => {
     );
     expect(items.rows).toHaveLength(2);
     expect(items.rows[0]).toMatchObject({ item_type: "memory", metadata_json: { k: "v" } });
-    expect(items.rows[1]).toMatchObject({ item_type: "workspace", item_id: null });
+    expect(items.rows[1]).toMatchObject({ item_type: "project_folder", item_id: null });
 
     const access = await pool.query<{ memory_id: string; run_id: string | null; access_type: string }>(
       "SELECT memory_id, run_id, access_type FROM memory_access_logs",

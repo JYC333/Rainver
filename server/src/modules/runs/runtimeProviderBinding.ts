@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { ServerConfig } from "../../config";
 import type { CredentialGrant } from "../providers/cli/credentialBroker";
 import { resolveProvidersDbPort } from "../providers/dbReader";
@@ -12,6 +11,7 @@ import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
 import type { RunRecord } from "./repository";
 import {
   CodexProviderConfigError,
+  materializeRunCodexHome,
   writeCodexProviderConfig,
 } from "./codexProviderConfig";
 import {
@@ -69,7 +69,7 @@ export async function buildRuntimeProviderBinding(
   const providerId = input.run.model_provider_id;
   if (!providerId) {
     return spec.adapter_type === "codex_cli"
-      ? codexHomeOnlyBinding(deps.credential)
+      ? await codexHomeOnlyBinding(deps.credential)
       : emptyRuntimeProviderBinding();
   }
 
@@ -156,7 +156,7 @@ function buildClaudeProviderBinding(
     run_group_id: input.run.run_group_id ?? null,
     agent_id: input.run.agent_id,
     project_id: input.run.project_id,
-    workspace_id: input.run.workspace_id,
+    project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
     ttl_ms: Math.max(deps.ttlSeconds, 1) * 1000,
   });
@@ -232,7 +232,7 @@ async function buildCodexProviderBinding(
     run_group_id: input.run.run_group_id ?? null,
     agent_id: input.run.agent_id,
     project_id: input.run.project_id,
-    workspace_id: input.run.workspace_id,
+    project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
     ttl_ms: Math.max(deps.ttlSeconds, 1) * 1000,
   });
@@ -313,7 +313,7 @@ async function buildOpenCodeProviderBinding(
     run_group_id: input.run.run_group_id ?? null,
     agent_id: input.run.agent_id,
     project_id: input.run.project_id,
-    workspace_id: input.run.workspace_id,
+    project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
     ttl_ms: Math.max(deps.ttlSeconds, 1) * 1000,
   });
@@ -344,8 +344,10 @@ async function buildOpenCodeProviderBinding(
   }
 }
 
-function codexHomeOnlyBinding(credential: CredentialGrant): RuntimeProviderBinding {
-  const codexHome = credential.temp_home ? join(credential.temp_home, ".codex") : null;
+async function codexHomeOnlyBinding(credential: CredentialGrant): Promise<RuntimeProviderBinding> {
+  const codexHome = credential.temp_home
+    ? await materializeRunCodexHome(credential.temp_home)
+    : null;
   return {
     env: codexHome ? { CODEX_HOME: codexHome } : {},
     lease_id: null,

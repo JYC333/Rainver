@@ -17,7 +17,7 @@ export function boardOut(row: BoardRow) {
   return {
     id: row.id,
     space_id: row.space_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     project_id: row.project_id ?? null,
     name: row.name,
     description: row.description,
@@ -57,7 +57,7 @@ export function taskOut(row: TaskRow) {
   return {
     id: row.id,
     space_id: row.space_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     project_id: row.project_id ?? null,
     board_id: row.board_id,
     column_id: row.column_id,

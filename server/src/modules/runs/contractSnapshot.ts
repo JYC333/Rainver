@@ -42,7 +42,7 @@ export interface RunBudgetResolution {
 export interface RunContractSnapshotInput {
   source: RunContractSource;
   project_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   acceptance_criteria_json?: unknown;
   definition_of_done?: string | null;
   required_outputs_json?: unknown;
@@ -56,6 +56,7 @@ export interface RunContractSnapshotInput {
   budget_sources?: RunBudgetSource[];
   workflow_input_json?: unknown;
   upstream_inputs_json?: unknown;
+  attachment_manifest_json?: unknown;
   route_hints_json?: unknown;
   /** Server-owned policy facts captured by trusted internal run creators. */
   policy_context_json?: unknown;
@@ -65,7 +66,7 @@ export interface RunContractSnapshot {
   contract_version: typeof RUN_CONTRACT_VERSION;
   source: RunContractSource;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   acceptance_criteria_json: unknown;
   definition_of_done: string | null;
   required_outputs_json: unknown;
@@ -80,6 +81,7 @@ export interface RunContractSnapshot {
   budget_resolution: RunBudgetResolution;
   workflow_input_json: unknown;
   upstream_inputs_json: unknown;
+  attachment_manifest_json: unknown;
   route_hints_json: unknown;
   policy_context_json: unknown;
   created_at: string;
@@ -99,7 +101,7 @@ export function createRunContractSnapshot(
       id: source.id ?? null,
     },
     project_id: input?.project_id ?? null,
-    workspace_id: input?.workspace_id ?? null,
+    project_folder_id: input?.project_folder_id ?? null,
     acceptance_criteria_json: cloneJson(input?.acceptance_criteria_json),
     definition_of_done: input?.definition_of_done ?? null,
     required_outputs_json: cloneJson(input?.required_outputs_json),
@@ -114,6 +116,7 @@ export function createRunContractSnapshot(
     budget_resolution: budget.resolution,
     workflow_input_json: cloneJson(input?.workflow_input_json),
     upstream_inputs_json: cloneJson(input?.upstream_inputs_json),
+    attachment_manifest_json: cloneJson(input?.attachment_manifest_json),
     route_hints_json: cloneJson(input?.route_hints_json),
     policy_context_json: cloneJson(input?.policy_context_json),
     created_at: createdAt,

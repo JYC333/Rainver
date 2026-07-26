@@ -262,7 +262,7 @@ describe("capabilities routes", () => {
     const draft = await app.inject({
       method: "POST",
       url: "/api/v1/projects/project-1/workflow-profiles/profile-1/run-draft",
-      payload: { runtime_profile_id: "runtime-profile-1", workspace_id: "workspace-1" },
+      payload: { runtime_profile_id: "runtime-profile-1", project_folder_id: "workspace-1" },
     });
 
     expect(draft.statusCode).toBe(200);
@@ -278,7 +278,7 @@ describe("capabilities routes", () => {
         run_type: "agent",
         trigger_origin: "manual",
         project_id: "project-1",
-        workspace_id: "workspace-1",
+        project_folder_id: "workspace-1",
         runtime_profile_id: "runtime-profile-1",
         adapter_type: null,
         capability_id: "research.source_collect",
@@ -503,7 +503,7 @@ function proposalOut(id: string, identity: SpaceUserIdentity, proposalType: stri
     id,
     space_id: identity.spaceId,
     user_id: identity.userId,
-    workspace_id: null,
+    project_folder_id: null,
     source_session_id: null,
     source_task_id: null,
     source_run_id: null,

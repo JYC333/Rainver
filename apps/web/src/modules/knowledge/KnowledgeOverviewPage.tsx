@@ -31,7 +31,7 @@ function needsReview(s: KnowledgeSourceSummary): boolean {
  * Knowledge Home — an optional, lightweight status hub (reached via the breadcrumb
  * switcher or a direct link, never the forced default landing). It surfaces real
  * recent activity with honest empty states; it is not a menu grid and does not
- * compete with the Notes/Wiki/Sources/Cards workspaces.
+ * compete with the Notes/Wiki/Sources/Cards sections.
  */
 export default function KnowledgeOverviewPage() {
   const { activeSpaceId } = useSpace()
@@ -113,7 +113,7 @@ export default function KnowledgeOverviewPage() {
                 <ArrowRight className="size-4 text-muted-foreground shrink-0" />
               </Link>
             ) : (
-              <p className="mt-3 text-sm text-muted-foreground">No recent notes yet. Start one from the Notes workspace.</p>
+              <p className="mt-3 text-sm text-muted-foreground">No recent notes yet. Start one from the Notes section.</p>
             )}
           </Card>
 

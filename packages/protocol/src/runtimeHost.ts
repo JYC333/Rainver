@@ -15,6 +15,7 @@ import {
   CanonicalModelEventSchema,
   CanonicalUsageSchema,
 } from "./model.js";
+import { RunInputEnvelopeSchema } from "./runOrchestration.js";
 
 export const RuntimeHostToolModeSchema = z.enum(["disabled", "authorized_bindings"]);
 export type RuntimeHostToolMode = z.infer<typeof RuntimeHostToolModeSchema>;
@@ -46,6 +47,7 @@ export const RuntimeHostStructuredOutputSchema = z.object({
 export type RuntimeHostStructuredOutput = z.infer<typeof RuntimeHostStructuredOutputSchema>;
 
 export const RuntimeHostExecuteRequestSchema = z.object({
+  run_input: RunInputEnvelopeSchema,
   run_id: IdSchema,
   space_id: IdSchema,
   model_provider_id: IdSchema,
@@ -61,7 +63,7 @@ export const RuntimeHostExecuteRequestSchema = z.object({
   run_group_id: IdSchema.nullish(),
   agent_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   trigger_origin: z.string().nullish(),
   capability_id: z.string().nullish(),
   context_snapshot_id: IdSchema.nullish(),
@@ -70,6 +72,7 @@ export const RuntimeHostExecuteRequestSchema = z.object({
   tool_mode: RuntimeHostToolModeSchema.default("disabled"),
   tool_bindings: z.array(RuntimeHostToolBindingSchema).default([]),
   tools: z.array(CanonicalToolDefinitionSchema).optional(),
+  cache_strategy: z.literal("conversation").optional(),
 });
 export type RuntimeHostExecuteRequest = z.infer<typeof RuntimeHostExecuteRequestSchema>;
 

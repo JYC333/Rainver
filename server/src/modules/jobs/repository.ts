@@ -19,7 +19,7 @@ export interface JobRecord {
   id: string;
   space_id: string;
   user_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   agent_id: string | null;
   job_type: string;
   status: JobStatus;
@@ -61,7 +61,7 @@ export interface EnqueueJobInput {
   payload: Record<string, unknown>;
   space_id: string;
   user_id: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   agent_id?: string | null;
   priority?: number;
   max_attempts?: number;
@@ -69,7 +69,7 @@ export interface EnqueueJobInput {
 }
 
 const JOB_SELECT_COLUMNS = `
-  id, space_id, user_id, workspace_id, agent_id, job_type, status, priority,
+  id, space_id, user_id, project_folder_id, agent_id, job_type, status, priority,
   payload_json, result_json, error, attempts, max_attempts, scheduled_at,
   claimed_by, claimed_at, started_at, completed_at, heartbeat_at,
   created_at, updated_at
@@ -98,18 +98,22 @@ export class PgJobQueueRepository {
     const id = randomUUID();
     const result = await this.db.query<JobRecord>(
       `INSERT INTO jobs (
-         id, space_id, user_id, workspace_id, agent_id, job_type, status, priority,
+         id, space_id, user_id, project_folder_id, agent_id, job_type, status, priority,
          payload_json, attempts, max_attempts, scheduled_at, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, 'pending', $7,
          $8::jsonb, 0, $9, $10::timestamptz, $11::timestamptz, $11::timestamptz
        )
+       ON CONFLICT (space_id, (payload_json->>'source_run_id'))
+         WHERE job_type = 'session_condense'
+           AND payload_json->>'source_run_id' IS NOT NULL
+       DO NOTHING
        RETURNING ${JOB_SELECT_COLUMNS}`,
       [
         id,
         input.space_id,
         input.user_id,
-        input.workspace_id ?? null,
+        input.project_folder_id ?? null,
         input.agent_id ?? null,
         input.job_type,
         input.priority ?? 0,
@@ -120,8 +124,75 @@ export class PgJobQueueRepository {
       ],
     );
     const row = result.rows[0];
-    if (!row) throw new Error("Job enqueue returned no row");
-    return row;
+    if (row) return row;
+    const sourceRunId = typeof input.payload.source_run_id === "string"
+      ? input.payload.source_run_id
+      : null;
+    if (input.job_type === "session_condense" && sourceRunId) {
+      const existing = await this.db.query<JobRecord>(
+        `SELECT ${JOB_SELECT_COLUMNS}
+           FROM jobs
+          WHERE space_id = $1
+            AND job_type = 'session_condense'
+            AND payload_json->>'source_run_id' = $2
+          LIMIT 1`,
+        [input.space_id, sourceRunId],
+      );
+      if (existing.rows[0]) return existing.rows[0];
+    }
+    throw new Error("Job enqueue returned no row");
+  }
+
+  async ensureAgentRunJob(
+    input: EnqueueJobInput & { job_type: "agent_run" },
+    now: Date = new Date(),
+  ): Promise<JobRecord> {
+    const id = randomUUID();
+    const payload = sanitizeEvidenceJson(input.payload);
+    const result = await this.db.query<JobRecord>(
+      `WITH existing AS (
+         SELECT ${JOB_SELECT_COLUMNS}
+           FROM jobs
+          WHERE space_id = $1
+            AND job_type = 'agent_run'
+            AND payload_json->>'run_id' = $2
+            AND status IN ('pending', 'claimed', 'running')
+          ORDER BY created_at DESC
+          LIMIT 1
+       ), inserted AS (
+         INSERT INTO jobs (
+           id, space_id, user_id, project_folder_id, agent_id, job_type, status,
+           priority, payload_json, attempts, max_attempts, scheduled_at,
+           created_at, updated_at
+         )
+         SELECT $3, $1, $4, $5, $6, 'agent_run', 'pending',
+                $7, $8::jsonb, 0, $9, $10::timestamptz, $11::timestamptz,
+                $11::timestamptz
+          WHERE NOT EXISTS (SELECT 1 FROM existing)
+         RETURNING ${JOB_SELECT_COLUMNS}
+       )
+       SELECT * FROM inserted
+       UNION ALL
+       SELECT * FROM existing
+       LIMIT 1`,
+      [
+        input.space_id,
+        String(input.payload.run_id ?? ""),
+        id,
+        input.user_id,
+        input.project_folder_id ?? null,
+        input.agent_id ?? null,
+        input.priority ?? 0,
+        JSON.stringify(payload),
+        input.max_attempts ?? 3,
+        (input.scheduled_at ?? now).toISOString(),
+        now.toISOString(),
+      ],
+    );
+    if (!result.rows[0]) {
+      throw new Error("Agent Run job ensure returned no row");
+    }
+    return result.rows[0];
   }
 
   async getJob(jobId: string): Promise<JobRecord | null> {
@@ -313,6 +384,38 @@ export class PgJobQueueRepository {
       [jobId, redactEvidenceText(error), now.toISOString(), workerId],
     );
     return result.rows[0]?.status ?? null;
+  }
+
+  async deferJob(
+    jobId: string,
+    error: string,
+    workerId: string | null,
+    scheduledAt: Date,
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE jobs
+          SET status = 'pending',
+              error = $2,
+              scheduled_at = $3,
+              attempts = GREATEST(0, attempts - 1),
+              heartbeat_at = NULL,
+              claimed_by = NULL,
+              claimed_at = NULL,
+              started_at = NULL,
+              updated_at = $4
+        WHERE id = $1
+          AND status IN ('claimed', 'running')
+          AND (CAST($5 AS text) IS NULL OR claimed_by = $5)`,
+      [
+        jobId,
+        redactEvidenceText(error),
+        scheduledAt.toISOString(),
+        now.toISOString(),
+        workerId,
+      ],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async cancelJob(

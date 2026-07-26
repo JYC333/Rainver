@@ -9,9 +9,10 @@ import { PgJobQueueRepository } from "../../jobs/repository";
 import { PgRunRepository, type RunRecord } from "../../runs/repository";
 import { RunMaterializationService } from "../../runs/materializationService";
 import { RunOrchestrationService } from "../../runs/orchestrationService";
+import { runOutputResult } from "../../runs/orchestrationResults";
 import { sharedCliProcessRegistry } from "../../runs/processRegistry";
 import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy";
-import { PgCodePatchCollector, PgWorkspaceManager } from "../../workspaces";
+import { PgCodePatchCollector, PgRunSandboxManager } from "../../projectFolders";
 import { PgVerificationEngine } from "../../runs/verification";
 import {
   HttpError,
@@ -72,7 +73,7 @@ import {
   type SourcePostProcessingTriggerConfig,
   type SourcePostProcessingTriggerType,
 } from "./repository";
-import { ProjectResearchWorkspaceService } from "../../projectResearch/workspaceService";
+import { ProjectResearchAreaService } from "../../projectResearch/areaService";
 import { resolveProjectResearchPaperCardPrompt } from "../../projectResearch/promptRegistry";
 import {
   buildRetrievalContextQuery,
@@ -1018,7 +1019,7 @@ export class SourcePostProcessingService {
         postProcessingRunId: postRun.id,
       });
       if (agentRun.status !== "succeeded" && agentRun.status !== "degraded") {
-        const agentOutput = recordValue(agentRun.output_json);
+        const agentOutput = runOutputResult(agentRun.output_json);
         const structuredOutputDiagnostics = recordValue(agentOutput.structured_output_diagnostics);
         return repo.markRunFinished({
           runId: postRun.id,
@@ -1272,7 +1273,7 @@ export class SourcePostProcessingService {
       user_id: input.userId,
       agent_id: input.agentId,
       project_id: input.projectId,
-      workspace_id: null,
+      project_folder_id: null,
       prompt: input.prompt,
       instruction: input.instruction,
       // Source post-processing is a Sources-owned job, not a user Automation.
@@ -1301,7 +1302,7 @@ export class SourcePostProcessingService {
     const repository = new PgRunRepository(pool);
     const orchestration = new RunOrchestrationService(this.config, repository, {
       materializer: RunMaterializationService.fromConfig(this.config),
-      workspaceManager: PgWorkspaceManager.fromConfig(this.config),
+      workspaceManager: PgRunSandboxManager.fromConfig(this.config),
       codePatchCollector: PgCodePatchCollector.fromConfig(this.config),
       verificationEngine: PgVerificationEngine.fromConfig(this.config),
       processRegistry: sharedCliProcessRegistry,
@@ -1572,7 +1573,7 @@ export class SourcePostProcessingService {
         artifactIds.push(artifactId);
       }
       if (projectId && input.inputConfig.processing_phase === "deep_analysis" && input.result.item_summaries.length) {
-        await new ProjectResearchWorkspaceService(this.db).materializePaperCardsFromDeepAnalysis({
+        await new ProjectResearchAreaService(this.db).materializePaperCardsFromDeepAnalysis({
           spaceId: input.connection.space_id,
           projectId,
           runId: input.agentRun.id,

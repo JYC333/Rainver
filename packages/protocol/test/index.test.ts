@@ -29,7 +29,7 @@ describe("index smoke import", () => {
     expect(protocol.SpaceRefSchema).toBeDefined();
     expect(protocol.UserRefSchema).toBeDefined();
     expect(protocol.AgentRefSchema).toBeDefined();
-    expect(protocol.WorkspaceRefSchema).toBeDefined();
+    expect(protocol.ProjectFolderRefSchema).toBeDefined();
     expect(protocol.ProjectRefSchema).toBeDefined();
 
     // Command + event contracts

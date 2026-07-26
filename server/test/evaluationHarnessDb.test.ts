@@ -112,7 +112,7 @@ async function applyProposal(proposalId: string): Promise<Record<string, unknown
       status: "accepted",
       risk_level: "medium",
       preview: false,
-      workspace_id: null,
+      project_folder_id: null,
       visibility: "space_shared",
       created_by_user_id: OWNER,
       created_by_agent_id: null,

@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
+import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock";
 import {
   redactEvidenceText,
-  redactSecretPatterns,
   sanitizeErrorJson,
   sanitizeEvidenceJson,
 } from "./evidenceRedaction";
 import { assertProjectInSpace } from "../projects/access";
-import { contentReadSql } from "../access/contentAccessSql";
+import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql";
 import { contentDecisionFromDb } from "../access/contentAccessQuery";
 import {
   addOptionalFilter,
@@ -41,6 +41,7 @@ import {
   type RunStepInput,
   type RunStepRecord,
   type RunTerminalUpdate,
+  type ConversationRuntimeTerminalSync,
 } from "./runRepositoryTypes";
 import {
   taskChecklistFromRunEvaluation,
@@ -58,6 +59,7 @@ import { assertBudgetSourcesAvailable, checkRunBudget } from "./budgetEnforcemen
 import { withQueryableTransaction } from "../routeUtils/common";
 import type { VerificationResultRecord } from "./verification/types";
 import { PgUsageRepository } from "../usage/repository";
+import { buildRunToolGrants } from "../systemActions/runToolGrants";
 
 export {
   RunCreateValidationError,
@@ -84,6 +86,7 @@ export {
   type RunStepInput,
   type RunStepRecord,
   type RunTerminalUpdate,
+  type ConversationRuntimeTerminalSync,
 } from "./runRepositoryTypes";
 
 export type { VerificationResultRecord } from "./verification/types";
@@ -96,7 +99,6 @@ interface RuntimeProfileForRun {
   adapter_type: string;
   model_provider_id: string | null;
   model_name: string | null;
-  credential_profile_id: string | null;
   runtime_config_json: unknown;
   runtime_policy_json: unknown;
   enabled: boolean;
@@ -172,6 +174,18 @@ export class PgRunRepository {
                 FROM run_attempts candidate
                WHERE candidate.space_id = r.space_id AND candidate.run_id = r.id
             )
+       ), rejected_run_proposals AS (
+         UPDATE proposals proposal
+            SET status = 'rejected',
+                updated_at = $2
+           FROM orphaned_runs run
+          WHERE proposal.space_id = run.space_id
+            AND proposal.created_by_run_id = run.id
+            AND proposal.status IN ('staged', 'pending')
+       ), released_execution_locks AS (
+         DELETE FROM run_execution_locks execution_lock
+          USING orphaned_runs run
+          WHERE execution_lock.run_id = run.id
        )
        SELECT id FROM orphaned_runs`,
       [
@@ -191,6 +205,28 @@ export class PgRunRepository {
         WHERE status = 'orphaned'
           AND error_json->>'error_code' = 'orphaned'
         ORDER BY updated_at ASC, id ASC
+        LIMIT $1`,
+      [Math.max(1, Math.min(500, Math.trunc(limit)))],
+    );
+    return result.rows;
+  }
+
+  async listTerminalChatRunsAwaitingCompletion(
+    limit = 100,
+  ): Promise<Array<{ id: string; space_id: string }>> {
+    const result = await this.db.query<{ id: string; space_id: string }>(
+      `SELECT r.id, r.space_id
+         FROM runs r
+        WHERE r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND r.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM run_events event
+             WHERE event.space_id = r.space_id
+               AND event.run_id = r.id
+               AND event.event_type = 'chat_completed'
+          )
+        ORDER BY r.updated_at ASC, r.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.trunc(limit)))],
     );
@@ -241,7 +277,7 @@ export class PgRunRepository {
         run_type: "agent",
         trigger_origin: "delegation",
         session_id: input.session_id ?? null,
-        workspace_id: input.workspace_id ?? null,
+        project_folder_id: input.project_folder_id ?? null,
         project_id: input.project_id ?? null,
         prompt: input.prompt ?? null,
         instruction: input.instruction ?? null,
@@ -253,6 +289,8 @@ export class PgRunRepository {
         capabilities_json: input.capabilities_json ?? null,
         model_override_json: input.model_override_json ?? null,
         context_artifact_ids: input.context_artifact_ids ?? null,
+        visibility: input.visibility,
+        grantee_user_ids: input.grantee_user_ids,
       },
       {
         root_run_id: input.root_run_id,
@@ -272,15 +310,18 @@ export class PgRunRepository {
     parent_run_id: string;
     root_run_id: string;
     run_group_id: string;
-    workspace_id?: string | null;
+    project_folder_id?: string | null;
     session_id?: string | null;
     project_id?: string | null;
     prompt: string;
     instruction?: string | null;
     runtime_profile_id?: string | null;
     model_override_json?: Record<string, unknown> | null;
+    contract_snapshot?: RunContractSnapshotInput;
     budget_json?: Record<string, unknown> | null;
     context_policy_json?: Record<string, unknown> | null;
+    visibility?: "private" | "space_shared" | "selected_users";
+    grantee_user_ids?: string[];
   }): Promise<RunRecord> {
     if (!input.parent_run_id || !input.root_run_id || !input.run_group_id) {
       throw new RunCreateValidationError("Grouped agent runs require parent, root, and group ids");
@@ -294,13 +335,16 @@ export class PgRunRepository {
         run_type: "agent",
         trigger_origin: "manual",
         session_id: input.session_id ?? null,
-        workspace_id: input.workspace_id ?? null,
+        project_folder_id: input.project_folder_id ?? null,
         project_id: input.project_id ?? null,
         prompt: input.prompt,
         instruction: input.instruction ?? null,
         parent_run_id: input.parent_run_id,
         runtime_profile_id: input.runtime_profile_id ?? null,
         model_override_json: input.model_override_json ?? null,
+        contract_snapshot: input.contract_snapshot,
+        visibility: input.visibility,
+        grantee_user_ids: input.grantee_user_ids,
       },
       {
         root_run_id: input.root_run_id,
@@ -327,13 +371,15 @@ export class PgRunRepository {
         WHERE space_id = $1 AND id = $2
         RETURNING id, space_id, agent_id, agent_version_id, runtime_profile_id,
                   context_snapshot_id, run_type, status, mode, prompt, instruction,
-                  workspace_id, session_id, parent_run_id, root_run_id, run_group_id,
+                  project_folder_id, session_id, parent_run_id, root_run_id, run_group_id,
                   delegation_id, project_id, scheduled_at, adapter_type, capability_id,
                   capabilities_json, model_provider_id, model_override_json,
                   runtime_profile_snapshot_json, required_sandbox_level, contract_snapshot_json, workflow_version_id, trigger_origin,
                   instructed_by_user_id, instructed_by_agent_id, error_message, error_json,
                   output_json, started_at, ended_at, created_at, updated_at,
-                  visibility`,
+                  visibility
+     )
+     SELECT * FROM updated`,
       [input.space_id, input.run_id, input.run_group_id, now],
     );
     return result.rows[0] ?? null;
@@ -371,18 +417,18 @@ export class PgRunRepository {
         400,
       );
     }
-    const versionOk = await this.agentVersionBelongsToAgent(
+    const agentVersion = await this.getAgentVersionForRun(
       input.space_id,
       input.agent_id,
       agent.current_version_id,
     );
-    if (!versionOk) {
+    if (!agentVersion) {
       throw new RunCreateValidationError(
         `AgentVersion '${agent.current_version_id}' does not belong to Agent '${input.agent_id}'`,
         400,
       );
     }
-    await this.assertOptionalSpaceRef("workspaces", input.workspace_id, input.space_id, "Workspace");
+    await this.assertOptionalSpaceRef("project_folders", input.project_folder_id, input.space_id, "Project Folder");
     await this.assertOptionalSpaceRef("sessions", input.session_id, input.space_id, "Session");
     await this.assertOptionalSpaceRef("projects", input.project_id, input.space_id, "Project");
     if (input.parent_run_id) {
@@ -413,6 +459,11 @@ export class PgRunRepository {
     const contractSnapshot = createRunContractSnapshot(input.contract_snapshot, now);
     const contextSnapshotId = randomUUID();
     const capabilitiesJson = normalizeRunCapabilitiesJson(input.capabilities_json);
+    const toolGrants = await buildRunToolGrants(
+      capabilitiesJson,
+      agentVersion.tool_permissions_json,
+    );
+    const permissionSnapshotJson = JSON.stringify({ tool_grants: toolGrants });
     const contextArtifactIds = normalizeContextArtifactIds(input.context_artifact_ids);
     await this.db.query(
       `INSERT INTO context_snapshots (
@@ -431,7 +482,7 @@ export class PgRunRepository {
           agent_version_id: agent.current_version_id,
           runtime_profile_id: requestedRuntimeProfile?.id ?? null,
           session_id: input.session_id ?? null,
-          workspace_id: input.workspace_id ?? null,
+          project_folder_id: input.project_folder_id ?? null,
           project_id: input.project_id ?? null,
           root_run_id: links.root_run_id ?? input.root_run_id ?? null,
           run_group_id: links.run_group_id ?? null,
@@ -464,24 +515,26 @@ export class PgRunRepository {
           id, space_id, agent_id, agent_version_id, run_role,
           requested_runtime_profile_id, runtime_profile_id,
           context_snapshot_id,
-          workspace_id, session_id, parent_run_id, root_run_id, run_group_id,
+          project_folder_id, session_id, parent_run_id, root_run_id, run_group_id,
           delegation_id, instructed_by_user_id, instructed_by_agent_id,
           run_type, trigger_origin, status, mode, prompt, instruction,
           scheduled_at, created_at, updated_at, adapter_type, capability_id,
                   capabilities_json, model_provider_id, model_override_json, runtime_profile_snapshot_json,
                   required_sandbox_level, owner_user_id, visibility, access_level, project_id,
-                  contract_snapshot_json, workflow_version_id, source, runtime_profile_selection_source
+                  contract_snapshot_json, workflow_version_id, source, runtime_profile_selection_source,
+                  permission_snapshot_json
        )
        VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
           $12, $13, $14, $15, $16, $17, $18, 'queued', $19, $20, $21, $22, $23, $23,
           $24, $25, $26::jsonb, $27, $28::jsonb, $29::jsonb, $30,
-          $15, $31, $32, $33, $34::jsonb, $35, 'managed', $36
+          $15, $31, $32, $33, $34::jsonb, $35, 'managed', $36,
+          $37::jsonb
        )
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
                  context_snapshot_id,
-                 run_type, status, mode, prompt, instruction, workspace_id,
+                 run_type, status, mode, prompt, instruction, project_folder_id,
                  session_id, parent_run_id, root_run_id, run_group_id,
                  delegation_id, project_id, scheduled_at,
                  adapter_type, capability_id, capabilities_json, model_provider_id,
@@ -491,7 +544,8 @@ export class PgRunRepository {
                  error_json, output_json,
                  started_at, ended_at, created_at, updated_at,
                  owner_user_id, visibility, access_level, contract_snapshot_json,
-                 workflow_version_id, route_decision_id, runtime_profile_selection_source`,
+                 workflow_version_id, route_decision_id, runtime_profile_selection_source,
+                 permission_snapshot_json`,
       [
         runId,
         input.space_id,
@@ -501,7 +555,7 @@ export class PgRunRepository {
         input.runtime_profile_id ?? null,
         null,
         contextSnapshotId,
-        input.workspace_id ?? null,
+        input.project_folder_id ?? null,
         input.session_id ?? null,
         input.parent_run_id ?? null,
         links.root_run_id ?? input.root_run_id ?? null,
@@ -523,16 +577,43 @@ export class PgRunRepository {
         modelOverrideJson,
         runtimeProfileSnapshotJson,
         requiredSandboxLevel,
-        agent.visibility === "space_shared" ? "space_shared" : "private",
+        input.visibility
+          ?? (agent.visibility === "space_shared" ? "space_shared" : "private"),
         agent.access_level,
         input.project_id ?? null,
         JSON.stringify(contractSnapshot),
         input.workflow_version_id ?? null,
         runtimeProfileSelectionSource,
+        permissionSnapshotJson,
       ],
     );
     const row = result.rows[0];
     if (!row) throw new Error("Run insert returned no row");
+    if (input.visibility === "selected_users") {
+      const granteeUserIds = [...new Set(input.grantee_user_ids ?? [])];
+      if (granteeUserIds.length === 0) {
+        throw new RunCreateValidationError(
+          "selected_users Run visibility requires at least one grantee",
+        );
+      }
+      await this.db.query(
+        `INSERT INTO content_access_grants (
+           id, space_id, resource_type, resource_id, grantee_user_id,
+           granted_by_user_id, access_level, created_at, updated_at,
+           revoked_at, revoked_by_user_id
+         )
+         SELECT gen_random_uuid()::varchar, $1, 'run', $2, grantee.user_id,
+                $3, 'full', $5, $5, NULL, NULL
+           FROM unnest($4::varchar[]) AS grantee(user_id)
+           JOIN space_memberships membership
+             ON membership.space_id = $1
+            AND membership.user_id = grantee.user_id
+            AND membership.status = 'active'
+         ON CONFLICT (space_id, resource_type, resource_id, grantee_user_id)
+         DO NOTHING`,
+        [input.space_id, row.id, input.user_id, granteeUserIds, now],
+      );
+    }
     if (!isCoordinator) {
       await this.db.query(
         `INSERT INTO run_attempts (
@@ -554,7 +635,7 @@ export class PgRunRepository {
     space_id: string;
     user_id: string;
     agent_id: string;
-    workspace_id?: string | null;
+    project_folder_id?: string | null;
     project_id?: string | null;
     prompt?: string | null;
     instruction?: string | null;
@@ -593,18 +674,18 @@ export class PgRunRepository {
         400,
       );
     }
-    const versionOk = await this.agentVersionBelongsToAgent(
+    const agentVersion = await this.getAgentVersionForRun(
       input.space_id,
       input.agent_id,
       agent.current_version_id,
     );
-    if (!versionOk) {
+    if (!agentVersion) {
       throw new RunCreateValidationError(
         `AgentVersion '${agent.current_version_id}' does not belong to Agent '${input.agent_id}'`,
         400,
       );
     }
-    await this.assertOptionalSpaceRef("workspaces", input.workspace_id, input.space_id, "Workspace");
+    await this.assertOptionalSpaceRef("project_folders", input.project_folder_id, input.space_id, "Project Folder");
     await this.assertOptionalSpaceRef("projects", input.project_id, input.space_id, "Project");
 
     const now = input.started_at ?? new Date().toISOString();
@@ -627,7 +708,7 @@ export class PgRunRepository {
           agent_version_id: agent.current_version_id,
           runtime_profile_id: null,
           session_id: null,
-          workspace_id: input.workspace_id ?? null,
+          project_folder_id: input.project_folder_id ?? null,
           project_id: input.project_id ?? null,
           user_message: input.prompt ?? input.instruction ?? null,
           manual_context: [],
@@ -647,7 +728,7 @@ export class PgRunRepository {
       `INSERT INTO runs (
           id, space_id, agent_id, agent_version_id, runtime_profile_id,
           context_snapshot_id,
-          workspace_id, session_id, parent_run_id, instructed_by_user_id,
+          project_folder_id, session_id, parent_run_id, instructed_by_user_id,
           run_type, trigger_origin, status, mode, prompt, instruction,
           scheduled_at, started_at, created_at, updated_at, adapter_type,
           capability_id, capabilities_json, model_provider_id, model_override_json,
@@ -664,7 +745,7 @@ export class PgRunRepository {
        )
        RETURNING id, space_id, agent_id, agent_version_id, runtime_profile_id,
                  context_snapshot_id,
-                 run_type, status, mode, prompt, instruction, workspace_id,
+                 run_type, status, mode, prompt, instruction, project_folder_id,
                  session_id, parent_run_id, root_run_id, run_group_id,
                  delegation_id, project_id, scheduled_at,
                  adapter_type, capability_id, capabilities_json, model_provider_id,
@@ -680,7 +761,7 @@ export class PgRunRepository {
         input.agent_id,
         agent.current_version_id,
         contextSnapshotId,
-        input.workspace_id ?? null,
+        input.project_folder_id ?? null,
         input.user_id,
         input.trigger_origin,
         input.prompt ?? null,
@@ -759,7 +840,7 @@ export class PgRunRepository {
   ): Promise<RuntimeProfileForRun | null> {
     const result = await this.db.query<RuntimeProfileForRun>(
       `SELECT id, space_id, agent_id, name, adapter_type, model_provider_id,
-              model_name, credential_profile_id, runtime_config_json,
+              model_name, runtime_config_json,
               runtime_policy_json, enabled, is_default, created_at, updated_at
          FROM agent_runtime_profiles
         WHERE space_id = $1 AND agent_id = $2 AND id = $3
@@ -769,22 +850,25 @@ export class PgRunRepository {
     return result.rows[0] ?? null;
   }
 
-  private async agentVersionBelongsToAgent(
+  private async getAgentVersionForRun(
     spaceId: string,
     agentId: string,
     versionId: string,
-  ): Promise<boolean> {
-    const result = await this.db.query<{ id: string }>(
-      `SELECT id
+  ): Promise<{ id: string; tool_permissions_json: unknown } | null> {
+    const result = await this.db.query<{
+      id: string;
+      tool_permissions_json: unknown;
+    }>(
+      `SELECT id, tool_permissions_json
          FROM agent_versions
         WHERE space_id = $1 AND agent_id = $2 AND id = $3`,
       [spaceId, agentId, versionId],
     );
-    return result.rows.length > 0;
+    return result.rows[0] ?? null;
   }
 
   private async assertOptionalSpaceRef(
-    table: "workspaces" | "sessions" | "projects",
+    table: "project_folders" | "sessions" | "projects",
     id: string | null | undefined,
     spaceId: string,
     label: string,
@@ -811,11 +895,11 @@ export class PgRunRepository {
               r.runtime_profile_id, r.runtime_profile_selection_source,
               av.system_prompt AS system_prompt,
               r.context_snapshot_id, r.run_type, r.status, r.mode, r.prompt,
-              r.instruction, r.workspace_id, r.session_id, r.parent_run_id,
+              r.instruction, r.project_folder_id, r.session_id, r.parent_run_id,
               r.root_run_id, r.run_group_id, r.delegation_id,
               r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.capabilities_json, r.model_provider_id, r.model_override_json, r.required_sandbox_level,
-              r.runtime_profile_snapshot_json,
+              r.runtime_profile_snapshot_json, r.permission_snapshot_json,
               COALESCE(r.runtime_profile_snapshot_json->'runtime_config_json', '{}'::jsonb) AS runtime_config_json,
               r.contract_snapshot_json, r.workflow_version_id, r.route_decision_id,
               r.trigger_origin, r.instructed_by_user_id, r.instructed_by_agent_id, r.error_message,
@@ -855,7 +939,7 @@ export class PgRunRepository {
     addOptionalFilter(clauses, params, "status", filters.status);
     addOptionalFilter(clauses, params, "mode", filters.mode);
     addOptionalFilter(clauses, params, "agent_id", filters.agent_id);
-    addOptionalFilter(clauses, params, "workspace_id", filters.workspace_id);
+    addOptionalFilter(clauses, params, "project_folder_id", filters.project_folder_id);
     addOptionalFilter(clauses, params, "project_id", filters.project_id);
     addOptionalFilter(clauses, params, "workflow_version_id", filters.workflow_version_id);
     addOptionalFilter(clauses, params, "capability_id", filters.capability_id);
@@ -868,7 +952,7 @@ export class PgRunRepository {
       `SELECT id, space_id, agent_id, agent_version_id, run_role,
               requested_runtime_profile_id, runtime_profile_id, runtime_profile_selection_source,
               context_snapshot_id,
-              run_type, status, mode, prompt, instruction, workspace_id,
+              run_type, status, mode, prompt, instruction, project_folder_id,
               session_id, parent_run_id, root_run_id, run_group_id, delegation_id,
               project_id, scheduled_at, adapter_type,
               capability_id, capabilities_json, model_provider_id, model_override_json,
@@ -919,7 +1003,7 @@ export class PgRunRepository {
   async listRunSteps(spaceId: string, runId: string): Promise<RunStepDetailRecord[]> {
     const result = await this.db.query<RunStepDetailRecord>(
       `SELECT id, space_id, run_id, attempt_number, parent_step_id, actor_id, step_index,
-              step_type, status, title, workspace_id, session_id, task_id,
+              step_type, status, title, project_folder_id, session_id, task_id,
               artifact_id, proposal_id, started_at, ended_at, input_summary,
               output_summary, error_type, error_message, metadata_json,
               created_at, updated_at
@@ -934,7 +1018,7 @@ export class PgRunRepository {
   async listRunEvents(spaceId: string, runId: string): Promise<RunEventDetailRecord[]> {
     const result = await this.db.query<RunEventDetailRecord>(
       `SELECT id, space_id, run_id, attempt_number, step_id, actor_id, event_index, event_type,
-              status, summary, error_code, error_message, workspace_id,
+              status, summary, error_code, error_message, project_folder_id,
               artifact_id, proposal_id, data_exposure_level, trust_level,
               metadata_json, created_at
          FROM run_events
@@ -961,7 +1045,7 @@ export class PgRunRepository {
     const limitParam = params.length + 1;
     const rows = await this.db.query<RunEventDetailRecord>(
       `SELECT id, space_id, run_id, attempt_number, step_id, actor_id, event_index, event_type,
-              status, summary, error_code, error_message, workspace_id,
+              status, summary, error_code, error_message, project_folder_id,
               artifact_id, proposal_id, data_exposure_level, trust_level,
               metadata_json, created_at
          FROM run_events
@@ -1010,12 +1094,20 @@ export class PgRunRepository {
     runId: string,
   ): Promise<ProposalSummaryRecord[]> {
     const result = await this.db.query<ProposalSummaryRecord>(
-      `SELECT id, space_id, proposal_type, status, title, visibility,
-              created_at, preview, urgency, review_deadline, expires_at,
-              created_by_run_id
-         FROM proposals
-        WHERE space_id = $1 AND created_by_run_id = $2
-        ORDER BY created_at ASC, id ASC`,
+      `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
+              proposal.status, proposal.title, proposal.visibility,
+              proposal.created_at, proposal.preview, proposal.urgency,
+              proposal.review_deadline, proposal.expires_at,
+              proposal.created_by_run_id
+         FROM proposals proposal
+         JOIN runs run
+           ON run.id = proposal.created_by_run_id
+          AND run.space_id = proposal.space_id
+        WHERE proposal.space_id = $1
+          AND proposal.created_by_run_id = $2
+          AND proposal.status <> 'staged'
+          AND run.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+        ORDER BY proposal.created_at ASC, proposal.id ASC`,
       [spaceId, runId],
     );
     return result.rows;
@@ -1026,7 +1118,7 @@ export class PgRunRepository {
       `SELECT id, space_id, agent_id, agent_version_id, parent_run_id,
               root_run_id, run_group_id, delegation_id, status,
               run_type, trigger_origin, mode, created_at, started_at, ended_at,
-              prompt, instruction, workspace_id, session_id, project_id,
+              prompt, instruction, project_folder_id, session_id, project_id,
               runtime_profile_id, runtime_profile_selection_source,
               adapter_type, model_provider_id, required_sandbox_level, contract_snapshot_json, workflow_version_id,
               instructed_by_user_id, instructed_by_agent_id, error_message, visibility
@@ -1049,7 +1141,7 @@ export class PgRunRepository {
               relevant_period_end, compiled_prefix_text, compiled_tail_text,
               compiled_prefix_ref, compiled_tail_ref, prefix_hash, tail_hash,
               compiler_version, retrieval_trace_json, token_budget_json,
-              policy_bundle_version, memory_digest_version, workspace_digest_version,
+              policy_bundle_version, memory_digest_version, project_folder_digest_version,
               included_memory_refs_json, included_evidence_refs_json,
               included_file_refs_json, included_doc_refs_json, redactions_json,
               data_exposure_level, rendered_context_uri, rendered_context_text,
@@ -1217,6 +1309,43 @@ export class PgRunRepository {
       [spaceId, runId],
     );
     return result.rows[0] ?? null;
+  }
+
+  async withRunFinalizationLock<T>(
+    spaceId: string,
+    runId: string,
+    attemptNumber: number,
+    finalizerVersion: string,
+    fn: (repository: PgRunRepository) => Promise<T>,
+  ): Promise<T> {
+    const lockKey = [
+      "run_finalization",
+      spaceId,
+      runId,
+      attemptNumber,
+      finalizerVersion,
+    ].join(":");
+    return withDedicatedSessionAdvisoryLock(this.db, lockKey, (lockedDb) =>
+      fn(lockedDb === this.db ? this : new PgRunRepository(lockedDb)));
+  }
+
+  async markRunFinalizationGateCommitted(
+    spaceId: string,
+    finalizationId: string,
+    committedAt: string,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE run_finalizations
+          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
+                || jsonb_build_object(
+                  'completion_gate_committed', true,
+                  'completion_gate_committed_at', $3::text
+                )
+        WHERE space_id = $1
+          AND id = $2
+          AND status = 'completed'`,
+      [spaceId, finalizationId, committedAt],
+    );
   }
 
   async getRunFinalizationByVersion(
@@ -1440,10 +1569,10 @@ export class PgRunRepository {
           WHERE space_id = $1 AND id = $2 AND status = 'queued'
           RETURNING id, space_id, agent_id, agent_version_id, runtime_profile_id,
                     runtime_profile_snapshot_json, run_type, status, mode,
-                    prompt, instruction, workspace_id, session_id, project_id,
+                    prompt, instruction, project_folder_id, session_id, project_id,
                     parent_run_id, root_run_id, run_group_id, delegation_id,
                     adapter_type, capability_id, capabilities_json, model_provider_id,
-                    model_override_json,
+                    model_override_json, permission_snapshot_json,
                     required_sandbox_level, contract_snapshot_json, workflow_version_id, trigger_origin, instructed_by_user_id,
                     instructed_by_agent_id, error_message,
                     started_at, ended_at
@@ -1510,6 +1639,81 @@ export class PgRunRepository {
     return checkRunBudget(this.db, run);
   }
 
+  async checkRunExecutionAuthorization(
+    run: Pick<
+      RunRecord,
+      | "space_id"
+      | "instructed_by_user_id"
+      | "project_id"
+      | "project_folder_id"
+      | "run_group_id"
+    >,
+  ): Promise<{ allowed: boolean; error_code?: string; error_message?: string }> {
+    if (!run.instructed_by_user_id) return { allowed: true };
+    const result = await this.db.query<{ allowed: boolean }>(
+      `SELECT (
+          EXISTS (
+            SELECT 1
+              FROM space_memberships membership
+             WHERE membership.space_id = $1
+               AND membership.user_id = $2
+               AND membership.status = 'active'
+          )
+          AND (
+            $3::varchar IS NULL
+            OR ${projectReadAccessSql("$1", "$3", "$2")}
+          )
+          AND (
+            $4::varchar IS NULL
+            OR NOT EXISTS (
+              SELECT 1
+                FROM agent_run_groups candidate_group
+               WHERE candidate_group.id = $4
+                 AND candidate_group.space_id = $1
+                 AND candidate_group.room_id IS NOT NULL
+            )
+            OR EXISTS (
+              SELECT 1
+                FROM agent_run_groups room_group
+                JOIN room_user_members room_member
+                  ON room_member.room_id = room_group.room_id
+                 AND room_member.space_id = room_group.space_id
+                 AND room_member.user_id = $2
+                 AND room_member.status = 'active'
+               WHERE room_group.id = $4
+                 AND room_group.space_id = $1
+            )
+          )
+          AND (
+            $5::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM project_folders execution_folder
+               WHERE execution_folder.id = $5
+                 AND execution_folder.space_id = $1
+                 AND execution_folder.project_id = $3
+                 AND execution_folder.status = 'active'
+                 AND execution_folder.execution_enabled = TRUE
+            )
+          )
+        ) AS allowed`,
+      [
+        run.space_id,
+        run.instructed_by_user_id,
+        run.project_id,
+        run.run_group_id,
+        run.project_folder_id,
+      ],
+    );
+    return result.rows[0]?.allowed
+      ? { allowed: true }
+      : {
+          allowed: false,
+          error_code: "run_execution_authorization_revoked",
+          error_message: "Run execution authorization is no longer active.",
+        };
+  }
+
   async updateRunSandboxLevel(input: {
     run_id: string;
     space_id: string;
@@ -1524,39 +1728,126 @@ export class PgRunRepository {
   }
 
   async markRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null> {
-    // The public run read model surfaces output through output_json.output_text,
-    // so the terminal write folds it in before sanitization. output_text is
-    // bounded (or not) by the adapter that produced it — e.g. the CLI adapter
-    // already truncates its own stdout, while the model-API adapter needs the
-    // full text intact for downstream JSON-schema parsing — so only the
-    // secret-pattern scrub runs here; the length cap in sanitizeEvidenceJson
-    // only applies to the rest of output_json.
-    const outputJson = {
-      ...(sanitizeEvidenceJson(recordValue(input.output_json)) as Record<string, unknown>),
-      ...(input.output_text ? { output_text: redactSecretPatterns(input.output_text) } : {}),
-    };
+    return this.markRunTerminalInternal(input, null, false);
+  }
+
+  async markRunTerminalWithConversationSession(
+    input: RunTerminalUpdate,
+    conversation: ConversationRuntimeTerminalSync,
+  ): Promise<RunRecord | null> {
+    return this.markRunTerminalInternal(input, conversation, false);
+  }
+
+  async publishRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null> {
+    return this.markRunTerminalInternal(input, null, true);
+  }
+
+  async publishRunTerminalWithConversationSession(
+    input: RunTerminalUpdate,
+    conversation: ConversationRuntimeTerminalSync,
+  ): Promise<RunRecord | null> {
+    return this.markRunTerminalInternal(input, conversation, true);
+  }
+
+  private async markRunTerminalInternal(
+    input: RunTerminalUpdate,
+    conversation: ConversationRuntimeTerminalSync | null,
+    executionOwner: boolean,
+  ): Promise<RunRecord | null> {
+    const outputJson = sanitizeEvidenceJson(recordValue(input.output_json));
     const errorJson = sanitizeErrorJson(input.error_json ?? {});
     const terminalErrorCode = typeof recordValue(errorJson).error_code === "string"
       ? recordValue(errorJson).error_code as string
       : null;
+    const replacementStateKey = randomUUID();
     const result = await this.db.query<RunRecord>(
-      `WITH updated AS (
-       UPDATE runs
+      `WITH candidate AS (
+         SELECT id
+           FROM runs
+          WHERE space_id = $1
+            AND id = $2
+            AND status NOT IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+            AND ($18::boolean OR NOT EXISTS (
+              SELECT 1 FROM run_execution_locks active_lock
+               WHERE active_lock.run_id = runs.id
+            ))
+            AND (NOT $18::boolean OR $3 = 'cancelled' OR status <> 'cancelling')
+          FOR UPDATE
+       ), synchronized_session AS (
+         UPDATE session_conversation_backends
+            SET runtime_state_key = CASE WHEN $11::boolean
+                  THEN runtime_state_key ELSE $16 END,
+                runtime_session_id = CASE WHEN $11::boolean
+                  THEN $14 ELSE NULL END,
+                runtime_context_fingerprint = CASE WHEN $11::boolean
+                  THEN $15 ELSE NULL END,
+                runtime_message_cursor_id = CASE WHEN $11::boolean
+                  THEN $17 ELSE NULL END,
+                runtime_session_updated_at = CASE WHEN $11::boolean
+                  THEN $7::timestamptz ELSE NULL END,
+                updated_at = $7
+          WHERE $10::boolean
+            AND id = $12
+            AND runtime_state_key = $13
+            AND EXISTS (SELECT 1 FROM candidate)
+          RETURNING runtime_state_key
+       ), updated AS (
+         UPDATE runs run_row
           SET status = $3,
               output_json = $4::jsonb,
               error_json = $5::jsonb,
               exit_code = $6,
               ended_at = $7,
               updated_at = $7,
-              error_message = $8
-        WHERE space_id = $1 AND id = $2
-          AND status NOT IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
-        RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                  prompt, instruction, workspace_id, session_id, project_id,
-                  parent_run_id, root_run_id, run_group_id, delegation_id,
-                  adapter_type, model_provider_id,
-                  required_sandbox_level, trigger_origin, instructed_by_user_id,
-                  instructed_by_agent_id, error_message, started_at, ended_at
+              error_message = $8,
+              model_override_json = CASE
+                WHEN $10::boolean
+                 AND NOT $11::boolean
+                 AND EXISTS (SELECT 1 FROM synchronized_session)
+                THEN jsonb_set(
+                  jsonb_set(
+                    run_row.model_override_json,
+                    '{conversation_runtime,runtime_state_key}',
+                    to_jsonb((
+                      SELECT runtime_state_key
+                        FROM synchronized_session
+                       LIMIT 1
+                    ))
+                  ),
+                  '{conversation_runtime,runtime_session_id}',
+                  'null'::jsonb
+                )
+                ELSE run_row.model_override_json
+              END
+          FROM candidate
+         WHERE run_row.id = candidate.id
+        RETURNING run_row.id, run_row.space_id, run_row.agent_id,
+                  run_row.agent_version_id, run_row.run_type, run_row.status,
+                  run_row.mode, run_row.prompt, run_row.instruction,
+                  run_row.project_folder_id, run_row.session_id, run_row.project_id,
+                  run_row.parent_run_id, run_row.root_run_id, run_row.run_group_id,
+                  run_row.delegation_id, run_row.adapter_type,
+                  run_row.model_provider_id, run_row.required_sandbox_level,
+                  run_row.trigger_origin, run_row.instructed_by_user_id,
+                  run_row.instructed_by_agent_id, run_row.error_message,
+                  run_row.output_json, run_row.error_json, run_row.started_at,
+                  run_row.ended_at
+       ), resolved_proposals AS (
+         UPDATE proposals proposal
+            SET status = CASE
+                  WHEN $3 IN ('succeeded', 'degraded') THEN 'pending'
+                  ELSE 'rejected'
+                END,
+                updated_at = $7
+           FROM updated u
+          WHERE proposal.space_id = u.space_id
+            AND proposal.created_by_run_id = u.id
+            AND proposal.status = 'staged'
+       ), released_lock AS (
+         DELETE FROM run_execution_locks execution_lock
+          USING updated u
+          WHERE $18::boolean
+            AND execution_lock.run_id = u.id
        ), updated_attempt AS (
          UPDATE run_attempts a
             SET status = $3,
@@ -1587,6 +1878,15 @@ export class PgRunRepository {
         input.completed_at,
         redactEvidenceText(extractErrorMessage(errorJson)),
         terminalErrorCode,
+        conversation !== null,
+        conversation?.keep_session ?? false,
+        conversation?.binding_id ?? null,
+        conversation?.runtime_state_key ?? null,
+        conversation?.runtime_session_id ?? null,
+        conversation?.context_fingerprint ?? null,
+        replacementStateKey,
+        conversation?.message_cursor_id ?? null,
+        executionOwner,
       ],
     );
     return result.rows[0] ?? null;
@@ -1623,12 +1923,16 @@ export class PgRunRepository {
 
   async listRunSupervisorDecisions(spaceId: string, runId: string): Promise<Record<string, unknown>[]> {
     const result = await this.db.query<Record<string, unknown>>(
-      `SELECT id, space_id, run_id, attempt_id, decision, reason_code,
+      `SELECT decision.id, decision.space_id, decision.run_id,
+              decision.attempt_id, decision.decision, decision.reason_code,
               next_attempt_number, total_estimated_cost_usd, max_cost_usd,
-              metadata_json, created_at
-         FROM run_supervisor_decisions
-        WHERE space_id = $1 AND run_id = $2
-        ORDER BY created_at DESC, id ASC`,
+              decision.metadata_json, decision.created_at
+         FROM run_supervisor_decisions decision
+         JOIN run_attempts attempt
+           ON attempt.id = decision.attempt_id
+          AND attempt.space_id = decision.space_id
+        WHERE decision.space_id = $1 AND decision.run_id = $2
+        ORDER BY attempt.attempt_number DESC, decision.id ASC`,
       [spaceId, runId],
     );
     return result.rows;
@@ -1657,7 +1961,7 @@ export class PgRunRepository {
             AND id = $2
             AND status IN ('queued', 'running', 'waiting_for_review', 'waiting_for_dependency', 'cancelling')
           RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                    prompt, instruction, workspace_id, session_id, project_id,
+                    prompt, instruction, project_folder_id, session_id, project_id,
                     parent_run_id, root_run_id, run_group_id, delegation_id,
                     adapter_type, model_provider_id, required_sandbox_level,
                     trigger_origin, instructed_by_user_id, instructed_by_agent_id,
@@ -1714,8 +2018,12 @@ export class PgRunRepository {
           WHERE space_id = $1
             AND id = $2
             AND status IN ('failed', 'degraded', 'orphaned')
+            AND NOT EXISTS (
+              SELECT 1 FROM run_execution_locks execution_lock
+               WHERE execution_lock.run_id = runs.id
+            )
           RETURNING id, space_id, agent_id, agent_version_id, runtime_profile_id,
-                    run_type, status, mode, prompt, instruction, workspace_id,
+                    run_type, status, mode, prompt, instruction, project_folder_id,
                     session_id, project_id, parent_run_id, root_run_id,
                     run_group_id, delegation_id, adapter_type, model_provider_id,
                     required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -1760,7 +2068,7 @@ export class PgRunRepository {
             AND id = $2
             AND status IN ('failed', 'degraded', 'orphaned')
           RETURNING id, space_id, agent_id, agent_version_id, run_type, status,
-                    mode, prompt, instruction, workspace_id, session_id,
+                    mode, prompt, instruction, project_folder_id, session_id,
                     project_id, parent_run_id, root_run_id, run_group_id,
                     delegation_id, adapter_type, model_provider_id,
                     required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -1818,7 +2126,7 @@ export class PgRunRepository {
           AND id = $2
           AND status = 'running'
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                  prompt, instruction, workspace_id, session_id, project_id,
+                  prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
                   adapter_type, model_provider_id,
                   required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -1870,7 +2178,7 @@ export class PgRunRepository {
           AND id = $2
           AND status = 'running'
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                  prompt, instruction, workspace_id, session_id, project_id,
+                  prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
                   adapter_type, model_provider_id,
                   required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -1881,6 +2189,80 @@ export class PgRunRepository {
         input.run_id,
         JSON.stringify(outputJson),
         input.paused_at,
+      ],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async markRunWaitingForDependencyWithConversationSession(
+    input: {
+      run_id: string;
+      space_id: string;
+      output_json: unknown;
+      paused_at: string;
+    },
+    conversation: ConversationRuntimeTerminalSync,
+  ): Promise<RunRecord | null> {
+    const outputJson = sanitizeEvidenceJson(input.output_json ?? {});
+    const result = await this.db.query<RunRecord>(
+      `WITH candidate AS (
+         SELECT id
+           FROM runs
+          WHERE space_id = $1
+            AND id = $2
+            AND status = 'running'
+          FOR UPDATE
+       ), synchronized_session AS (
+         UPDATE session_conversation_backends
+            SET runtime_session_id = $7,
+                runtime_context_fingerprint = $8,
+                runtime_message_cursor_id = $9,
+                runtime_session_updated_at = $4::timestamptz,
+                updated_at = $4
+          WHERE id = $5
+            AND runtime_state_key = $6
+            AND $7::varchar IS NOT NULL
+            AND EXISTS (SELECT 1 FROM candidate)
+          RETURNING id
+       )
+       UPDATE runs run_row
+          SET status = 'waiting_for_dependency',
+              output_json = $3::jsonb,
+              error_json = '{}'::jsonb,
+              error_message = NULL,
+              model_override_json = CASE
+                WHEN EXISTS (SELECT 1 FROM synchronized_session)
+                THEN jsonb_set(
+                  run_row.model_override_json,
+                  '{conversation_runtime,runtime_session_id}',
+                  to_jsonb($7::varchar)
+                )
+                ELSE run_row.model_override_json
+              END,
+              updated_at = $4
+         FROM candidate
+        WHERE run_row.id = candidate.id
+        RETURNING run_row.id, run_row.space_id, run_row.agent_id,
+                  run_row.agent_version_id, run_row.run_type, run_row.status,
+                  run_row.mode, run_row.prompt, run_row.instruction,
+                  run_row.project_folder_id, run_row.session_id, run_row.project_id,
+                  run_row.parent_run_id, run_row.root_run_id, run_row.run_group_id,
+                  run_row.delegation_id, run_row.adapter_type,
+                  run_row.model_provider_id, run_row.required_sandbox_level,
+                  run_row.trigger_origin, run_row.instructed_by_user_id,
+                  run_row.instructed_by_agent_id, run_row.error_message,
+                  run_row.output_json, run_row.error_json, run_row.started_at,
+                  run_row.ended_at`,
+      [
+        input.space_id,
+        input.run_id,
+        JSON.stringify(outputJson),
+        input.paused_at,
+        conversation.binding_id,
+        conversation.runtime_state_key,
+        conversation.runtime_session_id,
+        conversation.context_fingerprint,
+        conversation.message_cursor_id ?? null,
       ],
     );
     return result.rows[0] ?? null;
@@ -1901,6 +2283,16 @@ export class PgRunRepository {
       `UPDATE runs
           SET status = 'queued',
               prompt = $3,
+              model_override_json = CASE
+                WHEN model_override_json->'conversation_runtime'->>'schema_version'
+                     = 'conversation_runtime.v1'
+                THEN jsonb_set(
+                  model_override_json,
+                  '{conversation_runtime,replay_prompt}',
+                  to_jsonb($3::text)
+                )
+                ELSE model_override_json
+              END,
               output_json = COALESCE(output_json, '{}'::jsonb) || $4::jsonb,
               error_json = COALESCE(error_json, '{}'::jsonb),
               error_message = NULL,
@@ -1908,8 +2300,13 @@ export class PgRunRepository {
         WHERE space_id = $1
           AND id = $2
           AND status = 'waiting_for_dependency'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM run_execution_locks execution_lock
+             WHERE execution_lock.run_id = runs.id
+          )
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                  prompt, instruction, workspace_id, session_id, project_id,
+                  prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
                   adapter_type, model_provider_id,
                   required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -1937,7 +2334,7 @@ export class PgRunRepository {
               r.runtime_profile_id,
               av.system_prompt AS system_prompt,
               r.context_snapshot_id, r.run_type, r.status, r.mode, r.prompt,
-              r.instruction, r.workspace_id, r.session_id, r.parent_run_id,
+              r.instruction, r.project_folder_id, r.session_id, r.parent_run_id,
               r.root_run_id, r.run_group_id, r.delegation_id,
               r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.capabilities_json, r.model_provider_id, r.model_override_json, r.required_sandbox_level,
@@ -1991,7 +2388,7 @@ export class PgRunRepository {
           AND id = $2
           AND status = 'waiting_for_review'
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                  prompt, instruction, workspace_id, session_id, project_id,
+                  prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
                   adapter_type, model_provider_id, permission_snapshot_json,
                   required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -2020,6 +2417,61 @@ export class PgRunRepository {
     return result.rows[0] ?? null;
   }
 
+  async requeueApprovedAuthorizationRequest(input: {
+    run_id: string;
+    space_id: string;
+    authorization_request_id: string;
+    resumed_at: string;
+  }): Promise<RunRecord | null> {
+    const result = await this.db.query<RunRecord>(
+      `WITH updated AS (
+         UPDATE runs
+            SET status = 'queued',
+                error_json = NULL,
+                error_message = NULL,
+                updated_at = $4
+          WHERE id = $1
+            AND space_id = $2
+            AND status = 'waiting_for_review'
+            AND error_json->>'authorization_request_id' = $3
+            AND NOT EXISTS (
+              SELECT 1 FROM run_execution_locks execution_lock
+               WHERE execution_lock.run_id = runs.id
+            )
+            AND EXISTS (
+              SELECT 1 FROM authorization_requests authorization_request
+               WHERE authorization_request.id = $3
+                 AND authorization_request.space_id = $2
+                 AND authorization_request.run_id = $1
+                 AND authorization_request.status = 'approved'
+            )
+          RETURNING *
+       ), updated_attempt AS (
+         UPDATE run_attempts attempt
+            SET status = 'queued',
+                error_code = NULL,
+                error_json = COALESCE(attempt.error_json, '{}'::jsonb)
+                  || jsonb_build_object(
+                    'authorization_request_id', $3::text,
+                    'authorization_resumed_at', $4::text
+                  ),
+                updated_at = $4
+           FROM updated
+          WHERE attempt.run_id = updated.id
+            AND attempt.space_id = updated.space_id
+            AND attempt.status = 'waiting_for_review'
+       )
+       SELECT * FROM updated`,
+      [
+        input.run_id,
+        input.space_id,
+        input.authorization_request_id,
+        input.resumed_at,
+      ],
+    );
+    return result.rows[0] ?? null;
+  }
+
   async resumeRunAfterSupervisorReview(input: {
     run_id: string;
     space_id: string;
@@ -2039,7 +2491,7 @@ export class PgRunRepository {
             AND status = 'waiting_for_review'
             AND COALESCE(error_json->>'supervisor_review', 'false') = 'true'
           RETURNING id, space_id, agent_id, agent_version_id, run_type, status,
-                    mode, prompt, instruction, workspace_id, session_id, project_id,
+                    mode, prompt, instruction, project_folder_id, session_id, project_id,
                     parent_run_id, root_run_id, run_group_id, delegation_id,
                     adapter_type, model_provider_id, required_sandbox_level,
                     trigger_origin, instructed_by_user_id, instructed_by_agent_id,
@@ -2093,7 +2545,7 @@ export class PgRunRepository {
           AND id = $2
           AND status = 'succeeded'
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
-                  prompt, instruction, workspace_id, session_id, project_id,
+                  prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
                   adapter_type, model_provider_id,
                   required_sandbox_level, trigger_origin, instructed_by_user_id,
@@ -2117,7 +2569,7 @@ export class PgRunRepository {
     const result = await this.db.query<RunEventRecord>(
       `INSERT INTO run_events (
           id, space_id, run_id, attempt_number, event_index, step_id, actor_id, event_type,
-          status, summary, error_code, error_message, workspace_id,
+          status, summary, error_code, error_message, project_folder_id,
           artifact_id, proposal_id, data_exposure_level,
           trust_level, metadata_json, created_at
        )
@@ -2130,6 +2582,9 @@ export class PgRunRepository {
                  WHERE space_id = $1::varchar AND run_id = $2::varchar),
                $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                $16::jsonb, $17)
+       ON CONFLICT (space_id, run_id)
+         WHERE event_type = 'chat_completed'
+       DO NOTHING
        RETURNING id, space_id, run_id, event_index, event_type, status`,
       [
         input.space_id,
@@ -2142,7 +2597,7 @@ export class PgRunRepository {
         redactEvidenceText(input.summary),
         input.error_code ?? null,
         redactEvidenceText(input.error_message),
-        input.workspace_id ?? null,
+        input.project_folder_id ?? null,
         input.artifact_id ?? null,
         input.proposal_id ?? null,
         input.data_exposure_level ?? null,
@@ -2152,8 +2607,20 @@ export class PgRunRepository {
       ],
     );
     const row = result.rows[0];
-    if (!row) throw new Error("RunEvent append returned no row");
-    return row;
+    if (row) return row;
+    if (input.event_type === "chat_completed") {
+      const existing = await this.db.query<RunEventRecord>(
+        `SELECT id, space_id, run_id, event_index, event_type, status
+           FROM run_events
+          WHERE space_id = $1
+            AND run_id = $2
+            AND event_type = 'chat_completed'
+          LIMIT 1`,
+        [input.space_id, input.run_id],
+      );
+      if (existing.rows[0]) return existing.rows[0];
+    }
+    throw new Error("RunEvent append returned no row");
   }
 
   async createRunStep(input: RunStepInput): Promise<RunStepRecord> {
@@ -2161,7 +2628,7 @@ export class PgRunRepository {
     const result = await this.db.query<RunStepRecord>(
       `INSERT INTO run_steps (
           id, space_id, run_id, attempt_number, parent_step_id, actor_id, step_index,
-          step_type, status, title, workspace_id, session_id, task_id,
+          step_type, status, title, project_folder_id, session_id, task_id,
           artifact_id, proposal_id, started_at, ended_at,
           input_summary, output_summary, error_type, error_message,
           metadata_json, created_at, updated_at
@@ -2186,7 +2653,7 @@ export class PgRunRepository {
         input.step_type,
         input.status,
         input.title ?? null,
-        input.workspace_id ?? null,
+        input.project_folder_id ?? null,
         input.session_id ?? null,
         input.task_id ?? null,
         input.artifact_id ?? null,

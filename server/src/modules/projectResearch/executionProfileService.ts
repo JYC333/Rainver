@@ -159,9 +159,9 @@ export class ProjectResearchExecutionProfileService {
       model_name: string | null;
     }>(
       `SELECT id, model_provider_id, model_name
-         FROM agent_runtime_profiles
+        FROM agent_runtime_profiles
         WHERE space_id=$1 AND agent_id=$2 AND adapter_type=$3
-          AND model_provider_id=$4 AND credential_profile_id IS NULL AND enabled=true
+          AND model_provider_id=$4 AND enabled=true
         ORDER BY is_default DESC, created_at ASC, id ASC`,
       [identity.spaceId, agentId, RESEARCH_ADAPTER, modelProviderId],
     );
@@ -184,7 +184,6 @@ export class ProjectResearchExecutionProfileService {
         adapterType: RESEARCH_ADAPTER,
         modelProviderId,
         modelName,
-        credentialProfileId: null,
         runtimeConfigJson: { purpose: "project_research" },
         isDefault: false,
       },

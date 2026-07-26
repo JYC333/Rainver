@@ -20,7 +20,7 @@ const MEMORY_OBJECT_TYPES = ["memory_entry"] as const;
 
 interface MemoryProjectionRow {
   id: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   owner_user_id: string | null;
   sensitivity_level: string | null;
   visibility: string | null;
@@ -74,7 +74,7 @@ export const memoryRetrievalAdapter: RetrievalDomainAdapter = {
 
   async loadCanonical(db, spaceId, _objectType, objectId): Promise<CanonicalObject | null> {
     const result = await db.query<MemoryProjectionRow>(
-      `SELECT id, workspace_id, owner_user_id, visibility, status, memory_type,
+      `SELECT id, project_folder_id, owner_user_id, visibility, status, memory_type,
               title, content, sensitivity_level, scope_type, access_level, updated_at
          FROM memory_entries
         WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
@@ -94,7 +94,7 @@ export const memoryRetrievalAdapter: RetrievalDomainAdapter = {
       objectId: row.id,
       title,
       slug: null,
-      workspaceId: row.workspace_id,
+      projectFolderId: row.project_folder_id,
       ownerUserId: row.owner_user_id,
       visibility: row.visibility,
       status: row.status,
@@ -138,7 +138,7 @@ async function revalidateMemoryMany(
   const result = await db.query<MemoryVisibilityRow>(
     `SELECT me.id, me.space_id, me.deleted_at, me.sensitivity_level, me.visibility,
             me.access_level, ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$3" })} AS effective_access_level,
-            me.owner_user_id, me.scope_type, me.workspace_id, me.project_id, me.title, me.content
+            me.owner_user_id, me.scope_type, me.project_folder_id, me.project_id, me.title, me.content
        FROM memory_entries me
       WHERE me.space_id = $1
         AND me.id = ANY($2::varchar[])

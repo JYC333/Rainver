@@ -234,6 +234,24 @@ npm run build
 
 ```
 
+## Product acceptance
+
+Run the deterministic product gate from the repository root:
+
+```bash
+./ops/scripts/product-acceptance-gate.sh
+```
+
+The manual acceptance script, evidence requirements, and opt-in real-provider
+smoke setup are documented in
+[`architecture/PRODUCT_ACCEPTANCE.md`](architecture/PRODUCT_ACCEPTANCE.md).
+The real smoke is never part of the canonical suite and requires dedicated
+test data plus explicit short-lived credentials:
+
+```bash
+./ops/scripts/product-acceptance-real-smoke.sh
+```
+
 Manual stack smoke after a reset/rebuild:
 
 ```bash

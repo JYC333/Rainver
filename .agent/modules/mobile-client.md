@@ -4,7 +4,7 @@
 **PLANNED** — PWA scaffold exists (Vite + manifest). Mobile-specific UI not built.
 
 ## Purpose
-Define the mobile client strategy. agent-space targets mobile as a thin client for capture, review, and consumption — not as a full agent execution environment. Mobile is a first-class surface for quick capture (thoughts, life logs), card review, and proposal approval, not for running agents or editing workspaces.
+Define the mobile client strategy. agent-space targets mobile as a thin client for capture, review, and consumption — not as a full agent execution environment. Mobile is a first-class surface for quick capture (thoughts, life logs), card review, and proposal approval, not for running agents or editing Project Folders.
 
 ## Owns
 - PWA manifest and service worker (offline shell)
@@ -14,7 +14,7 @@ Define the mobile client strategy. agent-space targets mobile as a thin client f
 
 ## Does Not Own
 - Agent run execution (always server-side)
-- Workspace file editing (desktop / web only in v1)
+- Project Folder file editing (desktop / web only in v1)
 - Full memory review governance UI (mobile shows simplified view)
 
 ## Target Surfaces
@@ -28,7 +28,7 @@ Define the mobile client strategy. agent-space targets mobile as a thin client f
 | Memory list | Read-only browse | P2 |
 | Knowledge read | Read + highlight | P2 |
 | Agent chat | Full (text-only, no file attach in v1) | P2 |
-| Workspace console | Not supported in v1 | — |
+| Files & Code | Not supported in v1 | — |
 | Diff review | Not supported in v1 | — |
 
 ## Layout on Mobile

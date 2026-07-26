@@ -62,8 +62,10 @@ upstream provider traffic.
 
 For high-risk file-access runs, the CLI runs as a subprocess inside a detached
 git worktree. The broker:
+
 1. Creates `instance/cache/runtime-homes/<run_id>/`
-2. Symlinks the credential dir: `<run_id>/.claude → source_path`
+2. Copies only the runtime's declared credential files into their expected
+   path, rejecting symlinked source files and target path components
 3. Sets `HOME=<run_id>/` in the subprocess environment
 
 The CLI finds its login state at the expected path without seeing the full container HOME.
@@ -74,9 +76,20 @@ Provider API keys still never enter the subprocess env.
 
 ```
 /app/instance/cache/runtime-homes/<run_id>/
-├── .claude  →  /app/instance/secrets/cli-credentials/users/<owner_user_id>/claude_code/<profile_uuid>/
-└── (nothing else)
+└── .claude/
+    └── .credentials.json
 ```
+
+Lightweight CLI conversation instead uses
+`cache/conversation-runtime-homes/<state-key>/`. That HOME persists across
+turn processes so the vendor can resume its opaque session id, but remains
+private to one user × session backend binding. Each turn refreshes only the
+declared credential file and preserves vendor session state. Backend/context
+invalidation rotates the unguessable state key and removes the retired HOME;
+a 30-day hourly retention sweep removes any orphan left by interruption or
+session deletion after excluding keys referenced by a binding or nonterminal
+Run. Conversation state is excluded from backup and is never a
+credential-profile authority.
 
 If no explicit or active-space default profile grant is resolved, runtime
 execution fails before the runtime adapter is invoked with

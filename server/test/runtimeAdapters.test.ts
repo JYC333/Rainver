@@ -66,11 +66,18 @@ describe("runtime adapter catalog", () => {
     expect(getRuntimeAdapterSpec("opencode")).toMatchObject({
       implementation_status: "implemented",
       invocation: {
-        headless_command_template: ["{executable}", "run", "--format", "json", "--agent", "agent-space-locked", "--dir", "{sandbox_cwd}", "{prompt}"],
+        headless_command_template: ["{executable}", "acp", "--cwd", "{sandbox_cwd}"],
+        argument_rendering_strategy: "ndjson_rpc",
+        protocol: "acp",
       },
       subagent_disable_config: {
         relative_path: "opencode.json",
         denied_value: { "*": "deny" },
+        required_values: expect.arrayContaining([
+          { path: ["default_agent"], value: "agent-space-locked", value_mode: "exact" },
+          { path: ["subagent_depth"], value: 0, value_mode: "exact" },
+          { path: ["agent", "agent-space-locked", "mode"], value: "primary", value_mode: "exact" },
+        ]),
       },
     });
   });

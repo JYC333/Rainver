@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { proposals } from "./proposals";
 import { projects } from "./projects";
 
@@ -33,7 +33,7 @@ export const artifacts = pgTable("artifacts", {
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	trustLevel: varchar("trust_level", { length: 32 }),
 	projectId: varchar("project_id", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_artifacts_artifact_type").using("btree", table.artifactType.asc().nullsLast()),
 	index("ix_artifacts_space_surface_role").using("btree", table.spaceId.asc().nullsLast(), table.surfaceRole.asc().nullsLast()),
@@ -42,7 +42,7 @@ export const artifacts = pgTable("artifacts", {
 	index("ix_artifacts_proposal_id").using("btree", table.proposalId.asc().nullsLast()),
 	index("ix_artifacts_run_id").using("btree", table.runId.asc().nullsLast()),
 	index("ix_artifacts_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_artifacts_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_artifacts_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	unique("artifacts_id_space_id_key").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.ownerUserId],
@@ -65,9 +65,9 @@ export const artifacts = pgTable("artifacts", {
 			name: "artifacts_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "artifacts_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "artifacts_project_folder_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.projectId],

@@ -62,7 +62,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         source_type: kind === "voice" ? "voice_capture" : "file_capture",
         content,
         title,
-        workspace_id: upload.fields.workspace_id,
+        project_folder_id: upload.fields.project_folder_id,
         metadata_json: {
           capture_kind: kind,
           filename: originalName || null,
@@ -89,7 +89,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const { limit, offset } = parsePage(q);
       const rows = await repository().list(identity, {
         userId: forUserId,
-        workspaceId: optionalString(q.workspace_id),
+        projectFolderId: optionalString(q.project_folder_id),
         sourceType: optionalString(q.source_type),
         status: optionalString(q.status),
         projectId: optionalString(q.project_id),

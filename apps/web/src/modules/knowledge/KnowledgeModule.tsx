@@ -11,8 +11,8 @@ import SourcesPage from './SourcesPage'
 import KnowledgeCardsPanel from './KnowledgeCardsPanel'
 
 /**
- * `/knowledge` is a thin entry point, not a workspace: it redirects to the
- * last-used Knowledge workspace (Notes on a fresh client). It never lands on the
+ * `/knowledge` is a thin entry point, not a section: it redirects to the
+ * last-used Knowledge section (Notes on a fresh client). It never lands on the
  * overview — `home` is an intentional destination reached via the breadcrumb
  * switcher or a direct link.
  */
@@ -27,8 +27,8 @@ function KnowledgeIndexRedirect() {
  * "Wiki": Notes (working knowledge) and Wiki (canonical knowledge) are peer
  * sub-areas alongside Sources and Cards. Cross-section navigation is the
  * breadcrumb switcher in each page header (KnowledgeSectionHeader) — there is no
- * Knowledge scene sidebar or tab strip. Each workspace owns its own layout; the
- * Notes workspace nests the open note under `notes/:noteId` so its tree + tabs
+ * Knowledge scene sidebar or tab strip. Each section owns its own layout; the
+ * Notes section nests the open note under `notes/:noteId` so its tree + tabs
  * stay mounted while switching notes.
  */
 export default function KnowledgeModule() {

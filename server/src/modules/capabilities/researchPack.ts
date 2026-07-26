@@ -98,7 +98,7 @@ export const RESEARCH_CAPABILITIES: CapabilityDefinition[] = [
   researchCapability(
     "research.adhoc_analyze",
     "Ad-hoc Research Analysis",
-    "Analyze a bounded notebook and paper selection and propose a reviewed workspace update.",
+    "Analyze a bounded notebook and paper selection and propose a reviewed Research Area update.",
     [],
   ),
   researchCapability(
@@ -150,6 +150,9 @@ function workflow(
       capability_changes: "proposal_required",
     },
     recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
+    execution_shape: "structured_generation",
+    required_capabilities: [],
+    required_tools: [],
     prompt_asset_keys: [`workflow.${id}.run`],
   };
 }

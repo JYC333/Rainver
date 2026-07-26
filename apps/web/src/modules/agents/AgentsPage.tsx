@@ -1,93 +1,14 @@
 import { useEffect, useState } from 'react'
-import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
-import { Bot, Loader2, Plus, LayoutTemplate, MessageSquare, Settings2 } from 'lucide-react'
+import { SpaceLink as Link } from '../../core/spaceNav'
+import { Bot, Loader2, Plus, LayoutTemplate } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi } from '../../api/client'
 import type { AgentOut } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
-import { Badge, StatusBadge } from '../../components/ui/badge'
+import { StatusBadge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
-
-/**
- * The default Assistant is the space's system-managed Personal Assistant identity — backed
- * by a real Agent (agent_kind=system_assistant) and its own AgentVersion, never a raw chat
- * box and never a user-created template instance. This is the single entry for it on this
- * page; "Open chat" goes to its dedicated chat page, while its configuration (incl.
- * preferences) lives separately on its detail page.
- */
-function PersonalAssistantCard() {
-  const navigate = useNavigate()
-  const [assistant, setAssistant] = useState<AgentOut | null>(null)
-  const [busyAction, setBusyAction] = useState<'chat' | 'configure' | null>(null)
-
-  useEffect(() => {
-    // Resolve the existing assistant for its real name (404 until first created).
-    agentsApi.getDefaultAssistant().then(setAssistant).catch(() => setAssistant(null))
-  }, [])
-
-  async function resolveAssistant() {
-    const agent = assistant ?? await agentsApi.ensureDefaultAssistant()
-    setAssistant(agent)
-    return agent
-  }
-
-  async function openAssistant() {
-    setBusyAction('chat')
-    try {
-      const agent = await resolveAssistant()
-      navigate(`/agents/${agent.id}/chat`)
-    } catch (err) {
-      toast.error(errMsg(err))
-    } finally {
-      setBusyAction(null)
-    }
-  }
-
-  async function configureAssistant() {
-    setBusyAction('configure')
-    try {
-      const agent = await resolveAssistant()
-      navigate(`/agents/${agent.id}`)
-    } catch (err) {
-      toast.error(errMsg(err))
-    } finally {
-      setBusyAction(null)
-    }
-  }
-
-  return (
-    <Card className="border-primary/30">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'color-mix(in oklch, var(--primary) 12%, transparent)' }}>
-            <MessageSquare className="size-4" />
-          </div>
-          <div>
-            <CardTitle className="flex items-center gap-2">{assistant?.name ?? 'Personal Assistant'} <Badge variant="secondary">System-managed</Badge></CardTitle>
-            <p className="text-sm text-muted-foreground mt-1">
-              Your space's default contextual chat assistant. Open chat to talk to it; its context,
-              model, allowed outputs, and preferences are configured separately on its detail page.
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button size="sm" variant="outline" disabled={busyAction !== null} onClick={configureAssistant}>
-            {busyAction === 'configure'
-              ? <Loader2 className="size-4 animate-spin" />
-              : <><Settings2 className="size-3.5 mr-1" />Configure</>}
-          </Button>
-          <Button size="sm" disabled={busyAction !== null} onClick={openAssistant}>
-            {busyAction === 'chat'
-              ? <Loader2 className="size-4 animate-spin" />
-              : <><MessageSquare className="size-3.5 mr-1" />Open chat</>}
-          </Button>
-        </div>
-      </div>
-    </Card>
-  )
-}
 
 export default function AgentsPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
@@ -101,11 +22,8 @@ export default function AgentsPage() {
       return
     }
     setLoading(true)
-    // Include disabled/inactive agents so a disabled agent stays visible and can
-    // be re-enabled from its detail page (archived agents stay hidden).
     agentsApi.list({ status: 'active,disabled,inactive' })
-      // The system-managed default Assistant is represented by the card above —
-      // exclude it from the agent list so it is not listed twice.
+      // The retired hardcoded Assistant is not a selectable Room participant.
       .then(list => setAgents(list.filter(a => a.agent_kind !== 'system_assistant')))
       .catch(err => toast.error(errMsg(err)))
       .finally(() => setLoading(false))
@@ -132,8 +50,6 @@ export default function AgentsPage() {
           </Button>
         </div>
       </div>
-
-      {activeSpaceId && <PersonalAssistantCard />}
 
       {loading ? (
         <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading…</div>

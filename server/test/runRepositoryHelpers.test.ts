@@ -7,7 +7,7 @@ describe("runtime sandbox resolution", () => {
       adapterType: "opencode",
       configuredLevel: "none",
       riskLevel: "low",
-      workspaceId: null,
+      projectFolderId: null,
     })).toBe("ephemeral");
   });
 
@@ -16,7 +16,46 @@ describe("runtime sandbox resolution", () => {
       adapterType: "opencode",
       configuredLevel: "none",
       riskLevel: "high",
-      workspaceId: "workspace-1",
+      projectFolderId: "workspace-1",
+    })).toBe("worktree");
+  });
+
+  it("uses the zero-copy read-only Project Folder for low-risk CLI work", () => {
+    expect(resolveSandboxLevelForRuntime({
+      adapterType: "claude_code",
+      configuredLevel: "none",
+      riskLevel: "low",
+      projectFolderId: "workspace-1",
+    })).toBe("read_only");
+  });
+
+  it("does not let a configured read-only level downgrade high-risk CLI work", () => {
+    expect(resolveSandboxLevelForRuntime({
+      adapterType: "codex_cli",
+      configuredLevel: "read_only",
+      riskLevel: "high",
+      projectFolderId: "workspace-1",
+    })).toBe("worktree");
+  });
+
+  it.each(["dry_run", "ephemeral"])(
+    "does not let configured %s bypass a low-risk Folder read barrier",
+    (configuredLevel) => {
+      expect(resolveSandboxLevelForRuntime({
+        adapterType: "claude_code",
+        configuredLevel,
+        riskLevel: "low",
+        projectFolderId: "workspace-1",
+      })).toBe("read_only");
+    },
+  );
+
+  it("preserves a stronger configured sandbox above the read-only baseline", () => {
+    expect(resolveSandboxLevelForRuntime({
+      adapterType: "opencode",
+      configuredLevel: "worktree",
+      riskLevel: "medium",
+      projectFolderId: "workspace-1",
     })).toBe("worktree");
   });
 
@@ -25,7 +64,7 @@ describe("runtime sandbox resolution", () => {
       adapterType: "model_api",
       configuredLevel: "none",
       riskLevel: "low",
-      workspaceId: null,
+      projectFolderId: null,
     })).toBe("none");
   });
 
@@ -34,7 +73,7 @@ describe("runtime sandbox resolution", () => {
       adapterType: "opencode",
       configuredLevel: "none",
       riskLevel: "critical",
-      workspaceId: null,
+      projectFolderId: null,
     })).toBe("one_shot_docker");
   });
 });

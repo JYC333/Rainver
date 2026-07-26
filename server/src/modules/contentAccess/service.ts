@@ -22,7 +22,7 @@ interface ResourcePolicyRow {
   owner_user_id: string | null;
   visibility: string;
   access_level: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
 }
 
@@ -145,11 +145,11 @@ export class ContentAccessService {
     resourceId: string,
     forUpdate = false,
   ): Promise<ResourcePolicyRow | null> {
-    const workspaceSelect = definition.workspaceColumn ? `${definition.workspaceColumn} AS workspace_id` : "NULL::varchar AS workspace_id";
+    const projectFolderSelect = definition.projectFolderColumn ? `${definition.projectFolderColumn} AS project_folder_id` : "NULL::varchar AS project_folder_id";
     const projectSelect = definition.projectColumn ? `${definition.projectColumn} AS project_id` : "NULL::varchar AS project_id";
     const result = await db.query<ResourcePolicyRow>(
       `SELECT id, space_id, ${definition.ownerColumn} AS owner_user_id,
-              visibility, access_level, ${workspaceSelect}, ${projectSelect}
+              visibility, access_level, ${projectFolderSelect}, ${projectSelect}
          FROM ${definition.tableName}
         WHERE space_id = $1 AND id = $2 AND ${activeSql(definition)}
         LIMIT 1${forUpdate ? " FOR UPDATE" : ""}`,
@@ -245,7 +245,7 @@ function policyOut(resourceType: string, resource: ResourcePolicyRow, grants: re
     owner_user_id: resource.owner_user_id,
     visibility: resource.visibility,
     access_level: resource.access_level,
-    workspace_id: resource.workspace_id,
+    project_folder_id: resource.project_folder_id,
     project_id: resource.project_id,
     grants: grants.map((grant) => ({
       user_id: grant.grantee_user_id,

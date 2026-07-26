@@ -17,7 +17,7 @@ import {
 interface RuntimeToolBindingRow {
   id: string;
   space_id: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   agent_id: string | null;
   capability_id: string | null;
   runtime_adapter_type: string;
@@ -37,7 +37,7 @@ interface RuntimeToolBindingRow {
 }
 
 const COLUMNS = `
-  id, space_id, workspace_id, agent_id, capability_id, runtime_adapter_type,
+  id, space_id, project_folder_id, agent_id, capability_id, runtime_adapter_type,
   external_type, external_ref, display_name,
   required_scopes_json, credential_ref, data_exposure_level,
   observability_level, side_effect_level, approval_required, enabled,
@@ -80,7 +80,7 @@ class RuntimeToolBindingRepository {
     const values: unknown[] = [identity.spaceId];
     const clauses = ["space_id = $1"];
     for (const [queryKey, column] of [
-      ["workspace_id", "workspace_id"],
+      ["project_folder_id", "project_folder_id"],
       ["agent_id", "agent_id"],
       ["capability_id", "capability_id"],
       ["runtime_adapter_type", "runtime_adapter_type"],

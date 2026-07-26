@@ -15,11 +15,11 @@ import {
 import {
   deriveSkippedAfterScreeningSteps,
   researchState,
-  transition,
-  updateProjection,
+  advanceOperation,
+  refreshOperation,
   type ResearchOperationState,
-  type ResearchTransitionResult,
-} from "../stateMachine";
+  type ResearchMutationResult,
+} from "../operationProjection";
 
 interface MonitoringOperation {
   id: string;
@@ -61,6 +61,7 @@ export interface ProjectResearchMonitoringPorts {
   hasResearchQuestionDrift(spaceId: string, projectId: string, workflow: unknown): Promise<boolean>;
   appendPendingIncrementalItems(spaceId: string, projectId: string, workflowId: string, itemIds: string[]): Promise<void>;
   reconcileOperation(spaceId: string, operationId: string): Promise<void>;
+  startEmptyScanPass(input: SourceScanCompletedInput, operationId: string): Promise<void>;
   activeHistoricalBackfill(spaceId: string, projectId: string, workflowId: string): Promise<MonitoringOperationRow | null>;
   backfillPlanForItems(spaceId: string, itemIds: string[]): Promise<Map<string, { last_plan_id: string | null; created_plan_id: string | null }>>;
   operationByIdempotency(spaceId: string, projectId: string, key: string): Promise<MonitoringOperationRow | null>;
@@ -153,62 +154,83 @@ export class ProjectResearchMonitoringCoordinator {
         });
         continue;
       }
-      const state = researchState(operation.progress_json);
-      const otherPending = await this.db.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM extraction_jobs
-          WHERE space_id=$1 AND id<>$2 AND job_type='connection_scan'
-            AND status IN ('pending','running')
-            AND metadata_json->>'source_channel_id' = ANY(
-              ARRAY(SELECT jsonb_array_elements_text($3::jsonb))
-            )`,
-        [input.spaceId, input.scanJobId, JSON.stringify(state.channel_ids)],
+      await this.ports.startEmptyScanPass(input, operation.id);
+    }
+  }
+
+  async completeEmptyScanPass(
+    input: SourceScanCompletedInput,
+    operationId: string,
+  ): Promise<void> {
+    const operationResult = await this.db.query<MonitoringOperationRow>(
+      `SELECT id,space_id,project_id,status,progress_json,created_at
+         FROM project_operations
+        WHERE id=$1 AND space_id=$2 AND status='active'
+        FOR UPDATE`,
+      [operationId, input.spaceId],
+    );
+    const operation = operationResult.rows[0];
+    if (!operation) return;
+    const state = researchState(operation.progress_json);
+    if (state.run_kind !== "incremental" || !state.awaiting_source_scan) return;
+    const otherPending = await this.db.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM extraction_jobs
+        WHERE space_id=$1 AND id<>$2 AND job_type='connection_scan'
+          AND status IN ('pending','running')
+          AND metadata_json->>'source_channel_id' = ANY(
+            ARRAY(SELECT jsonb_array_elements_text($3::jsonb))
+          )`,
+      [input.spaceId, input.scanJobId, JSON.stringify(state.channel_ids)],
+    );
+    if (Number(otherPending.rows[0]?.count ?? 0) > 0) return;
+    const pendingPostProcessing = await this.db.query<{ count: string }>(
+      `SELECT (
+         (SELECT count(*) FROM source_post_processing_runs
+           WHERE space_id=$1 AND source_channel_id=ANY($2::text[]) AND status IN ('queued','running'))
+         +
+         (SELECT count(*) FROM jobs
+           WHERE space_id=$1 AND job_type='source_post_processing_event' AND status IN ('pending','claimed','running')
+             AND payload_json->>'source_channel_id'=ANY($2::text[]))
+       )::text AS count`,
+      [input.spaceId, state.channel_ids],
+    );
+    if (Number(pendingPostProcessing.rows[0]?.count ?? 0) > 0) return;
+    const progress = await this.ports.screeningProgressFor(
+      input.spaceId,
+      operation.project_id,
+      operation.id,
+      state,
+      operation.created_at,
+    );
+    const result = await advanceOperation(this.db, input.spaceId, operation.id, {
+      from: ["monitor_setup", "backfill", "screening"],
+      to: "complete",
+      mutate: ({ state: current }) => {
+        current.awaiting_source_scan = false;
+        current.watermark = {
+          before: current.watermark.after ?? input.scanWindowStart,
+          after: input.scannedAt,
+          overlap_hours: current.watermark.overlap_hours,
+        };
+        current.stage_state = "skipped";
+        current.screening_progress = {
+          ...progress,
+          phase: "completed",
+          total_items: 0,
+          classified_items: 0,
+          unclassified_items: 0,
+          message: "The monitoring scan completed with no new papers.",
+          updated_at: input.scannedAt,
+        };
+      },
+      stepOverrides: deriveSkippedAfterScreeningSteps(),
+    });
+    if (result.applied && result.row && result.state) {
+      await this.recordScanSummary(
+        result.row,
+        result.state,
+        { relevant: 0, maybe: 0, excluded: 0 },
       );
-      if (Number(otherPending.rows[0]?.count ?? 0) > 0) continue;
-      const pendingPostProcessing = await this.db.query<{ count: string }>(
-        `SELECT (
-           (SELECT count(*) FROM source_post_processing_runs
-             WHERE space_id=$1 AND source_channel_id=ANY($2::text[]) AND status IN ('queued','running'))
-           +
-           (SELECT count(*) FROM jobs
-             WHERE space_id=$1 AND job_type='source_post_processing_event' AND status IN ('pending','claimed','running')
-               AND payload_json->>'source_channel_id'=ANY($2::text[]))
-         )::text AS count`,
-        [input.spaceId, state.channel_ids],
-      );
-      if (Number(pendingPostProcessing.rows[0]?.count ?? 0) > 0) continue;
-      const progress = await this.ports.screeningProgressFor(
-        input.spaceId,
-        workflow.project_id,
-        operation.id,
-        state,
-        operation.created_at,
-      );
-      const result = await transition(this.db, input.spaceId, operation.id, {
-        from: ["monitor_setup", "backfill", "screening"],
-        to: "complete",
-        mutate: ({ state: current }) => {
-          current.awaiting_source_scan = false;
-          current.watermark = {
-            before: current.watermark.after ?? input.scanWindowStart,
-            after: input.scannedAt,
-            overlap_hours: current.watermark.overlap_hours,
-          };
-          current.stage_state = "skipped";
-          current.screening_progress = {
-            ...progress,
-            phase: "completed",
-            total_items: 0,
-            classified_items: 0,
-            unclassified_items: 0,
-            message: "The monitoring scan completed with no new papers.",
-            updated_at: input.scannedAt,
-          };
-        },
-        stepOverrides: deriveSkippedAfterScreeningSteps(),
-      });
-      if (result.applied && result.row && result.state) {
-        await this.recordScanSummary(result.row, result.state, { relevant: 0, maybe: 0, excluded: 0 });
-      }
     }
   }
 
@@ -289,7 +311,7 @@ export class ProjectResearchMonitoringCoordinator {
         const historicalUpdates = sourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.last_plan_id ?? ""));
         const pendingIds = sourceItemIds.filter((id) => !historicalIds.includes(id) && !historicalUpdates.includes(id));
         if (historicalIds.length > 0) {
-          await updateProjection(this.db, spaceId, historical.id, ({ state: current }) => {
+          await refreshOperation(this.db, spaceId, historical.id, ({ state: current }) => {
             current.source_item_ids = unique([...current.source_item_ids, ...historicalIds]);
             current.watermark = { before: current.watermark.after, after: watermarkAfter, overlap_hours: current.watermark.overlap_hours };
           });
@@ -303,7 +325,7 @@ export class ProjectResearchMonitoringCoordinator {
       if (prior && prior.status !== "failed" && prior.status !== "cancelled") return;
       const active = await this.ports.activeIncremental(spaceId, run.project_id, workflow.id);
       if (active) {
-        await updateProjection(this.db, spaceId, active.id, ({ state: current }) => {
+        await refreshOperation(this.db, spaceId, active.id, ({ state: current }) => {
           current.source_item_ids = unique([...current.source_item_ids, ...sourceItemIds]);
           current.awaiting_source_scan = false;
           current.watermark = { before: current.watermark.after, after: watermarkAfter, overlap_hours: current.watermark.overlap_hours };
@@ -329,8 +351,8 @@ export class ProjectResearchMonitoringCoordinator {
     projectId: string;
     operationId: string;
     workflowId: string;
-  }): Promise<ResearchTransitionResult> {
-    const result = await transition(this.db, input.spaceId, input.operationId, {
+  }): Promise<ResearchMutationResult> {
+    const result = await advanceOperation(this.db, input.spaceId, input.operationId, {
       from: ["screening", "comparison", "failed"],
       to: "comparison",
       mutate: async ({ db, state }) => {
@@ -411,7 +433,7 @@ export class ProjectResearchMonitoringCoordinator {
         } },
         { seq: 4, status: "skipped" },
       ],
-      onIllegal: "noop",
+      onStale: "noop",
     });
     if (result.applied && result.state && !result.state.comparison_run_id
       && (result.state.comparison_pending_source_item_ids?.length ?? 0) === 0
@@ -440,12 +462,15 @@ export class ProjectResearchMonitoringCoordinator {
     const state = researchState(row.progress_json);
     const comparisons = state.comparison_results_json ?? [];
     const runId = finalizingRunId ?? state.comparison_run_id ?? "";
-    const notebookVersion = comparisons.length > 0 && runId
+    const signalIds = comparisons.length > 0 && runId
       ? (await new ProjectResearchMonitorComparisonService(this.db).persistComparisons({
         spaceId, projectId, workflowId, operationId, runId, comparisons,
-      })).notebookVersion
-      : null;
-    await transition(this.db, spaceId, operationId, {
+        researchQuestion: state.research_question || "approved research corpus",
+        threadScope: state.thread_scope,
+        instructedByUserId,
+      })).signalIds
+      : [];
+    await advanceOperation(this.db, spaceId, operationId, {
       from: ["comparison"],
       to: "complete",
       mutate: ({ state: current }) => {
@@ -456,7 +481,7 @@ export class ProjectResearchMonitoringCoordinator {
       stepOverrides: [
         { seq: 0, status: "done" }, { seq: 1, status: "done" }, { seq: 2, status: "done" },
         comparisons.length > 0
-          ? { seq: 3, status: "done", detail: { run_id: runId, notebook_version: notebookVersion, comparison_count: comparisons.length } }
+          ? { seq: 3, status: "done", detail: { run_id: runId, signal_ids: signalIds, comparison_count: comparisons.length } }
           : { seq: 3, status: "skipped", detail: { reason: "No eligible papers to compare" } },
         { seq: 4, status: "skipped" },
       ],
@@ -497,7 +522,7 @@ export class ProjectResearchMonitoringCoordinator {
       await this.ports.reconcileCompletedRun(spaceId, runId);
       return;
     }
-    await updateProjection(this.db, spaceId, operation.id, ({ state: current }) => {
+    await refreshOperation(this.db, spaceId, operation.id, ({ state: current }) => {
       current.heartbeat_at = new Date().toISOString();
     });
   }
@@ -521,7 +546,7 @@ export class ProjectResearchMonitoringCoordinator {
       const matchedIds = new Set(matched.map((item) => item.source_item_id));
       const unmatched = input.expectedSourceItemIds.filter((id) => !matchedIds.has(id));
       const wasBatch = input.expectedSourceItemIds.length > 1;
-      const updated = await updateProjection(this.db, input.spaceId, input.operation.id, ({ state }) => {
+      const updated = await refreshOperation(this.db, input.spaceId, input.operation.id, ({ state }) => {
         if (state.comparison_run_id !== input.runId) return false;
         const existing = state.comparison_results_json ?? [];
         const bySourceItemId = new Map(existing.map((item) => [item.source_item_id, item]));

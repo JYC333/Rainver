@@ -12,7 +12,7 @@ interface ActivityRow {
   user_id: string | null;
   owner_user_id: string | null;
   subject_user_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
   activity_type: string;
   title: string | null;
@@ -24,7 +24,7 @@ interface ActivityRow {
 }
 
 const ACTIVITY_COLUMNS = `
-  id, space_id, user_id, owner_user_id, subject_user_id, workspace_id, project_id,
+  id, space_id, user_id, owner_user_id, subject_user_id, project_folder_id, project_id,
   activity_type, title, content, source_trust, source_url, status, aggregate_key
 `;
 
@@ -171,7 +171,7 @@ export class PgActivityConsolidationRepository {
         ],
       },
       createdByUserId: identity.userId,
-      workspaceId: activity.workspace_id,
+      projectFolderId: activity.project_folder_id,
       projectId: activity.project_id,
       visibility: "space_shared",
       riskLevel: "low",

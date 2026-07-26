@@ -24,7 +24,7 @@ Anki-like review system. Cards are generated from knowledge items and activities
 
 ```
 FlashCard:
-  id, space_id, user_id, workspace_id
+  id, space_id, user_id, project_folder_id
   knowledge_item_id        — FK → KnowledgeItem (null if standalone)
   activity_record_id       — FK → ActivityRecord (null if not from activity)
   front, back, extra
@@ -112,7 +112,7 @@ POST /api/v1/cards/{id}/review
 ## UI: Card Browser
 
 - List of all FlashCards for current space/user
-- Filter by: status, source (knowledge/activity), workspace, due date
+- Filter by: status, source (knowledge/activity), Project Folder, due date
 - Bulk actions: suspend, archive, reset scheduling
 - Each row: front preview, due date, FSRS difficulty, review count
 

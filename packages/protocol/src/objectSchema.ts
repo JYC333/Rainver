@@ -109,6 +109,7 @@ export const OBJECT_KIND_KEY_VALUES_BY_BASE_OBJECT_TYPE = {
   project_public_summary: ["project_public_summary"],
   source_item: ["external_url", "feed_entry", "activity_record", "artifact", "run_event", "file", "document", "log"],
   extracted_evidence: ["document", "excerpt", "event", "log", "artifact", "claim", "summary"],
+  inquiry_thread: ["question", "hypothesis"],
 } as const satisfies Record<SpaceObjectKindBaseObjectType, readonly string[]>;
 
 export const OBJECT_SCHEMA_RELATION_TYPE_VALUES = [

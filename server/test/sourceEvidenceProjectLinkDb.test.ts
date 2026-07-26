@@ -416,11 +416,11 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     );
     const context = new PgRunContextRepository(pool);
     const ownerContext = await context.selectEvidenceForContext({
-      spaceId: SPACE, userId: OWNER, workspaceId: null, projectId: null, runId: null, limit: 8,
+      spaceId: SPACE, userId: OWNER, projectFolderId: null, projectId: null, runId: null, limit: 8,
     });
     expect(ownerContext.map((selection) => (selection.item as { id?: string }).id)).toContain(evidenceId);
     const unconsentedContext = await context.selectEvidenceForContext({
-      spaceId: SPACE, userId: OTHER_USER, workspaceId: null, projectId: null, runId: null, limit: 8,
+      spaceId: SPACE, userId: OTHER_USER, projectFolderId: null, projectId: null, runId: null, limit: 8,
     });
     expect(unconsentedContext.map((selection) => (selection.item as { id?: string }).id)).not.toContain(evidenceId);
 
@@ -570,7 +570,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       [randomUUID(), SPACE, evidenceIds[0], PROJECT, now],
     );
     const contextRows = await new PgRunContextRepository(pool).selectEvidenceForContext({
-      spaceId: SPACE, userId: OTHER_USER, workspaceId: null, projectId: PROJECT, runId: null, limit: 8,
+      spaceId: SPACE, userId: OTHER_USER, projectFolderId: null, projectId: PROJECT, runId: null, limit: 8,
     });
     expect(contextRows.map((selection) => (selection.item as { id?: string }).id)).not.toContain(evidenceIds[0]);
     await expect(repository.createSummaryRun({ spaceId: SPACE, userId: OTHER_USER }, {
@@ -720,7 +720,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const selections = await repo.selectEvidenceForContext({
       spaceId: SPACE,
       userId: OWNER,
-      workspaceId: null,
+      projectFolderId: null,
       projectId: PROJECT,
       runId: null,
       limit: 8,

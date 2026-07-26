@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,15 +6,21 @@ import { loadConfig } from "../src/config";
 import {
   buildSubprocessEnv,
   DockerCliCommandExecutor,
+  createVendorEventStream,
+  createVendorTextDeltaStream,
   executeVendorCliAdapter,
   parseOpenCodeOutput,
+  parseVendorStructuredOutput,
   type CliCommandExecutor,
   type CliCredentialBrokerPort,
   type CliExecutionResult,
 } from "../src/modules/runs/vendorCliAdapter";
 import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease";
+import { materializeRunCredentialHome } from "../src/modules/providers/cli/credentialBroker";
 import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
 import type { RunRecord } from "../src/modules/runs/repository";
+import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope";
+import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol";
 
 const tmpPaths: string[] = [];
 
@@ -41,7 +47,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "headless",
     prompt: "Fix the bug",
     instruction: null,
-    workspace_id: "workspace-1",
+    project_folder_id: "workspace-1",
     session_id: null,
     project_id: null,
     adapter_type: "codex_cli",
@@ -64,6 +70,11 @@ class FakeBroker implements CliCredentialBrokerPort {
   }> = [];
   cleanups: string[] = [];
   granted = true;
+  liveQuotas: Array<{ runtime: string; profileId: string; quota: Record<string, unknown> }> = [];
+
+  async prepareRunHome(runId: string): Promise<string> {
+    return `/tmp/runtime-home/${runId}`;
+  }
 
   async grantForRun(
     runId: string,
@@ -97,6 +108,14 @@ class FakeBroker implements CliCredentialBrokerPort {
   async cleanupRunHome(runId: string): Promise<void> {
     this.cleanups.push(runId);
   }
+
+  async recordLiveQuota(
+    runtime: string,
+    profileId: string,
+    quota: Record<string, unknown>,
+  ): Promise<void> {
+    this.liveQuotas.push({ runtime, profileId, quota });
+  }
 }
 
 class TempCodexBroker extends FakeBroker {
@@ -118,6 +137,9 @@ class TempCodexBroker extends FakeBroker {
     await mkdir(this.tempHome, { recursive: true });
     await mkdir(this.profileDir, { recursive: true });
     await writeFile(join(this.profileDir, "auth.json"), "{\"token\":\"login-state\"}", "utf8");
+    await writeFile(join(this.profileDir, "config.toml"), "shared = true", "utf8");
+    await mkdir(join(this.profileDir, "sessions"), { recursive: true });
+    await writeFile(join(this.profileDir, "sessions", "shared.jsonl"), "shared session", "utf8");
     await symlink(this.profileDir, join(this.tempHome, ".codex"));
     return {
       granted: true,
@@ -150,10 +172,27 @@ class FakeExecutor implements CliCommandExecutor {
       credential_source_path: string | null;
       credential_target_path: string | null;
     };
+    read_only?: {
+      workspace_cwd: string;
+      context_cwd: string;
+      sandbox_root: string;
+      agent_space_home: string;
+      cli_tools_root: string;
+      readable_paths: string[];
+      writable_paths: string[];
+    };
   }> = [];
   result: CliExecutionResult = {
     returncode: 0,
-    stdout: "cli output",
+    stdout: JSON.stringify({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        delta: "cli output",
+      },
+    }),
     stderr: "",
     timed_out: false,
   };
@@ -172,8 +211,90 @@ class FakeExecutor implements CliCommandExecutor {
       credential_source_path: string | null;
       credential_target_path: string | null;
     };
+    on_stdout_chunk?: (chunk: string) => void;
   }): Promise<CliExecutionResult> {
     this.calls.push(input);
+    const controller = (input as Parameters<CliCommandExecutor["runCommand"]>[0]).stdio_controller;
+    if (controller) {
+      const send = () => {};
+      const close = () => {};
+      controller.start(send);
+      if (input.command.includes("app-server")) {
+        controller.receive({ id: 1, result: {} }, send, close);
+        controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
+        controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
+        controller.receive({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            tokenUsage: {
+              last: {
+                inputTokens: 12,
+                outputTokens: 3,
+                totalTokens: 15,
+                cachedInputTokens: 4,
+                cacheWriteInputTokens: 0,
+                reasoningOutputTokens: 1,
+              },
+              total: {
+                inputTokens: 12,
+                outputTokens: 3,
+                totalTokens: 15,
+                cachedInputTokens: 4,
+                cacheWriteInputTokens: 0,
+                reasoningOutputTokens: 1,
+              },
+            },
+          },
+        }, send, close);
+      } else {
+        controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+        controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, close);
+        controller.receive({
+          jsonrpc: "2.0",
+          id: 3,
+          result: {
+            configOptions: [{ id: "model", currentValue: "provider/model" }],
+          },
+        }, send, close);
+      }
+      for (const line of this.result.stdout.split(/\r?\n/).filter(Boolean)) {
+        input.on_stdout_chunk?.(`${line}\n`);
+        controller.receive(JSON.parse(line) as Record<string, unknown>, send, close);
+      }
+      if (input.command.includes("app-server")) {
+        controller.receive({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "completed" },
+          },
+        }, send, close);
+      } else {
+        controller.receive(
+          {
+            jsonrpc: "2.0",
+            id: 4,
+            result: {
+              stopReason: "end_turn",
+              usage: {
+                inputTokens: 12,
+                outputTokens: 3,
+                totalTokens: 20,
+                cachedReadTokens: 4,
+                cachedWriteTokens: 0,
+                thoughtTokens: 1,
+              },
+            },
+          },
+          send,
+          close,
+        );
+      }
+    } else {
+      input.on_stdout_chunk?.(this.result.stdout);
+    }
     return this.result;
   }
 }
@@ -191,6 +312,53 @@ class FakeTools implements RuntimeToolResolverPort {
 }
 
 describe("executeVendorCliAdapter", () => {
+  it("materializes OpenCode auth at its nested HOME path without shared session state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aspace-opencode-home-"));
+    tmpPaths.push(root);
+    const source = join(root, "profile");
+    const home = join(root, "run-home");
+    await mkdir(source, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(join(source, "auth.json"), '{"token":"owned"}', "utf8");
+    await writeFile(join(source, "opencode.db"), "shared session state", "utf8");
+
+    await materializeRunCredentialHome({
+      tempHome: home,
+      runtime: "opencode",
+      sourcePath: source,
+    });
+
+    await expect(
+      readFile(join(home, ".local", "share", "opencode", "auth.json"), "utf8"),
+    ).resolves.toContain("owned");
+    await expect(
+      readFile(join(home, ".local", "share", "opencode", "opencode.db"), "utf8"),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a vendor-created symlink in a persistent credential HOME", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aspace-opencode-home-link-"));
+    tmpPaths.push(root);
+    const source = join(root, "profile");
+    const home = join(root, "conversation-home");
+    const outside = join(root, "outside");
+    await Promise.all([
+      mkdir(source, { recursive: true }),
+      mkdir(home, { recursive: true }),
+      mkdir(outside, { recursive: true }),
+    ]);
+    await writeFile(join(source, "auth.json"), '{"token":"owned"}', "utf8");
+    await symlink(outside, join(home, ".local"));
+
+    await expect(materializeRunCredentialHome({
+      tempHome: home,
+      runtime: "opencode",
+      sourcePath: source,
+    })).rejects.toThrow("credential target contains a symlink");
+    await expect(readFile(join(outside, "share", "opencode", "auth.json"), "utf8"))
+      .rejects.toThrow();
+  });
+
   it("runs codex_cli with credential grant, safe env, redacted command log, and AGENserver context", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-"));
     tmpPaths.push(sandbox);
@@ -225,13 +393,8 @@ describe("executeVendorCliAdapter", () => {
     expect(executor.calls[0]).toMatchObject({
       command: [
         process.execPath,
-        "--ask-for-approval",
-        "never",
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
-        "Fix the bug",
+        "app-server",
+        "--stdio",
       ],
       cwd: sandbox,
       timeout_seconds: 120,
@@ -247,25 +410,103 @@ describe("executeVendorCliAdapter", () => {
       success: true,
       output_text: "cli output",
       error_code: null,
+      usage: {
+        input_tokens: 8,
+        output_tokens: 2,
+        total_tokens: 15,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 4,
+        reasoning_tokens: 1,
+      },
       metadata_json: {
         credential_profile_id: "11111111-1111-4111-8111-111111111111",
         context_file_type: "AGENTS.md",
         rendered_in_sandbox: true,
+        external_session_id: "thread-1",
       },
       adapter_log_json: {
         command: [
           process.execPath,
-          "--ask-for-approval",
-          "never",
-          "exec",
-          "--skip-git-repo-check",
-          "--sandbox",
-          "workspace-write",
-          "[REDACTED_PROMPT]",
+          "app-server",
+          "--stdio",
         ],
         timeout_seconds: 120,
       },
     });
+  });
+
+  it("stages context outside a read-only Project Folder and passes one write-scoped HOME", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aspace-cli-read-only-"));
+    tmpPaths.push(root);
+    const workspace = join(root, "workspaces", "project");
+    const contextCwd = join(root, "sandboxes", "read-only-context", "run-1");
+    const runtimeHome = join(root, "cache", "cli-run-homes", "run-1");
+    await Promise.all([
+      mkdir(workspace, { recursive: true }),
+      mkdir(contextCwd, { recursive: true }),
+      mkdir(runtimeHome, { recursive: true }),
+    ]);
+    await writeFile(join(workspace, "source.txt"), "project source");
+    const broker = new FakeBroker();
+    broker.grantForRun = async (runId, spaceId, runtime, executorMode, profileId) => {
+      broker.grants.push({ runId, spaceId, runtime, executorMode, profileId });
+      return {
+        granted: true,
+        profile_id: profileId ?? "default-profile-id",
+        runtime,
+        executor_mode: executorMode,
+        readonly: false,
+        temp_home: runtimeHome,
+        host_source_path: null,
+        target_path: null,
+        env: { HOME: runtimeHome },
+        network_profile_id: null,
+        fallback_reason: null,
+      };
+    };
+    const executor = new FakeExecutor();
+    const readOnlyConfig = loadConfig({
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      SERVER_INTERNAL_TOKEN: "internal-token",
+      AGENT_SPACE_HOME: root,
+      SANDBOX_ROOT: join(root, "sandboxes"),
+      WORKSPACE_ROOT: join(root, "workspaces"),
+    });
+
+    const result = await executeVendorCliAdapter(
+      readOnlyConfig,
+      {
+        run: run({ required_sandbox_level: "read_only" }),
+        sandbox_cwd: workspace,
+        context_text: "Generated read-only instructions",
+        adapter_config: {
+          credential_profile_id: "11111111-1111-4111-8111-111111111111",
+          read_only_workspace: {
+            workspace_cwd: workspace,
+            context_cwd: contextCwd,
+          },
+        },
+      },
+      { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
+    );
+
+    await expect(readFile(join(contextCwd, "AGENTS.md"), "utf8"))
+      .resolves.toBe("Generated read-only instructions");
+    await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).rejects.toThrow();
+    expect(await readFile(join(workspace, "source.txt"), "utf8")).toBe("project source");
+    expect(executor.calls[0]).toMatchObject({
+      cwd: workspace,
+      read_only: {
+        workspace_cwd: workspace,
+        context_cwd: contextCwd,
+        sandbox_root: join(root, "sandboxes"),
+        agent_space_home: root,
+        cli_tools_root: readOnlyConfig.cliToolsRoot,
+        readable_paths: [],
+        writable_paths: [runtimeHome],
+      },
+    });
+    expect(result).toMatchObject({ success: true, error_code: null });
   });
 
   it("runs an ephemeral (no-workspace) CLI in the prepared working dir", async () => {
@@ -277,7 +518,7 @@ describe("executeVendorCliAdapter", () => {
     const result = await executeVendorCliAdapter(
       config(),
       {
-        run: run({ required_sandbox_level: "ephemeral", workspace_id: null }),
+        run: run({ required_sandbox_level: "ephemeral", project_folder_id: null }),
         sandbox_cwd: sandbox,
         context_text: "Daily organize",
         adapter_config: { credential_profile_id: "11111111-1111-4111-8111-111111111111", timeout: 60 },
@@ -345,16 +586,12 @@ describe("executeVendorCliAdapter", () => {
     expect(executor.calls[0].env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
 
     const codexDir = executor.calls[0].env.CODEX_HOME;
+    expect((await lstat(codexDir)).isSymbolicLink()).toBe(false);
     const configToml = await readFile(join(codexDir, "config.toml"), "utf8");
     expect(executor.calls[0].command).toEqual([
       process.execPath,
-      "--ask-for-approval",
-      "never",
-      "exec",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "workspace-write",
-      "Fix the bug",
+      "app-server",
+      "--stdio",
     ]);
     expect(configToml).toContain('model = "MiniMax-M3"');
     expect(configToml).toContain('model_provider = "agent_space_provider"');
@@ -366,6 +603,7 @@ describe("executeVendorCliAdapter", () => {
     expect(configToml).toContain('experimental_bearer_token = "');
     expect(configToml).not.toContain("provider-secret");
     await expect(readFile(join(codexDir, "auth.json"), "utf8")).resolves.toContain("login-state");
+    await expect(readFile(join(codexDir, "sessions", "shared.jsonl"), "utf8")).rejects.toThrow();
     const catalog = JSON.parse(
       await readFile(join(codexDir, "model-catalogs", "agent-space-provider.json"), "utf8"),
     ) as {
@@ -551,7 +789,7 @@ describe("executeVendorCliAdapter", () => {
     const result = await executeVendorCliAdapter(
       config(),
       {
-        run: run({ required_sandbox_level: "ephemeral", workspace_id: null }),
+        run: run({ required_sandbox_level: "ephemeral", project_folder_id: null }),
         sandbox_cwd: null,
         adapter_config: { credential_profile_id: "11111111-1111-4111-8111-111111111111" },
       },
@@ -564,6 +802,53 @@ describe("executeVendorCliAdapter", () => {
     });
     expect(executor.calls).toEqual([]);
     expect(broker.grants).toEqual([]);
+  });
+
+  it("records precise Claude subscription usage and live quota from the run stream", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-claude-usage-"));
+    tmpPaths.push(sandbox);
+    const broker = new FakeBroker();
+    const executor = new FakeExecutor();
+    executor.result.stdout = await readFile(
+      join(__dirname, "fixtures", "cliRuntimeOutput", "claude_code.turn.jsonl"),
+      "utf8",
+    );
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run({ adapter_type: "claude_code", model_provider_id: null }),
+        sandbox_cwd: sandbox,
+        adapter_config: {
+          credential_profile_id: "22222222-2222-4222-8222-222222222222",
+        },
+      },
+      { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
+    );
+
+    expect(result.usage).toEqual({
+      input_tokens: 532,
+      output_tokens: 18,
+      total_tokens: 17_326,
+      cache_creation_input_tokens: 16_776,
+      cache_read_input_tokens: 0,
+    });
+    expect(result.model_usage).toHaveLength(2);
+    expect(result.metadata_json).toMatchObject({
+      external_session_id: "11111111-2222-4333-8444-555555555555",
+      subscription_quota: {
+        rate_limit_type: "seven_day",
+        utilization: 0.42,
+      },
+    });
+    expect(broker.liveQuotas).toEqual([{
+      runtime: "claude_code",
+      profileId: "22222222-2222-4222-8222-222222222222",
+      quota: expect.objectContaining({
+        rate_limit_type: "seven_day",
+        utilization: 0.42,
+      }),
+    }]);
   });
 
   it("renders claude_code model and permission-bypass args only when policy allows", async () => {
@@ -590,6 +875,10 @@ describe("executeVendorCliAdapter", () => {
     expect(executor.calls[0].command).toEqual([
       process.execPath,
       "--print",
+      "--output-format",
+      "stream-json",
+      "--include-partial-messages",
+      "--verbose",
       "--model",
       "claude-sonnet",
       "--dangerously-skip-permissions",
@@ -605,6 +894,123 @@ describe("executeVendorCliAdapter", () => {
       permissions?: { deny?: string[] };
     };
     expect(claudeSettings.permissions?.deny).toContain("Task");
+  });
+
+  it("renders Claude's explicit resume command for a bound conversation session", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-resume-"));
+    tmpPaths.push(sandbox);
+    const broker = new FakeBroker();
+    const executor = new FakeExecutor();
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run({ adapter_type: "claude_code" }),
+        sandbox_cwd: sandbox,
+        adapter_config: {
+          conversation_runtime: {
+            binding_id: "binding-1",
+            runtime_state_key: "11111111-1111-4111-8111-111111111111",
+            runtime_session_id: "22222222-2222-4222-8222-222222222222",
+          },
+        },
+      },
+      { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
+    );
+
+    expect(executor.calls[0].command).toEqual([
+      process.execPath,
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--include-partial-messages",
+      "--verbose",
+      "--resume",
+      "22222222-2222-4222-8222-222222222222",
+      "Fix the bug",
+    ]);
+    expect(result.metadata_json).toMatchObject({
+      conversation_binding_id: "binding-1",
+      runtime_session_resumed: true,
+    });
+  });
+
+  it("classifies a missing resumed Claude session for replay retry", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-stale-resume-"));
+    tmpPaths.push(sandbox);
+    const executor = new FakeExecutor();
+    executor.result = {
+      returncode: 1,
+      stdout: "",
+      stderr: "Session not found",
+      timed_out: false,
+    };
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run({ adapter_type: "claude_code" }),
+        sandbox_cwd: sandbox,
+        adapter_config: {
+          conversation_runtime: {
+            binding_id: "binding-1",
+            runtime_state_key: "11111111-1111-4111-8111-111111111111",
+            runtime_session_id: "22222222-2222-4222-8222-222222222222",
+          },
+        },
+      },
+      {
+        credentialBroker: new FakeBroker(),
+        executor,
+        toolRegistry: new FakeTools(),
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error_code: "runtime_session_invalid",
+    });
+  });
+
+  it("configures and revokes a short-lived MCP identity for granted CLI tools", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-tools-"));
+    tmpPaths.push(sandbox);
+    const broker = new FakeBroker();
+    const executor = new FakeExecutor();
+    const toolRun = run({
+      adapter_type: "claude_code",
+      permission_snapshot_json: {
+        tool_grants: [{
+          action_id: "retrieval.search",
+          capability_id: "retrieval.search",
+          approval_behavior: "none",
+          side_effecting: false,
+        }],
+      },
+    });
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: toolRun,
+        run_input: assembleRunInputEnvelope(toolRun),
+        sandbox_cwd: sandbox,
+      },
+      { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
+    );
+    expect(result.success).toBe(true);
+    expect(executor.calls[0].env.AGENT_SPACE_MCP_URL)
+      .toBe("http://127.0.0.1:8010/internal/runs/run-1/mcp");
+    expect(executor.calls[0].env.AGENT_SPACE_TOOL_TOKEN).toBeTruthy();
+    expect(executor.calls[0].command).toContain("--mcp-config");
+    const configPath = executor.calls[0].command[
+      executor.calls[0].command.indexOf("--mcp-config") + 1
+    ]!;
+    const mcpConfig = JSON.parse(await readFile(configPath, "utf8")) as {
+      mcpServers: { "agent-space": { url: string; headers: { Authorization: string } } };
+    };
+    expect(mcpConfig.mcpServers["agent-space"].url).toBe(executor.calls[0].env.AGENT_SPACE_MCP_URL);
+    expect(mcpConfig.mcpServers["agent-space"].headers.Authorization)
+      .toBe(`Bearer ${executor.calls[0].env.AGENT_SPACE_TOOL_TOKEN}`);
   });
 
   it("fails closed when the credential profile is missing", async () => {
@@ -681,6 +1087,8 @@ describe("executeVendorCliAdapter", () => {
         credential_root: "/tmp/aspace/secrets",
         credential_source_path: "/tmp/aspace/secrets/codex",
         credential_target_path: "/home/agent/.codex",
+        exchange_input_cwd: "/tmp/aspace/sandboxes/exchange/space-1/run-1/input",
+        exchange_output_cwd: "/tmp/aspace/sandboxes/exchange/space-1/run-1/output",
       },
     });
     const command = launcher.calls[0]?.command ?? [];
@@ -693,6 +1101,8 @@ describe("executeVendorCliAdapter", () => {
     expect(command).toContain("256");
     expect(command).toContain("--volume");
     expect(command).toContain("/tmp/aspace/secrets/codex:/home/sandbox/.codex:ro");
+    expect(command).toContain("/tmp/aspace/sandboxes/exchange/space-1/run-1/input:/run-exchange/input:ro");
+    expect(command).toContain("/tmp/aspace/sandboxes/exchange/space-1/run-1/output:/run-exchange/output:rw");
     expect(command).not.toContain("must-not-enter");
   });
 
@@ -701,7 +1111,10 @@ describe("executeVendorCliAdapter", () => {
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
-    executor.result.stdout = '{"type":"text","text":"structured answer"}\n{"part":{"text":"more"}}';
+    executor.result.stdout = [
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"structured answer"}}}}',
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"more"}}}}',
+    ].join("\n");
     const result = await executeVendorCliAdapter(
       config(),
       { run: run({ adapter_type: "opencode" }), sandbox_cwd: sandbox, model: "provider/model" },
@@ -710,26 +1123,35 @@ describe("executeVendorCliAdapter", () => {
     expect(result).toMatchObject({
       success: true,
       adapter_type: "opencode",
-      output_text: "structured answer\nmore",
+      output_text: "structured answermore",
       output_json: { format: "opencode_jsonl" },
+      usage: {
+        input_tokens: 12,
+        output_tokens: 3,
+        total_tokens: 20,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 4,
+        reasoning_tokens: 1,
+      },
+      metadata_json: {
+        external_session_id: "session-1",
+      },
     });
     expect(executor.calls[0]?.command).toEqual([
       process.execPath,
-      "run",
-      "--format",
-      "json",
-      "--agent",
-      "agent-space-locked",
-      "--dir",
+      "acp",
+      "--cwd",
       sandbox,
-      "--model",
-      "provider/model",
-      "Fix the bug",
     ]);
+    expect(executor.calls[0]?.env.HOME).toBe("/tmp/runtime-home/run-1");
+    expect(broker.cleanups).toEqual(["run-1"]);
     const configJson = JSON.parse(await readFile(join(sandbox, "opencode.json"), "utf8")) as Record<string, unknown>;
     expect(configJson).toMatchObject({
+      default_agent: "agent-space-locked",
+      subagent_depth: 0,
       agent: {
         "agent-space-locked": {
+          mode: "primary",
           permission: {
             task: { "*": "deny" },
             edit: { "*": "allow" },
@@ -742,7 +1164,12 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("falls back to stdout when an OpenCode stream contains no JSON events", () => {
-    expect(parseOpenCodeOutput("plain output")).toEqual({ text: "plain output", output_json: null, event_count: 0 });
+    expect(parseOpenCodeOutput("plain output")).toEqual({
+      text: "plain output",
+      output_json: null,
+      event_count: 0,
+      runtime_events: [],
+    });
   });
 
   it("maps nonzero and timeout results to CLI adapter failures", async () => {
@@ -817,6 +1244,8 @@ describe("buildSubprocessEnv", () => {
       HTTPS_PROXY: "http://127.0.0.1:7890",
       HTTP_PROXY: "http://127.0.0.1:7890",
       NO_PROXY: "localhost,127.0.0.1,::1",
+      AGENT_SPACE_EXCHANGE_INPUT: "/tmp/exchange/input/run_input.json",
+      AGENT_SPACE_EXCHANGE_OUTPUT: "/tmp/exchange/output",
     });
 
     expect(env.HOME).toBe("/tmp/home");
@@ -827,6 +1256,8 @@ describe("buildSubprocessEnv", () => {
     expect(env.HTTPS_PROXY).toBe("http://127.0.0.1:7890");
     expect(env.HTTP_PROXY).toBe("http://127.0.0.1:7890");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1,::1");
+    expect(env.AGENT_SPACE_EXCHANGE_INPUT).toBe("/tmp/exchange/input/run_input.json");
+    expect(env.AGENT_SPACE_EXCHANGE_OUTPUT).toBe("/tmp/exchange/output");
     expect(env.GEMINI_API_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.LC_TEST_VALUE).toBe("ok");
@@ -835,5 +1266,839 @@ describe("buildSubprocessEnv", () => {
 
     delete process.env.ASPACE_SHOULD_NOT_LEAK;
     delete process.env.LC_TEST_VALUE;
+  });
+});
+
+describe("vendor structured event normalization", () => {
+  it("starts Codex app-server with its own read-only sandbox inside the OS mount barrier", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "inspect",
+      cwd: "/workspace",
+      model: null,
+      sandbox_mode: "read-only",
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    controller.start((message) => sent.push(message));
+    controller.receive({ id: 1, result: {} }, (message) => sent.push(message), () => {});
+
+    expect(sent[2]).toMatchObject({
+      method: "thread/start",
+      params: {
+        cwd: "/workspace",
+        sandbox: "read-only",
+        approvalPolicy: "never",
+      },
+    });
+  });
+
+  it("drives Codex app-server and emits only documented agent-message deltas", () => {
+    const deltas: string[] = [];
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: "gpt-test",
+      on_text_delta: (delta) => deltas.push(delta),
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+    controller.start((message) => sent.push(message));
+    controller.receive({ id: 1, result: {} }, (message) => sent.push(message), () => {
+      closed = true;
+    });
+    controller.receive(
+      { id: 2, result: { thread: { id: "thread-1" } } },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    controller.receive(
+      { method: "thread/started", params: { thread: { id: "thread-1" } } },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    for (const status of ["starting", "ready"]) {
+      controller.receive(
+        {
+          method: "mcpServer/startupStatus/updated",
+          params: {
+            threadId: "thread-1",
+            name: "agent_space",
+            status,
+          },
+        },
+        (message) => sent.push(message),
+        () => { closed = true; },
+      );
+    }
+    controller.receive(
+      {
+        method: "configWarning",
+        params: { summary: "A recoverable configuration warning" },
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+
+    expect(sent.map((message) => message.method)).toEqual([
+      "initialize",
+      "initialized",
+      "thread/start",
+      "turn/start",
+    ]);
+    expect(sent[3]).toMatchObject({
+      params: {
+        threadId: "thread-1",
+        input: [{ type: "text", text: "hello" }],
+      },
+    });
+    expect(sent[2]).toMatchObject({
+      params: {
+        cwd: "/workspace",
+        model: "gpt-test",
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+      },
+    });
+    controller.receive(
+      { id: 3, result: { turn: { id: "turn-1" } } },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    controller.receive(
+      {
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          turn: { id: "turn-1" },
+        },
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    controller.receive(
+      {
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", status: { type: "active" } },
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    for (const delta of ["hel", "lo"]) {
+      controller.receive(
+        {
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            itemId: "item-1",
+            delta,
+          },
+        },
+        (message) => sent.push(message),
+        () => { closed = true; },
+      );
+    }
+    expect(deltas).toEqual(["hel", "lo"]);
+    controller.receive(
+      {
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          tokenUsage: {
+            last: {
+              inputTokens: 12,
+              outputTokens: 3,
+              totalTokens: 15,
+              cachedInputTokens: 4,
+              cacheWriteInputTokens: 0,
+              reasoningOutputTokens: 1,
+            },
+            total: {
+              inputTokens: 30,
+              outputTokens: 7,
+              totalTokens: 37,
+              cachedInputTokens: 10,
+              cacheWriteInputTokens: 0,
+              reasoningOutputTokens: 2,
+            },
+          },
+        },
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+
+    controller.receive(
+      {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: { id: "turn-1", status: "completed" },
+        },
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    controller.receive(
+      {
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", status: { type: "idle" } },
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: true,
+      error: null,
+      text: "hello",
+      external_session_id: "thread-1",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 5,
+        total_tokens: 37,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 10,
+        reasoning_tokens: 2,
+      },
+    });
+  });
+
+  it("resumes a Codex thread and records only the resumed turn usage delta", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "follow up",
+      cwd: "/workspace",
+      model: null,
+      runtime_session_id: "thread-existing",
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    const close = () => { closed = true; };
+
+    controller.start(send);
+    controller.receive({ id: 1, result: {} }, send, close);
+    expect(sent[2]).toEqual({
+      method: "thread/resume",
+      id: 2,
+      params: { threadId: "thread-existing" },
+    });
+    controller.receive(
+      { id: 2, result: { thread: { id: "thread-existing" } } },
+      send,
+      close,
+    );
+    expect(sent.some((message) => message.method === "turn/start")).toBe(false);
+    controller.receive({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-existing",
+        tokenUsage: {
+          total: {
+            inputTokens: 100,
+            outputTokens: 40,
+            totalTokens: 140,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 5,
+            reasoningOutputTokens: 10,
+          },
+        },
+      },
+    }, send, close);
+    expect(sent.at(-1)).toMatchObject({
+      method: "turn/start",
+      params: {
+        threadId: "thread-existing",
+        input: [{ type: "text", text: "follow up" }],
+      },
+    });
+    controller.receive({ id: 3, result: { turn: { id: "turn-follow-up" } } }, send, close);
+    controller.receive({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-existing",
+        turnId: "turn-follow-up",
+        tokenUsage: {
+          total: {
+            inputTokens: 130,
+            outputTokens: 55,
+            totalTokens: 185,
+            cachedInputTokens: 25,
+            cacheWriteInputTokens: 7,
+            reasoningOutputTokens: 14,
+          },
+        },
+      },
+    }, send, close);
+    controller.receive({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-existing",
+        turn: { id: "turn-follow-up", status: "completed" },
+      },
+    }, send, close);
+
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: true,
+      external_session_id: "thread-existing",
+      usage: {
+        input_tokens: 23,
+        output_tokens: 11,
+        total_tokens: 45,
+        cache_creation_input_tokens: 2,
+        cache_read_input_tokens: 5,
+        reasoning_tokens: 4,
+      },
+    });
+  });
+
+  it("accepts scoped Codex reasoning and command-output delta notifications", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    let closed = false;
+    const send = () => {};
+    const close = () => { closed = true; };
+    controller.receive({ id: 1, result: {} }, send, close);
+    controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
+    controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
+
+    for (const method of [
+      "item/reasoning/textDelta",
+      "item/commandExecution/outputDelta",
+    ]) {
+      controller.receive({
+        method,
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+          delta: "diagnostic",
+        },
+      }, send, close);
+    }
+
+    expect(closed).toBe(false);
+    expect(controller.result()).toMatchObject({ completed: false, error: null, text: "" });
+  });
+
+  it("rejects incomplete Codex token-usage notifications", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const send = () => {};
+    let closed = false;
+    const close = () => { closed = true; };
+    controller.receive({ id: 1, result: {} }, send, close);
+    controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
+    controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
+    controller.receive({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        tokenUsage: {
+          total: {
+            inputTokens: 12,
+            outputTokens: 3,
+          },
+        },
+      },
+    }, send, close);
+
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "Codex app-server returned invalid token usage",
+      usage: null,
+    });
+  });
+
+  it("rejects malformed Codex protocol envelopes", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    let closed = false;
+    controller.receive({ foo: 1 }, () => {}, () => { closed = true; });
+    expect(closed).toBe(true);
+    expect(controller.result().error).toBe(
+      "Codex app-server returned an unsupported protocol message",
+    );
+  });
+
+  it("fails closed when Codex app-server requests interactive approval", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+
+    controller.receive(
+      { id: 91, method: "item/commandExecution/requestApproval", params: {} },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+
+    expect(sent).toEqual([{
+      id: 91,
+      error: expect.objectContaining({ code: -32601 }),
+    }]);
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "Codex requested unsupported interactive method 'item/commandExecution/requestApproval'",
+      text: "",
+    });
+  });
+
+  it("rejects an out-of-order Codex completion", () => {
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    let closed = false;
+
+    controller.receive(
+      {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: { id: "turn-1", status: "completed" },
+        },
+      },
+      () => {},
+      () => { closed = true; },
+    );
+
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "Codex app-server returned an out-of-order turn completion",
+      text: "",
+    });
+  });
+
+  it("drives OpenCode ACP and emits agent_message_chunk updates", () => {
+    const deltas: string[] = [];
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: "provider/model",
+      on_text_delta: (delta) => deltas.push(delta),
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {
+      closed = true;
+    });
+    controller.receive(
+      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+      send,
+      () => { closed = true; },
+    );
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        configOptions: [{ id: "model", currentValue: "provider/model" }],
+      },
+    }, send, () => {
+      closed = true;
+    });
+
+    expect(sent.map((message) => message.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_config_option",
+      "session/prompt",
+    ]);
+    expect(sent[2]).toMatchObject({
+      params: {
+        sessionId: "session-1",
+        configId: "model",
+        value: "provider/model",
+      },
+    });
+    for (const delta of ["hel", "lo"]) {
+      controller.receive(
+        {
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: "session-1",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: delta },
+            },
+          },
+        },
+        send,
+        () => { closed = true; },
+      );
+    }
+    expect(deltas).toEqual(["hel", "lo"]);
+
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        result: {
+          stopReason: "end_turn",
+          usage: {
+            inputTokens: 12,
+            outputTokens: 3,
+            totalTokens: 20,
+            cachedReadTokens: 4,
+            cachedWriteTokens: 0,
+            thoughtTokens: 1,
+          },
+        },
+      },
+      send,
+      () => { closed = true; },
+    );
+    expect(closed).toBe(true);
+    expect(controller.result()).toEqual({
+      completed: true,
+      error: null,
+      text: "hello",
+      external_session_id: "session-1",
+      usage: {
+        input_tokens: 12,
+        output_tokens: 3,
+        total_tokens: 20,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 4,
+        reasoning_tokens: 1,
+      },
+    });
+  });
+
+  it("resumes an opaque OpenCode session before prompting", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "continue",
+      cwd: "/workspace",
+      model: null,
+      runtime_session_id: "ses_existing-opaque",
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    const close = () => { closed = true; };
+
+    controller.start(send);
+    controller.receive(
+      { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } },
+      send,
+      close,
+    );
+    expect(sent[1]).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/resume",
+      params: {
+        sessionId: "ses_existing-opaque",
+        cwd: "/workspace",
+        mcpServers: [],
+      },
+    });
+    controller.receive(
+      { jsonrpc: "2.0", id: 2, result: { configOptions: [] } },
+      send,
+      close,
+    );
+    expect(sent[2]).toMatchObject({
+      method: "session/prompt",
+      params: {
+        sessionId: "ses_existing-opaque",
+        prompt: [{ type: "text", text: "continue" }],
+      },
+    });
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 6,
+          outputTokens: 2,
+          totalTokens: 9,
+          thoughtTokens: 1,
+        },
+      },
+    }, send, close);
+
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: true,
+      external_session_id: "ses_existing-opaque",
+      usage: {
+        input_tokens: 6,
+        output_tokens: 2,
+        total_tokens: 9,
+        reasoning_tokens: 1,
+      },
+    });
+  });
+
+  it("fails closed when OpenCode ACP requests interactive permission", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 92,
+        method: "session/request_permission",
+        params: {},
+      },
+      (message) => sent.push(message),
+      () => { closed = true; },
+    );
+
+    expect(sent).toEqual([{
+      jsonrpc: "2.0",
+      id: 92,
+      error: expect.objectContaining({ code: -32601 }),
+    }]);
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "OpenCode ACP requested unsupported interactive method 'session/request_permission'",
+      text: "",
+    });
+  });
+
+  it("rejects incomplete OpenCode ACP prompt usage", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const send = () => {};
+    let closed = false;
+    const close = () => { closed = true; };
+    controller.start(send);
+    controller.receive(
+      { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } },
+      send,
+      close,
+    );
+    controller.receive(
+      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+      send,
+      close,
+    );
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        stopReason: "end_turn",
+        usage: { inputTokens: 1 },
+      },
+    }, send, close);
+
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "OpenCode ACP returned invalid token usage",
+      usage: null,
+    });
+  });
+
+  it("rejects invalid optional OpenCode ACP usage buckets", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const send = () => {};
+    let closed = false;
+    const close = () => { closed = true; };
+    controller.start(send);
+    controller.receive(
+      { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } },
+      send,
+      close,
+    );
+    controller.receive(
+      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+      send,
+      close,
+    );
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+          cachedReadTokens: -1,
+        },
+      },
+    }, send, close);
+
+    expect(closed).toBe(true);
+    expect(controller.result().error).toBe(
+      "OpenCode ACP returned invalid token usage",
+    );
+  });
+
+  it("fails closed when OpenCode ACP does not apply the requested model", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: "provider/model",
+    })!;
+    const send = () => {};
+    let closed = false;
+    const close = () => { closed = true; };
+    controller.receive(
+      { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } },
+      send,
+      close,
+    );
+    controller.receive(
+      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+      send,
+      close,
+    );
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        result: {
+          configOptions: [{ id: "model", currentValue: "different/model" }],
+        },
+      },
+      send,
+      close,
+    );
+
+    expect(closed).toBe(true);
+    expect(controller.result().error).toBe(
+      "OpenCode ACP did not apply the requested model",
+    );
+  });
+
+  it("rejects malformed OpenCode ACP protocol envelopes", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    let closed = false;
+    controller.receive(
+      { jsonrpc: "2.0", foo: 1 },
+      () => {},
+      () => { closed = true; },
+    );
+    expect(closed).toBe(true);
+    expect(controller.result().error).toBe(
+      "OpenCode ACP returned an unsupported protocol message",
+    );
+  });
+
+  it("rejects an out-of-order OpenCode prompt response", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    let closed = false;
+
+    controller.receive(
+      { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } },
+      () => {},
+      () => { closed = true; },
+    );
+
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "OpenCode ACP returned unexpected response id '4' during initialize",
+      text: "",
+    });
+  });
+
+  it("ignores Claude final-result copies after partial-message deltas", () => {
+    const claude = createVendorTextDeltaStream("claude_code");
+    expect(claude.push([
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}',
+      '{"type":"result","result":"hello"}',
+      "",
+    ].join("\n"))).toEqual(["hello"]);
+  });
+
+  it("normalizes Codex command lifecycle without persisting message deltas", () => {
+    const stream = createVendorEventStream("codex_cli");
+    const first = stream.push(
+      '{"type":"item.started","item":{"id":"call-1","type":"command_execution","command":"npm test"}}\n' +
+      '{"type":"item.delta","delta":"private token fragment"}\n',
+    );
+    const second = stream.push(
+      '{"type":"item.completed","item":{"id":"call-1","type":"command_execution","status":"completed"}}',
+    );
+    expect(first.map((event) => event.type)).toEqual(["tool_call_started"]);
+    expect(second).toEqual([]);
+    expect(stream.finish().map((event) => event.type)).toEqual(["tool_call_completed"]);
+    expect(JSON.stringify([...first, ...stream.finish()])).not.toContain("private token fragment");
+  });
+
+  it("normalizes Claude tool-use and tool-result blocks", () => {
+    const parsed = parseVendorStructuredOutput("claude_code", [
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Working"},{"type":"tool_use","id":"tool-1","name":"Read"}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"hidden body"}]}}',
+      '{"type":"result","result":"Done"}',
+    ].join("\n"));
+    expect(parsed?.text).toBe("Working\nDone");
+    expect(parsed?.runtime_events.map((event) => event.type)).toEqual([
+      "tool_call_started",
+      "tool_call_completed",
+    ]);
+    expect(JSON.stringify(parsed?.runtime_events)).not.toContain("hidden body");
+  });
+
+  it("normalizes OpenCode tool lifecycle across chunk boundaries", () => {
+    const stream = createVendorEventStream("opencode");
+    expect(stream.push('{"type":"tool_use_start","id":"call')).toEqual([]);
+    expect(stream.push('-2","name":"bash"}\n').map((event) => event.type))
+      .toEqual(["tool_call_started"]);
   });
 });

@@ -271,7 +271,7 @@ describe("content access SQL/in-memory equivalence", () => {
           access_level: "full",
           owner_user_id: OWNER,
           scope_type: "user",
-          workspace_id: null,
+          project_folder_id: null,
         },
         {
           spaceId: SPACE,

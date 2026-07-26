@@ -27,6 +27,7 @@ const OPERATION = "77777777-7777-4777-8777-777777777777";
 const INCREMENTAL_OPERATION = "77777777-7777-4777-8777-777777777778";
 const PLAN = "aaaaaaaa-1111-4111-8111-111111111111";
 const AGENT = "99999999-9999-4999-8999-999999999999";
+const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 let container: TestPostgresDatabase | undefined;
@@ -114,6 +115,15 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Screening Agent','active',NULL,$4,$4,'space_shared')`,
     [AGENT, SPACE, OWNER, now],
   );
+  await pool.query(
+    `INSERT INTO agent_versions (
+       id, agent_id, space_id, version_label, system_prompt, model_config_json,
+       runtime_config_json, context_policy_json, memory_policy_json,
+       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
+     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
+    [AGENT_VERSION, AGENT, SPACE, now],
+  );
+  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
   await seedOperation();
   await pool.query(
     `INSERT INTO source_backfill_plans (
@@ -177,6 +187,7 @@ async function seedOperation(): Promise<void> {
     schema_version: "project_research_operation.v1",
     run_kind: "baseline",
     workflow_id: WORKFLOW,
+    agent_id: AGENT,
     source_backfill_plan_ids: [PLAN],
     source_backfill_plan_id: PLAN,
     current_stage: "backfill",
@@ -228,6 +239,17 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
     // transition — and the screening_gate checkpoint it creates — must not
     // have fired yet, even though the display numbers above are already fresh.
     expect(operation.rows[0]!.status).toBe("active");
+    const execution = await pool!.query<{ status: string; current: boolean }>(
+      `SELECT execution.status,
+              operation.current_execution_id=execution.id AS current
+         FROM workflow_executions execution
+         JOIN project_operations operation
+           ON operation.id=execution.research_operation_id
+          AND operation.space_id=execution.space_id
+        WHERE execution.space_id=$1 AND execution.research_operation_id=$2`,
+      [SPACE, OPERATION],
+    );
+    expect(execution.rows).toEqual([{ status: "completed", current: true }]);
     const checkpoints = await pool!.query<{ id: string }>(
       `SELECT id FROM project_research_checkpoints WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
@@ -263,6 +285,7 @@ async function seedIncrementalOperation(sourceItemIds: string[]): Promise<void> 
     schema_version: "project_research_operation.v1",
     run_kind: "incremental",
     workflow_id: WORKFLOW,
+    agent_id: AGENT,
     current_stage: "screening",
     stage_state: "running",
     partial: false,

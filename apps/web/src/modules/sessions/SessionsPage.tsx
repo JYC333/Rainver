@@ -14,6 +14,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { StatusBadge } from '../../components/ui/badge'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
+import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
 
@@ -25,7 +26,8 @@ export default function SessionsPage() {
   const [sessionNotFound, setSessionNotFound] = useState(false)
   const [messages, setMessages]             = useState<Message[]>([])
   const [title, setTitle]                   = useState('')
-  const [workspace, setWorkspace]           = useState('')
+  const [projectId, setProjectId]           = useState('')
+  const [folder, setFolder]           = useState('')
   const [msgInput, setMsgInput]             = useState('')
   const [loading, setLoading]               = useState(false)
   const autoOpenRef = useRef(false)
@@ -57,8 +59,8 @@ export default function SessionsPage() {
       return
     }
     try {
-      await sessionsApi.create({ title: title || undefined, workspace_id: workspace || undefined })
-      setTitle(''); setWorkspace('')
+      await sessionsApi.create({ title: title || undefined, project_id: projectId || undefined, project_folder_id: folder || undefined })
+      setTitle(''); setProjectId(''); setFolder('')
       toast.success('Session created')
       await loadSessions()
     } catch (e) { toast.error(errMsg(e)) }
@@ -84,7 +86,7 @@ export default function SessionsPage() {
   async function sendMessage() {
     if (!activeSession || !msgInput.trim()) return
     try {
-      await sessionsApi.addMessage(activeSession.id, { role: 'user', content: msgInput.trim() })
+      await sessionsApi.addMessage(activeSession.id, { content: msgInput.trim() })
       setMsgInput('')
       setMessages(await sessionsApi.messages(activeSession.id))
     } catch (e) { toast.error(errMsg(e)) }
@@ -134,10 +136,7 @@ export default function SessionsPage() {
               onKeyDown={e => e.key === 'Enter' && createSession()}
             />
           </div>
-          <div>
-            <Label>Workspace ID (optional)</Label>
-            <Input value={workspace} onChange={e => setWorkspace(e.target.value)} placeholder="e.g. agent-space" />
-          </div>
+          <ProjectFolderSelectors projectId={projectId} folderId={folder} onProjectChange={setProjectId} onFolderChange={setFolder} />
         </div>
         <Button onClick={createSession} disabled={!activeSpaceId}>Create Session</Button>
       </Card>
@@ -152,7 +151,7 @@ export default function SessionsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Title</TableHead><TableHead>ID</TableHead>
+                  <TableHead>Title</TableHead>
                   <TableHead>Status</TableHead><TableHead>Created</TableHead>
                   <TableHead />
                 </TableRow>
@@ -160,8 +159,7 @@ export default function SessionsPage() {
               <TableBody>
                 {sessions.map(s => (
                   <TableRow key={s.id}>
-                    <TableCell>{s.title ?? <span className="text-muted-foreground">—</span>}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{s.id.slice(0, 16)}…</TableCell>
+                    <TableCell>{s.title ?? <span className="text-muted-foreground">Untitled session</span>}</TableCell>
                     <TableCell><StatusBadge status={s.status} /></TableCell>
                     <TableCell className="text-muted-foreground text-xs">{fmt(s.created_at)}</TableCell>
                     <TableCell>
@@ -185,7 +183,7 @@ export default function SessionsPage() {
 
       {!sessionNotFound && activeSession && (
         <Card>
-          <CardTitle>Session: {activeSession.title ?? activeSession.id.slice(0, 16)}</CardTitle>
+          <CardTitle>Session: {activeSession.title ?? 'Untitled session'}</CardTitle>
           <div className="flex flex-col gap-2.5 max-h-72 overflow-y-auto mb-4 pr-1">
             {messages.length === 0
               ? <p className="text-muted-foreground text-center py-6 text-sm">No messages.</p>

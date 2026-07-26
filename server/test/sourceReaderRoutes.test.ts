@@ -96,7 +96,7 @@ function fakeEvidenceRow(overrides: Record<string, unknown> = {}): Record<string
 
 function fakeProposalRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: "proposal-1", space_id: SPACE, created_by_user_id: USER, workspace_id: null, created_by_run_id: null,
+    id: "proposal-1", space_id: SPACE, created_by_user_id: USER, project_folder_id: null, created_by_run_id: null,
     proposal_type: "memory_create", status: "pending", risk_level: "low", urgency: "normal", preview: false,
     title: "The quick brown fox", payload_json: {}, rationale: "Created from reader annotation.", visibility: "space_shared",
     review_deadline: null, expires_at: null, created_at: "2026-06-30T10:00:00.000Z", reviewed_at: null,

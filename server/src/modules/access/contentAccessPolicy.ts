@@ -12,7 +12,7 @@ import {
 /**
  * Canonical effective-level rule (see the oversight/grant-upgrade plan):
  *
- *   scope gates (membership, space, workspace/project, active row) → deny if failed
+ *   scope gates (membership, space, project_folder/project, active row) → deny if failed
  *   effective = widest( base-by-visibility, active-grant level, oversight level )
  *
  * The `highly_restricted` memory sensitivity gate is layered on top by the

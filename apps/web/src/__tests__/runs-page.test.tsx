@@ -3,6 +3,15 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api/client', () => ({
+  agentsApi: {
+    list: vi.fn().mockResolvedValue([]),
+  },
+  projectsApi: {
+    list: vi.fn().mockResolvedValue({ items: [] }),
+  },
+  projectFoldersApi: {
+    list: vi.fn().mockResolvedValue({ items: [] }),
+  },
   runsApi: {
     list: vi.fn().mockResolvedValue([]),
     stop: vi.fn(),

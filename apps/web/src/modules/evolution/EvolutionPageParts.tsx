@@ -64,7 +64,7 @@ export type DetailTab = 'definition' | 'signals' | 'strategies' | 'decisions' | 
 export type TargetDialogMode = 'create' | 'copy' | 'edit'
 export type TargetListTab = 'active' | 'archived'
 
-const TARGET_TYPES = ['agent_version', 'capability', 'runtime_skill_binding', 'memory', 'knowledge', 'workflow', 'workspace', 'system'].map(value => ({ value, label: value }))
+const TARGET_TYPES = ['agent_version', 'capability', 'runtime_skill_binding', 'memory', 'knowledge', 'workflow', 'project_folder', 'system'].map(value => ({ value, label: value }))
 const RISK_LEVELS = ['low', 'medium', 'high', 'critical'].map(value => ({ value, label: value }))
 const TARGET_STATUSES = ['active', 'paused', 'archived'].map(value => ({ value, label: value }))
 const ENABLED_OPTIONS = [
@@ -601,19 +601,12 @@ export function TargetConfigDialog({
               <Select value={targetType} onChange={setTargetType} options={TARGET_TYPES} />
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label>引用类型</Label>
-              <Input value={targetRefType} onChange={event => setTargetRefType(event.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>引用 ID</Label>
-              <Input value={targetRefId} onChange={event => setTargetRefId(event.target.value)} />
-            </div>
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>能力 key</Label>
               <Input value={capabilityKey} onChange={event => setCapabilityKey(event.target.value)} />
             </div>
+            <p className="self-end rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">对象引用由已选择的能力或服务端上下文绑定，不在普通表单中粘贴内部标识符。</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1.5">
@@ -741,16 +734,12 @@ export function SignalDialog({
 }) {
   const [signalType, setSignalType] = useState(SIGNAL_TYPES[0].value)
   const [severity, setSeverity] = useState('medium')
-  const [sourceType, setSourceType] = useState('manual')
-  const [sourceId, setSourceId] = useState('')
   const [summary, setSummary] = useState('')
 
   useEffect(() => {
     if (!open) {
       setSignalType(SIGNAL_TYPES[0].value)
       setSeverity('medium')
-      setSourceType('manual')
-      setSourceId('')
       setSummary('')
     }
   }, [open])
@@ -770,8 +759,8 @@ export function SignalDialog({
             event.preventDefault()
             onSubmit({
               signal_type: signalType,
-              source_type: sourceType.trim() || 'manual',
-              source_id: sourceId.trim() || null,
+              source_type: 'manual',
+              source_id: null,
               severity,
               summary: summary.trim() || null,
               payload_json: {},
@@ -792,16 +781,7 @@ export function SignalDialog({
               <Select value={severity} onChange={setSeverity} options={SIGNAL_SEVERITIES} />
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label>来源类型</Label>
-              <Input value={sourceType} onChange={event => setSourceType(event.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>来源 ID</Label>
-              <Input value={sourceId} onChange={event => setSourceId(event.target.value)} />
-            </div>
-          </div>
+          <p className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">手动信号由当前目标和提交人提供来源上下文；自动采集的信号由服务端附加不可编辑的来源引用。</p>
           <div className="space-y-1.5">
             <Label>摘要</Label>
             <Textarea value={summary} onChange={event => setSummary(event.target.value)} />

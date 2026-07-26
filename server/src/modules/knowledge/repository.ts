@@ -102,7 +102,7 @@ interface SpaceObjectRow {
   visibility: string;
   owner_user_id: string | null;
   primary_project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   created_by_user_id: string | null;
 }
 
@@ -391,7 +391,7 @@ export class PgKnowledgeRepository {
           },
         }),
         rationale: optionalString(body.rationale) ?? "Object schema import requested.",
-        workspaceId: null,
+        projectFolderId: null,
         projectId: null,
         riskLevel: "high",
       });
@@ -431,7 +431,7 @@ export class PgKnowledgeRepository {
         relation_hints: relationHints,
       }),
       rationale: optionalString(body.rationale) ?? "Object kind creation requested.",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
       riskLevel: "high",
     });
@@ -461,7 +461,7 @@ export class PgKnowledgeRepository {
       title: `Update object kind: ${current.label}`,
       payload: objectKindProposalPayload("object_kind_update", payload),
       rationale: optionalString(body.rationale) ?? "Object kind update requested.",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
       riskLevel: "high",
     });
@@ -478,7 +478,7 @@ export class PgKnowledgeRepository {
       title: `Deprecate object kind: ${current.label}`,
       payload: objectKindProposalPayload("object_kind_deprecate", { target_kind_id: kindId }),
       rationale: optionalString(body.rationale) ?? "Object kind deprecation requested.",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
       riskLevel: "high",
     });
@@ -495,7 +495,7 @@ export class PgKnowledgeRepository {
       title: `Archive object kind: ${current.label}`,
       payload: objectKindProposalPayload("object_kind_archive", { target_kind_id: kindId }),
       rationale: optionalString(body.rationale) ?? "Object kind archive requested.",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
       riskLevel: "high",
     });
@@ -506,7 +506,7 @@ export class PgKnowledgeRepository {
     status: string | null;
     visibility: string | null;
     projectId: string | null;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     q: string | null;
     limit: number;
     offset: number;
@@ -797,7 +797,7 @@ export class PgKnowledgeRepository {
       title: `Claim: ${title}`,
       payload,
       rationale: optionalString(body.rationale) ?? "Claim creation requested.",
-      workspaceId: optionalString(body.workspace_id),
+      projectFolderId: optionalString(body.project_folder_id),
       projectId: optionalString(body.project_id),
     });
   }
@@ -870,7 +870,7 @@ export class PgKnowledgeRepository {
       title: `Update claim: ${claim.title}`,
       payload,
       rationale: optionalString(body.rationale) ?? "Claim update requested.",
-      workspaceId: claim.workspace_id,
+      projectFolderId: claim.project_folder_id,
       projectId: claim.primary_project_id,
     });
   }
@@ -889,7 +889,7 @@ export class PgKnowledgeRepository {
         proposed_content: claim.claim_text,
       },
       rationale: "Claim archive requested.",
-      workspaceId: claim.workspace_id,
+      projectFolderId: claim.project_folder_id,
       projectId: claim.primary_project_id,
     });
   }
@@ -927,7 +927,7 @@ export class PgKnowledgeRepository {
         metadata: optionalObject(body.metadata) ?? {},
       },
       rationale: optionalString(body.rationale) ?? "Object relation requested.",
-      workspaceId: fromObject.workspace_id,
+      projectFolderId: fromObject.project_folder_id,
       projectId: fromObject.primary_project_id,
     });
   }
@@ -950,7 +950,7 @@ export class PgKnowledgeRepository {
         metadata_patch: metadataPatch,
       },
       rationale: "Object relation archive requested.",
-      workspaceId: fromObject.workspace_id,
+      projectFolderId: fromObject.project_folder_id,
       projectId: fromObject.primary_project_id,
     });
   }
@@ -982,7 +982,7 @@ export class PgKnowledgeRepository {
       title: payload.title,
       payload,
       rationale: optionalString(body.rationale) ?? "Knowledge creation requested.",
-      workspaceId: optionalString(body.workspace_id),
+      projectFolderId: optionalString(body.project_folder_id),
       projectId: optionalString(body.project_id),
     });
   }
@@ -1013,7 +1013,7 @@ export class PgKnowledgeRepository {
       title: `Update: ${payload.title}`,
       payload,
       rationale: optionalString(body.rationale) ?? "Knowledge update requested.",
-      workspaceId: item.workspace_id,
+      projectFolderId: item.project_folder_id,
       projectId: item.project_id,
     });
   }
@@ -1032,7 +1032,7 @@ export class PgKnowledgeRepository {
         proposed_content: item.content,
       },
       rationale: "Knowledge archive requested.",
-      workspaceId: item.workspace_id,
+      projectFolderId: item.project_folder_id,
       projectId: item.project_id,
     });
   }
@@ -1687,7 +1687,7 @@ export class PgKnowledgeRepository {
       status: string | null;
       visibility: string | null;
       projectId: string | null;
-      workspaceId: string | null;
+      projectFolderId: string | null;
       q: string | null;
     },
   ): { where: string; params: unknown[] } {
@@ -1706,7 +1706,7 @@ export class PgKnowledgeRepository {
       clauses.push(contentVisibilityParamFilterSql("so", add(filters.visibility)));
     }
     if (filters.projectId) clauses.push(`so.primary_project_id = ${add(filters.projectId)}`);
-    if (filters.workspaceId) clauses.push(`so.workspace_id = ${add(filters.workspaceId)}`);
+    if (filters.projectFolderId) clauses.push(`so.project_folder_id = ${add(filters.projectFolderId)}`);
     if (filters.q) clauses.push(`(so.title ILIKE ${add(`%${filters.q}%`)} OR ki.content ILIKE $${params.length})`);
     return { where: `WHERE ${clauses.join(" AND ")}`, params };
   }
@@ -2058,7 +2058,7 @@ export class PgKnowledgeRepository {
   private async getVisibleSpaceObjectRow(identity: SpaceUserIdentity, objectId: string): Promise<SpaceObjectRow | null> {
     const result = await this.db.query<SpaceObjectRow>(
       `SELECT id, space_id, object_type, title, status, visibility,
-              owner_user_id, primary_project_id, workspace_id, created_by_user_id
+              owner_user_id, primary_project_id, project_folder_id, created_by_user_id
          FROM space_objects so
         WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL
           AND ${contentReadSql("space_object", "so", "$3")}`,
@@ -2220,7 +2220,7 @@ export class PgKnowledgeRepository {
     title: string;
     payload: Record<string, unknown>;
     rationale: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     projectId: string | null;
     riskLevel?: "low" | "medium" | "high" | "critical";
   }): Promise<ProposalOut> {
@@ -2231,7 +2231,7 @@ export class PgKnowledgeRepository {
       title: input.title,
       payload: input.payload,
       rationale: input.rationale,
-      workspaceId: input.workspaceId,
+      projectFolderId: input.projectFolderId,
       projectId: input.projectId,
       createdByUserId: inputIdentity.userId,
       visibility: "space_shared",

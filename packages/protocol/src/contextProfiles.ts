@@ -1,7 +1,7 @@
 /**
  * Context profile and routing-manifest contracts.
  *
- * These schemas describe DB-authoritative context workspace configuration.
+ * These schemas describe DB-authoritative context configuration.
  * Runtime vendor files remain generated adapter artifacts.
  */
 
@@ -11,7 +11,7 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 export const ContextProfileScopeSchema = z.enum([
   "space",
   "project",
-  "workspace",
+  "project_folder",
   "agent",
   "user",
 ]);
@@ -100,7 +100,7 @@ export type ContextRoutingUpdateRequest = z.infer<typeof ContextRoutingUpdateReq
 
 export const ContextEffectiveRoutingResponseSchema = z
   .object({
-    workspace_id: IdSchema,
+    project_folder_id: IdSchema,
     profiles: z.array(ContextProfileSchema),
     effective_manifest: ContextRoutingManifestSchema,
     selected_agent_doc_paths: z.array(z.string()),

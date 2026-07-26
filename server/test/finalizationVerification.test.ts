@@ -20,7 +20,7 @@ function run(contract_snapshot_json: unknown): RunRecord {
     mode: "live",
     prompt: null,
     instruction: null,
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "model_api",
@@ -99,6 +99,17 @@ class FinalizationRepository {
       finalized_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
     };
+  }
+
+  async markRunFinalizationGateCommitted(): Promise<void> {}
+  async withRunFinalizationLock<T>(
+    _spaceId: string,
+    _runId: string,
+    _attemptNumber: number,
+    _finalizerVersion: string,
+    fn: (repository: PgRunRepository) => Promise<T>,
+  ): Promise<T> {
+    return fn(this as unknown as PgRunRepository);
   }
   async appendRunEvent(): Promise<null> { return null; }
 }

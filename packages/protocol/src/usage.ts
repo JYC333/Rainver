@@ -30,6 +30,7 @@ export type UsageSourceType = z.infer<typeof UsageSourceTypeSchema>;
 export const UsageExecutionChannelSchema = z.enum([
   "managed_api",
   "provider_proxy",
+  "local_cli",
   "local_cli_transcript",
   "manual_import",
   "cross_instance_import",
@@ -194,7 +195,7 @@ export const UsageEventDTOSchema = z.object({
   session_name: z.string().nullable(),
   agent_id: IdSchema.nullable(),
   project_id: IdSchema.nullable(),
-  workspace_id: IdSchema.nullable(),
+  project_folder_id: IdSchema.nullable(),
   occurred_at: ISODateTimeSchema,
   recorded_at: ISODateTimeSchema,
   usage_details: UsageDetailsSchema,

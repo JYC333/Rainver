@@ -13,7 +13,7 @@
 │     Activity Inbox, Memory Review, Knowledge, Cards │
 │     apps/web/src/                                   │
 ├─────────────────────────────────────────────────────┤
-│  11. Workspace Console Layer                         │
+│  11. Files & Code Layer                              │
 │     File browser, git diff review, run logs,        │
 │     artifact review, diff approval UI               │
 ├─────────────────────────────────────────────────────┤
@@ -68,7 +68,7 @@
 │     server/src/modules/auth + agents          │
 ├─────────────────────────────────────────────────────┤
 │   1. Space Layer                                     │
-│     Space, SpaceMembership, Workspace               │
+│     Space, SpaceMembership                          │
 │     All data scoped by space_id                     │
 │     server/migrations + modules/spaces        │
 └─────────────────────────────────────────────────────┘
@@ -80,7 +80,7 @@
 - **Run is the central execution object** — every agent invocation creates a Run; Run produces Activities, Artifacts, and Proposals; Session is conversation-level, Run is execution-level
 - **Proposal gate** — memory and code changes require explicit proposal approval before durable mutation
 - **Runtime-agnostic core** — Agent is a product-level actor; Runtime Adapter (capability, model_api, claude_code, codex_cli, opencode, ...) is a replaceable execution backend; Model Provider (Anthropic, OpenAI, litellm) is the underlying LLM. These three are distinct. Tool-using / filesystem Claude work goes through the `claude_code` CLI RuntimeAdapterSpec. Per ADR 0008 the governing invariant is **credential channel isolation** — an Anthropic API key must never enter a Claude Code CLI subprocess env; the in-process encrypted API channel (reflector, `/providers/chat`, `model_api`) passes the key as a litellm parameter (never via env) and may serve any provider including Anthropic.
-- **Sandbox enforcement** — file-access local CLI runtimes (`claude_code`, `codex_cli`) always run sandboxed (never `none`/`dry_run`). The working-directory scope is resolved from workspace binding + risk: no workspace bound → `ephemeral` (a system-provisioned throwaway run-scope dir, server-owned); workspace bound → `risk_level=high` → `worktree` (detached git worktree, diff → `code_patch` proposal). The agent never works directly in the real workspace. See `modules/sandbox.md`.
+- **Sandbox enforcement** — file-access local CLI runtimes (`claude_code`, `codex_cli`) always run sandboxed (never `none`/`dry_run`). The working-directory scope is resolved from Project Folder binding + risk: no Folder bound → `ephemeral` (a system-provisioned throwaway run-scope dir, server-owned); Folder bound → `risk_level=high` → `worktree` (detached git worktree, diff → `code_patch` proposal). The agent never works directly in the real Project Folder. See `modules/sandbox.md`.
 - **ContextCompiler** — vendor files (CLAUDE.md, AGENTS.md, prompt.md, and adapter sidecars such as Agent Persona Prompt `SOUL.md`) are compiled artefacts written to the sandbox, never source of truth; security scanning, token budgets, and `.agent/` progressive loading enforced at compile time
 - **ContextSnapshot** — frozen ContextPackage saved at run-start; immutable; stored in `context_snapshots` for audit
 - **ContextAttachment** — structured context references (file, git_diff, memory_entry, etc.) resolved and scanned by ContextBuilder
@@ -108,7 +108,7 @@
 | New UI view (web) | Layer 12 | `apps/web/src/modules/<name>/` |
 | New UI view (mobile-primary) | Layer 13 | `apps/web/src/modules/<name>/` mobile variants |
 | New runtime adapter (CLI or SDK) | Layer 10 | `server/src/modules/runtimeAdapters/` — see `modules/runtime-adapters.md` |
-| Workspace file operation | Layer 11 | `server/src/modules/workspaces/` |
+| Project Folder file operation | Layer 11 | `server/src/modules/projectFolders/` |
 | New optional feature module | All | add to `server/src/gateway/routeRegistry.ts` + `apps/web/src/modules/registry.ts` |
 
 ## Runtime Targets (MVP)

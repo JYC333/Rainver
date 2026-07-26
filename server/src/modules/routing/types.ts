@@ -1,10 +1,22 @@
 export type RouteExecutionMode = "live" | "dry_run";
 export type RouteRiskLevel = "low" | "medium" | "high" | "critical";
 export type RouteTrustLevel = "low" | "medium" | "high";
-export type SandboxLevel = "none" | "dry_run" | "ephemeral" | "worktree" | "one_shot_docker";
+export type SandboxLevel =
+  | "none"
+  | "dry_run"
+  | "ephemeral"
+  | "read_only"
+  | "worktree"
+  | "one_shot_docker";
+export type RouteExecutionShape =
+  | "conversational"
+  | "structured_generation"
+  | "agentic_files"
+  | "code_execution";
 
 export interface RouteHints {
   preferred_adapter_types: string[];
+  execution_shape: RouteExecutionShape | null;
   preferred_runtime_profile_id: string | null;
   required_capabilities: string[];
   required_tools: string[];

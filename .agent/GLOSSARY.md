@@ -19,7 +19,7 @@ model config, runtime config, context policy, memory policy, capabilities, tool 
 and runtime policy. All stored as JSON fields on the Agent model — no additional FKs.
 
 **Run**
-The central execution object. A single agent invocation scoped to a Space/workspace.
+The central execution object. A single agent invocation scoped to a Space/Project Folder.
 Belongs to a Session (optional) or can be standalone (Job-triggered, delegated, etc.).
 Many Runs can occur within one Session.
 
@@ -49,7 +49,7 @@ Proposal has explicit temporal fields: `created_at`, `decided_at`, `deadline` (s
 `low | normal | high | critical`.
 
 **Context Builder**
-Assembles a `ContextPackage` from MemoryStore for a space/user/workspace. Enforces space isolation. Resolves ContextAttachments. Logs all memory access.
+Assembles a `ContextPackage` from MemoryStore for a space/user/Project Folder. Enforces space isolation. Resolves ContextAttachments. Logs all memory access.
 
 **Context Compiler**
 Translates a ContextPackage into a vendor instruction file (CLAUDE.md, AGENTS.md, prompt.md, plus adapter sidecars such as the Agent Persona Prompt `SOUL.md`) written to the sandbox. Runs security scanning, enforces token budgets, and loads `.agent/` docs progressively.

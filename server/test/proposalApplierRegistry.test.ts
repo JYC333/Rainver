@@ -8,7 +8,7 @@ class FakeApplyDb {
   readonly dirtyUpdates: Array<{ kind: string; params: readonly unknown[] }> = [];
   readonly jobs: Array<{
     job_type: string;
-    workspace_id: unknown;
+    project_folder_id: unknown;
     agent_id: unknown;
     payload: Record<string, unknown>;
   }> = [];
@@ -33,8 +33,8 @@ class FakeApplyDb {
     if (norm.startsWith("UPDATE context_digests")) {
       const kind = norm.includes("digest_type = 'policy_bundle'")
         ? "policy_bundle"
-        : norm.includes("digest_type = 'workspace'")
-          ? "workspace"
+        : norm.includes("digest_type = 'project_folder'")
+          ? "project_folder"
           : "agent";
       this.dirtyUpdates.push({ kind, params });
       return { rows: [], rowCount: 1 };
@@ -42,7 +42,7 @@ class FakeApplyDb {
     if (norm.startsWith("INSERT INTO jobs")) {
       this.jobs.push({
         job_type: String(params[5]),
-        workspace_id: params[3],
+        project_folder_id: params[3],
         agent_id: params[4],
         payload: JSON.parse(String(params[7])) as Record<string, unknown>,
       });
@@ -51,7 +51,7 @@ class FakeApplyDb {
           id: String(params[0]),
           space_id: params[1],
           user_id: params[2],
-          workspace_id: params[3],
+          project_folder_id: params[3],
           agent_id: params[4],
           job_type: params[5],
           status: "pending",
@@ -100,7 +100,7 @@ function proposal(overrides: Partial<ApplyProposal> = {}): ApplyProposal {
     space_id: "space-1",
     proposal_type: "policy_change",
     title: "Change policy",
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     created_by_user_id: "user-1",
     payload_json: {
@@ -109,7 +109,7 @@ function proposal(overrides: Partial<ApplyProposal> = {}): ApplyProposal {
       policy_json: { rule: "Use safe defaults." },
       rule_json: { effect: "allow" },
       applies_to_json: {
-        workspace_ids: ["ws-1", "ws-1"],
+        project_folder_ids: ["ws-1", "ws-1"],
         agents: [{ id: "agent-1" }],
       },
     },
@@ -210,7 +210,7 @@ describe("proposal applier registry", () => {
       domain: "runtime",
       rule_json: JSON.stringify({ effect: "allow" }),
       applies_to_json: JSON.stringify({
-        workspace_ids: ["ws-1", "ws-1"],
+        project_folder_ids: ["ws-1", "ws-1"],
         agents: [{ id: "agent-1" }],
       }),
     });
@@ -222,7 +222,7 @@ describe("proposal applier registry", () => {
     expect(db.jobs.map((j) => j.payload)).toEqual([
       { space_id: "space-1", digest_type: "policy_bundle" },
     ]);
-    expect(db.jobs.filter((j) => j.payload.digest_type === "workspace")).toHaveLength(0);
+    expect(db.jobs.filter((j) => j.payload.digest_type === "project_folder")).toHaveLength(0);
     expect(db.jobs.filter((j) => j.payload.digest_type === "agent")).toHaveLength(0);
   });
 

@@ -360,13 +360,13 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       proposal_type: string;
       title: string | null;
       payload_json: Record<string, unknown>;
-      workspace_id: string | null;
+      project_folder_id: string | null;
       visibility: string | null;
       created_by_user_id: string | null;
       created_by_run_id: string | null;
       project_id: string | null;
     }>(
-      `SELECT id, space_id, proposal_type, title, payload_json, workspace_id, visibility,
+      `SELECT id, space_id, proposal_type, title, payload_json, project_folder_id, visibility,
               created_by_user_id, created_by_run_id, project_id
          FROM proposals WHERE id = $1`,
       [activation.proposal_id],
@@ -434,13 +434,13 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       proposal_type: string;
       title: string | null;
       payload_json: Record<string, unknown>;
-      workspace_id: string | null;
+      project_folder_id: string | null;
       visibility: string | null;
       created_by_user_id: string | null;
       created_by_run_id: string | null;
       project_id: string | null;
     }>(
-      `SELECT id, space_id, proposal_type, title, payload_json, workspace_id, visibility,
+      `SELECT id, space_id, proposal_type, title, payload_json, project_folder_id, visibility,
               created_by_user_id, created_by_run_id, project_id
          FROM proposals WHERE id = $1`,
       [activation.proposal_id],

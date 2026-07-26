@@ -226,7 +226,7 @@ describe('last-used Knowledge section', () => {
     expect(readLastKnowledgeSection()).toBe('notes')
   })
 
-  it('remembers the last workspace', () => {
+  it('remembers the last section', () => {
     rememberKnowledgeSection('wiki')
     expect(readLastKnowledgeSection()).toBe('wiki')
   })
@@ -258,7 +258,7 @@ describe('Knowledge replaces the first-level Wiki', () => {
 })
 
 describe('Knowledge routing', () => {
-  it('redirects /knowledge to the default workspace (notes)', async () => {
+  it('redirects /knowledge to the default section (notes)', async () => {
     renderAt('/spaces/personal-1/knowledge')
     await waitFor(() =>
       expect(screen.getByTestId('loc')).toHaveTextContent('/spaces/personal-1/knowledge/notes'))
@@ -276,7 +276,7 @@ describe('Knowledge routing', () => {
     expect(await screen.findByText('Continue working')).toBeInTheDocument()
   })
 
-  it('renders the Notes workspace shell at /knowledge/notes', async () => {
+  it('renders the Notes section shell at /knowledge/notes', async () => {
     renderAt('/spaces/personal-1/knowledge/notes')
     const tree = await screen.findByLabelText('Notes organization')
     expect(within(tree).getByText('Inbox')).toBeInTheDocument()
@@ -718,7 +718,7 @@ describe('Knowledge routing', () => {
     expect(payload).not.toHaveProperty('plain_text')
   })
 
-  it('renders the Wiki workspace (KnowledgeItem-backed) at /knowledge/wiki', async () => {
+  it('renders the Wiki section (KnowledgeItem-backed) at /knowledge/wiki', async () => {
     renderAt('/spaces/personal-1/knowledge/wiki')
     expect(await screen.findByText(/powered by KnowledgeItems/i)).toBeInTheDocument()
     expect(screen.getByLabelText('Switch Knowledge section')).toBeInTheDocument()

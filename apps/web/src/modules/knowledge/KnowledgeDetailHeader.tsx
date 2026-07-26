@@ -42,9 +42,6 @@ export default function KnowledgeDetailHeader({
         <div>
           <h1 className="text-lg font-semibold tracking-tight">{item.title}</h1>
           <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            ID <span className="font-mono select-all text-foreground">{item.id}</span>
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <ContentAccessControl resourceType="space_object" resourceId={item.id} ownerUserId={item.owner_user_id} />
@@ -70,18 +67,23 @@ export default function KnowledgeDetailHeader({
         <p><span className="font-medium text-foreground">confidence</span> {item.confidence ?? '-'}</p>
         <p><span className="font-medium text-foreground">created</span> {fmt(item.created_at)}</p>
         <p><span className="font-medium text-foreground">updated</span> {fmt(item.updated_at)}</p>
-        {item.source_refs.length > 0 && (
-          <pre className="md:col-span-2 whitespace-pre-wrap bg-muted/30 rounded-md p-2 border border-border">
-            source_refs {JSON.stringify(item.source_refs, null, 2)}
-          </pre>
-        )}
-        {knowledgeProvenance(item).map(row => (
-          <p key={row.label} className="break-all">
-            <span className="font-medium text-foreground">{row.label}</span>{' '}
-            <span className={row.value ? 'font-mono select-all' : ''}>{row.value ?? '-'}</span>
-          </p>
-        ))}
       </div>
+      <details className="rounded-md border border-border bg-muted/20 p-3 text-xs">
+        <summary className="cursor-pointer font-medium">Technical provenance</summary>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 text-muted-foreground">
+          {item.source_refs.length > 0 && (
+            <pre className="md:col-span-2 whitespace-pre-wrap bg-muted/30 rounded-md p-2 border border-border">
+              source_refs {JSON.stringify(item.source_refs, null, 2)}
+            </pre>
+          )}
+          {knowledgeProvenance(item).map(row => (
+            <p key={row.label} className="break-all">
+              <span className="font-medium text-foreground">{row.label}</span>{' '}
+              <span className={row.value ? 'font-mono select-all' : ''}>{row.value ?? '-'}</span>
+            </p>
+          ))}
+        </div>
+      </details>
     </Card>
   )
 }

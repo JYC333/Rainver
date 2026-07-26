@@ -138,7 +138,7 @@ this as current product scope, not as missing backend support.
 - Raw capture (activity module)
 - Agent runtime output storage (runs/artifacts modules)
 - Long-term agent context injection (memory module)
-- Project taxonomy or workspace structure
+- Project taxonomy or Project Folder structure
 - Spaced repetition scheduling
 - Feynman or Reflection assessment dialogue flows
 
@@ -183,9 +183,9 @@ canonical tables.
 The initial projection indexes:
 
 - `KnowledgeItem` title, slug, aliases, content/plain text, excerpt, source URL,
-  item status, visibility, owner, workspace, accepted object relations, and
+  item status, visibility, owner, Project Folder, accepted object relations, and
   item-source evidence links.
-- `Note` title, plain text, excerpt, status, workspace/project associations where
+- `Note` title, plain text, excerpt, status, Project Folder/project associations where
   present, and working `note_links` rows.
 - `Source` title, URI, raw text, summary, status, and item-source links.
 - `Claim` title, subject text, claim text, status, visibility, owner, claim
@@ -266,7 +266,7 @@ provenance is not treated as human ownership authority.
 Knowledge reads are viewer-aware:
 
 - `space_shared` is readable by any authenticated member of the current space.
-- workspace-scoped `space_shared` is readable by any authenticated member of the current space for now. Workspace-role narrowing is future work.
+- Project Folder-scoped `space_shared` is readable by any authenticated member of the current space for now. Project Folder-role narrowing is future work.
 - `private` has owner base access and never consults grants; private content
   cannot omit its owner.
 - `selected_users` requires an active grant in `content_access_grants` for an
@@ -309,11 +309,11 @@ Knowledge proposal apply currently relies on proposal approval and the `proposal
 
 These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `ProposalApplyService`, not direct `PolicyGateway.enforce()` call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
 
-## Project And Workspace Association
+## Project And Project Folder Association
 
-Project is not a Knowledge type. Workspace is not a Knowledge type. They are contextual associations.
+Project is not a Knowledge type. Project Folder is not a Knowledge type. They are contextual associations.
 
-KnowledgeItem rows may carry `project_id` and/or `workspace_id`, but the primary content model must not be a project tree taxonomy.
+KnowledgeItem rows may carry `project_id` and/or `project_folder_id`, but the primary content model must not be a project tree taxonomy.
 
 ## Models
 
@@ -328,7 +328,7 @@ SpaceObject:                           # shared object root for Knowledge-owned 
                                     #   Source raw|processing|processed|archived|error
                                     #   Claim active|disputed|superseded|rejected|archived
   visibility
-  owner_user_id, primary_project_id, workspace_id
+  owner_user_id, primary_project_id, project_folder_id
   created_by_user_id, created_by_agent_id, created_by_run_id
   created_at, updated_at, archived_at, deleted_at
 
@@ -468,7 +468,7 @@ not replaced by Source.
 - Knowledge does not automatically enter Memory or ContextBuilder.
 - Knowledge promotion into Memory is a future explicit proposal flow.
 - Activity, Run, and Artifact are raw/source inputs, not active Knowledge.
-- Project and workspace are associations, not Knowledge content categories.
+- Project and Project Folder are associations, not Knowledge content categories.
 - Updates are versioned; active content is not overwritten in place.
 - Relation rows are database-backed and same-space only.
 - Backend/domain/API naming uses `knowledge`; frontend-specific labels are presentation-only.

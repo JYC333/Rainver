@@ -13,7 +13,7 @@ interface SourcePolicyRow {
   owner_user_id: string | null;
   visibility: string;
   access_level: string;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
 }
 
@@ -38,7 +38,7 @@ export async function resolveUsageAttribution(
       access_level: "full",
       source_resource_type: null,
       source_resource_id: null,
-      workspace_id: null,
+      project_folder_id: null,
       project_id: null,
       grant_snapshots: [],
     };
@@ -52,7 +52,7 @@ export async function resolveUsageAttribution(
       access_level: "full",
       source_resource_type: null,
       source_resource_id: null,
-      workspace_id: null,
+      project_folder_id: null,
       project_id: null,
       grant_snapshots: [],
     };
@@ -87,8 +87,8 @@ async function sourceAttribution(
   }
   const alias = "usage_source";
   const active = definition.activePredicate?.(alias) ?? "true";
-  const workspaceSql = definition.workspaceColumn
-    ? `${alias}.${definition.workspaceColumn}`
+  const projectFolderSql = definition.projectFolderColumn
+    ? `${alias}.${definition.projectFolderColumn}`
     : "NULL::varchar";
   const projectSql = definition.projectColumn
     ? `${alias}.${definition.projectColumn}`
@@ -97,7 +97,7 @@ async function sourceAttribution(
     `SELECT ${alias}.${definition.ownerColumn} AS owner_user_id,
             ${alias}.visibility,
             ${alias}.access_level,
-            ${workspaceSql} AS workspace_id,
+            ${projectFolderSql} AS project_folder_id,
             ${projectSql} AS project_id
        FROM ${definition.tableName} ${alias}
       WHERE ${alias}.space_id = $1 AND ${alias}.id = $2 AND ${active}
@@ -123,7 +123,7 @@ async function sourceAttribution(
     access_level: row.access_level as ContentAccessLevel,
     source_resource_type: resourceType,
     source_resource_id: resourceId,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     project_id: row.project_id,
     grant_snapshots: grants,
   };

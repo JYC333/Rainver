@@ -65,7 +65,7 @@ export interface NotesTreeProps {
   onDeleteCollection: (collection: NoteCollection) => void
   /** Drag a folder onto another folder (or a gap between siblings, or the
    * root strip) to reparent and/or reorder it. Project-backed folders may be
-   * freely placed; fixed workspace roots (Inbox/Archive/Projects) are not
+   * freely placed; fixed collection roots (Inbox/Archive/Projects) are not
    * draggable. Every affected sibling's new position is included. */
   onDropCollections?: (updates: CollectionMove[]) => void
   /** Drag a note onto a folder (or a gap between two notes in a folder) to
@@ -514,7 +514,7 @@ interface FolderRowProps {
 
 /** Folder action protection and drag policy are intentionally separate:
  * project-backed folders remain protected from deletion but can be placed
- * freely, while fixed workspace roots cannot move. */
+ * freely, while fixed collection roots cannot move. */
 function FolderRow({
   node, active, indent, protectedCollection, draggableCollection, invalidDropTarget, hasChildren, expanded,
   onToggle, onSelect, onCreateChild, onRename, onMove, onHide, onDelete,

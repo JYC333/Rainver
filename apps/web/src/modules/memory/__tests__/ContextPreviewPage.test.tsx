@@ -57,14 +57,14 @@ const briefArtifact: Artifact = {
   owner_user_id: 'user-1',
   content: null,
   project_id: null,
-  workspace_id: 'workspace-1',
+  project_folder_id: 'workspace-1',
   created_at: '2026-06-26T10:00:00.000Z',
   updated_at: '2026-06-26T10:00:00.000Z',
 }
 
 function renderPage() {
   return render(
-    <MemoryRouter initialEntries={['/context?artifact_id=brief-1&workspace_id=workspace-1']}>
+    <MemoryRouter initialEntries={['/context?artifact_id=brief-1&project_folder_id=workspace-1']}>
       <ContextPreviewPage />
     </MemoryRouter>,
   )
@@ -81,7 +81,7 @@ describe('ContextPreviewPage artifact attachments', () => {
     }))
     vi.mocked(contextApi.build).mockResolvedValue({
       user_memory: [],
-      workspace_memory: [],
+      project_folder_memory: [],
       capability_memory: [],
       agent_memory: [],
       system_policy: [],
@@ -111,7 +111,7 @@ describe('ContextPreviewPage artifact attachments', () => {
     await waitFor(() => {
       expect(artifactsApi.list).toHaveBeenCalledWith(expect.objectContaining({
         artifact_type: 'retrieval_brief',
-        workspace_id: 'workspace-1',
+        project_folder_id: 'workspace-1',
       }))
     })
 
@@ -119,7 +119,7 @@ describe('ContextPreviewPage artifact attachments', () => {
 
     await waitFor(() => {
       expect(contextApi.build).toHaveBeenCalledWith(expect.objectContaining({
-        workspace_id: 'workspace-1',
+        project_folder_id: 'workspace-1',
         project_id: null,
         context_artifact_ids: ['brief-1'],
       }))

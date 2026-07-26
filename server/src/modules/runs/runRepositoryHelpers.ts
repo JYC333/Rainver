@@ -44,10 +44,10 @@ export function validateRunCreateInput(input: RunCreateInput): void {
 
 export function requiredSandboxLevelForRun(
   adapterType: string | null | undefined,
-  workspaceId: string | null | undefined,
+  projectFolderId: string | null | undefined,
 ): string {
   if (!isVendorCliAdapter(adapterType)) return "none";
-  return workspaceId ? "worktree" : "ephemeral";
+  return projectFolderId ? "read_only" : "ephemeral";
 }
 
 /**
@@ -60,7 +60,7 @@ export function resolveSandboxLevelForRuntime(input: {
   adapterType: string | null | undefined;
   configuredLevel: string | null | undefined;
   riskLevel: string | null | undefined;
-  workspaceId: string | null | undefined;
+  projectFolderId: string | null | undefined;
 }): string | null {
   if (
     isVendorCliAdapter(input.adapterType) &&
@@ -71,10 +71,28 @@ export function resolveSandboxLevelForRuntime(input: {
   }
   if (isVendorCliAdapter(input.adapterType)) {
     const configured = typeof input.configuredLevel === "string" ? input.configuredLevel.trim() : "";
-    if (configured && configured !== "none") return configured;
-    return requiredSandboxLevelForRun(input.adapterType, input.workspaceId);
+    const risk = typeof input.riskLevel === "string"
+      ? input.riskLevel.trim().toLowerCase()
+      : "";
+    const baseline = risk === "high"
+      ? "worktree"
+      : requiredSandboxLevelForRun(input.adapterType, input.projectFolderId);
+    return sandboxRank(configured) > sandboxRank(baseline)
+      ? configured
+      : baseline;
   }
   return input.configuredLevel ?? null;
+}
+
+function sandboxRank(level: string): number {
+  return {
+    none: 0,
+    dry_run: 1,
+    ephemeral: 2,
+    read_only: 3,
+    worktree: 4,
+    one_shot_docker: 5,
+  }[level] ?? -1;
 }
 
 function assertOneOf(value: string, allowed: readonly string[], field: string): void {

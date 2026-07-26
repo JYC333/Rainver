@@ -102,6 +102,9 @@ export async function workflowDefinitionFromTemplate(template: WorkflowTemplate)
       capability_ids: template.capability_ids,
       proposal_policy: template.proposal_policy,
       recommended_runtime_adapters: template.recommended_runtime_adapters,
+      execution_shape: template.execution_shape ?? "structured_generation",
+      required_capabilities: template.required_capabilities ?? [],
+      required_tools: template.required_tools ?? [],
       prompt_asset_keys: template.prompt_asset_keys,
     },
   });

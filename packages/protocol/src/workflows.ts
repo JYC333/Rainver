@@ -22,6 +22,14 @@ export const WorkflowTemplateSchema = z
     output_artifact_types: z.array(z.string().min(1)),
     proposal_policy: JsonObjectSchema,
     recommended_runtime_adapters: z.array(z.string().min(1)),
+    execution_shape: z.enum([
+      "conversational",
+      "structured_generation",
+      "agentic_files",
+      "code_execution",
+    ]).default("structured_generation"),
+    required_capabilities: z.array(z.string().min(1)).default([]),
+    required_tools: z.array(z.string().min(1)).default([]),
     prompt_asset_keys: z.array(z.string().min(1)).default([]),
   })
   .passthrough();
@@ -167,7 +175,7 @@ export const WorkflowRunDraftRequestSchema = z
     runtime_profile_id: IdSchema.nullish(),
     prompt: z.string().nullish(),
     instruction: z.string().nullish(),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     session_id: IdSchema.nullish(),
     config_json: JsonObjectSchema.optional(),
   })
@@ -188,7 +196,7 @@ export const WorkflowRunCreateBodyDraftSchema = z
     // caller selects one.
     agent_id: IdSchema.nullable(),
     runtime_profile_id: IdSchema.nullish(),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     session_id: IdSchema.nullish(),
     prompt: z.string().min(1),
     instruction: z.string().nullish(),

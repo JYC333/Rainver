@@ -9,7 +9,7 @@
 
 agent-space is **not** a local-first system and will not become one. The server-authoritative model is a deliberate design choice: agents run server-side, memory is managed through a proposal workflow, and policy and credentials require central enforcement.
 
-The compatible goal is narrower: **local-first personal interfaces for capture, drafts, tasks, cards, lightweight notes, and offline reading** — where local-first genuinely improves user experience — while keeping agent execution, active memory, proposals, credentials, workspace operations, policy, runtime adapters, and deployment firmly server-authoritative.
+The compatible goal is narrower: **local-first personal interfaces for capture, drafts, tasks, cards, lightweight notes, and offline reading** — where local-first genuinely improves user experience — while keeping agent execution, active memory, proposals, credentials, Project Folder operations, policy, runtime adapters, and deployment firmly server-authoritative.
 
 Key principle: any object that feeds into durable system state must pass through the server. Local-first is a client convenience layer, not a durability layer.
 
@@ -49,7 +49,7 @@ Objects that must never leave the server boundary:
 
 - Credentials and provider secrets
 - RuntimeAdapter secrets / config
-- Workspace filesystem paths
+- Project Folder filesystem paths
 - Sandbox paths
 - Deployment jobs
 - Capability install / update state
@@ -100,7 +100,7 @@ Tables that are server-authoritative or server-only do not need `device_id` or `
 - Proposal acceptance or rejection
 - Policy changes
 - Credential changes
-- Workspace file changes
+- Project Folder file changes
 - Code patch apply
 - Deployment actions
 - Capability install or update
@@ -160,7 +160,7 @@ Agent execution remains server-side (or main-node-side in federated deployments)
 | Personal captures | Append-only; conflicts are rare and low-stakes |
 | Tasks | Last-write-wins acceptable initially; visibility and status changes require careful merge or user prompt |
 | Drafts (knowledge, decision, note) | User-resolved conflict if diverged; present a diff |
-| Active memory / proposal apply / policy / workspace | No offline apply; queue and submit when online |
+| Active memory / proposal apply / policy / Project Folder | No offline apply; queue and submit when online |
 
 Do not prematurely introduce CRDT or operational transform. The current user scale and sync surface do not justify the complexity. Start with version-based conflict detection and user-prompted resolution where needed.
 
@@ -175,7 +175,7 @@ The following are explicitly out of scope for this system:
 - **Full offline agent execution** — violates policy enforcement and memory authority boundaries
 - **Full mobile database sync** — no current mobile client; design when the need is concrete
 - **E2EE / zero-knowledge architecture** — incompatible with server-side agent execution and memory management
-- **Workspace file local-first sync** — filesystem paths are server-authoritative; local sync introduces conflict resolution complexity that has no current payoff
+- **Project Folder file local-first sync** — filesystem paths are server-authoritative; local sync introduces conflict resolution complexity that has no current payoff
 
 These may become relevant in future iterations, but should not influence current implementation decisions.
 

@@ -751,7 +751,7 @@ export class PgSourcesRepository {
   private async assertTargetInSpace(spaceId: string, targetType: string, targetId: string): Promise<void> {
     const tableMap: Record<string, string | null> = {
       space: null,
-      workspace: "workspaces",
+      project_folder: "project_folders",
       project: "projects",
       user: "space_memberships",
       agent: "agents",

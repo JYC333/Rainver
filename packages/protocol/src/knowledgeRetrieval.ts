@@ -4,8 +4,11 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 // knowledge_item / note / source / claim are owned by the Knowledge domain adapter.
 // memory_entry is owned by the Memory domain adapter. project_public_summary is
 // owned by the Projects domain adapter. source_item / extracted_evidence are
-// owned by the Source domain adapter. The contract is shared but each domain
-// registers its own adapter into its own registry, so the surfaces stay isolated.
+// owned by the Source domain adapter. inquiry_thread is owned by the Inquiry
+// domain adapter (ADR 0011 — inquiry_threads are never `space_objects` rows,
+// so this is a Phase 4 addition to the read plane only, not a change to the
+// canonical object root). The contract is shared but each domain registers
+// its own adapter into its own registry, so the surfaces stay isolated.
 export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "knowledge_item",
   "note",
@@ -15,6 +18,7 @@ export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "project_public_summary",
   "source_item",
   "extracted_evidence",
+  "inquiry_thread",
 ] as const;
 
 export const RetrievalObjectTypeSchema = z.enum(RETRIEVAL_OBJECT_TYPE_VALUES);

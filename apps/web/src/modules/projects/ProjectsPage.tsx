@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
-import { BookOpen, FolderKanban, Plus, Target } from 'lucide-react'
+import { FolderKanban, Plus, Target } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectPresetsApi, projectsApi } from '../../api/client'
+import { projectTemplatesApi, projectsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { Project, ProjectPresetDescriptor } from '../../types/api'
+import type { Project, ProjectTemplateDescriptor } from '../../types/api'
+import { ACADEMIC_TEMPLATE_KEY, templateKeyFromProject } from './templateUtils'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -33,11 +34,12 @@ const FILTER_OPTIONS = [
   { value: 'archived', label: 'Archived' },
 ]
 
-const ACADEMIC_PRESET_KEY = 'academic_research'
-
-function projectPresetKey(project: Project): string | null {
-  const value = project.settings_json?.preset
-  return typeof value === 'string' ? value : null
+function blankTemplateFirst(templates: ProjectTemplateDescriptor[]) {
+  return [...templates].sort((left, right) => {
+    if (left.key === 'blank') return -1
+    if (right.key === 'blank') return 1
+    return 0
+  })
 }
 
 export default function ProjectsPage() {
@@ -45,14 +47,18 @@ export default function ProjectsPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
-  const [projectPresets, setProjectPresets] = useState<ProjectPresetDescriptor[]>([])
+  const [projectTemplates, setProjectTemplates] = useState<ProjectTemplateDescriptor[]>([])
   const [statusFilter, setStatusFilter] = useState('active')
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
   const [newFocus, setNewFocus] = useState('')
-  const [newPresetKey, setNewPresetKey] = useState<string | null>(null)
+  const [newGoal, setNewGoal] = useState('')
+  const [newScope, setNewScope] = useState('')
+  const [newSuccessDefinition, setNewSuccessDefinition] = useState('')
+  const [newTemplateKey, setNewTemplateKey] = useState<string | null>(null)
+  const [templatesLoaded, setTemplatesLoaded] = useState(false)
 
   const loadProjects = useCallback(async () => {
     if (!activeSpaceId) {
@@ -76,17 +82,33 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     if (!activeSpaceId) {
-      setProjectPresets([])
+      setProjectTemplates([])
+      setTemplatesLoaded(false)
       return
     }
-    projectPresetsApi.list()
-      .then(setProjectPresets)
-      .catch(() => setProjectPresets([]))
+    setTemplatesLoaded(false)
+    projectTemplatesApi.list()
+      .then(templates => {
+        setProjectTemplates(templates)
+        setNewTemplateKey(current => current && templates.some(template => template.key === current)
+          ? current
+          : templates.find(template => template.key === 'blank')?.key ?? templates[0]?.key ?? null)
+      })
+      .catch(e => {
+        setProjectTemplates([])
+        setNewTemplateKey(null)
+        toast.error(`Could not load Project Templates: ${errMsg(e)}`)
+      })
+      .finally(() => setTemplatesLoaded(true))
   }, [activeSpaceId])
 
   async function createProject() {
     if (!newName.trim()) {
       toast.error('Name is required')
+      return
+    }
+    if (!newTemplateKey) {
+      toast.error('Select a Project Template before creating the Project')
       return
     }
     setCreating(true)
@@ -95,14 +117,21 @@ export default function ProjectsPage() {
         name: newName.trim(),
         description: newDescription.trim() || null,
         current_focus: newFocus.trim() || null,
-        settings_json: newPresetKey ? { preset: newPresetKey } : null,
+        settings_json: null,
+        template_key: newTemplateKey,
+        goal: newGoal.trim() || null,
+        scope_included: newScope.trim() || null,
+        success_definition: newSuccessDefinition.trim() || null,
       })
       toast.success('Project created')
       setCreateOpen(false)
       setNewName('')
       setNewDescription('')
       setNewFocus('')
-      setNewPresetKey(null)
+      setNewTemplateKey(projectTemplates.find(template => template.key === 'blank')?.key ?? projectTemplates[0]?.key ?? null)
+      setNewGoal('')
+      setNewScope('')
+      setNewSuccessDefinition('')
       navigate(`/projects/${project.id}`)
     } catch (e) {
       toast.error(errMsg(e))
@@ -115,7 +144,10 @@ export default function ProjectsPage() {
     setNewName('')
     setNewDescription('')
     setNewFocus('')
-    setNewPresetKey(null)
+    setNewTemplateKey(projectTemplates.find(template => template.key === 'blank')?.key ?? projectTemplates[0]?.key ?? null)
+    setNewGoal('')
+    setNewScope('')
+    setNewSuccessDefinition('')
   }
 
   return (
@@ -172,7 +204,7 @@ export default function ProjectsPage() {
       ) : projects.length === 0 ? (
         <EmptyState
           title="No projects yet."
-          description="Projects organize long-lived goals, research, artifacts, proposals, and linked workspaces. Create a project to group work around a goal."
+          description="Projects organize long-lived goals, research, artifacts, proposals, and Project Folders. Create a project to group work around a goal."
           action={
             <Button onClick={() => setCreateOpen(true)} className="gap-1.5">
               <Plus className="size-4" />
@@ -203,7 +235,7 @@ export default function ProjectsPage() {
               )}
               <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
                 <Badge variant="outline">{project.status}</Badge>
-                {projectPresetKey(project) === ACADEMIC_PRESET_KEY && <Badge variant="secondary">Academic Research</Badge>}
+                {templateKeyFromProject(project) === ACADEMIC_TEMPLATE_KEY && <Badge variant="secondary">Academic Research</Badge>}
                 <span>Updated {fmt(project.updated_at)}</span>
               </div>
             </Card>
@@ -213,7 +245,7 @@ export default function ProjectsPage() {
 
       {/* Create dialog */}
       <Dialog open={createOpen} onOpenChange={v => { setCreateOpen(v); if (!v) resetForm() }}>
-        <DialogContent>
+        <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
             <DialogDescription className="sr-only">
@@ -236,7 +268,34 @@ export default function ProjectsPage() {
                 value={newDescription}
                 onChange={e => setNewDescription(e.target.value)}
                 placeholder="What is this project about?"
+                rows={2}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Goal</Label>
+              <Textarea
+                value={newGoal}
+                onChange={e => setNewGoal(e.target.value)}
+                placeholder="What outcome should this project produce?"
                 rows={3}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Scope</Label>
+              <Textarea
+                value={newScope}
+                onChange={e => setNewScope(e.target.value)}
+                placeholder="What is included in this project?"
+                rows={2}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Success definition</Label>
+              <Textarea
+                value={newSuccessDefinition}
+                onChange={e => setNewSuccessDefinition(e.target.value)}
+                placeholder="How will you know this Project is successful?"
+                rows={2}
               />
             </div>
             <div className="space-y-1.5">
@@ -248,45 +307,26 @@ export default function ProjectsPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Project type</Label>
+              <Label>Project Template</Label>
               <div className="grid gap-2 sm:grid-cols-2">
-                <button
-                  type="button"
-                  className={[
-                    'rounded-md border p-3 text-left transition-colors',
-                    newPresetKey === null
-                      ? 'border-primary bg-primary/5'
-                      : 'border-border bg-background hover:bg-muted/40',
-                  ].join(' ')}
-                  onClick={() => setNewPresetKey(null)}
-                >
-                  <div className="flex items-center gap-2">
-                    <FolderKanban className="size-4 text-muted-foreground" />
-                    <span className="text-sm font-medium">General project</span>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Standard project workspace for goals, runs, memory, tasks, and sources.
-                  </p>
-                </button>
-                {projectPresets
-                  .filter(preset => preset.key === ACADEMIC_PRESET_KEY)
-                  .map(preset => (
+                {blankTemplateFirst(projectTemplates)
+                  .map(template => (
                     <button
-                      key={preset.key}
+                      key={template.key}
                       type="button"
                       className={[
                         'rounded-md border p-3 text-left transition-colors',
-                        newPresetKey === preset.key
+                        newTemplateKey === template.key
                           ? 'border-primary bg-primary/5'
                           : 'border-border bg-background hover:bg-muted/40',
                       ].join(' ')}
-                      onClick={() => setNewPresetKey(preset.key)}
+                      onClick={() => setNewTemplateKey(template.key)}
                     >
                       <div className="flex items-center gap-2">
-                        <BookOpen className="size-4 text-accent-foreground" />
-                        <span className="text-sm font-medium">{preset.name}</span>
+                        <FolderKanban className="size-4 text-accent-foreground" />
+                        <span className="text-sm font-medium">{template.name}</span>
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">{preset.description}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{template.description}</p>
                     </button>
                   ))}
               </div>
@@ -294,7 +334,7 @@ export default function ProjectsPage() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => { setCreateOpen(false); resetForm() }}>Cancel</Button>
-            <Button onClick={createProject} disabled={creating || !newName.trim()}>
+            <Button onClick={createProject} disabled={creating || !newName.trim() || !templatesLoaded || !newTemplateKey}>
               {creating ? 'Creating…' : 'Create project'}
             </Button>
           </DialogFooter>

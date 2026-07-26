@@ -27,6 +27,10 @@ services:
       dockerfile: server/Dockerfile
       network: host
     container_name: agent-space-prod-server
+    # Required by the rootless bubblewrap read-only Project Folder boundary.
+    # Keep the container unprivileged and do not add SYS_ADMIN.
+    security_opt:
+      - seccomp=unconfined
     volumes:
       - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/prod}:/aspace
     env_file:

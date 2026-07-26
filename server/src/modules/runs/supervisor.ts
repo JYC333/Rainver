@@ -19,9 +19,14 @@ const RETRYABLE_ERROR_CODES = new Set([
   "adapter_runtime_error",
   "cli_runtime_provider_config_failed",
   "runtime_tool_version_unavailable",
+  "runtime_session_invalid",
   "provider_network_error",
   "provider_rate_limit",
   "orphaned",
+  "semantic_rejection",
+  "verification_failed",
+  "validation_failed",
+  "run_exchange_output_validation_failed",
 ]);
 
 export interface RunSupervisorPort {
@@ -170,8 +175,8 @@ export class PgRunSupervisor implements RunSupervisorPort {
           space_id: input.run.space_id,
           user_id: userId,
           agent_id: input.run.agent_id,
-          workspace_id: input.run.workspace_id,
-          max_attempts: 1,
+          project_folder_id: input.run.project_folder_id,
+          max_attempts: 3,
           payload: { run_id: input.run.id, supervisor_attempt: attemptNumber + 1 },
         });
       } else if (decision.decision !== "cancelled") {

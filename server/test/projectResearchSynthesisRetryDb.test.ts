@@ -6,15 +6,13 @@ import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPost
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
-// Real-Postgres coverage for retrying a failed synthesis stage. The retry
-// used to advance the stage in one write and bind the queued run in a second
-// write built from a stale snapshot; the state machine silently skipped that
-// second write, orphaning the run and leaving the operation stuck in
-// synthesis with no bound run. queueSynthesis now performs the transition,
-// the run, and its job in one transaction, so a retry either fully takes
-// effect or changes nothing.
+// Real-Postgres coverage for retrying a failed synthesis stage through the
+// immutable execution-per-pass authority. The retry command starts one
+// WorkflowExecution; its domain action atomically updates the operation
+// projection and queues the governed Run/Job.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -29,6 +27,7 @@ const PROMPT_KEY = "project_research.synthesis";
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
 let available = false;
+let threadScope: Array<{ thread_id: string; version: number; kind: "question"; statement: string }> = [];
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
@@ -67,10 +66,24 @@ beforeEach(async () => {
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  const thread = await new InquiryThreadService(pool).createThread(
+    identity,
+    PROJECT,
+    { kind: "question", statement: "Does agent memory improve synthesis?" },
+  );
+  threadScope = [{
+    thread_id: String(thread.id),
+    version: Number(thread.version),
+    kind: "question",
+    statement: String(thread.statement),
+  }];
   await pool.query(
     `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','synthesis','active','agent_assisted','{}'::jsonb,$4,$4)`,
-    [WORKFLOW, SPACE, PROJECT, now],
+     VALUES ($1,$2,$3,'literature_review','synthesis','active','agent_assisted',$4::jsonb,$5,$5)`,
+    [WORKFLOW, SPACE, PROJECT, JSON.stringify({
+      research_question: "Does agent memory improve synthesis?",
+      thread_scope: threadScope,
+    }), now],
   );
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
@@ -123,9 +136,11 @@ async function seedFailedSynthesisOperation(previousRunId: string | null): Promi
   const now = new Date().toISOString();
   const progress = {
     schema_version: "project_research_operation.v1",
+    projection_mode: "managed",
     run_kind: "baseline",
     workflow_id: WORKFLOW,
-    research_question: "agent memory",
+    research_question: "Does agent memory improve synthesis?",
+    thread_scope: threadScope,
     agent_id: AGENT,
     source_backfill_plan_ids: [],
     source_backfill_plan_id: null,
@@ -177,7 +192,7 @@ async function seedRelevantCorpus(): Promise<void> {
 }
 
 describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real Postgres)", () => {
-  it("retries in one transaction: the failed -> synthesis transition, the queued run, and its job all land together", async () => {
+  it("retries through one WorkflowExecution pass and atomically binds the queued Run and Job", async () => {
     if (!available || !pool) return;
     await seedSynthesisPrompt();
     await seedRelevantCorpus();
@@ -212,6 +227,17 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
       [SPACE, runId],
     );
     expect(job.rows[0]?.status).toBe("pending");
+    const execution = await pool.query<{ status: string; research_operation_id: string }>(
+      `SELECT status,research_operation_id
+         FROM workflow_executions
+        WHERE space_id=$1 AND research_operation_id=$2`,
+      [SPACE, OPERATION],
+    );
+    expect(execution.rows).toHaveLength(1);
+    expect(execution.rows[0]).toMatchObject({
+      status: "running",
+      research_operation_id: OPERATION,
+    });
   });
 
   it("treats concurrent synthesis retries as one idempotent command", async () => {
@@ -226,11 +252,12 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
       orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
     ]);
 
-    expect("operation" in first ? first.operation.id : first.id).toBe(OPERATION);
-    expect("operation" in second ? second.operation.id : second.id).toBe(OPERATION);
+    expect((first as { id: string }).id).toBe(OPERATION);
+    expect((second as { id: string }).id).toBe(OPERATION);
     const runs = await pool.query(
       `SELECT id FROM runs
         WHERE space_id=$1
+          AND capability_id='research.brief_synthesize'
           AND contract_snapshot_json->'workflow_input_json'->'project_research'->>'operation_id'=$2`,
       [SPACE, OPERATION],
     );
@@ -260,13 +287,16 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
         empty_result: { kind: "no_relevant_sources", reason_code: "empty_approved_corpus" },
       },
     });
-    const runs = await pool.query(`SELECT id FROM runs WHERE space_id=$1`, [SPACE]);
+    const runs = await pool.query(
+      `SELECT id FROM runs WHERE space_id=$1 AND capability_id='research.brief_synthesize'`,
+      [SPACE],
+    );
     const jobs = await pool.query(`SELECT id FROM jobs WHERE space_id=$1`, [SPACE]);
     expect(runs.rows).toHaveLength(0);
     expect(jobs.rows).toHaveLength(0);
   });
 
-  it("changes nothing when queueing fails: the operation stays failed/retryable and no run or job is created", async () => {
+  it("keeps the operation failed and retryable when the pass cannot resolve its synthesis prompt", async () => {
     if (!available || !pool) return;
     // No synthesis prompt is seeded, so queueSynthesis fails inside the
     // transaction after the transition and run would otherwise have applied.
@@ -274,7 +304,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
 
     await expect(
       new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION),
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({ id: OPERATION });
 
     const operation = await pool.query<{ status: string; progress_json: { current_stage?: string; synthesis_run_id?: string | null } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -283,9 +313,19 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     expect(operation.rows[0]!.status).toBe("failed");
     expect(operation.rows[0]!.progress_json.current_stage).toBe("failed");
     expect(operation.rows[0]!.progress_json.synthesis_run_id).toBeNull();
-    const runs = await pool.query(`SELECT id FROM runs WHERE space_id=$1`, [SPACE]);
+    const runs = await pool.query(
+      `SELECT id FROM runs WHERE space_id=$1 AND capability_id='research.brief_synthesize'`,
+      [SPACE],
+    );
     const jobs = await pool.query(`SELECT id FROM jobs WHERE space_id=$1`, [SPACE]);
     expect(runs.rows).toHaveLength(0);
     expect(jobs.rows).toHaveLength(0);
+    const execution = await pool.query<{ status: string }>(
+      `SELECT status FROM workflow_executions
+        WHERE space_id=$1 AND research_operation_id=$2`,
+      [SPACE, OPERATION],
+    );
+    expect(execution.rows).toHaveLength(1);
+    expect(execution.rows[0]?.status).toBe("failed");
   });
 });

@@ -21,7 +21,7 @@ export function defaultModelConfigFor(modelName: string | null | undefined): { m
   };
 }
 export const DEFAULT_MEMORY_POLICY = {
-  readable_scopes: ["system", "space", "user", "workspace", "capability", "agent"],
+  readable_scopes: ["system", "space", "user", "project_folder", "capability", "agent"],
   writable_scopes: ["agent"],
   readable_types: ["preference", "semantic", "episodic", "procedural", "project"],
 };

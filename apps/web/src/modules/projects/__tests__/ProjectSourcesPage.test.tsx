@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import ProjectSourcesPage from '../ProjectSourcesPage'
-import { projectPresetsApi, projectsApi, sourcesApi } from '../../../api/client'
+import { projectsApi, sourcesApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -31,9 +31,6 @@ vi.mock('../../../api/client', () => ({
     createOperation:vi.fn(),
     proposeBindingBackfill:vi.fn(),
   },
-  projectPresetsApi: {
-    getProjectPreset: vi.fn(),
-  },
   sourcesApi: {
     channels: vi.fn(),
     projectSourceBindings: vi.fn(),
@@ -59,11 +56,13 @@ beforeEach(() => {
     status: 'active',
     current_focus: null,
     settings_json: {},
+    template_key: 'blank',
+    primary_mode: 'inquiry',
+    active_brief_version_id: null,
     archived_at: null,
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
   })
-  vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValue({ preset_key: null })
   vi.mocked(sourcesApi.channels).mockResolvedValue([{
     id: 'channel-1',
     space_id: 'space-1',
@@ -301,11 +300,13 @@ describe('ProjectSourcesPage', () => {
       status: 'active',
       current_focus: null,
       settings_json: null,
+      template_key: 'academic_research',
+      primary_mode: 'inquiry',
+      active_brief_version_id: null,
       archived_at: null,
       created_at: '2026-07-01T00:00:00.000Z',
       updated_at: '2026-07-01T00:00:00.000Z',
     })
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
     renderPage()
 
     const graphLink = await screen.findByRole('link', { name: /open graph/i })
@@ -317,7 +318,7 @@ describe('ProjectSourcesPage', () => {
     expect(screen.getByText('Literature sources')).toBeInTheDocument()
     expect(screen.getByText('Advanced monitor state')).toBeInTheDocument()
     expect(screen.getByText(/Cursor empty · watermark/)).toBeInTheDocument()
-    expect(projectPresetsApi.getProjectPreset).toHaveBeenCalledWith('project-1')
+    expect(projectsApi.get).toHaveBeenCalledWith('project-1')
   })
 
   it('uses the activity date query as a project item filter', async () => {
@@ -360,7 +361,6 @@ describe('ProjectSourcesPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /import history/i }))
     await waitFor(() => expect(projectsApi.proposeBindingBackfill).toHaveBeenCalledWith('project-1','binding-1',expect.objectContaining({strategy:expect.objectContaining({window_unit:'date_window'})})))
     expect(projectsApi.get).toHaveBeenCalledTimes(1)
-    expect(projectPresetsApi.getProjectPreset).toHaveBeenCalledTimes(1)
   })
 
   it('uses the product confirmation dialog before removing a binding', async () => {

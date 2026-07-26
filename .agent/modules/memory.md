@@ -16,15 +16,15 @@ Scoped, long-term context for agents and users. Not raw data — curated, approv
 - `MemoryProposalProducer` — creates Proposals from validated candidates
 - `MemoryMaintenanceService` — owner-private Memory quality scans, report artifacts, and review packets
 - `SourceMonitoringService` — gates semantic/policy proposal acceptance by source trust
-- `server/src/modules/context/compiler.ts` and workspace `PathPolicy` — secret/injection scanning and path policy
+- `server/src/modules/context/compiler.ts` and Project Folder `PathPolicy` — secret/injection scanning and path policy
 
 ## Key Models
 
 ```
 MemoryEntry:
-  id, space_id, owner_user_id, workspace_id
+  id, space_id, owner_user_id, project_folder_id
   agent_id                          (nullable agent placement link)
-  scope_type (system|space|user|workspace|capability|agent)
+  scope_type (system|space|user|project_folder|capability|agent)
   memory_type, memory_layer (episodic|semantic)
   namespace, title, content
   status (active|archived|proposed|rejected|superseded)
@@ -37,7 +37,7 @@ MemoryEntry:
   access_count, last_accessed_at, fitness_score
 
 Proposal (memory_create | memory_update | memory_archive | memory_maintenance_packet | policy_change):
-  id, space_id, workspace_id, proposal_type, status, risk_level, urgency
+  id, space_id, project_folder_id, proposal_type, status, risk_level, urgency
   payload_json  — carries proposed content, provenance_entries, source evidence
   created_by_agent_id, created_by_run_id, created_by_user_id
   required_approver_role, created_at, decided_at
@@ -55,7 +55,7 @@ MemoryReadTrace:
 ## Main Flows
 
 **Context assembly:**
-1. `ContextBuilder.build(space_id, user_id, workspace_id, attachments=[...])`
+1. `ContextBuilder.build(space_id, user_id, project_folder_id, attachments=[...])`
 2. Hard-filters by space/scope/subject/visibility before ranking; logs all injected memory
 3. Returns `ContextPackage`; populates `ContextSnapshot` before adapter execution
 4. `ContextCompiler.compile()` → scans content → applies budget → writes CLAUDE.md plus Agent Persona Prompt sidecar (`SOUL.md`) to sandbox when applicable
@@ -175,7 +175,7 @@ project-free memory only. Chat/assistant context candidates
 project memory can appear only for projects the viewer can access.
 The chat path logs only final selected memory items, after budget/dedup, through
 `PgContextSnapshotRepository` with `access_type = context_injection`.
-`ContextDigest` (`context/digestService.ts`) is a shared cache, so workspace/agent
+`ContextDigest` (`context/digestService.ts`) is a shared cache, so Project Folder/agent
 digests exclude `project_id IS NOT NULL` memory at generation time and revalidate
 source ids with `project_id IS NULL` at consumption time — runtime memory
 consumers are project-cut at the shared chokepoints (per-run retriever, chat
@@ -189,8 +189,8 @@ What landed (`server/src/modules/memory/retrievalAdapter.ts`):
   resolve Knowledge objects and vice versa.
 - `revalidate` is the single read-access gate: it reuses `canReadMemory` plus
   `access_level=summary` content redaction plus project-membership gating (see "Project-
-  level access gate" above). It runs with no workspace/system/template context,
-  so workspace-scoped space_shared and system/template memories owned by other users fail
+  level access gate" above). It runs with no Project Folder/system/template context,
+  so Project Folder-scoped space_shared and system/template memories owned by other users fail
   closed; the proposer's own memories still match (owner check precedes the
   visibility switch), which is what duplicate detection needs. The derived
   `retrieval_*` projection is never trusted for read access.
@@ -251,27 +251,27 @@ no-edit update.
 
 `ContextDigest` is a versioned derived cache of approved Memory/Policy content. It is **not** Memory and **not** Policy.
 
-- Supported `digest_type` values: `policy_bundle`, `workspace`, `agent`.
+- Supported `digest_type` values: `policy_bundle`, `project_folder`, `agent`.
 - Digest content is rendered from active `MemoryEntry` + active `Policy` rows only. Unapproved proposal content is never included.
-- Workspace/agent memory digests are shared derived caches, so they include only cache-safe shared memory:
-  workspace digests may include `space_shared` and workspace-scoped `space_shared` memory for that workspace;
+- Project Folder/agent memory digests are shared derived caches, so they include only cache-safe shared memory:
+  Project Folder digests may include `space_shared` and Project Folder-scoped `space_shared` memory for that Project Folder;
   agent digests may include `space_shared` memory for that agent. User-specific or per-user gated
   content (`private`, `selected_users`, summary-level disclosure, and `highly_restricted` sensitivity) remains
   on the per-run retriever path.
 - `ContextDigestService` generates/versions digests deterministically (no LLM required).
 - Source hash versioning: if source IDs + version signals are unchanged, the existing digest is reused. If sources changed, old digest is marked `superseded` and a new version is created.
 - `ContextCompiler` may use active digests in `stable_prefix`; `ContextSnapshot` records full source traceability.
-- Consumption is fail-safe on read: a workspace/agent memory digest is only injected (and source-ref'd) when (1) the run's agent `readable_scopes` includes that scope — the digest is a derived view of that scope's memory, so it is gated by the same boundary as the direct retriever — **and** (2) it is `active` **and** (3) every memory id it claims still passes live revalidation for its scope (same space + scope, active, undeleted, shared, non-`highly_restricted`). A digest failing any check (out-of-scope, `dirty`, or any stale/ineligible claimed source) is dropped and that scope falls back to the direct retriever (memory) / direct active policies (`policy_bundle`). This prevents a pending change, a stale/tampered row, or a read-boundary bypass from leaking content into the prompt.
-- Generation locks the workspace/agent scope row `FOR UPDATE` so it cannot be archived between the active-scope check and the digest insert (serializes against `archive`, which disables digests in the same transaction).
-- Generation **and** dirty-marking take the same per-digest `pg_advisory_xact_lock` key (`policy_bundle:<space>` / `workspace:<space>:<id>` / `agent:<space>:<id>`). Without a shared lock, a refresh that read stale sources could flip a concurrently-marked-dirty digest back to `active` (its `source_hash` still matching the stale read) and resurface it as injectable.
+- Consumption is fail-safe on read: a Project Folder/agent memory digest is only injected (and source-ref'd) when (1) the run's agent `readable_scopes` includes that scope — the digest is a derived view of that scope's memory, so it is gated by the same boundary as the direct retriever — **and** (2) it is `active` **and** (3) every memory id it claims still passes live revalidation for its scope (same space + scope, active, undeleted, shared, non-`highly_restricted`). A digest failing any check (out-of-scope, `dirty`, or any stale/ineligible claimed source) is dropped and that scope falls back to the direct retriever (memory) / direct active policies (`policy_bundle`). This prevents a pending change, a stale/tampered row, or a read-boundary bypass from leaking content into the prompt.
+- Generation locks the Project Folder/agent scope row `FOR UPDATE` so it cannot be archived between the active-scope check and the digest insert (serializes against `archive`, which disables digests in the same transaction).
+- Generation **and** dirty-marking take the same per-digest `pg_advisory_xact_lock` key (`policy_bundle:<space>` / `project_folder:<space>:<id>` / `agent:<space>:<id>`). Without a shared lock, a refresh that read stale sources could flip a concurrently-marked-dirty digest back to `active` (its `source_hash` still matching the stale read) and resurface it as injectable.
 - Context preparation records `memory_access_logs` for digest source memory that is injected through a digest but was not already logged by the per-run retriever.
 - Digest can be deleted and regenerated. Digest does not create Proposal.
 - Personal Radius / external sources are out of scope.
 
 ### Dirty tracking
 `ProposalApplyService` marks affected digests `dirty` after accepted proposals:
-- `memory_create/update/archive` → marks `workspace` and/or `agent` digest dirty based on the memory's scope.
-- `policy_change` → marks only the `policy_bundle` digest dirty. Workspace/agent digests are memory-only and never embed policy content, so a policy change does not dirty them (invalidating them would just recompute an identical memory hash). Scoped policies are still surfaced per-run at consumption time via `loadDigestBundle`.
+- `memory_create/update/archive` → marks `project_folder` and/or `agent` digest dirty based on the memory's scope.
+- `policy_change` → marks only the `policy_bundle` digest dirty. Project Folder/agent digests are memory-only and never embed policy content, so a policy change does not dirty them (invalidating them would just recompute an identical memory hash). Scoped policies are still surfaced per-run at consumption time via `loadDigestBundle`.
 
 ## Related Files
 - `.agent/architecture/MEMORY_MAINTENANCE.md`

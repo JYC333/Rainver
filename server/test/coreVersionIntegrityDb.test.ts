@@ -430,7 +430,7 @@ function capabilityUpdateProposal(versionId: string, id: string): ApplyProposal 
       capability_version_id: versionId,
       status: "available",
     },
-    workspace_id: null,
+    project_folder_id: null,
     created_by_user_id: USER,
     project_id: null,
   };
@@ -454,7 +454,7 @@ function capabilityEnableProposal(
       capability_version_id: versionId,
       ...(userId ? { user_id: userId } : {}),
     },
-    workspace_id: null,
+    project_folder_id: null,
     created_by_user_id: USER,
     project_id: null,
   };

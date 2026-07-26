@@ -35,7 +35,7 @@ export interface ActivityRow {
   source_run_id: string | null;
   session_id: string | null;
   user_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   agent_id: string | null;
   source_task_id: string | null;
   project_id: string | null;
@@ -86,7 +86,7 @@ interface SummarySourceRef {
 
 export interface ActivityListFilters {
   userId?: string | null;
-  workspaceId?: string | null;
+  projectFolderId?: string | null;
   sourceType?: string | null;
   sourceRunId?: string | null;
   status?: string | null;
@@ -105,7 +105,7 @@ export interface SummaryRunInput {
 }
 
 const ACTIVITY_COLUMNS = `
-  id, space_id, source_run_id, session_id, user_id, workspace_id, agent_id,
+  id, space_id, source_run_id, session_id, user_id, project_folder_id, agent_id,
   source_task_id, project_id, source_url, activity_type, title, content,
   payload_json, occurred_at, created_at, status, updated_at, source_kind,
   source_trust, source_integrity_json, entity_refs_json, subject_user_id,
@@ -167,7 +167,7 @@ export class PgActivityRepository {
     if (!isContentVisibility(visibility)) throw new HttpError(422, "Invalid visibility");
     const result = await this.db.query<ActivityRow>(
       `INSERT INTO activity_records (
-         id, space_id, source_run_id, session_id, user_id, workspace_id, agent_id,
+         id, space_id, source_run_id, session_id, user_id, project_folder_id, agent_id,
          source_task_id, project_id, source_url, activity_type, title, content,
          payload_json, occurred_at, created_at, status, updated_at, source_kind,
          source_trust, visibility, owner_user_id
@@ -185,7 +185,7 @@ export class PgActivityRepository {
         optionalString(body.source_run_id),
         optionalString(body.source_session_id),
         identity.userId,
-        optionalString(body.workspace_id),
+        optionalString(body.project_folder_id),
         optionalString(body.agent_id),
         optionalString(body.source_task_id),
         projectId,
@@ -493,7 +493,7 @@ export class PgActivityRepository {
       title: activity.title || `Activity: ${(activity.content ?? "").slice(0, 80)}`,
       payload,
       rationale: "Activity consolidation generated a memory proposal.",
-      workspaceId: activity.workspace_id,
+      projectFolderId: activity.project_folder_id,
       projectId: activity.project_id,
     });
   }
@@ -527,7 +527,7 @@ export class PgActivityRepository {
         ],
       },
       rationale: "Input summary requested a memory proposal.",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
     });
   }
@@ -561,7 +561,7 @@ export class PgActivityRepository {
         ],
       },
       rationale: "Input summary requested a knowledge proposal.",
-      workspaceId: null,
+      projectFolderId: null,
       projectId: null,
     });
   }
@@ -572,7 +572,7 @@ export class PgActivityRepository {
     title: string;
     payload: Record<string, unknown>;
     rationale: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     projectId: string | null;
   }): Promise<ProposalOut> {
     const now = new Date();
@@ -582,7 +582,7 @@ export class PgActivityRepository {
       title: input.title,
       payload: input.payload,
       rationale: input.rationale,
-      workspaceId: input.workspaceId,
+      projectFolderId: input.projectFolderId,
       projectId: input.projectId,
       createdByUserId: input.identity.userId,
       visibility: "private",
@@ -603,7 +603,7 @@ function buildActivityWhere(
     return `$${params.length}`;
   };
   if (filters.userId) clauses.push(`user_id = ${add(filters.userId)}`);
-  if (filters.workspaceId) clauses.push(`workspace_id = ${add(filters.workspaceId)}`);
+  if (filters.projectFolderId) clauses.push(`project_folder_id = ${add(filters.projectFolderId)}`);
   if (filters.sourceType) clauses.push(`activity_type = ${add(normalizeSourceType(filters.sourceType))}`);
   if (filters.sourceRunId) clauses.push(`source_run_id = ${add(filters.sourceRunId)}`);
   if (filters.status) clauses.push(`status = ${add(filters.status)}`);
@@ -616,7 +616,7 @@ export function activityToOut(row: ActivityRow): Record<string, unknown> {
     id: row.id,
     space_id: row.space_id,
     user_id: row.user_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     agent_id: row.agent_id,
     source_type: row.activity_type,
     title: row.title,

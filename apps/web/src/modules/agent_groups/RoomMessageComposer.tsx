@@ -4,7 +4,7 @@ import type { EditorView } from '@tiptap/pm/view'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Bot } from 'lucide-react'
-import type { AgentOut, AgentRunGroupTimeline } from '../../types/api'
+import type { AgentOut } from '../../types/api'
 
 export interface RoomMessageComposerValue {
   text: string
@@ -91,7 +91,7 @@ export function RoomMessageComposer({
   value: RoomMessageComposerValue
   onChange: (value: RoomMessageComposerValue) => void
   agents: AgentOut[]
-  members: AgentRunGroupTimeline['members']
+  members: Array<{ agent_id: string; status: string }>
   disabled: boolean
   resetToken: number
   onSubmit: () => void

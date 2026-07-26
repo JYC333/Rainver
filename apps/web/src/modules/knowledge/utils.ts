@@ -56,24 +56,11 @@ export function validateConfidence(value: number | null): boolean {
   return !Number.isNaN(value) && (value === null || (value >= 0 && value <= 1))
 }
 
-export function parseSourceRefs(value: string): Record<string, unknown>[] {
-  if (!value.trim()) return []
-  const parsed: unknown = JSON.parse(value)
-  if (!Array.isArray(parsed) || !parsed.every(isObjectRecord)) {
-    throw new Error('source_refs must be a JSON array of objects')
-  }
-  return parsed
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 // ── Knowledge section navigation ───────────────────────────────────────────
 /**
  * Sub-areas of the first-level Knowledge module. `home` is the optional overview
- * hub; the other four are the working workspaces. `/knowledge` opens the last-used
- * *workspace* (never `home`, which stays an intentional destination) and defaults
+ * hub; the other four are the working sections. `/knowledge` opens the last-used
+ * *section* (never `home`, which stays an intentional destination) and defaults
  * to `notes` on a fresh client. See KnowledgeModule / KnowledgeSectionHeader.
  */
 export type KnowledgeSection = 'home' | 'notes' | 'wiki' | 'sources' | 'cards'
@@ -90,7 +77,7 @@ export const DEFAULT_KNOWLEDGE_SECTION: KnowledgeSection = 'notes'
 
 const LAST_SECTION_KEY = 'agent-space:knowledge-section'
 
-function isWorkspaceSection(value: string): value is Exclude<KnowledgeSection, 'home'> {
+function isWorkingSection(value: string): value is Exclude<KnowledgeSection, 'home'> {
   return (KNOWLEDGE_WORKSPACE_SECTIONS as string[]).includes(value)
 }
 
@@ -98,7 +85,7 @@ function isWorkspaceSection(value: string): value is Exclude<KnowledgeSection, '
 export function readLastKnowledgeSection(): Exclude<KnowledgeSection, 'home'> {
   try {
     const v = localStorage.getItem(LAST_SECTION_KEY)
-    if (v && isWorkspaceSection(v)) return v
+    if (v && isWorkingSection(v)) return v
   } catch {
     /* ignore */
   }
@@ -106,11 +93,11 @@ export function readLastKnowledgeSection(): Exclude<KnowledgeSection, 'home'> {
 }
 
 /**
- * Remember the active workspace so `/knowledge` reopens it next time. `home` is
+ * Remember the active section so `/knowledge` reopens it next time. `home` is
  * intentionally not persisted — the overview must never become the default landing.
  */
 export function rememberKnowledgeSection(section: KnowledgeSection): void {
-  if (!isWorkspaceSection(section)) return
+  if (!isWorkingSection(section)) return
   try {
     localStorage.setItem(LAST_SECTION_KEY, section)
   } catch {

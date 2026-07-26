@@ -40,7 +40,7 @@ const privateAttribution = {
   access_level: "full" as const,
   source_resource_type: null,
   source_resource_id: null,
-  workspace_id: null,
+  project_folder_id: null,
   project_id: null,
   grant_snapshots: [],
 };
@@ -459,7 +459,7 @@ function eventRow(event: ReturnType<typeof normalizeUsageObservation>, id: strin
     session_name: event.session_name,
     agent_id: event.agent_id,
     project_id: event.project_id,
-    workspace_id: event.workspace_id,
+    project_folder_id: event.project_folder_id,
     occurred_at: event.occurred_at,
     recorded_at: event.recorded_at,
     input_tokens: event.input_tokens,

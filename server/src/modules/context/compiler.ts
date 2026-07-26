@@ -263,10 +263,10 @@ function buildSections(
   }
 
   add(
-    "workspace",
+    "project_folder",
     `# Project Context\n\n${renderMemories(
-      [...context.workspace_memory, ...context.capability_memory],
-      "workspace",
+      [...context.project_folder_memory, ...context.capability_memory],
+      "project_folder",
     )}`,
   );
   add("agent", `# Agent Context\n\n${renderMemories(context.agent_memory, "agent")}`);

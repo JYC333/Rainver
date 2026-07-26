@@ -9,7 +9,7 @@ export async function resolveTestUsageAttribution(
     access_level: "full",
     source_resource_type: input.source_resource_type ?? (input.run_id ? "run" : null),
     source_resource_id: input.source_resource_id ?? input.run_id ?? null,
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     grant_snapshots: [],
   };

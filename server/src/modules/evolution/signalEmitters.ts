@@ -93,7 +93,7 @@ export interface SignalEmissionResult {
 }
 
 interface AutoTargetDescriptor {
-  targetType: "capability" | "workflow" | "workspace";
+  targetType: "capability" | "workflow" | "project_folder";
   targetRefType: string;
   targetRefId: string;
   capabilityKey: string | null;
@@ -352,7 +352,7 @@ export class EvolutionSignalEmitter {
          SELECT pg_advisory_xact_lock(hashtext($1)) AS acquired
        ), existing AS (
          SELECT id FROM evolution_targets
-          WHERE space_id = $2 AND target_type = 'workspace'
+          WHERE space_id = $2 AND target_type = 'project_folder'
             AND target_ref_type = 'runtime_adapter' AND target_ref_id = $3
             AND status = 'active'
           ORDER BY created_at ASC, id ASC LIMIT 1
@@ -362,7 +362,7 @@ export class EvolutionSignalEmitter {
            capability_key, current_version_id, risk_level, status, enabled,
            engine_policy_json, metadata_json, created_at, updated_at
          )
-         SELECT $4, $2, 'workspace', 'runtime_adapter', $3,
+         SELECT $4, $2, 'project_folder', 'runtime_adapter', $3,
                 NULL, NULL, 'medium', 'active', true,
                 '{"source":"d1_runtime_conformance"}'::jsonb,
                 $5::jsonb, $6, $6 FROM lock
@@ -566,7 +566,7 @@ function autoTargetDescriptor(run: RunRecord): AutoTargetDescriptor | null {
   }
   if (sourceKind === "automation" && sourceId) {
     return {
-      targetType: "workspace",
+      targetType: "project_folder",
       targetRefType: "automation",
       targetRefId: sourceId,
       capabilityKey: null,
@@ -585,7 +585,7 @@ function autoTargetDescriptor(run: RunRecord): AutoTargetDescriptor | null {
   }
   if (sourceKind === "task" && sourceId) {
     return {
-      targetType: "workspace",
+      targetType: "project_folder",
       targetRefType: "task",
       targetRefId: sourceId,
       capabilityKey: null,

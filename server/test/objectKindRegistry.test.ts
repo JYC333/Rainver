@@ -143,7 +143,7 @@ class ObjectKindApplyServiceFakeClient extends ObjectKindApplyFakeDb {
     if (norm === "BEGIN" || norm === "COMMIT" || norm === "ROLLBACK") {
       return { rows: [], rowCount: 0 };
     }
-    if (norm.startsWith("SELECT id, space_id, proposal_type, status")) {
+    if (norm.startsWith("SELECT proposal.id, proposal.space_id, proposal.proposal_type")) {
       return { rows: [this.proposalRow], rowCount: 1 };
     }
     if (norm.includes("AS effective_access_level")) {
@@ -757,7 +757,7 @@ function proposal(proposalType: string, payload: Record<string, unknown>): Apply
     space_id: "space-1",
     proposal_type: proposalType,
     title: proposalType,
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     created_by_user_id: "user-1",
     created_by_run_id: null,
@@ -815,7 +815,7 @@ function proposalRow(overrides: Record<string, unknown> = {}) {
     id: "proposal-1",
     space_id: "space-1",
     created_by_user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     created_by_run_id: null,
     proposal_type: "object_kind_create",
     status: "pending",

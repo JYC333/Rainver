@@ -10,7 +10,7 @@ CREATE TABLE public.memory_entries (
     space_id character varying(36) NOT NULL,
     subject_user_id character varying(36),
     owner_user_id character varying(36),
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     scope_type character varying(32) NOT NULL,
     namespace character varying(255),
     memory_type character varying(64) NOT NULL,
@@ -70,15 +70,11 @@ CREATE TABLE public.space_memberships (
     CONSTRAINT space_memberships_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE public.workspaces (
+CREATE TABLE public.project_folders (
     id character varying(36) NOT NULL,
     space_id character varying(36) NOT NULL,
-    CONSTRAINT workspaces_pkey PRIMARY KEY (id)
-);
-
-CREATE TABLE public.project_workspaces (
     project_id character varying(36) NOT NULL,
-    workspace_id character varying(36) NOT NULL
+    CONSTRAINT project_folders_pkey PRIMARY KEY (id)
 );
 
 CREATE TABLE public.content_access_grants (
@@ -138,7 +134,7 @@ CREATE TABLE public.proposals (
     updated_at timestamp with time zone NOT NULL,
     reviewed_at timestamp with time zone,
     reviewed_by character varying(36),
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     rationale text,
     created_by_agent_id character varying(36),
     created_by_user_id character varying(36),
@@ -194,7 +190,7 @@ CREATE TABLE public.retrieval_objects (
     space_id character varying(36) NOT NULL,
     object_type character varying(64) NOT NULL,
     object_id character varying(36) NOT NULL,
-    workspace_id character varying(36),
+    project_folder_id character varying(36),
     owner_user_id character varying(36),
     visibility character varying(32),
     status character varying(32) NOT NULL,

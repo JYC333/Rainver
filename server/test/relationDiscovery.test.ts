@@ -510,7 +510,7 @@ describe("relation_discovery_packet applier", () => {
         },
         visibility: "private",
         created_by_user_id: "user-1",
-        workspace_id: null,
+        project_folder_id: null,
         project_id: null,
       } as never,
     });
@@ -578,7 +578,7 @@ describe("relation_discovery_packet applier", () => {
         },
         visibility: "private",
         created_by_user_id: "user-1",
-        workspace_id: null,
+        project_folder_id: null,
         project_id: null,
       } as never,
     });

@@ -21,6 +21,8 @@ describe("operational failure alerts", () => {
       dedupeKey: "job_exhausted:job-1",
       spaceId: "space-1",
       userId: "user-1",
+      projectId: "project-1",
+      sourceRunId: "run-1",
       payload: { job_id: "job-1" },
     });
 
@@ -28,6 +30,9 @@ describe("operational failure alerts", () => {
     expect(calls[0].sql).toContain("INSERT INTO activity_records");
     expect(calls[0].sql).toContain("ON CONFLICT (space_id, aggregate_key)");
     expect(calls[0].sql).toContain("owner_user_id = EXCLUDED.owner_user_id");
+    expect(calls[0].sql).toContain("project_id = EXCLUDED.project_id");
+    expect(calls[0].params).toContain("project-1");
+    expect(calls[0].params).toContain("run-1");
     expect(calls[0].sql).toContain("visibility = EXCLUDED.visibility");
     expect(calls[0].params).toContain("private");
     expect(calls[0].params).toContain("operational_alert:job_exhausted:job-1");

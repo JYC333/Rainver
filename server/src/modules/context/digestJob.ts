@@ -28,9 +28,9 @@ export function registerContextDigestRefreshHandler(
     if (digestType === "policy_bundle") {
       return service.generatePolicyBundle(spaceId) as unknown as Promise<Record<string, unknown>>;
     }
-    if (digestType === "workspace") {
-      if (!scopeId) throw new Error("context_digest_refresh workspace payload missing scope_id");
-      return service.generateWorkspaceBundle(spaceId, scopeId) as unknown as Promise<Record<string, unknown>>;
+    if (digestType === "project_folder") {
+      if (!scopeId) throw new Error("context_digest_refresh project_folder payload missing scope_id");
+      return service.generateProjectFolderBundle(spaceId, scopeId) as unknown as Promise<Record<string, unknown>>;
     }
     if (digestType === "agent") {
       if (!scopeId) throw new Error("context_digest_refresh agent payload missing scope_id");

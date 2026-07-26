@@ -1,11 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, plansApi } from '../../api/client'
-import type { AgentOut, PlanExecuteBody } from '../../types/api'
+import type { AgentOut, AgentRuntimeProfileOut, PlanExecuteBody } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog'
-import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
@@ -21,11 +20,26 @@ interface PlanExecuteDialogProps {
 export default function PlanExecuteDialog({ open, planId, onOpenChange, onExecuted }: PlanExecuteDialogProps) {
   const [agents, setAgents] = useState<AgentOut[]>([])
   const [agentId, setAgentId] = useState('')
+  const [runtimeProfiles, setRuntimeProfiles] = useState<AgentRuntimeProfileOut[]>([])
   const [runtimeProfileId, setRuntimeProfileId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [instruction, setInstruction] = useState('')
   const [busy, setBusy] = useState(false)
   const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    setRuntimeProfileId('')
+    if (!agentId) {
+      setRuntimeProfiles([])
+      return
+    }
+    agentsApi.listRuntimeProfiles(agentId)
+      .then(rows => setRuntimeProfiles(rows.filter(row => row.enabled)))
+      .catch(error => {
+        setRuntimeProfiles([])
+        toast.error(errMsg(error))
+      })
+  }, [agentId])
 
   async function loadAgents() {
     if (loaded) return
@@ -70,7 +84,7 @@ export default function PlanExecuteDialog({ open, planId, onOpenChange, onExecut
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-1.5"><Label>Agent</Label><Select value={agentId} onChange={setAgentId} options={[{ value: '', label: 'Select agent…' }, ...agents.map(agent => ({ value: agent.id, label: agent.name }))]} /></div>
-          <div className="space-y-1.5"><Label>Runtime profile ID (optional)</Label><Input value={runtimeProfileId} onChange={event => setRuntimeProfileId(event.target.value)} placeholder="Use the agent default" /></div>
+          <div className="space-y-1.5"><Label>Runtime profile (optional)</Label><Select value={runtimeProfileId} onChange={setRuntimeProfileId} disabled={!agentId} options={[{ value: '', label: agentId ? 'Use the Agent default' : 'Select an Agent first' }, ...runtimeProfiles.map(profile => ({ value: profile.id, label: `${profile.name}${profile.is_default ? ' · default' : ''}` }))]} /></div>
           <div className="space-y-1.5"><Label>Prompt (optional)</Label><Textarea value={prompt} onChange={event => setPrompt(event.target.value)} /></div>
           <div className="space-y-1.5"><Label>Instruction (optional)</Label><Textarea value={instruction} onChange={event => setInstruction(event.target.value)} /></div>
         </div>

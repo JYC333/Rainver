@@ -105,14 +105,14 @@ export function computeFeatures(config: ServerConfig): string[] {
     "personal_memory_grants_server_authority",
     "evolution_server_authority",
     "content_publications_server_authority",
-    "workspace_profiles_server_authority",
+    "project_folder_execution_configs_server_authority",
     "graph_projection_server_authority",
     "server_agent_runtime_host",
     "config_semantic_validation",
     "notification_webhook_egress_policy_gate",
   ];
   features.push("proposals_server_authority");
-  features.push("chat_turn_server_authority");
+  features.push("room_conversation_server_authority");
   features.push("context_assembly_server_authority");
   features.push("memory_server_authority");
   if (config.enableNotificationWebhookEgress) {

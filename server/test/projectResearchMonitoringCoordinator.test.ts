@@ -16,6 +16,7 @@ describe("ProjectResearchMonitoringCoordinator", () => {
         hasResearchQuestionDrift: vi.fn(),
         appendPendingIncrementalItems: vi.fn(),
         reconcileOperation: vi.fn(),
+        startEmptyScanPass: vi.fn(),
         activeHistoricalBackfill: vi.fn(),
         backfillPlanForItems: vi.fn(),
         operationByIdempotency: vi.fn(),

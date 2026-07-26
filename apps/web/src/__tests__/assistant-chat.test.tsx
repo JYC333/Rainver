@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // vi.mock factories are hoisted above the module body, so anything they reference
 // must be created via vi.hoisted (which runs first) to avoid a TDZ error.
-const { agent, listMock, getMock, messagesMock } = vi.hoisted(() => ({
+const { agent, getMock, messagesMock, backendsMock } = vi.hoisted(() => ({
   agent: {
     id: 'a1', space_id: 'personal-1', created_by_user_id: 'u1', name: 'Assistant',
     description: null, visibility: 'private', role_instruction: null, status: 'active',
@@ -12,14 +12,13 @@ const { agent, listMock, getMock, messagesMock } = vi.hoisted(() => ({
     source_template_version_id: null, model: null, adapter_type: 'model_api',
     requires_model_provider: true, system_prompt: null, created_at: '', updated_at: '',
   },
-  listMock: vi.fn(),
   getMock: vi.fn(),
   messagesMock: vi.fn(),
+  backendsMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
-  agentsApi: { get: getMock, chat: vi.fn() },
-  providersApi: { list: listMock },
+  agentsApi: { get: getMock, chat: vi.fn(), conversationBackends: backendsMock },
   sessionsApi: { messages: messagesMock },
 }))
 
@@ -38,56 +37,123 @@ function renderPage(entry = '/agents/a1/chat') {
       <Routes>
         <Route path="/agents/:agentId/chat" element={<AssistantChatPage />} />
       </Routes>
+      <LocationProbe />
     </MemoryRouter>,
   )
 }
 
-describe('AssistantChatPage — default model provider gating', () => {
+function LocationProbe() {
+  const location = useLocation()
+  return <span data-testid="location">{location.pathname}{location.search}</span>
+}
+
+describe('AssistantChatPage conversation backends', () => {
   beforeEach(() => {
-    listMock.mockReset()
     getMock.mockReset()
     messagesMock.mockReset()
+    backendsMock.mockReset()
+    vi.mocked(agentsApi.chat).mockReset()
     getMock.mockResolvedValue(agent)
     messagesMock.mockResolvedValue([])
+    backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-1',
+      name: 'Managed',
+      adapter_type: 'model_api',
+      model_name: 'gpt-test',
+      requires_cli_credential: false,
+      credential_profiles: [],
+    }], binding: null })
     // jsdom doesn't implement Element.scrollTo, which ChatPanel calls on mount.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   })
 
-  it('blocks chat with a configure-provider notice when no default provider is configured', async () => {
-    // A provider exists but is not the default → backend cannot resolve one for the run.
-    listMock.mockResolvedValue([{ id: 'p1', is_default: false, enabled: true }])
+  it('disables the composer when no eligible backend is configured', async () => {
+    backendsMock.mockResolvedValue({ options: [], binding: null })
     renderPage()
-    expect(await screen.findByText(/no model provider configured/i)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /configure a provider/i })).toBeInTheDocument()
-    // The chat input must not render — the assistant is unusable until configured.
-    expect(screen.queryByPlaceholderText(/ask your assistant/i)).toBeNull()
+    expect(await screen.findByText(/no eligible conversation backend/i)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/ask your assistant/i)).toBeDisabled()
   })
 
-  it('shows the chat when a default provider is configured', async () => {
-    listMock.mockResolvedValue([{ id: 'p1', is_default: true, enabled: true }])
+  it('shows the selected eligible backend and enables chat', async () => {
     renderPage()
     expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
-    expect(screen.queryByText(/no model provider configured/i)).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue('runtime-1:')
+    })
   })
 
-  it('shows the chat for a CLI runtime even with no default provider', async () => {
-    // CLI runtimes manage their own model/login — the provider gate must not block them.
-    getMock.mockResolvedValue({ ...agent, adapter_type: 'claude_code', requires_model_provider: false })
-    listMock.mockResolvedValue([{ id: 'p1', is_default: false, enabled: true }])
-    renderPage()
+  it('restores the user × session CLI backend binding', async () => {
+    backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-cli',
+      name: 'Subscription',
+      adapter_type: 'claude_code',
+      model_name: null,
+      requires_cli_credential: true,
+      credential_profiles: [
+        { id: 'credential-default', name: 'Default', is_default: true },
+        { id: 'credential-1', name: 'Personal', is_default: false },
+      ],
+    }], binding: {
+      runtime_profile_id: 'runtime-cli',
+      adapter_type: 'claude_code',
+      credential_profile_id: 'credential-1',
+    } })
+    renderPage('/agents/a1/chat?session=s1')
     expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
-    expect(screen.queryByText(/no model provider configured/i)).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue(
+        'runtime-cli:credential-1',
+      )
+    })
+    expect(backendsMock).toHaveBeenCalledWith('a1', {
+      spaceId: 'personal-1',
+      sessionId: 's1',
+    })
   })
 
-  it('fails open (shows chat) when the providers check itself errors', async () => {
-    listMock.mockRejectedValue(new Error('network'))
-    renderPage()
-    expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
-    expect(screen.queryByText(/no model provider configured/i)).toBeNull()
+  it('waits for backend discovery before auto-sending a Home draft', async () => {
+    let resolveBackends!: (value: Awaited<ReturnType<typeof agentsApi.conversationBackends>>) => void
+    backendsMock.mockReturnValue(new Promise(resolve => {
+      resolveBackends = resolve
+    }))
+    vi.mocked(agentsApi.chat).mockResolvedValue({
+      ok: true,
+      session_id: 'session-new',
+      run_id: 'run-1',
+      reply: 'done',
+      assistant_message: null,
+      action_previews: [],
+    } as never)
+
+    renderPage('/agents/a1/chat?draft=hello')
+    expect(agentsApi.chat).not.toHaveBeenCalled()
+    resolveBackends({
+      options: [{
+        runtime_profile_id: 'runtime-1',
+        name: 'Managed',
+        adapter_type: 'model_api',
+        model_name: 'gpt-test',
+        requires_cli_credential: false,
+        credential_profiles: [],
+      }],
+      binding: null,
+    })
+
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledTimes(1))
+    expect(agentsApi.chat).toHaveBeenCalledWith(
+      'a1',
+      expect.objectContaining({
+        message: 'hello',
+        backend: {
+          runtime_profile_id: 'runtime-1',
+          credential_profile_id: null,
+        },
+      }),
+      expect.any(Object),
+    )
   })
 
   it('shows an error bubble on ok:false and does not reload history', async () => {
-    listMock.mockResolvedValue([{ id: 'p1', is_default: true, enabled: true }])
     vi.mocked(agentsApi.chat).mockResolvedValue({
       ok: false,
       error: 'The run failed.',
@@ -108,8 +174,37 @@ describe('AssistantChatPage — default model provider gating', () => {
     expect(messagesMock).not.toHaveBeenCalledWith('session-new')
   })
 
+  it('marks an in-flight partial reply as failed when the stream disconnects', async () => {
+    vi.mocked(agentsApi.chat).mockImplementation(async (_agentId, _body, options) => {
+      options?.onAccepted?.({
+        schema_version: 'chat_turn_accepted.v1',
+        session_id: 'session-new',
+        run_id: 'run-1',
+        user_message_id: 'message-1',
+        status: 'queued',
+        event_stream_url: '/api/v1/runs/run-1/events/stream',
+        backend: {
+          runtime_profile_id: 'runtime-1',
+          adapter_type: 'model_api',
+          credential_profile_id: null,
+        },
+      })
+      options?.onTextDelta?.('partial reply')
+      throw new Error('stream disconnected')
+    })
+
+    renderPage()
+    const input = await screen.findByPlaceholderText(/ask your assistant/i)
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
+
+    await screen.findByText(/could not complete/i)
+    expect(screen.getByText(/partial reply/)).toBeInTheDocument()
+    expect(screen.getAllByText(/stream disconnected/)).toHaveLength(1)
+    expect(screen.getByTestId('location')).toHaveTextContent('session=session-new')
+  })
+
   it('loads persisted messages when opened with a session query param', async () => {
-    listMock.mockResolvedValue([{ id: 'p1', is_default: true, enabled: true }])
     messagesMock.mockResolvedValue([
       {
         id: 'm1',

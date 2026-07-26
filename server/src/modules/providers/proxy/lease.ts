@@ -17,7 +17,7 @@ export interface ProviderProxyLeaseInput {
   run_group_id?: string | null;
   agent_id?: string | null;
   project_id?: string | null;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   trigger_origin?: string | null;
   ttl_ms: number;
 }
@@ -43,7 +43,7 @@ export interface ProviderProxyLease {
   run_group_id: string | null;
   agent_id: string | null;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   trigger_origin: string | null;
   expires_at: string;
 }
@@ -67,7 +67,7 @@ export interface ResolvedProviderProxyLease {
   run_group_id: string | null;
   agent_id: string | null;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   trigger_origin: string | null;
   expires_at_ms: number;
 }
@@ -118,7 +118,7 @@ export class ProviderProxyLeaseRegistry {
       run_group_id: input.run_group_id ?? null,
       agent_id: input.agent_id ?? null,
       project_id: input.project_id ?? null,
-      workspace_id: input.workspace_id ?? null,
+      project_folder_id: input.project_folder_id ?? null,
       trigger_origin: input.trigger_origin ?? null,
       expires_at_ms: Date.now() + Math.max(input.ttl_ms, 1_000),
     };
@@ -142,7 +142,7 @@ export class ProviderProxyLeaseRegistry {
       run_group_id: record.run_group_id,
       agent_id: record.agent_id,
       project_id: record.project_id,
-      workspace_id: record.workspace_id,
+      project_folder_id: record.project_folder_id,
       trigger_origin: record.trigger_origin,
       expires_at: new Date(record.expires_at_ms).toISOString(),
     };

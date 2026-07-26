@@ -45,10 +45,10 @@ capture / trigger
 - **Actor** — the general execution/authorship identity: user, agent, system, automation, connector, or service account. New audit and RunStep surfaces carry actor identity.
 - Do not merge User and Agent.
 
-### Workspace is a context container, not a repository
+### Project is a context container, not a repository
 
-- A workspace may contain activities, tasks, runs, artifacts, proposals, memory, files, attached repositories, and agents.
-- A code repository is an attached resource, not the definition of workspace.
+- A Project may contain activities, tasks, runs, artifacts, proposals, memory, and owned Project Folders (files, attached repositories).
+- A code repository is an owned Project Folder resource, not the definition of Project. A Project Folder belongs to exactly one Project.
 
 ### ModelProvider and RuntimeAdapter are separate
 
@@ -66,7 +66,7 @@ capture / trigger
 
 ### Sandbox and path policy boundary
 
-- All file access from agent execution is mediated by `WorkspaceManager` and `PathPolicy`.
+- All file access from agent execution is mediated by `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`.
 - Sandboxed file-access adapters currently run inside a git worktree. One-shot Docker
   is planned for stricter process isolation and must fail closed until implemented.
 - Adapters must not access arbitrary host paths.
@@ -84,7 +84,7 @@ capture / trigger
 - Knowledge items must not automatically enter ContextBuilder.
 - Promoting Knowledge into Memory must be a separate future proposal flow, not an implicit side effect.
 - Activity, Run, and Artifact are source inputs for Knowledge proposals.
-- Project and workspace are contextual associations for Knowledge, not Knowledge content types.
+- Project and Project Folder are contextual associations for Knowledge, not Knowledge content types.
 - Knowledge reads use the canonical content-access policy: active members may
   read `space_shared` rows within scope, owners have base access to `private`
   rows, and ordinary `selected_users` readers require an active grant. The sole
@@ -111,7 +111,7 @@ capture / trigger
 ### External tools are adapters, not product foundations
 
 - Claude Code, Codex, Cursor, LangGraph, OpenAI Agents SDK are runtime adapters.
-- Memory, context, policy, proposals, audit, and workspace governance live in Agent-Space's database, not in vendor CLIs.
+- Memory, context, policy, proposals, audit, and Project Folder governance live in Agent-Space's database, not in vendor CLIs.
 - OpenCode is a third optional CLI runtime alongside Claude Code and Codex CLI, not a
   universal or preferred execution layer. User-initiated/supervised heavy work may use CLI
   subscription allowance; managed API work keeps its existing direct adapters. Claude
@@ -131,9 +131,9 @@ capture / trigger
 | Policy proposal apply | Proposal gate creates active Policy row | Active |
 | Runtime execution | Runtime policy JSON, adapter resolver, credential resolver | Active |
 | Runtime credential use | Credential resolver + secret redaction | Active |
-| Workspace file read | Route workspace-space check + `PathPolicy` | Active |
-| Workspace file write / code patch | Approved `code_patch` proposal gate + `PathPolicy` | Active |
-| Sandbox path access | Execution workspace boundary, worktree root validation | Active |
+| Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
+| Project Folder file write / code patch | Approved `code_patch` proposal gate + `PathPolicy` | Active |
+| Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Authenticated 501 stub; operator-only deployer allowlist | Deferred / fail-closed |
 | Self-evolution execution | Disabled by default (`ENABLE_SYSTEM_EVOLUTION=false`) | Active |
 | Future automation trigger | No model yet — reserved | Not built |
@@ -148,7 +148,7 @@ Run these before structural changes:
 - Are User and Agent still separate?
 - Is Actor available for authorship/execution identity on new surfaces?
 - Is ModelProvider separate from RuntimeAdapter?
-- Is Workspace a context container, not a repo?
+- Is Project a context container, not a repo?
 - Are vendor instruction files generated artifacts, not source of truth?
 
 **Flow checks:**
@@ -163,4 +163,4 @@ Run these before structural changes:
 - Does an accepted active Policy row change a real enforcement decision?
 - Is deployment still manual or allowlisted-deployer-only?
 - Is self-evolution disabled by default?
-- Does workspace scan mark paths `stale` rather than hard-delete?
+- Does Project Folder archive/unregister leave the physical directory untouched rather than hard-delete?

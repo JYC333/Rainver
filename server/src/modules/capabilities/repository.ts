@@ -755,8 +755,8 @@ export class PgCapabilitiesRepository {
       return;
     }
     const table =
-      scopeType === "workspace"
-        ? "workspaces"
+      scopeType === "project_folder"
+        ? "project_folders"
         : scopeType === "project"
           ? "projects"
           : scopeType === "agent"
@@ -1181,10 +1181,10 @@ function skillLocalOverlayOut(row: SkillLocalOverlayRow): SkillLocalOverlay {
 }
 
 function ensureOverlayScope(value: string): SkillLocalOverlayScope {
-  if (["space", "project", "workspace", "agent", "user"].includes(value)) {
+  if (["space", "project", "project_folder", "agent", "user"].includes(value)) {
     return value as SkillLocalOverlayScope;
   }
-  throw new HttpError(422, "scope_type must be one of space, project, workspace, agent, user");
+  throw new HttpError(422, "scope_type must be one of space, project, project_folder, agent, user");
 }
 
 function ensureOverlayStatus(value: string): SkillLocalOverlayStatus {

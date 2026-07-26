@@ -350,7 +350,7 @@ function providerProxyUsageObservation(
     session_id: lease.session_id,
     agent_id: lease.agent_id,
     project_id: lease.project_id,
-    workspace_id: lease.workspace_id,
+    project_folder_id: lease.project_folder_id,
     trigger_origin: lease.trigger_origin,
     adapter_type: lease.adapter_type,
     provider_id: lease.provider_id,

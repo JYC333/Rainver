@@ -114,11 +114,11 @@ async function applyProposal(proposalId: string, userId: string): Promise<Return
     proposal_type: string;
     title: string | null;
     payload_json: Record<string, unknown> | null;
-    workspace_id: string | null;
+    project_folder_id: string | null;
     created_by_user_id: string | null;
     project_id: string | null;
   }>(
-    `SELECT id, space_id, proposal_type, title, payload_json, workspace_id, created_by_user_id, project_id
+    `SELECT id, space_id, proposal_type, title, payload_json, project_folder_id, created_by_user_id, project_id
        FROM proposals WHERE id = $1`,
     [proposalId],
   );

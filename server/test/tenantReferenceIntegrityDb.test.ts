@@ -189,7 +189,7 @@ describe("tenant reference integrity", () => {
     )).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("rejects cross-space references in every research workspace layer", async (ctx) => {
+  it("rejects cross-space references in every Research Area layer", async (ctx) => {
     if (!available || !pool) return ctx.skip();
     const now = new Date().toISOString();
 

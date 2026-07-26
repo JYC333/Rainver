@@ -30,7 +30,7 @@ supported domains may create active `Policy` rows. Reserved domains are
 vocabulary only and fail closed until wired.
 
 **Policy service / gateway** (`server/src/modules/policy/service.ts` and `gateway.ts`) is the enforcement entry point for sensitive actions. It composes hard invariants, PolicyEngine, and PolicyDecisionRecord persistence. Business enforcement code must call one of:
-- **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, workspace read/patch, artifact, proposal creation, agent config proposal creation, and automation sensitive gates.
+- **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, Project Folder read/patch, artifact, proposal creation, agent config proposal creation, and automation sensitive gates.
 - **`enforceProposalApply(...)`** — proposal application path. Used by `PgProposalApplyService`.
 
 Direct use of `PolicyEngine` or hard-invariant helpers outside documented non-mutating simulations is a boundary violation detected by `server/test/boundaries.test.ts`.
@@ -67,6 +67,13 @@ not agent-visible.
 **Hard invariant guard** (`server/src/modules/policy/decisionCore.ts`) runs before PolicyEngine and enforces non-overridable security/privacy invariants.
 
 **PolicyDecisionRecord** is an append-only durable audit table for sensitive policy decisions. Created for: audit_required actions, DENY, REQUIRE_APPROVAL, and forced records.
+
+`authorization_requests` references one same-Space PolicyDecisionRecord and
+Run. Only the built-in `managed_system_action_grant_required` deny for an exact
+grantable registry action may be referenced. The approved row has a composite
+foreign key to the resulting same-Space, same-Agent, same-action, same-Run
+ActionApprovalGrant. Hard-invariant, Space, credential, retrieval, and unknown
+action boundaries remain non-requestable.
 
 Space membership role checks remain separate from persisted Policy rows.
 Canonical roles (ascending authority): `guest < member < reviewer < admin <
@@ -142,7 +149,7 @@ Retrieval hard-filter metadata remains in `retrieval_trace_json` on context pack
 **Status:** ✅ Enforced
 
 - The canonical content read predicate (`server/src/modules/access/contentAccess*.ts`) first
-  requires active same-Space membership and workspace/project scope, then merges ordinary
+  requires active same-Space membership and project_folder/project scope, then merges ordinary
   visibility, active grants, and the Space's creation-time `oversight_mode` with
   `deny < summary < full` widest-wins semantics.
 - Space owner/admin roles do **not** independently bypass content reads. The sole exception is
@@ -171,7 +178,7 @@ Retrieval hard-filter metadata remains in `retrieval_trace_json` on context pack
 | `run.user_private_scope` | `server/src/modules/policy/decisionCore.ts` |
 
 **Reserved / unsupported active Policy row domains:** `runtime.execute`,
-`workspace.read`, `agent.config_update`, `automation.fire`,
+`project_folder.read`, `agent.config_update`, `automation.fire`,
 `capability.enable`, `tool_binding.enable`, `deployment.execute`.
 
 `policy_change` proposal application validates the domain, enforcement mode,
@@ -214,8 +221,8 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
 **Registry structure**: The registry has three lifecycle states, distinguished by `lifecycle_status`:
 - **WIRED_DIRECT** (28): `lifecycle_status=WIRED_DIRECT` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site.
   Actions: `runtime.execute`, `runtime.use_credential`, `context.inject_memory`, `context.render_for_runtime`,
-  `workspace.write_patch`, `artifact.persist`, `proposal.create`, `proposal.apply`,
-  `agent.config_update`, `workspace.read`, `runtime_skill.render`,
+  `project_folder.write_patch`, `artifact.persist`, `proposal.create`, `proposal.apply`,
+  `agent.config_update`, `project_folder.read`, `runtime_skill.render`,
   `automation.create`, `automation.update`, `automation.fire`,
   `source.connection.manage`, `source.item_create`, `source.item_update`,
   `evidence.create`, `evidence.update`, `evidence.link`,
@@ -237,14 +244,14 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
 - **RESERVED** (11): `lifecycle_status=RESERVED` — registered for vocabulary completeness and fail-closed
   defence-in-depth, but not wired to business code yet. `PolicyGateway` always denies reserved actions.
   `current_enforcement_point="not_implemented"` is a human-readable marker.
-  Actions: `context.use_personal_grant`, `workspace.apply_patch`, `artifact.export`,
+  Actions: `context.use_personal_grant`, `project_folder.apply_patch`, `artifact.export`,
   `proposal.approve`, `memory.read_private`, `memory.promote_shared`, `runtime_skill.execute`,
   `tool_binding.enable`, `evidence.export`, `deployment.propose`, `deployment.execute`.
 
 **record_failure_mode** (`RecordFailureMode` in `packages/protocol/src/policy.ts`): Each action definition carries a typed `record_failure_mode` field:
 - `BEST_EFFORT` (default) — if `PolicyDecisionRecord` persistence fails, log a warning and continue.
 - `FAIL_CLOSED` — preferred enforcement raises `PolicyAuditPersistError` if durable persistence fails; the sensitive action must not proceed.
-  Actions with `FAIL_CLOSED`: `runtime.use_credential`, `workspace.write_patch`, `artifact.persist`, `proposal.apply`,
+  Actions with `FAIL_CLOSED`: `runtime.use_credential`, `project_folder.write_patch`, `artifact.persist`, `proposal.apply`,
   `policy.change`, `skill.import`, `skill.convert`, `capability.enable`, `capability.disable`,
   `capability.update`, `runtime_skill.binding_update`, `automation.create`, `automation.fire`,
   `automation.update`, `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`, `memory.retrieval.brief`,
@@ -275,11 +282,11 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 | `runtime.use_credential` | `server/src/modules/providers/providerCommandStore.ts`, provider invocation, and run orchestration | Uses `enforce()` before ModelProvider API-key secret fetch; `resource_space_id` comes from the credential row. Same-space manual/api/delegation origins allow; automation requires approval. CLI-profile runtimes use the CLI CredentialBroker path. **fail_closed**. |
 | `context.inject_memory` | `server/src/modules/context/` and `server/src/modules/runs/` | Uses `enforce()` before context assembly/persistence; cross-space access hard denies. |
 | `context.render_for_runtime` | `server/src/modules/runs/` | Before adapter execution — cross-space hard DENY. `has_personal_grant_context` in `context`. |
-| `workspace.write_patch` | `server/src/modules/workspaces/` and proposal appliers | Uses `enforce()` before workspace file writes. **fail_closed**. |
-| `workspace.read` | `server/src/modules/workspaces/routes.ts` | Uses `enforce()` before workspace tree/file/status/diff reads. Uses actual `Workspace.space_id` as `resource_space_id`. Normal project reads default allow; system_core, external-root, protected/restricted, full diff, and secret-like path reads use `force_record=True`. PathPolicy still blocks traversal and secret-like paths before content is returned. Full diff is bounded and secret-like diff values are redacted; secret-like diff paths are denied. |
+| `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers | Uses `enforce()` before Project Folder file writes. **fail_closed**. |
+| `project_folder.read` | `server/src/modules/projectFolders/repository.ts` | Uses `enforce()` before Project Folder tree/file/status/diff reads. Uses actual `ProjectFolder.space_id` as `resource_space_id`. Normal project reads default allow; protected-Folder, external-root, protected/restricted, full diff, and secret-like path reads use `force_record=True`. PathPolicy still blocks traversal and secret-like paths before content is returned. Full diff is bounded and secret-like diff values are redacted; secret-like diff paths are denied. |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` | Uses `enforce()` before persistence. Blocked decisions are audited once and write no file or row. **fail_closed**. |
 | `proposal.create` | `server/src/modules/proposals/` and target modules | Uses `enforce()` for user-created proposals. |
-| `proposal.create` | `server/src/modules/workspaces/codePatchCollector.ts` | Uses `enforce()` with `force_record=True` for system-created code_patch proposals. |
+| `proposal.create` | `server/src/modules/projectFolders/codePatch.ts` | Uses `enforce()` with `force_record=True` for system-created code_patch proposals. |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` | Uses `enforceProposalApply()`; unsupported types deny first. **fail_closed**. |
 | `agent.config_update` | `server/src/modules/agents/service.ts` | Uses `enforce()` before creating `agent_config_update` proposals. This is the domain-specific proposal creation audit; accepted mutation still goes through `proposal.apply`. Metadata includes changed field names and safe IDs only, not raw system prompt or policy blobs. |
 | `automation.create` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. Runtime preflight and policy preflight simulation must pass before the Automation row is written. `membership_role`, `agent_id`, `trigger_type` in `context`. **fail_closed** — persistence failure blocks creation. |
@@ -335,7 +342,7 @@ managed-run creation:
 - attachable type allowlist: `retrieval_brief`, `retrieval_eval_report`,
   `retrieval_explain_report`, `retrieval_maintenance_report`,
   `memory_maintenance_report`;
-- visibility and grants: canonical content access predicate; workspace/project
+- visibility and grants: canonical content access predicate; project_folder/project
   scope is checked independently;
 - project gate: project-scoped artifacts require project visibility;
 - content mode: bounded summary only, with raw artifact content excluded from
@@ -415,8 +422,8 @@ instead of silently using `model_provider_mode=none`.
 | `runtime.use_credential` | provider credential resolver + run orchestration PolicyGateway for ModelProvider API-key runtimes (`trigger_origin` in `context`; credential space from DB) | PolicyDecisionRecord |
 | `context.inject_memory` | context/runs PolicyGateway (`trigger_origin` in `context`) | PolicyDecisionRecord on DENY |
 | `context.render_for_runtime` | runs PolicyGateway (`has_personal_grant_context` in `context`) | PolicyDecisionRecord on DENY |
-| `workspace.read` | workspaces PolicyGateway (`read_kind`, `relative_path`, workspace posture in `context`) | PolicyDecisionRecord on DENY/REQUIRE_APPROVAL and forced audit for system_core/external-root/restricted/full-diff/secret-like reads |
-| `artifact.persist` | run materialization PolicyGateway (`artifact_type`, `visibility`, workspace/project IDs, storage shape in `context`) | PolicyDecisionRecord (audit_required=True) |
+| `project_folder.read` | projectFolders PolicyGateway (`read_kind`, `relative_path`, Folder posture in `context`) | PolicyDecisionRecord on DENY/REQUIRE_APPROVAL and forced audit for protected-Folder/external-root/restricted/full-diff/secret-like reads |
+| `artifact.persist` | run materialization PolicyGateway (`artifact_type`, `visibility`, project_folder/project IDs, storage shape in `context`) | PolicyDecisionRecord (audit_required=True) |
 | `proposal.create` | proposals + target modules (`target_visibility`, `target_scope` in `context` for memory proposals) | PolicyDecisionRecord (force_record=True for code_patch) |
 | `proposal.apply` | proposal apply service PolicyGateway | PolicyDecisionRecord (audit_required=True). Unsupported proposal types deny at gate (`audit_code="unsupported_proposal_type"`) before any role check. Role matrix: owner=all, admin=low/medium/high, reviewer=low/medium. |
 | `knowledge.*` | proposals + knowledge proposal appliers via `proposal.apply` | No direct write gate. Accepted `knowledge_*` proposals create/version/archive KnowledgeItem or create/archive ObjectRelation rows. |

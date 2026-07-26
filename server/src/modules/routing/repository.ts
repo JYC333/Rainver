@@ -29,6 +29,13 @@ interface RuntimeCandidateRow {
   conformance_suite_version: string | null;
 }
 
+interface CliCredentialAvailability {
+  availableProfiles(
+    spaceId: string,
+    userId: string,
+  ): Promise<Record<string, unknown>[]>;
+}
+
 export class RouteSelectionError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
@@ -37,12 +44,22 @@ export class RouteSelectionError extends Error {
 }
 
 export class PgRouteDecisionRepository {
-  constructor(private readonly db: Queryable, private readonly selector = new DeterministicRouteSelector()) {}
+  constructor(
+    private readonly db: Queryable,
+    private readonly selector = new DeterministicRouteSelector(),
+    private readonly cliCredentials: CliCredentialAvailability | null = null,
+  ) {}
 
   async routeRun(run: RunRecord): Promise<RunRecord> {
     if (run.run_type === "system" || run.run_type === "validation") return run;
     const hints = routeHintsForRun(run);
-    const candidates = await this.listCandidates(run.space_id, run.agent_id, run.owner_user_id ?? null);
+    const requestedCredentialProfileId = conversationCredentialProfileId(run.model_override_json);
+    const candidates = await this.listCandidates(
+      run.space_id,
+      run.agent_id,
+      run.owner_user_id ?? null,
+      requestedCredentialProfileId,
+    );
     const attemptNumber = await this.currentAttemptNumber(run);
     const retryRoute = attemptNumber > 1 ? await this.retryRouteContext(run, attemptNumber) : null;
     const decision = this.selector.select({
@@ -55,7 +72,7 @@ export class PgRouteDecisionRepository {
       required_sandbox_level: routeSandboxLevel(run.required_sandbox_level),
       execution_mode: run.mode === "dry_run" ? "dry_run" : "live",
       risk_level: riskLevel(contractRecord(run.contract_snapshot_json).risk_level),
-      workspace_available: Boolean(run.workspace_id),
+      workspace_available: Boolean(run.project_folder_id),
       hints,
     }, candidates);
     const now = new Date().toISOString();
@@ -152,7 +169,7 @@ export class PgRouteDecisionRepository {
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
                  context_snapshot_id, run_type, status, mode, prompt, instruction,
-                 workspace_id, session_id, parent_run_id, root_run_id, run_group_id,
+                 project_folder_id, session_id, parent_run_id, root_run_id, run_group_id,
                  delegation_id, project_id, scheduled_at, adapter_type, capability_id,
                  capabilities_json, model_provider_id, model_override_json,
                  runtime_profile_snapshot_json, required_sandbox_level,
@@ -176,7 +193,12 @@ export class PgRouteDecisionRepository {
           model_provider_id: selected.model_provider_id,
           model_name: selected.model_name,
           credential_profile_id: selected.credential_profile_id,
-          runtime_config_json: selected.runtime_config_json,
+          runtime_config_json: {
+            ...selected.runtime_config_json,
+            ...(selected.credential_profile_id
+              ? { credential_profile_id: selected.credential_profile_id }
+              : {}),
+          },
           runtime_policy_json: selected.runtime_policy_json,
           is_default: selected.is_default,
         }),
@@ -211,7 +233,12 @@ export class PgRouteDecisionRepository {
     return chain.some((profileId) => profileId !== selected);
   }
 
-  async listCandidates(spaceId: string, agentId: string, ownerUserId: string | null): Promise<RouteCandidate[]> {
+  async listCandidates(
+    spaceId: string,
+    agentId: string,
+    ownerUserId: string | null,
+    requestedCredentialProfileId: string | null = null,
+  ): Promise<RouteCandidate[]> {
     const result = await this.db.query<RuntimeCandidateRow>(
       `WITH verified_runs AS (
          SELECT vr.run_id, bool_and(vr.status = 'passed') AS passed
@@ -239,8 +266,9 @@ export class PgRouteDecisionRepository {
        )
       SELECT arp.id AS runtime_profile_id, arp.name AS profile_name,
               arp.adapter_type, arp.model_provider_id, arp.model_name,
-              arp.credential_profile_id, cp.owner_user_id AS credential_profile_owner_id,
-              mp.enabled AS provider_enabled, mp.credential_id AS provider_credential_id,
+              cp.id AS credential_profile_id, cp.owner_user_id AS credential_profile_owner_id,
+              (mp.enabled AND mpg.enabled) AS provider_enabled,
+              mp.credential_id AS provider_credential_id,
               EXISTS (
                 SELECT 1 FROM model_provider_credentials mpc
                  WHERE mpc.provider_id = arp.model_provider_id
@@ -270,17 +298,64 @@ export class PgRouteDecisionRepository {
           AND av.space_id = a.space_id
           AND av.agent_id = a.id
          LEFT JOIN model_providers mp ON mp.id = arp.model_provider_id
-         LEFT JOIN cli_credential_profiles cp
-           ON cp.id = arp.credential_profile_id AND cp.owner_user_id = $3
+         LEFT JOIN model_provider_space_grants mpg
+           ON mpg.provider_id = arp.model_provider_id
+          AND mpg.space_id = arp.space_id
+         LEFT JOIN LATERAL (
+           SELECT profile.id, profile.owner_user_id
+             FROM cli_credential_space_grants grant_row
+             JOIN cli_credential_profiles profile
+               ON profile.id = grant_row.profile_id
+              AND profile.owner_user_id = grant_row.owner_user_id
+            WHERE grant_row.space_id = $1
+              AND grant_row.owner_user_id = $3
+              AND grant_row.enabled = true
+              AND profile.owner_user_id = $3
+              AND profile.runtime = arp.adapter_type
+              AND ($4::text IS NULL OR profile.id = $4)
+            ORDER BY (profile.id = $4) DESC,
+                     grant_row.is_default DESC,
+                     profile.created_at ASC,
+                     profile.id ASC
+            LIMIT 1
+         ) cp ON true
          LEFT JOIN history ON history.adapter_type = arp.adapter_type
          LEFT JOIN runtime_conformance_results conformance
            ON conformance.runtime_adapter_type = arp.adapter_type
           AND conformance.runtime_version = COALESCE(arp.runtime_config_json->>'runtime_tool_version', '')
         WHERE arp.space_id = $1 AND arp.agent_id = $2
         ORDER BY arp.is_default DESC, arp.created_at ASC, arp.id ASC`,
-      [spaceId, agentId, ownerUserId],
+      [spaceId, agentId, ownerUserId, requestedCredentialProfileId],
     );
-    return result.rows.map((row) => candidateFromRow(row));
+    const hasCliCandidates = result.rows.some((row) =>
+      isLocalCliRuntimeAdapter(row.adapter_type));
+    let loggedInCredentialIds: Set<string> | null = null;
+    if (hasCliCandidates) {
+      if (!ownerUserId || !this.cliCredentials) {
+        throw new RouteSelectionError(
+          "route_cli_eligibility_unavailable",
+          "CLI routing requires the Run owner's live credential eligibility",
+        );
+      }
+      const available = await this.cliCredentials.availableProfiles(spaceId, ownerUserId);
+      loggedInCredentialIds = new Set(
+        available
+          .filter((profile) => profile.logged_in === true)
+          .map((profile) => profile.id)
+          .filter((id): id is string => typeof id === "string"),
+      );
+    }
+    const candidates = result.rows.map((row) =>
+      candidateFromRow(
+        row,
+        !isLocalCliRuntimeAdapter(row.adapter_type) ||
+          Boolean(row.credential_profile_id && loggedInCredentialIds?.has(row.credential_profile_id)),
+      ));
+    return requestedCredentialProfileId
+      ? candidates.filter(
+          (candidate) => candidate.credential_profile_id === requestedCredentialProfileId,
+        )
+      : candidates;
   }
 
   async getDecision(spaceId: string, runId: string) {
@@ -349,7 +424,12 @@ export class PgRouteDecisionRepository {
   }
 }
 
-export function routeHintsForRun(run: Pick<RunRecord, "contract_snapshot_json"> & { runtime_profile_id?: string | null }): RouteHints {
+export function routeHintsForRun(
+  run: Pick<RunRecord, "contract_snapshot_json"> & {
+    runtime_profile_id?: string | null;
+    session_id?: string | null;
+  },
+): RouteHints {
   const contract = contractRecord(run.contract_snapshot_json);
   const raw = record(contract.route_hints_json);
   const sources: Array<{ source: string; value: unknown }> = [];
@@ -358,11 +438,24 @@ export function routeHintsForRun(run: Pick<RunRecord, "contract_snapshot_json"> 
   if (raw.evolution_strategy !== undefined) sources.push({ source: "evolution_strategy", value: raw.evolution_strategy });
   sources.push({ source: "contract", value: raw });
   const result = mergeRouteHints(sources);
+  if (!result.execution_shape && run.session_id) {
+    result.execution_shape = "conversational";
+    result.sources.push("run_session");
+  } else if (
+    !result.execution_shape &&
+    Object.keys(record(contract.structured_output_json)).length > 0
+  ) {
+    result.execution_shape = "structured_generation";
+    result.sources.push("structured_output_contract");
+  }
   if (run.runtime_profile_id && !result.preferred_runtime_profile_id) result.preferred_runtime_profile_id = run.runtime_profile_id;
   return result;
 }
 
-function candidateFromRow(row: RuntimeCandidateRow): RouteCandidate {
+function candidateFromRow(
+  row: RuntimeCandidateRow,
+  cliCredentialLoggedIn = true,
+): RouteCandidate {
   const spec = getRuntimeAdapterSpec(row.adapter_type);
   const runtimeConfig = record(row.runtime_config_json);
   const runtimePolicy = record(row.runtime_policy_json);
@@ -371,10 +464,10 @@ function candidateFromRow(row: RuntimeCandidateRow): RouteCandidate {
     : isLocalCliRuntimeAdapter(row.adapter_type)
       ? spec?.credentials.credential_mode === "cli_profile_or_model_provider"
         ? Boolean(
-            (row.credential_profile_id && row.credential_profile_owner_id) ||
+            (cliCredentialLoggedIn && row.credential_profile_id && row.credential_profile_owner_id) ||
             (row.model_provider_id && row.provider_enabled && (row.provider_credential_id || row.provider_has_healthy_credential)),
           )
-        : Boolean(row.credential_profile_id && row.credential_profile_owner_id)
+        : Boolean(cliCredentialLoggedIn && row.credential_profile_id && row.credential_profile_owner_id)
       : Boolean(row.provider_enabled && (row.provider_credential_id || row.provider_has_healthy_credential));
   return {
     runtime_profile_id: row.runtime_profile_id,
@@ -408,11 +501,18 @@ function candidateFromRow(row: RuntimeCandidateRow): RouteCandidate {
 }
 
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function conversationCredentialProfileId(value: unknown): string | null {
+  const backend = record(record(value).conversation_backend);
+  const credentialProfileId = backend.credential_profile_id;
+  return typeof credentialProfileId === "string" && credentialProfileId.trim()
+    ? credentialProfileId
+    : null;
+}
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []; }
 function unique(values: string[]): string[] { return [...new Set(values)]; }
 function numberOrNull(value: unknown): number | null { const number = typeof value === "string" ? Number(value) : value; return typeof number === "number" && Number.isFinite(number) ? number : null; }
-function sandboxLevel(value: unknown): "none" | "dry_run" | "ephemeral" | "worktree" | "one_shot_docker" { return value === "dry_run" || value === "ephemeral" || value === "worktree" || value === "one_shot_docker" ? value : "none"; }
-function routeSandboxLevel(value: unknown): "none" | "dry_run" | "ephemeral" | "worktree" | "one_shot_docker" {
+function sandboxLevel(value: unknown): "none" | "dry_run" | "ephemeral" | "read_only" | "worktree" | "one_shot_docker" { return value === "dry_run" || value === "ephemeral" || value === "read_only" || value === "worktree" || value === "one_shot_docker" ? value : "none"; }
+function routeSandboxLevel(value: unknown): "none" | "dry_run" | "ephemeral" | "read_only" | "worktree" | "one_shot_docker" {
   return sandboxLevel(value);
 }
 function trustLevel(value: unknown): "low" | "medium" | "high" { return value === "medium" || value === "high" ? value : "low"; }

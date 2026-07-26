@@ -42,7 +42,7 @@ export const contextArtifactRevocations = pgTable("context_artifact_revocations"
 			foreignColumns: [spaces.id],
 			name: "context_artifact_revocations_space_id_fkey"
 		}),
-	check("ck_context_artifact_revocations_scope_type", sql`(scope_type)::text = ANY (ARRAY[('workspace'::character varying)::text, ('project'::character varying)::text])`),
+	check("ck_context_artifact_revocations_scope_type", sql`(scope_type)::text = ANY (ARRAY[('project_folder'::character varying)::text, ('project'::character varying)::text])`),
 ]);
 
 export const contextDigests = pgTable("context_digests", {
@@ -79,7 +79,7 @@ export const contextDigests = pgTable("context_digests", {
 			foreignColumns: [spaces.id],
 			name: "context_digests_space_id_fkey"
 		}),
-	check("ck_context_digests_digest_type", sql`(digest_type)::text = ANY (ARRAY[('policy_bundle'::character varying)::text, ('workspace'::character varying)::text, ('agent'::character varying)::text])`),
+	check("ck_context_digests_digest_type", sql`(digest_type)::text = ANY (ARRAY[('policy_bundle'::character varying)::text, ('project_folder'::character varying)::text, ('agent'::character varying)::text])`),
 	check("ck_context_digests_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('dirty'::character varying)::text, ('superseded'::character varying)::text, ('disabled'::character varying)::text])`),
 ]);
 
@@ -113,7 +113,7 @@ export const contextProfiles = pgTable("context_profiles", {
 	check("ck_context_profiles_context_pack_object", sql`jsonb_typeof(context_pack_json) = 'object'::text`),
 	check("ck_context_profiles_routing_manifest_object", sql`jsonb_typeof(routing_manifest_json) = 'object'::text`),
 	check("ck_context_profiles_scope_id", sql`(((scope_type)::text = 'space'::text) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'space'::text) AND (scope_id IS NOT NULL))`),
-	check("ck_context_profiles_scope_type", sql`(scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('workspace'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])`),
+	check("ck_context_profiles_scope_type", sql`(scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('project_folder'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])`),
 	check("ck_context_profiles_version_positive", sql`version >= 1`),
 ]);
 
@@ -137,7 +137,7 @@ export const contextSnapshots = pgTable("context_snapshots", {
 	tokenBudgetJson: jsonb("token_budget_json"),
 	policyBundleVersion: varchar("policy_bundle_version", { length: 64 }),
 	memoryDigestVersion: varchar("memory_digest_version", { length: 64 }),
-	workspaceDigestVersion: varchar("workspace_digest_version", { length: 64 }),
+	projectFolderDigestVersion: varchar("project_folder_digest_version", { length: 64 }),
 	includedMemoryRefsJson: jsonb("included_memory_refs_json"),
 	includedEvidenceRefsJson: jsonb("included_evidence_refs_json"),
 	includedFileRefsJson: jsonb("included_file_refs_json"),
@@ -198,5 +198,5 @@ export const contextSnapshotItems = pgTable("context_snapshot_items", {
 			foreignColumns: [contextSnapshots.id],
 			name: "context_snapshot_items_context_snapshot_id_fkey"
 		}),
-	check("ck_context_snapshot_items_item_type", sql`(item_type)::text = ANY (ARRAY[('memory'::character varying)::text, ('knowledge_item'::character varying)::text, ('source'::character varying)::text, ('activity_record'::character varying)::text, ('project_public_summary'::character varying)::text, ('task'::character varying)::text, ('idea'::character varying)::text, ('project'::character varying)::text, ('workspace'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('manual_context'::character varying)::text])`),
+	check("ck_context_snapshot_items_item_type", sql`(item_type)::text = ANY (ARRAY[('memory'::character varying)::text, ('knowledge_item'::character varying)::text, ('source'::character varying)::text, ('activity_record'::character varying)::text, ('project_public_summary'::character varying)::text, ('task'::character varying)::text, ('idea'::character varying)::text, ('project'::character varying)::text, ('project_folder'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text, ('artifact'::character varying)::text, ('manual_context'::character varying)::text])`),
 ]);

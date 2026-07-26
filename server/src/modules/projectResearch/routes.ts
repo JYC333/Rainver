@@ -2,27 +2,19 @@ import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry";
 import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
 import { ProjectResearchRepository } from "./repository";
-import { ProjectExperimentRepository } from "./experimentRepository";
 import { ProjectResearchPipelineService } from "./pipeline/researchPipelineService";
 import { enforceSources } from "../sources/enforceSources";
 import { ProjectResearchReportRepository } from "./reportRepository";
 import { ProjectResearchQuestionRefineService } from "./questionRefineService";
-import { registerProjectResearchWorkspaceRoutes } from "./workspaceRoutes";
+import { registerProjectResearchAreaRoutes } from "./areaRoutes";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => ProjectResearchRepository) | null = null;
-let experimentRepositoryFactoryOverride: ((context: ModuleContext) => ProjectExperimentRepository) | null = null;
 let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchPipelineService) | null = null;
 
 export function __setProjectResearchRepositoryFactoryForTests(
   factory: ((context: ModuleContext) => ProjectResearchRepository) | null,
 ): void {
   repositoryFactoryOverride = factory;
-}
-
-export function __setProjectExperimentRepositoryFactoryForTests(
-  factory: ((context: ModuleContext) => ProjectExperimentRepository) | null,
-): void {
-  experimentRepositoryFactoryOverride = factory;
 }
 
 export function __setProjectResearchOrchestratorFactoryForTests(
@@ -34,11 +26,6 @@ export function __setProjectResearchOrchestratorFactoryForTests(
 function repository(context: ModuleContext): ProjectResearchRepository {
   if (repositoryFactoryOverride) return repositoryFactoryOverride(context);
   return new ProjectResearchRepository(dbPool(context.config));
-}
-
-function experimentRepository(context: ModuleContext): ProjectExperimentRepository {
-  if (experimentRepositoryFactoryOverride) return experimentRepositoryFactoryOverride(context);
-  return new ProjectExperimentRepository(dbPool(context.config));
 }
 
 function orchestrator(context: ModuleContext): ProjectResearchPipelineService {
@@ -55,7 +42,7 @@ function requireParam(request: Parameters<typeof params>[0], name: string): stri
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const base = "/api/v1/projects/:projectId/research";
   const reports = () => new ProjectResearchReportRepository(dbPool(context.config));
-  registerProjectResearchWorkspaceRoutes(app, context, base);
+  registerProjectResearchAreaRoutes(app, context, base);
 
   app.post(`${base}/question/refine`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -116,7 +103,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const sourceGate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
       if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
-      return reply.send(await orchestrator(context).applyQuestionForward(identity, requireParam(request, "projectId")));
+      const workflowId = optionalString(jsonBody(request).workflow_id);
+      if (!workflowId) throw new HttpError(422, "workflow_id is required");
+      return reply.send(await orchestrator(context).applyQuestionForward(identity, requireParam(request, "projectId"), workflowId));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -126,7 +115,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await orchestrator(context).questionChangeImpact(identity, requireParam(request, "projectId")));
+      const workflowId = optionalString(query(request).workflow_id);
+      if (!workflowId) throw new HttpError(422, "workflow_id is required");
+      return reply.send(await orchestrator(context).questionChangeImpact(identity, requireParam(request, "projectId"), workflowId));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -139,10 +130,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const sourceGate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
       if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
       const strategy = optionalString(jsonBody(request).strategy);
+      const workflowId = optionalString(jsonBody(request).workflow_id);
+      if (!workflowId) throw new HttpError(422, "workflow_id is required");
       if (strategy !== "rescreen" && strategy !== "synthesis_only" && strategy !== "apply_forward") {
         throw new HttpError(422, "strategy must be rescreen, synthesis_only, or apply_forward");
       }
-      return reply.send(await orchestrator(context).resolveQuestionChange(identity, requireParam(request, "projectId"), strategy));
+      return reply.send(await orchestrator(context).resolveQuestionChange(identity, requireParam(request, "projectId"), workflowId, strategy));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -490,115 +483,4 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // --- Experiments ---------------------------------------------------------
-
-  app.get(`${base}/experiments/campaigns`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await experimentRepository(context).listCampaigns(identity, requireParam(request, "projectId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post(`${base}/experiments/campaigns`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await experimentRepository(context).createCampaign(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.patch(`${base}/experiments/campaigns/:campaignId`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await experimentRepository(context).updateCampaign(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "campaignId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.get(`${base}/experiments/campaigns/:campaignId/runs`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await experimentRepository(context).listRuns(identity, requireParam(request, "projectId"), requireParam(request, "campaignId")),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post(`${base}/experiments/campaigns/:campaignId/runs`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(
-          await experimentRepository(context).createRun(
-            identity,
-            requireParam(request, "projectId"),
-            requireParam(request, "campaignId"),
-            jsonBody(request),
-          ),
-        );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post(`${base}/experiments/campaigns/:campaignId/runs/:runId/decide`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await experimentRepository(context).decideRun(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "campaignId"),
-          requireParam(request, "runId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.get(`${base}/experiments/provenance`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await experimentRepository(context).listProvenance(identity, requireParam(request, "projectId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post(`${base}/experiments/provenance`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await experimentRepository(context).createProvenance(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 }

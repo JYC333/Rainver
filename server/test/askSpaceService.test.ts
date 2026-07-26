@@ -85,10 +85,39 @@ function cannedBrief(domain: AskSpaceDomain, opts: { stale?: boolean; itemId?: s
 }
 
 function typeFor(domain: AskSpaceDomain) {
-  return domain === "memory" ? "memory_entry" : domain === "project" ? "project_public_summary" : "knowledge_item";
+  if (domain === "memory") return "memory_entry";
+  if (domain === "project") return "project_public_summary";
+  if (domain === "source") return "source_item";
+  if (domain === "inquiry") return "inquiry_thread";
+  return "knowledge_item";
 }
 
 describe("AskSpaceService.think (orchestration)", () => {
+  it("includes Inquiry as a first-class cross-domain retrieval section", async () => {
+    const service = new AskSpaceService(new FakeDb(), CONFIG, {
+      runDomainBrief: async ({ domain }) => cannedBrief(domain),
+      canRunActions: async () => false,
+    });
+
+    const result = await service.think({
+      spaceId: "space-1",
+      userId: "user-1",
+      query: "what hypotheses changed",
+      domains: ["knowledge", "inquiry"],
+    });
+
+    expect(result.requested_domains).toEqual(["knowledge", "inquiry"]);
+    expect(result.domains[1]).toMatchObject({
+      domain: "inquiry",
+      object_types: ["inquiry_thread"],
+      total: 1,
+    });
+    expect(result.provenance[1]).toMatchObject({
+      domain: "inquiry",
+      object_type: "inquiry_thread",
+    });
+  });
+
   it("fans across domains, aggregates gaps/provenance, logs Memory reads, and gates follow-ups", async () => {
     const db = new FakeDb();
     const recordMemoryReads = vi.fn(async () => {});

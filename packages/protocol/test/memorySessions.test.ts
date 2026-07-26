@@ -17,8 +17,10 @@ import {
   ChatRunCreateResultSchema,
   ChatTurnPrepareRunRequestSchema,
   ChatTurnPrepareRunResultSchema,
+  ChatTurnAcceptedSchema,
+  ChatTurnCompletionSchema,
   ChatTurnRequestSchema,
-  ChatTurnResultSchema,
+  ConversationBackendCatalogSchema,
   MemorySearchRequestSchema,
   MemoryPageSchema,
   MemoryOutSchema,
@@ -117,10 +119,16 @@ describe("memory + sessions contracts", () => {
     ).toBe("New chat");
     expect(
       MessageCreateRequestSchema.parse({
-        role: "user",
         content: "hello",
-      }).role,
-    ).toBe("user");
+      }).content,
+    ).toBe("hello");
+    expect(
+      MessageCreateRequestSchema.safeParse({
+        role: "assistant",
+        content: "forged",
+        metadata: { run_id: "run-1" },
+      }).success,
+    ).toBe(false);
   });
 
   it("parses explicit context artifact attachments without raw secret fields", () => {
@@ -179,8 +187,8 @@ describe("memory + sessions contracts", () => {
           id: "revocation-1",
           space_id: "space-1",
           artifact_id: "artifact-1",
-          scope_type: "workspace",
-          scope_id: "workspace-1",
+          scope_type: "project_folder",
+          scope_id: "project-folder-1",
           reason: null,
           created_by_user_id: "user-1",
           created_at: "2026-06-26T10:00:00.000Z",
@@ -251,7 +259,7 @@ describe("memory + sessions contracts", () => {
     ).toBe("summary-1");
   });
 
-  it("parses chat-turn request/result and prepare-run contracts", () => {
+  it("parses asynchronous chat-turn contracts", () => {
     expect(
       ChatTurnRequestSchema.parse({
         message: "  hello  ",
@@ -259,13 +267,79 @@ describe("memory + sessions contracts", () => {
       }).message,
     ).toBe("hello");
     expect(
-      ChatTurnResultSchema.parse({
+      ChatTurnAcceptedSchema.parse({
+        schema_version: "chat_turn_accepted.v1",
+        session_id: "session-1",
+        run_id: "run-1",
+        user_message_id: "message-1",
+        status: "queued",
+        event_stream_url: "/api/v1/runs/run-1/events/stream",
+        backend: {
+          runtime_profile_id: "runtime-profile-1",
+          adapter_type: "model_api",
+          credential_profile_id: null,
+        },
+      }).status,
+    ).toBe("queued");
+    expect(
+      ConversationBackendCatalogSchema.parse({
+        options: [{
+          runtime_profile_id: "runtime-profile-1",
+          name: "Subscription",
+          adapter_type: "claude_code",
+          model_name: null,
+          requires_cli_credential: true,
+          credential_profiles: [{
+            id: "credential-1",
+            name: "Personal",
+            is_default: true,
+          }],
+        }],
+        binding: {
+          runtime_profile_id: "runtime-profile-1",
+          adapter_type: "claude_code",
+          credential_profile_id: "credential-1",
+        },
+      }).binding?.credential_profile_id,
+    ).toBe("credential-1");
+    expect(
+      ChatTurnCompletionSchema.parse({
+        schema_version: "chat_turn_completion.v1",
         session_id: "session-1",
         run_id: "run-1",
         ok: true,
         reply: "hi",
+        assistant_message: {
+          schema_version: "assistant_message.v1",
+          id: "message-2",
+          session_id: "session-1",
+          run_id: "run-1",
+          content: "hi",
+          artifact_refs: ["artifact-1"],
+          tool_call_refs: ["tool-call-1"],
+          created_at: "2026-06-14T10:00:01.000Z",
+        },
       }).reply,
     ).toBe("hi");
+    expect(() =>
+      ChatTurnCompletionSchema.parse({
+        schema_version: "chat_turn_completion.v1",
+        session_id: "session-1",
+        run_id: "run-1",
+        ok: true,
+        assistant_message: {
+          schema_version: "assistant_message.v1",
+          id: "message-2",
+          session_id: "session-1",
+          run_id: "run-1",
+          content: "hi",
+          artifact_refs: [],
+          tool_call_refs: [],
+          created_at: "2026-06-14T10:00:01.000Z",
+          secret_ref: "must-not-leak",
+        },
+      }),
+    ).toThrow();
     expect(
       ChatTurnPrepareRunRequestSchema.parse({
         agent_id: "agent-1",

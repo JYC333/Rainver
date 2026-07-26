@@ -121,7 +121,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       identity.spaceId,
       identity.userId,
       {
-        workspaceId: optionalString(body.workspace_id),
+        projectFolderId: optionalString(body.project_folder_id),
         title: optionalString(body.title),
         metadata: optionalRecord(body.metadata),
       },
@@ -134,17 +134,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const sessionId = params(request).sessionId ?? "";
     const body = jsonBody(request);
-    const role = optionalString(body.role);
-    const content = typeof body.content === "string" ? body.content : "";
-    // Keep the legacy MessageCreate contract: role + non-empty content are required (422).
-    if (!role) return reply.code(422).send({ detail: "role is required" });
-    if (!content) return reply.code(422).send({ detail: "content is required" });
+    const protocol = await loadProtocol();
+    const parsed = protocol.MessageCreateRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return reply.code(422).send({ detail: "content is required and no other fields are accepted" });
+    }
     const services = sessionServices(context);
     const message = await services.repository.addMessage(
       identity.spaceId,
       identity.userId,
       sessionId,
-      { role, content, metadata: optionalRecord(body.metadata) },
+      { role: "user", content: parsed.data.content },
     );
     if (message === null) return reply.code(404).send({ detail: "Session not found" });
     return reply.code(201).send(message);

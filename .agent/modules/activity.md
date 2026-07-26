@@ -16,7 +16,7 @@ Raw input boundary for raw inputs. Nothing bypasses this layer into active memor
 
 ```
 ActivityRecord:
-  id, space_id, user_id, workspace_id, agent_id
+  id, space_id, user_id, project_folder_id, agent_id
   source_kind/source_type, source_trust
   title, content
   source_run_id, source_task_id, source_session_id, source_url

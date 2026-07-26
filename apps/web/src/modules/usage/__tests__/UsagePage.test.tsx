@@ -169,7 +169,7 @@ const events: UsageEventsResponse = {
     session_name: 'Main session',
     agent_id: 'agent-1',
     project_id: null,
-    workspace_id: null,
+    project_folder_id: null,
     occurred_at: '2026-07-09T12:00:00.000Z',
     recorded_at: '2026-07-09T12:00:01.000Z',
     usage_details: { input: 1000, output: 500, total: 1500 },

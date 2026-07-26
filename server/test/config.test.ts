@@ -250,8 +250,8 @@ describe("config diagnostics", () => {
 
     expect(collectConfigDiagnostics({}, config)).toContainEqual({
       severity: "info",
-      code: "chat_turn_server_authority",
-      message: "Personal Assistant chat turns are served by the fixed server authority",
+      code: "room_conversation_server_authority",
+      message: "Room conversation turns are served by the fixed server authority",
     });
     expect(collectConfigDiagnostics({}, config)).toContainEqual({
       severity: "info",

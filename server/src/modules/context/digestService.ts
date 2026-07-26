@@ -24,8 +24,8 @@ export interface MemoryDigestResult {
 }
 
 export interface ContextDigestRefreshResult {
-  digest_type: "policy_bundle" | "workspace" | "agent";
-  scope_type: "space" | "workspace" | "agent";
+  digest_type: "policy_bundle" | "project_folder" | "agent";
+  scope_type: "space" | "project_folder" | "agent";
   scope_id: string | null;
   id: string;
   space_id: string;
@@ -50,9 +50,9 @@ interface PolicyRow {
 }
 
 interface DirtyDigestRow {
-  scope_type: "space" | "workspace" | "agent";
+  scope_type: "space" | "project_folder" | "agent";
   scope_id: string | null;
-  digest_type: "policy_bundle" | "workspace" | "agent";
+  digest_type: "policy_bundle" | "project_folder" | "agent";
 }
 
 interface DigestStatusRow {
@@ -82,7 +82,7 @@ interface MemorySummaryRow {
  */
 export const digestLockKey = {
   policyBundle: (spaceId: string) => `policy_bundle:${spaceId}`,
-  workspace: (spaceId: string, workspaceId: string) => `workspace:${spaceId}:${workspaceId}`,
+  projectFolder: (spaceId: string, projectFolderId: string) => `project_folder:${spaceId}:${projectFolderId}`,
   agent: (spaceId: string, agentId: string) => `agent:${spaceId}:${agentId}`,
 };
 
@@ -126,18 +126,18 @@ export async function markPolicyBundleDirty(
 }
 
 /**
- * Mark the active workspace digest as dirty.
+ * Mark the active Project Folder digest as dirty.
  * Must run inside the caller's transaction: it takes the per-digest advisory lock
  * (so it serializes with refresh) and the mark is atomic with the memory change.
- * No-op if no active digest exists for this workspace.
+ * No-op if no active digest exists for this Folder.
  */
-export async function markWorkspaceBundleDirty(
+export async function markProjectFolderBundleDirty(
   db: Queryable,
   spaceId: string,
-  workspaceId: string,
+  projectFolderId: string,
   reason: Record<string, unknown>,
 ): Promise<void> {
-  await acquireDigestLock(db, digestLockKey.workspace(spaceId, workspaceId));
+  await acquireDigestLock(db, digestLockKey.projectFolder(spaceId, projectFolderId));
   const now = new Date().toISOString();
   await db.query(
     `UPDATE context_digests
@@ -147,11 +147,11 @@ export async function markWorkspaceBundleDirty(
             dirty_reason_json = $2::jsonb,
             updated_at = $1
       WHERE space_id = $3
-        AND scope_type = 'workspace'
+        AND scope_type = 'project_folder'
         AND scope_id = $4
-        AND digest_type = 'workspace'
+        AND digest_type = 'project_folder'
         AND status IN ('active', 'dirty')`,
-    [now, JSON.stringify(reason), spaceId, workspaceId],
+    [now, JSON.stringify(reason), spaceId, projectFolderId],
   );
 }
 
@@ -195,7 +195,7 @@ export async function markAgentBundleDirty(
 export async function disableScopeDigests(
   db: Queryable,
   spaceId: string,
-  scopeType: "workspace" | "agent",
+  scopeType: "project_folder" | "agent",
   scopeId: string,
 ): Promise<void> {
   await db.query(
@@ -311,9 +311,9 @@ export class PgContextDigestService {
     return result.rows;
   }
 
-  async generateWorkspaceBundle(spaceId: string, workspaceId: string): Promise<MemoryDigestResult> {
-    return this.withDigestLock(digestLockKey.workspace(spaceId, workspaceId), (svc) =>
-      svc.generateScopeBundle(spaceId, "workspace", workspaceId, "workspace_id"),
+  async generateProjectFolderBundle(spaceId: string, projectFolderId: string): Promise<MemoryDigestResult> {
+    return this.withDigestLock(digestLockKey.projectFolder(spaceId, projectFolderId), (svc) =>
+      svc.generateScopeBundle(spaceId, "project_folder", projectFolderId, "project_folder_id"),
     );
   }
 
@@ -325,13 +325,13 @@ export class PgContextDigestService {
 
   private async generateScopeBundle(
     spaceId: string,
-    scopeType: "workspace" | "agent",
+    scopeType: "project_folder" | "agent",
     scopeId: string,
-    idColumn: "workspace_id" | "agent_id",
+    idColumn: "project_folder_id" | "agent_id",
   ): Promise<MemoryDigestResult> {
     // Fail closed if the scope no longer exists or has been archived. The
     // context_digests table only FKs space_id, so without this gate an explicit
-    // refresh/job could re-create an `active` digest for an archived workspace/
+    // refresh/job could re-create an `active` digest for an archived Folder/
     // agent (whose prior digest was already disabled on archive).
     await this.assertScopeActive(spaceId, scopeType, scopeId);
     const memories = await this.loadScopeMemories(spaceId, scopeType, idColumn, scopeId);
@@ -411,20 +411,20 @@ export class PgContextDigestService {
    *
    * Locks the scope row `FOR UPDATE` so it cannot be archived between this check
    * and the digest INSERT in the same transaction: a concurrent archive (which
-   * updates the workspace/agent row, then disables its digests) must wait for
+   * updates the project_folder/agent row, then disables its digests) must wait for
    * this generation to commit, or — if it commits first — this SELECT observes
    * the now-archived status and fails closed. Without the lock the two could
    * interleave and leave an archived scope with a fresh `active` digest.
    *
-   * `scopeType` is internal (set by generateWorkspaceBundle/generateAgentBundle),
+   * `scopeType` is internal (set by generateProjectFolderBundle/generateAgentBundle),
    * not request-derived, so the table name interpolation is safe.
    */
   private async assertScopeActive(
     spaceId: string,
-    scopeType: "workspace" | "agent",
+    scopeType: "project_folder" | "agent",
     scopeId: string,
   ): Promise<void> {
-    const table = scopeType === "workspace" ? "workspaces" : "agents";
+    const table = scopeType === "project_folder" ? "project_folders" : "agents";
     const result = await this.db.query(
       `SELECT 1 FROM ${table}
         WHERE space_id = $1 AND id = $2 AND status = 'active'
@@ -438,11 +438,11 @@ export class PgContextDigestService {
   }
 
   /**
-   * Load the memories that belong in a workspace/agent digest.
+   * Load the memories that belong in a project_folder/agent digest.
    *
    * The digest is a cache-SHARED bundle, so the visibility filter is a privacy
    * gate, not a scoping mechanism: only non-private memories (space_shared /
-   * space-shared workspace or agent memory, project-free memories, and
+   * space-shared project_folder or agent memory, project-free memories, and
    * non-`highly_restricted` rows are eligible. Private / per-user-gated memory
    * and project-scoped memory are never folded into the shared digest — they are
    * rendered directly per run instead. Scoping is done separately by
@@ -453,7 +453,7 @@ export class PgContextDigestService {
   private async loadScopeMemories(
     spaceId: string,
     scopeType: string,
-    idColumn: "workspace_id" | "agent_id",
+    idColumn: "project_folder_id" | "agent_id",
     scopeId: string,
   ): Promise<MemorySummaryRow[]> {
     const result = await this.db.query<MemorySummaryRow>(
@@ -538,9 +538,9 @@ export class ContextDigestRefreshService {
 
   async refresh(
     spaceId: string,
-    scopeType: "space" | "workspace" | "agent",
+    scopeType: "space" | "project_folder" | "agent",
     scopeId: string | null,
-    digestType: "policy_bundle" | "workspace" | "agent",
+    digestType: "policy_bundle" | "project_folder" | "agent",
   ): Promise<ContextDigestRefreshResult> {
     const service = new PgContextDigestService(this.db);
     if (digestType === "policy_bundle") {
@@ -552,15 +552,15 @@ export class ContextDigestRefreshService {
         ...result,
       };
     }
-    if (digestType === "workspace") {
-      if (scopeType !== "workspace" || !scopeId) {
-        throw new Error("workspace digest refresh requires workspace scope_id");
+    if (digestType === "project_folder") {
+      if (scopeType !== "project_folder" || !scopeId) {
+        throw new Error("project_folder digest refresh requires scope_id");
       }
-      const result = await service.generateWorkspaceBundle(spaceId, scopeId);
+      const result = await service.generateProjectFolderBundle(spaceId, scopeId);
       return {
         ...result,
-        digest_type: "workspace",
-        scope_type: "workspace",
+        digest_type: "project_folder",
+        scope_type: "project_folder",
       };
     }
     if (scopeType !== "agent" || !scopeId) {

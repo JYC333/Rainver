@@ -18,7 +18,6 @@ vi.mock('../api/client', () => ({
     ]),
   },
   homeApi: { summary: vi.fn() },
-  agentsApi: { ensureDefaultAssistant: vi.fn() },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
@@ -59,11 +58,11 @@ describe('HomePage (user-scoped Today Command Center)', () => {
     expect(homeApi.summary).not.toHaveBeenCalled()
   })
 
-  it('shows the Personal Assistant entry and no DirectChat wording', async () => {
+  it('does not retain the hardcoded Personal Assistant chat entry', async () => {
     renderHome()
     await waitForHomeData()
 
-    expect(screen.getByText('Personal Assistant')).toBeInTheDocument()
+    expect(screen.queryByText('Personal Assistant')).toBeNull()
     expect(screen.queryByText(/DirectChat/i)).toBeNull()
   })
 

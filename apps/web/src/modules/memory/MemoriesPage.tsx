@@ -25,9 +25,10 @@ import { Select } from '../../components/ui/select'
 import { Badge } from '../../components/ui/badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { ScopeBadge } from '../../components/ScopeBadge'
+import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 
 const TYPES:  MemoryType[]  = ['preference', 'semantic', 'episodic', 'procedural', 'project']
-const SCOPES: MemoryScope[] = ['user', 'workspace', 'capability', 'agent', 'system']
+const SCOPES: MemoryScope[] = ['user', 'project_folder', 'capability', 'agent', 'system']
 
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
 
@@ -82,7 +83,7 @@ export default function MemoriesPage() {
   const [accessLogOffset, setAccessLogOffset] = useState(0)
   const [accessLogHasMore, setAccessLogHasMore] = useState(false)
   const [accessTypeFilter, setAccessTypeFilter] = useState('')
-  const [accessLogWorkspaceId, setAccessLogWorkspaceId] = useState('')
+  const [accessLogFolderId, setAccessLogFolderId] = useState('')
   const [accessLogs, setAccessLogs] = useState<MemoryAccessLogEntry[]>([])
   const [accessLogsLoading, setAccessLogsLoading] = useState(false)
 
@@ -131,7 +132,7 @@ export default function MemoriesPage() {
 
   useEffect(() => {
     setAccessLogOffset(0)
-  }, [accessLogLimit, accessTypeFilter, accessLogWorkspaceId, projectFilter])
+  }, [accessLogLimit, accessTypeFilter, accessLogFolderId, projectFilter])
 
   const loadAccessLogs = useCallback(async () => {
     if (!activeSpaceId) {
@@ -146,7 +147,7 @@ export default function MemoriesPage() {
         limit,
         offset: accessLogOffset,
         access_type: accessTypeFilter || undefined,
-        workspace_id: accessLogWorkspaceId.trim() || undefined,
+        project_folder_id: accessLogFolderId.trim() || undefined,
         project_id: projectFilter || undefined,
       })
       setAccessLogs(page.items)
@@ -158,7 +159,7 @@ export default function MemoriesPage() {
     } finally {
       setAccessLogsLoading(false)
     }
-  }, [activeSpaceId, accessLogLimit, accessLogOffset, accessTypeFilter, accessLogWorkspaceId, projectFilter])
+  }, [activeSpaceId, accessLogLimit, accessLogOffset, accessTypeFilter, accessLogFolderId, projectFilter])
 
   useEffect(() => { void loadAccessLogs() }, [loadAccessLogs])
 
@@ -548,18 +549,24 @@ export default function MemoriesPage() {
               {projectFilter && <p className="mt-1 text-xs text-muted-foreground">Project filter active: {projectFilter}</p>}
             </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[90px_180px_minmax(180px,1fr)_auto]">
+          <div className="grid gap-2 sm:grid-cols-[90px_180px_minmax(360px,1fr)_auto]">
             <NumberField label="limit" value={accessLogLimit} onChange={setAccessLogLimit} />
             <div className="space-y-1">
               <Label className="text-xs">access_type</Label>
               <Select value={accessTypeFilter} options={ACCESS_TYPE_OPTIONS} onChange={setAccessTypeFilter} />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">workspace_id</Label>
-              <Input
-                value={accessLogWorkspaceId}
-                onChange={event => setAccessLogWorkspaceId(event.target.value)}
-                placeholder="Optional workspace scope"
+            <div className="grid grid-cols-2 gap-2">
+              <ProjectFolderSelectors
+                projectId={projectFilter}
+                folderId={accessLogFolderId}
+                onProjectChange={value => setSearchParams(params => {
+                  if (value) params.set('project_id', value)
+                  else params.delete('project_id')
+                  return params
+                })}
+                onFolderChange={setAccessLogFolderId}
+                projectLabel="Project"
+                folderLabel="Project Folder"
               />
             </div>
             <Button size="sm" variant="outline" onClick={() => void loadAccessLogs()} disabled={accessLogsLoading || !activeSpaceId} className="self-end">

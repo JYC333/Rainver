@@ -3,8 +3,8 @@ import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCode2, Loader2, MessageSquare, Ban, Power } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, credentialsApi, runtimeToolsApi } from '../../api/client'
-import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Run, Proposal, CliCredentialAvailableProfileOut, SpaceRuntimeToolPolicyOut } from '../../types/api'
+import { agentsApi, runtimeToolsApi } from '../../api/client'
+import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Run, Proposal, SpaceRuntimeToolPolicyOut } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -481,38 +481,6 @@ function ScheduleTab({ agentId, version, onSaved }: { agentId: string; version: 
 
 // ── Model (editable) ──────────────────────────────────────────────────────────
 
-function CliProfileSelector({
-  runtime,
-  profiles,
-  value,
-  onChange,
-}: {
-  runtime: string
-  profiles: CliCredentialAvailableProfileOut[]
-  value: string
-  onChange: (value: string) => void
-}) {
-  const runtimeProfiles = profiles.filter(profile => profile.runtime === runtime)
-  if (runtimeProfiles.length === 0) return null
-  return (
-    <div className="space-y-1.5">
-      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">CLI profile</label>
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-      >
-        <option value="">Active-space default</option>
-        {runtimeProfiles.map(profile => (
-          <option key={profile.id} value={profile.id}>
-            {profile.name}{profile.is_default ? ' (default)' : ''}{profile.manageable ? ' · mine' : ''}
-          </option>
-        ))}
-      </select>
-    </div>
-  )
-}
-
 function RuntimeVersionSelector({
   runtime,
   policies,
@@ -586,11 +554,7 @@ function ModelTab({
   const requireClaudeCompatible = adapterType === 'claude_code'
   const requireOpenAiCompatible = adapterType === 'codex_cli'
   const isCli = adapterType === 'claude_code' || adapterType === 'codex_cli'
-  const [cliProfiles, setCliProfiles] = useState<CliCredentialAvailableProfileOut[]>([])
   const [runtimePolicies, setRuntimePolicies] = useState<SpaceRuntimeToolPolicyOut[]>([])
-  const [credentialProfileId, setCredentialProfileId] = useState(
-    typeof runtimeConfig.credential_profile_id === 'string' ? runtimeConfig.credential_profile_id : '',
-  )
   const [runtimeToolVersion, setRuntimeToolVersion] = useState(
     typeof runtimeConfig.runtime_tool_version === 'string' ? runtimeConfig.runtime_tool_version : '',
   )
@@ -620,9 +584,6 @@ function ModelTab({
     )
     setEnabled(selectedProfile?.enabled ?? true)
     setIsDefault(selectedProfile?.is_default ?? profiles.length === 0)
-    setCredentialProfileId(
-      typeof cfg.credential_profile_id === 'string' ? cfg.credential_profile_id : '',
-    )
     setRuntimeToolVersion(
       typeof cfg.runtime_tool_version === 'string' ? cfg.runtime_tool_version : '',
     )
@@ -631,20 +592,12 @@ function ModelTab({
 
   useEffect(() => {
     if (!isCli) {
-      setCliProfiles([])
       setRuntimePolicies([])
       return
     }
-    Promise.all([
-      credentialsApi.available(adapterType).catch(() => [] as CliCredentialAvailableProfileOut[]),
-      runtimeToolsApi.spacePolicies().catch(() => [] as SpaceRuntimeToolPolicyOut[]),
-    ])
-      .then(([profiles, policies]) => {
-        setCliProfiles(profiles.filter(profile => profile.logged_in))
-        setRuntimePolicies(policies)
-      })
+    runtimeToolsApi.spacePolicies()
+      .then(setRuntimePolicies)
       .catch(() => {
-        setCliProfiles([])
         setRuntimePolicies([])
       })
   }, [adapterType, isCli])
@@ -660,8 +613,7 @@ function ModelTab({
     try {
       const selectedModel = providerSelection?.model || model.trim()
       let nextRuntimeConfig: Record<string, unknown> = { ...runtimeConfig, adapter_type: adapterType }
-      if (isCli && credentialProfileId) nextRuntimeConfig.credential_profile_id = credentialProfileId
-      else delete nextRuntimeConfig.credential_profile_id
+      delete nextRuntimeConfig.credential_profile_id
       if (isCli && runtimeToolVersion) nextRuntimeConfig.runtime_tool_version = runtimeToolVersion
       else delete nextRuntimeConfig.runtime_tool_version
       nextRuntimeConfig = mergeRetrievalToolDomains(nextRuntimeConfig, retrievalToolDomains)
@@ -672,7 +624,6 @@ function ModelTab({
         runtime_policy_json: { ...runtimePolicy, default_adapter_type: adapterType },
         model_provider_id: supportsProviderSelection ? (providerSelection?.provider_id ?? null) : null,
         model_name: supportsProviderSelection && providerSelection?.provider_id && selectedModel ? selectedModel : null,
-        credential_profile_id: isCli && credentialProfileId ? credentialProfileId : null,
         enabled,
         is_default: isDefault,
       }
@@ -691,7 +642,6 @@ function ModelTab({
     setProviderSelection(null)
     setEnabled(true)
     setIsDefault(profiles.length === 0)
-    setCredentialProfileId('')
     setRuntimeToolVersion('')
     setRetrievalToolDomains({ memory: false, project_public_summary: false, source: false })
   }
@@ -747,20 +697,12 @@ function ModelTab({
         />
       )}
       {isCli && (
-        <>
-          <CliProfileSelector
-            runtime={adapterType}
-            profiles={cliProfiles}
-            value={credentialProfileId}
-            onChange={setCredentialProfileId}
-          />
-          <RuntimeVersionSelector
-            runtime={adapterType}
-            policies={runtimePolicies}
-            value={runtimeToolVersion}
-            onChange={setRuntimeToolVersion}
-          />
-        </>
+        <RuntimeVersionSelector
+          runtime={adapterType}
+          policies={runtimePolicies}
+          value={runtimeToolVersion}
+          onChange={setRuntimeToolVersion}
+        />
       )}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Model</label>

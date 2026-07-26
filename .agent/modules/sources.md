@@ -5,7 +5,7 @@
 Implemented for built-in RSS, Atom, watched web page, arXiv, OpenAlex,
 Semantic Scholar, and credentialed Brave Web Search providers
 with HTML-first extraction), manual URL, candidate evidence,
-reader, structured reader document extraction, workspace/project routing flows,
+reader, structured reader document extraction, project_folder/project routing flows,
 Level 2 Source Recipe creation through Phase 8, and the Custom Source backend
 create flow through Phase 8.
 Source Recipe plan/create/dry-run/activate routes, proposal activation,
@@ -47,7 +47,7 @@ annotation persistence.
 Project Sources is likewise an acquisition/control-plane surface: it binds
 Sources, displays health, runs scans/backfills, and synchronizes the Project
 Corpus. Article-level triage/read review and WHY/HOW/WHAT cards live in the
-Project Research Workspace Reading List, not on the Project Sources page.
+Project Research Area Reading List, not on the Project Sources page.
 
 The normal Sources frontend should not render source item feeds, extracted
 evidence feeds, or run-history tables. It may show scan/configuration status
@@ -98,7 +98,7 @@ for jobs, rules, and troubleshooting.
 - General plugin marketplace.
 - Credential storage.
 - Project Research notebooks, paper cards, checklist items, or their proposal
-  appliers. Sources only invokes the workspace card materializer after a
+  appliers. Sources only invokes the Research Area card materializer after a
   successful project-bound deep-analysis run.
 
 ## Current Implementation
@@ -244,7 +244,7 @@ provider catalog, renders provider-owned setup fields (including the arXiv
 category picker), and creates a reusable Source with one or more independent
 Monitors. Project binding happens through the Project Sources surface and
 `project_source_bindings`; creating a monitor outside a project does not bind it
-implicitly. The Academic Research Project preset reuses the same provider and
+implicitly. The Academic Research Project Profile reuses the same provider and
 monitor models, and its Project Sources section feeds the Project Corpus and
 the core Graph `academic_citation_v1` project lens when source items, evidence,
 and object links are materialized.
@@ -335,7 +335,7 @@ remote image references. PDF URLs store the raw PDF as an
 `source_raw_snapshot` artifact (`mime_type="application/pdf"`, file-backed
 `storage_path`) and derive a `pdf_text_v1` reader document from those bytes.
 
-The Reader UI is a read-only workspace. It supports block-level reading rhythm,
+The Reader UI is a read-only surface. It supports block-level reading rhythm,
 selection toolbar annotation creation, annotation notebook/inspector, comment
 threads, and proposal-gated downstream actions from existing annotations. It is
 not an editable document surface.
@@ -348,8 +348,8 @@ updates `source_items.extracted_artifact_id`.
 Projects consume Sources through Project-owned `project_source_bindings`,
 `project_source_item_links`, project filters, evidence links, and the
 Project-owned `project_corpus_items` read model.
-`ProjectSourceBinding.project_id` is required and does not depend on
-`project_workspaces`. Project writers directly bind existing active Sources;
+`ProjectSourceBinding.project_id` is required and does not depend on any
+Project Folder association. Project writers directly bind existing active Sources;
 agent-initiated bindings remain proposal-first. Project Sources pages can create
 or save URLs into a project collection through an already-bound source, run scans,
 backfill existing source items/evidence, and inspect source health. Projects do

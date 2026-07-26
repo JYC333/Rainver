@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Queryable } from "../src/modules/routeUtils/common";
 import { ProjectResearchScreeningCoordinator } from "../src/modules/projectResearch/pipeline/screeningCoordinator";
-import { researchState } from "../src/modules/projectResearch/stateMachine";
+import { researchState } from "../src/modules/projectResearch/operationProjection";
 
 describe("ProjectResearchScreeningCoordinator", () => {
   it("returns canonical zero counts without querying corpus projections", async () => {

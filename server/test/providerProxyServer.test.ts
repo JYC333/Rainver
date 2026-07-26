@@ -30,7 +30,7 @@ async function testUsageAttribution(input: UsageObservation): Promise<UsageAttri
     access_level: "full",
     source_resource_type: input.source_resource_type ?? null,
     source_resource_id: input.source_resource_id ?? null,
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     grant_snapshots: [],
   };
@@ -318,7 +318,7 @@ describe("provider proxy server", () => {
       run_group_id: "group-1",
       agent_id: "agent-1",
       project_id: "project-1",
-      workspace_id: "workspace-1",
+      project_folder_id: "workspace-1",
       trigger_origin: "manual",
       ttl_ms: 60_000,
     });
@@ -351,7 +351,7 @@ describe("provider proxy server", () => {
         session_id: "session-1",
         agent_id: "agent-1",
         project_id: "project-1",
-        workspace_id: "workspace-1",
+        project_folder_id: "workspace-1",
         trigger_origin: "manual",
         adapter_type: "claude_code",
         provider_id: "provider-1",

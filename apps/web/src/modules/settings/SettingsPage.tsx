@@ -19,7 +19,7 @@ const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun; descriptio
 ]
 
 const SPACE_TYPES: { value: Exclude<SpaceType, 'personal'>; label: string; description: string }[] = [
-  { value: 'team',   label: 'Team',   description: 'Collaborative workspace for a team' },
+  { value: 'team',   label: 'Team',   description: 'Collaborative Space for a team' },
   { value: 'household', label: 'Family', description: 'Shared space for household members' },
 ]
 

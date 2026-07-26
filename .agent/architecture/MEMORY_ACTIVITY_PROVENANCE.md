@@ -9,7 +9,7 @@ Raw input must enter Activity before reaching Memory or Proposal.
 | Non-chat: thought, snippet, note, link, paste | `POST /api/v1/activity` | `ActivityRecord` |
 | Chat / Ask Agent / conversation | `POST /api/v1/sessions` + messages | `Session` + `Message` |
 | Run output | `ActivityRecord` with `activity_type=run_event` | `ActivityRecord` |
-| Workspace event | `ActivityRecord` with `activity_type=workspace_event` | `ActivityRecord` |
+| Project Folder event | `ActivityRecord` with `activity_type=project_folder_event` | `ActivityRecord` |
 
 Sessions must not be used as generic raw-capture storage for non-chat content.
 
@@ -36,7 +36,7 @@ Memory writes are **proposal-first**. The public memory write API returns `Propo
 
 | Field | Responsibility |
 |---|---|
-| `activity_type` / `source_kind` | Source identity: what kind of raw input. Values: `user_capture`, `chat_message`, `run_event`, `workspace_event`, `external_source`, etc. |
+| `activity_type` / `source_kind` | Source identity: what kind of raw input. Values: `user_capture`, `chat_message`, `run_event`, `project_folder_event`, `external_source`, etc. |
 | `source_url` | Source identity: origin URL for web captures. Not trusted evidence by itself. |
 | `content` | Raw input payload. Not Memory. |
 | `source_trust` | Trust state resolved from `activity_type` if not explicitly set. |
@@ -65,7 +65,7 @@ source of truth behind an accepted memory, policy, or other durable object,
 especially after a proposal is applied.
 
 `EvidenceLink` is separate: it links candidate `ExtractedEvidence` to a space,
-workspace, project, run, or other target for relevance, context selection, and
+Project Folder, project, run, or other target for relevance, context selection, and
 provenance eligibility. It does not by itself mean that evidence has been
 accepted into Memory or Knowledge.
 

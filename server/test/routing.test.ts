@@ -115,6 +115,93 @@ describe("deterministic route selector", () => {
     expect(result.fallback_chain).toEqual(["claude", "model"]);
   });
 
+  it("defaults conversational and structured generation to Managed API", () => {
+    for (const executionShape of ["conversational", "structured_generation"] as const) {
+      const result = new DeterministicRouteSelector().select({
+        required_sandbox_level: "none",
+        execution_mode: "live",
+        risk_level: "low",
+        workspace_available: false,
+        hints: mergeRouteHints([{ source: "contract", value: { execution_shape: executionShape } }]),
+      }, [
+        candidate({ runtime_profile_id: "managed", adapter_type: "model_api", is_default: false }),
+        candidate({
+          runtime_profile_id: "open",
+          adapter_type: "opencode",
+          is_default: true,
+          minimum_sandbox_level: "worktree",
+          supports_workspace: true,
+          effective_trust_level: "low",
+          conformance_status: "passed",
+        }),
+      ]);
+      expect(result.selected?.candidate.runtime_profile_id).toBe("managed");
+    }
+  });
+
+  it("defaults file and code shapes to conformant OpenCode", () => {
+    for (const executionShape of ["agentic_files", "code_execution"] as const) {
+      const result = new DeterministicRouteSelector().select({
+        required_sandbox_level: "none",
+        execution_mode: "live",
+        risk_level: "low",
+        workspace_available: true,
+        hints: mergeRouteHints([{ source: "contract", value: { execution_shape: executionShape } }]),
+      }, [
+        candidate({ runtime_profile_id: "managed", adapter_type: "model_api" }),
+        candidate({
+          runtime_profile_id: "open",
+          adapter_type: "opencode",
+          is_default: false,
+          minimum_sandbox_level: "worktree",
+          supports_workspace: true,
+          effective_trust_level: "low",
+          conformance_status: "passed",
+        }),
+      ]);
+      expect(result.selected?.candidate.runtime_profile_id).toBe("open");
+      expect(result.rejected).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          runtime_profile_id: "managed",
+          reasons: expect.arrayContaining(["execution_shape_incompatible"]),
+        }),
+      ]));
+    }
+  });
+
+  it("rejects nonconformant OpenCode and tool-free fallback for file work", () => {
+    const result = new DeterministicRouteSelector().select({
+      required_sandbox_level: "none",
+      execution_mode: "live",
+      risk_level: "low",
+      workspace_available: true,
+      required_tools: ["shell"],
+      hints: mergeRouteHints([{ source: "contract", value: { execution_shape: "agentic_files" } }]),
+    }, [
+      candidate({ runtime_profile_id: "managed", adapter_type: "model_api", tools: [] }),
+      candidate({
+        runtime_profile_id: "open",
+        adapter_type: "opencode",
+        tools: ["shell"],
+        minimum_sandbox_level: "worktree",
+        supports_workspace: true,
+        effective_trust_level: "low",
+        conformance_status: "partial",
+      }),
+    ]);
+    expect(result.selected).toBeNull();
+    expect(result.rejected).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runtime_profile_id: "managed",
+        reasons: expect.arrayContaining(["required_tool_missing", "execution_shape_incompatible"]),
+      }),
+      expect.objectContaining({
+        runtime_profile_id: "open",
+        reasons: expect.arrayContaining(["runtime_conformance_required_for_execution_shape"]),
+      }),
+    ]));
+  });
+
   it("merges task, workflow, and evolution hints with source trace", () => {
     const hints = mergeRouteHints([
       { source: "task_contract", value: { required_capabilities: ["research"], cost_budget_usd: 2 } },

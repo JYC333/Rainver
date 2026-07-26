@@ -223,7 +223,7 @@ export function ContentAccessControl({
               <Label>Scope</Label>
               <div className="flex flex-wrap gap-2">
                 <Badge variant="outline">Space</Badge>
-                {policy.workspace_id && <Badge variant="outline">Workspace {policy.workspace_id}</Badge>}
+                {policy.project_folder_id && <Badge variant="outline">Project Folder {policy.project_folder_id}</Badge>}
                 {policy.project_id && <Badge variant="outline">Project {policy.project_id}</Badge>}
               </div>
             </section>

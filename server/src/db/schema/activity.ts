@@ -5,7 +5,7 @@ import { users } from "./auth";
 import { sessions } from "./sessions";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { projects } from "./projects";
 import { tasks } from "./tasks";
 
@@ -15,7 +15,7 @@ export const activityRecords = pgTable("activity_records", {
 	sourceRunId: varchar("source_run_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	userId: varchar("user_id", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	agentId: varchar("agent_id", { length: 36 }),
 	sourceTaskId: varchar("source_task_id", { length: 36 }),
 	sourceUrl: text("source_url"),
@@ -53,7 +53,7 @@ export const activityRecords = pgTable("activity_records", {
 	index("ix_activity_records_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_activity_records_subject_user_id").using("btree", table.subjectUserId.asc().nullsLast()),
 	index("ix_activity_records_user_id").using("btree", table.userId.asc().nullsLast()),
-	index("ix_activity_records_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_activity_records_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	uniqueIndex("uq_activity_records_space_aggregate_key").using("btree", table.spaceId.asc().nullsLast(), table.aggregateKey.asc().nullsLast()).where(sql`(aggregate_key IS NOT NULL)`),
 	foreignKey({
 			columns: [table.agentId],
@@ -86,9 +86,9 @@ export const activityRecords = pgTable("activity_records", {
 			name: "activity_records_user_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "activity_records_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "activity_records_project_folder_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.projectId],
@@ -110,7 +110,7 @@ export const activityRecords = pgTable("activity_records", {
 			foreignColumns: [users.id],
 			name: "fk_activity_records_subject_user_id_users"
 		}).onDelete("set null"),
-	check("ck_activity_records_source_kind", sql`(source_kind IS NULL) OR ((source_kind)::text = ANY (ARRAY[('user_capture'::character varying)::text, ('chat_message'::character varying)::text, ('external_chat'::character varying)::text, ('file_import'::character varying)::text, ('web_capture'::character varying)::text, ('run_event'::character varying)::text, ('workspace_event'::character varying)::text, ('system_event'::character varying)::text, ('external_source'::character varying)::text, ('source'::character varying)::text]))`),
+	check("ck_activity_records_source_kind", sql`(source_kind IS NULL) OR ((source_kind)::text = ANY (ARRAY[('user_capture'::character varying)::text, ('chat_message'::character varying)::text, ('external_chat'::character varying)::text, ('file_import'::character varying)::text, ('web_capture'::character varying)::text, ('run_event'::character varying)::text, ('project_folder_event'::character varying)::text, ('system_event'::character varying)::text, ('external_source'::character varying)::text, ('source'::character varying)::text]))`),
 	check("ck_activity_records_source_trust", sql`(source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))`),
 	check("ck_activity_records_status", sql`(status)::text = ANY (ARRAY[('raw'::character varying)::text, ('processed'::character varying)::text, ('proposals_generated'::character varying)::text, ('failed'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_activity_records_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),

@@ -15,6 +15,7 @@ interface ToolChatBody {
   messages: ToolChatMessage[];
   system?: string | null;
   tools?: CanonicalToolDefinition[] | null;
+  cache_strategy?: "conversation";
 }
 
 function providerToolName(name: string): string {
@@ -171,6 +172,20 @@ export function anthropicMessages(body: ToolChatBody): Array<Record<string, unkn
   }
 
   flushToolResults();
+  if (body.cache_strategy === "conversation" && messages.length >= 2) {
+    const cacheIndex = messages.length - 2;
+    const message = messages[cacheIndex];
+    if (message && typeof message.content === "string" && message.content) {
+      messages[cacheIndex] = {
+        ...message,
+        content: [{
+          type: "text",
+          text: message.content,
+          cache_control: { type: "ephemeral" },
+        }],
+      };
+    }
+  }
   return messages;
 }
 

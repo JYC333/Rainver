@@ -1,9 +1,9 @@
-import { pgTable, index, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents";
 import { users } from "./auth";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { projects } from "./projects";
 import { runs } from "./runs";
 import { evolvableAssetVersions } from "./evolvableAssets";
@@ -13,7 +13,7 @@ export const automations = pgTable("automations", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	projectId: varchar("project_id", { length: 36 }),
 	name: varchar({ length: 256 }).notNull(),
 	description: text(),
@@ -29,7 +29,7 @@ export const automations = pgTable("automations", {
 	index("ix_automations_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_automations_space_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
 	index("ix_automations_status").using("btree", table.status.asc().nullsLast()),
-	index("ix_automations_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_automations_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	unique("uq_automations_id_space_id").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.agentId],
@@ -57,9 +57,9 @@ export const automations = pgTable("automations", {
 			name: "automations_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "automations_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "automations_project_folder_id_fkey"
 		}),
 	check("ck_automations_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('paused'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_automations_trigger_type", sql`(trigger_type)::text = ANY (ARRAY[('manual'::character varying)::text, ('schedule'::character varying)::text])`),
@@ -116,6 +116,12 @@ export const workflowExecutions = pgTable("workflow_executions", {
 	resolutionTraceJson: jsonb("resolution_trace_json").default({}).notNull(),
 	contractSnapshotJson: jsonb("contract_snapshot_json").default({}).notNull(),
 	budgetSnapshotJson: jsonb("budget_snapshot_json").default({}).notNull(),
+	// Loose (non-FK) cross-domain identifier, not a `project_operations`
+	// ownership link: a caller-supplied Project Research operation id, used
+	// only to enforce "at most one active pass per operation" below. No FK
+	// to avoid a schema import cycle with projectOperations.ts (ADR 0011's
+	// loose cross-domain identifier pattern, e.g. retrieval_edges).
+	researchOperationId: varchar("research_operation_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }),
 	endedAt: timestamp("ended_at", { withTimezone: true, mode: 'string' }),
@@ -126,6 +132,11 @@ export const workflowExecutions = pgTable("workflow_executions", {
 	index("ix_workflow_executions_root_run").using("btree", table.spaceId.asc().nullsLast(), table.rootRunId.asc().nullsLast()),
 	unique("uq_workflow_executions_id_space_id").on(table.id, table.spaceId),
 	unique("uq_workflow_executions_id_automation_id").on(table.id, table.automationId),
+	// At most one active (queued/running) pass per Project Research operation
+	// — the DB-level half of "single active Execution per Operation"; the
+	// app also locks the operation row before starting a new pass.
+	uniqueIndex("uq_workflow_executions_active_research_operation").using("btree", table.researchOperationId.asc().nullsLast())
+		.where(sql`research_operation_id IS NOT NULL AND status IN ('queued', 'running')`),
 	foreignKey({ columns: [table.automationId, table.spaceId], foreignColumns: [automations.id, automations.spaceId], name: "workflow_executions_automation_space_fkey" }),
 	foreignKey({ columns: [table.rootRunId], foreignColumns: [runs.id], name: "workflow_executions_root_run_delete_fkey" }).onDelete("set null"),
 	foreignKey({ columns: [table.rootRunId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "workflow_executions_root_run_space_fkey" }),

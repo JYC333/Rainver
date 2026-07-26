@@ -26,19 +26,19 @@
     "input": {
       "allowed_sources": [
         "memory",
-        "workspace"
+        "project_folder"
       ],
       "max_tokens": 4000,
       "max_items": 20,
       "context_policy_applied": true,
       "items": [
         {
-          "item_type": "workspace",
+          "item_type": "project_folder",
           "item_id": "ws-1",
           "title": "WS",
           "excerpt": "desc",
           "score": 0.9,
-          "reason": "current_workspace",
+          "reason": "current_project_folder",
           "token_count": 5,
           "metadata": {}
         },
@@ -57,12 +57,12 @@
     "expected": {
       "items": [
         {
-          "item_type": "workspace",
+          "item_type": "project_folder",
           "item_id": "ws-1",
           "title": "WS",
           "excerpt": "desc",
           "score": 0.9,
-          "reason": "current_workspace",
+          "reason": "current_project_folder",
           "token_count": 5,
           "metadata": {}
         },
@@ -82,7 +82,7 @@
       "retrieval_trace": {
         "allowed_sources": [
           "memory",
-          "workspace"
+          "project_folder"
         ],
         "context_policy_applied": true,
         "item_count": 2,
@@ -417,7 +417,7 @@
         "memory",
         "project",
         "source",
-        "workspace"
+        "project_folder"
       ],
       "max_tokens": 12,
       "max_items": 20,
@@ -434,7 +434,7 @@
           "metadata": {}
         },
         {
-          "item_type": "workspace",
+          "item_type": "project_folder",
           "item_id": "ws-1",
           "title": null,
           "excerpt": "y",
@@ -478,7 +478,7 @@
           "metadata": {}
         },
         {
-          "item_type": "workspace",
+          "item_type": "project_folder",
           "item_id": "ws-1",
           "title": null,
           "excerpt": "y",
@@ -507,7 +507,7 @@
           "memory",
           "project",
           "source",
-          "workspace"
+          "project_folder"
         ],
         "context_policy_applied": true,
         "item_count": 3,

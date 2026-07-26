@@ -9,6 +9,7 @@ export const retrievalObjectType = pgEnum("retrieval_object_type", [
   "project_public_summary",
   "source_item",
   "extracted_evidence",
+  "inquiry_thread",
 ]);
 
 // tsvector full-text search column (retrieval_chunks.tsv). Not a pgvector

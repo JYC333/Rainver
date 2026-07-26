@@ -5,6 +5,7 @@ import { projects } from "./projects";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { artifacts } from "./artifacts";
+import { workflowExecutions } from "./automations";
 
 export const projectOperations = pgTable("project_operations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -19,6 +20,16 @@ export const projectOperations = pgTable("project_operations", {
 	planArtifactId: varchar("plan_artifact_id", { length: 36 }),
 	progressJson: jsonb("progress_json").default({}).notNull(),
 	version: integer().default(1).notNull(),
+	// The operation's current (or most recent) pass. A retry/resume/rescan
+	// creates a new WorkflowExecution and repoints this rather than reopening
+	// the old one — WorkflowExecution's engine is a strict per-pass DAG, not
+	// a cyclic state machine, so a "pass" is never revisited.
+	currentExecutionId: varchar("current_execution_id", { length: 36 }),
+	// Incremented each time a new WorkflowExecution pass is started for this
+	// operation. Purely observational bookkeeping — correctness against
+	// stale/late writes comes from `currentExecutionId` guards and
+	// `workflow_execution_node_runs` scoping, not from this counter.
+	generation: integer().default(0).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (t): PgTableExtraConfigValue[] => [
@@ -33,11 +44,13 @@ export const projectOperations = pgTable("project_operations", {
 	foreignKey({ columns: [t.createdByUserId], foreignColumns: [users.id], name: "project_operations_user_fkey" }),
 	foreignKey({ columns: [t.initiatingRunId, t.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "project_operations_run_fkey" }),
 	foreignKey({ columns: [t.planArtifactId, t.spaceId], foreignColumns: [artifacts.id, artifacts.spaceId], name: "project_operations_artifact_fkey" }),
+	foreignKey({ columns: [t.currentExecutionId, t.spaceId], foreignColumns: [workflowExecutions.id, workflowExecutions.spaceId], name: "project_operations_current_execution_fkey" }),
 	unique("uq_project_operations_space_id_id").on(t.id, t.spaceId),
 	unique("uq_project_operations_id_project_space").on(t.id, t.projectId, t.spaceId),
 	check("ck_project_operations_kind", sql`kind IN ('source_setup','source_backfill','research','custom')`),
 	check("ck_project_operations_status", sql`status IN ('draft','active','waiting_review','completed','failed','cancelled')`),
 	check("ck_project_operations_version", sql`version >= 1`),
+	check("ck_project_operations_generation", sql`generation >= 0`),
 ]);
 
 export const projectOperationSteps = pgTable("project_operation_steps", {

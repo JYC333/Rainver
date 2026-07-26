@@ -58,7 +58,7 @@ current Space, then every visible-object query adds an active
 corpus. `lens_id=academic_citation_v1` narrows the same projection to the
 academic citation/authorship relation set over source/person/organization
 objects. This is the generic Project graph lens used by presets such as
-`academic_research`; it does not create preset-specific graph storage.
+`academic_research`; it does not create Profile-specific graph storage.
 
 `debug` graph mode is frontend-only and is rejected by the backend.
 
@@ -146,7 +146,7 @@ direct graph interaction writes.
 
 Domain surfaces consume Graph View by requesting a `GraphProjection` from the
 core graph API or by linking into the built-in `/graph` page with the relevant
-query parameters. Project presets use this path for focused graph lenses such as
+query parameters. Project Profiles use this path for focused graph lenses such as
 `/graph?project_id=...&lens_id=academic_citation_v1`.
 
 Domain modules may choose node/edge kinds and theme hints through the projection

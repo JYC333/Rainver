@@ -57,9 +57,39 @@ Consequences of this reframing:
 - The runtime adapter standard stays vendor-neutral; vendor CLI support is
   RuntimeAdapterSpec data, not Agent/provider foundation code.
 
+## Channel selection
+
+Execution shape and **funding/capacity source** are equal selectors, consistent with the
+dual funding/access paths in ADR 0010. A rule based on execution shape alone would make a
+user's paid CLI subscription unreachable for conversation, forcing separate API spend for a
+model they already pay for.
+
+- Tool-using / filesystem / agentic work uses a CLI runtime adapter.
+- No-tools text generation may use either channel. The in-process API channel is the
+  default; a local CLI runtime is selected when the user is spending subscription
+  capacity rather than API budget.
+- Conversation is therefore a supported CLI runtime surface, not an API-only surface.
+
+Anthropic is permitted on both channels, and the isolation invariant applies equally to both:
+a provider API key must never enter a CLI subprocess environment. When a CLI runs against a
+configured ModelProvider it receives only a local provider-proxy URL and a short-lived lease
+token; the upstream key is resolved inside the server proxy boundary.
+
+CLI credentials remain user-owned. A conversation backed by CLI subscription capacity
+resolves the credential profile of the signed-in speaker, never a space-shared profile,
+so one member's capacity is not spent on another member's instruction.
+The selected `(runtime_profile_id, credential_profile_id)` is stored on the
+user × session conversation binding and frozen into each Run's conversation
+backend override. `AgentRuntimeProfile` contains transport/model policy only
+and has no credential-profile field.
+
 ## Consequences
 
-The distinction is now by **execution shape**, not vendor: tool-using / filesystem /
-agentic work uses a CLI runtime adapter; no-tools text generation for any provider uses
-the in-process API channel (`model_api`). Anthropic is permitted on both,
-subject to the isolation invariant.
+- Channel choice is a routing decision over execution shape, funding source, credential
+  availability, trust level, and sandbox requirement — not a fixed vendor or shape rule.
+- The in-process API channel remains the system's LLM primitive layer (embedding, rerank,
+  query rewrite, synthesis, session condensing, intent planning, summary generation). That
+  layer is not replaceable by a CLI runtime and also supplies CLI provider mode through the
+  provider proxy.
+- `model_api` is that layer's projection into the run domain, not a competitor to the CLI
+  runtimes.

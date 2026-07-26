@@ -29,7 +29,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "live",
     prompt: "Say hello",
     instruction: null,
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "model_api",

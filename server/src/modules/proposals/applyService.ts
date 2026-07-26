@@ -18,9 +18,9 @@ import {
 import {
   PgProposalRepository,
 } from "./repository";
-import { PgSnapshotStore } from "../workspaces/snapshotStore";
-import { PgWorkspaceRepository, workspaceAbsoluteRoot } from "../workspaces/repository";
-import { validatePath } from "../workspaces/pathPolicy";
+import { PgSnapshotStore } from "../projectFolders/snapshotStore";
+import { PgProjectFolderRepository, projectFolderAbsoluteRoot } from "../projectFolders/repository";
+import { validatePath } from "../projectFolders/pathPolicy";
 import type {
   ProposalAcceptOut,
   ProposalApprovalOut,
@@ -63,7 +63,7 @@ interface ApplyProposalRow {
   risk_level: string | null;
   preview: boolean;
   payload_json: Record<string, unknown> | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   visibility: string | null;
   created_by_user_id: string | null;
   created_by_agent_id: string | null;
@@ -173,7 +173,7 @@ export class PgProposalApplyService {
           proposal_type: proposal.proposal_type,
           title: proposal.title,
           payload_json: proposal.payload_json,
-          workspace_id: proposal.workspace_id,
+          project_folder_id: proposal.project_folder_id,
           visibility: proposal.visibility,
           created_by_user_id: proposal.created_by_user_id,
           created_by_run_id: proposal.created_by_run_id,
@@ -233,6 +233,7 @@ export class PgProposalApplyService {
         spaceId: proposal.space_id,
         agentId: proposal.created_by_agent_id,
         actionId: action.actionId,
+        runId: proposal.created_by_run_id,
         projectId: action.projectId ?? proposal.project_id,
         resourceKind: action.resourceKind,
         resourceId: action.resourceId,
@@ -243,7 +244,7 @@ export class PgProposalApplyService {
       await this.enforceApplyPolicy(client, proposal, grantingUserId);
       const result = await this.registry.apply({ config: this.config, db: client, proposal: {
         id: proposal.id, space_id: proposal.space_id, proposal_type: proposal.proposal_type,
-        title: proposal.title, payload_json: proposal.payload_json, workspace_id: proposal.workspace_id,
+        title: proposal.title, payload_json: proposal.payload_json, project_folder_id: proposal.project_folder_id,
         visibility: proposal.visibility, created_by_user_id: proposal.created_by_user_id,
         created_by_run_id: proposal.created_by_run_id, project_id: proposal.project_id,
       }, userId: grantingUserId });
@@ -424,7 +425,7 @@ export class PgProposalApplyService {
 
       const proposal = await client.query<ApplyProposalRow>(
       `SELECT id, space_id, proposal_type, status, risk_level, preview,
-                payload_json, workspace_id, created_by_user_id, created_by_run_id,
+                payload_json, project_folder_id, created_by_user_id, created_by_run_id,
                 visibility, project_id, title
            FROM proposals
           WHERE id = $1 AND space_id = $2 AND proposal_type = 'code_patch' AND status = 'accepted'
@@ -439,9 +440,9 @@ export class PgProposalApplyService {
         await client.query("ROLLBACK");
         return null;
       }
-      if (!p.workspace_id) {
+      if (!p.project_folder_id) {
         await client.query("ROLLBACK");
-        throw new ProposalApplyHttpError(422, "code_patch proposal has no workspace_id");
+        throw new ProposalApplyHttpError(422, "code_patch proposal has no project_folder_id");
       }
 
       const snapshot = await new PgSnapshotStore(client).getByProposal(proposalId, identity.spaceId);
@@ -450,13 +451,13 @@ export class PgProposalApplyService {
         throw new ProposalApplyHttpError(404, "No available snapshot found for this proposal — it may have expired or already been used");
       }
 
-      const workspace = await new PgWorkspaceRepository(client, this.config)
-        .getWorkspace(identity.spaceId, p.workspace_id, true);
-      if (!workspace) {
+      const folder = await new PgProjectFolderRepository(client, this.config)
+        .getFolder(identity.spaceId, p.project_folder_id, true);
+      if (!folder) {
         await client.query("ROLLBACK");
-        throw new ProposalApplyHttpError(404, "Workspace not found");
+        throw new ProposalApplyHttpError(404, "Project Folder not found");
       }
-      const root = workspaceAbsoluteRoot(workspace, this.config.workspaceRoot);
+      const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
 
       // Restore files to pre-apply state
       const restoredPaths: string[] = [];
@@ -465,7 +466,7 @@ export class PgProposalApplyService {
           path: resolve(root, file.path),
           allowedRoot: root,
           mode: "write",
-          workspaceType: workspace.workspace_type,
+          protectedFolder: folder.protected,
           forTrustedCodePatchApply: true,
         });
         if (file.existed && file.content !== null) {
@@ -484,19 +485,19 @@ export class PgProposalApplyService {
       const now = new Date().toISOString();
       await client.query(
         `INSERT INTO activity_records (
-           id, space_id, source_run_id, user_id, workspace_id, activity_type,
+           id, space_id, source_run_id, user_id, project_folder_id, activity_type,
            title, content, payload_json, occurred_at, created_at, status, updated_at,
            source_kind, source_trust, visibility, owner_user_id
          ) VALUES (
            $1, $2, NULL, $3, $4, 'proposal.code_patch.rolled_back',
            $5, $6, $7::jsonb, $8, $8, 'processed', $8,
-           'workspace_event', 'internal_system', 'space_shared', $3
+           'project_folder_event', 'internal_system', 'space_shared', $3
          )`,
         [
           randomUUID(),
           identity.spaceId,
           identity.userId,
-          p.workspace_id,
+          p.project_folder_id,
           p.title ?? "Code patch rolled back",
           `Rolled back code patch proposal ${proposalId}.`,
           JSON.stringify({ proposal_id: proposalId, restored_paths: restoredPaths, file_count: restoredPaths.length }),
@@ -543,11 +544,15 @@ export class PgProposalApplyService {
     proposalId: string,
   ): Promise<ApplyProposalRow | null> {
     const result = await client.query<ApplyProposalRow>(
-      `SELECT id, space_id, proposal_type, status, risk_level, preview,
-              payload_json, workspace_id, created_by_user_id, created_by_agent_id, created_by_run_id,
-              visibility, project_id, title, required_approver_role
-         FROM proposals
-        WHERE id = $1
+      `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
+              proposal.status, proposal.risk_level, proposal.preview,
+              proposal.payload_json, proposal.project_folder_id,
+              proposal.created_by_user_id, proposal.created_by_agent_id,
+              proposal.created_by_run_id, proposal.visibility,
+              proposal.project_id, proposal.title,
+              proposal.required_approver_role
+         FROM proposals proposal
+        WHERE proposal.id = $1
         FOR UPDATE`,
       [proposalId],
     );

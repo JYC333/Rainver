@@ -21,6 +21,7 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
+import { ProjectSelector } from '../../components/ProjectFolderSelectors'
 
 function jsonText(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2)
@@ -129,6 +130,7 @@ function CaseDialog({
   const [description, setDescription] = useState('')
   const [baselineVersionId, setBaselineVersionId] = useState('')
   const [sourceRunId, setSourceRunId] = useState('')
+  const [sourceRuns, setSourceRuns] = useState<Run[]>([])
   const [inputJson, setInputJson] = useState('{}')
   const [expectationJson, setExpectationJson] = useState('{}')
   const [recipeJson, setRecipeJson] = useState('{\n  "checks": [{ "type": "output_schema", "schema": { "type": "object" } }]\n}')
@@ -148,6 +150,16 @@ function CaseDialog({
     setBaselineOutputJson('{}')
   }, [approvedVersions, open])
 
+  useEffect(() => {
+    if (!open || !fromRun) return
+    runsApi.list({ status: 'succeeded', limit: 100 })
+      .then(setSourceRuns)
+      .catch(error => {
+        setSourceRuns([])
+        toast.error(errMsg(error))
+      })
+  }, [fromRun, open])
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     setBusy(true)
@@ -162,7 +174,7 @@ function CaseDialog({
         verification_recipe_json: parseObject(recipeJson, 'Verification recipe'),
       }
       if (fromRun) {
-        if (!sourceRunId.trim()) throw new Error('Source run ID is required.')
+        if (!sourceRunId.trim()) throw new Error('Select a passed source Run.')
         await evolutionApi.createEvaluationCaseFromRun(asset.id, { ...common, source_run_id: sourceRunId.trim() })
       } else {
         await evolutionApi.createEvaluationCase(asset.id, { ...common, baseline_output_json: parseAny(baselineOutputJson, 'Baseline output') })
@@ -185,7 +197,7 @@ function CaseDialog({
           <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1.5"><Label>Name</Label><Input value={name} onChange={event => setName(event.target.value)} /></div><div className="space-y-1.5"><Label>Approved baseline version</Label><Select value={baselineVersionId} onChange={setBaselineVersionId} options={[{ value: '', label: 'Select baseline…' }, ...approvedVersions.map(version => ({ value: version.id, label: `v${version.version}` }))]} /></div></div>
           <div className="space-y-1.5"><Label>Description</Label><Textarea value={description} onChange={event => setDescription(event.target.value)} /></div>
           <div className="flex items-center gap-2"><input id="case-from-run" type="checkbox" checked={fromRun} onChange={event => setFromRun(event.target.checked)} /><Label htmlFor="case-from-run">Use a passed source Run as baseline</Label></div>
-          {fromRun ? <div className="space-y-1.5"><Label>Source run ID</Label><Input value={sourceRunId} onChange={event => setSourceRunId(event.target.value)} placeholder="The server verifies visibility and passed evaluation" /></div> : <div className="space-y-1.5"><Label>Baseline output JSON</Label><Textarea className="min-h-28 font-mono text-xs" value={baselineOutputJson} onChange={event => setBaselineOutputJson(event.target.value)} /></div>}
+          {fromRun ? <div className="space-y-1.5"><Label>Passed source Run</Label><Select value={sourceRunId} onChange={setSourceRunId} options={[{ value: '', label: 'Select a succeeded Run…' }, ...sourceRuns.map(run => ({ value: run.id, label: run.instruction ?? run.prompt ?? `Succeeded ${run.run_type} Run` }))]} /></div> : <div className="space-y-1.5"><Label>Baseline output JSON</Label><Textarea className="min-h-28 font-mono text-xs" value={baselineOutputJson} onChange={event => setBaselineOutputJson(event.target.value)} /></div>}
           <div className="grid gap-3 lg:grid-cols-3"><div className="space-y-1.5"><Label>Input JSON</Label><Textarea className="min-h-32 font-mono text-xs" value={inputJson} onChange={event => setInputJson(event.target.value)} /></div><div className="space-y-1.5"><Label>Expectation JSON</Label><Textarea className="min-h-32 font-mono text-xs" value={expectationJson} onChange={event => setExpectationJson(event.target.value)} /></div><div className="space-y-1.5"><Label>Verification recipe JSON</Label><Textarea className="min-h-32 font-mono text-xs" value={recipeJson} onChange={event => setRecipeJson(event.target.value)} /></div></div>
           <DialogFooter><Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button><Button type="submit" disabled={busy}>{busy && <Loader2 className="size-3.5 animate-spin" />} Create case</Button></DialogFooter>
         </form>
@@ -311,7 +323,7 @@ function PromotionDialog({
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!versionId) { toast.error('Choose a candidate or testing version'); return }
-    if (scopeType !== 'system' && !scopeId.trim()) { toast.error('Target scope ID is required'); return }
+    if (scopeType !== 'system' && !scopeId.trim()) { toast.error(`Choose a target ${scopeType}.`); return }
     setBusy(true)
     try {
       const result = await evolutionApi.createAssetPromotionProposal(asset.id, versionId, {
@@ -339,7 +351,7 @@ function PromotionDialog({
         <DialogHeader><DialogTitle>Create promotion proposal</DialogTitle><DialogDescription>Promotion remains proposal-gated. Approval is performed in Evolution Inbox.</DialogDescription></DialogHeader>
         <form className="space-y-4" onSubmit={submit}>
           <div className="space-y-1.5"><Label>Candidate version</Label><Select value={versionId} onChange={value => { setVersionId(value); setSelectedEvaluationIds([]) }} options={[{ value: '', label: 'Select version…' }, ...promotableVersions.map(version => ({ value: version.id, label: `v${version.version} · ${version.status}` }))]} /></div>
-          <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1.5"><Label>Target scope</Label><Select value={scopeType} onChange={value => { const next = value as 'project' | 'space' | 'system'; setScopeType(next); if (next === 'space') setScopeId(activeSpaceId ?? ''); if (next === 'system') setScopeId('') }} options={[{ value: 'space', label: 'Space' }, { value: 'project', label: 'Project' }, { value: 'system', label: 'System' }]} /></div><div className="space-y-1.5"><Label>Target scope ID</Label><Input value={scopeId} onChange={event => setScopeId(event.target.value)} disabled={scopeType === 'system'} placeholder={scopeType === 'system' ? 'Not used' : 'Scope ID'} /></div></div>
+          <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1.5"><Label>Target scope</Label><Select value={scopeType} onChange={value => { const next = value as 'project' | 'space' | 'system'; setScopeType(next); if (next === 'space') setScopeId(activeSpaceId ?? ''); if (next === 'system' || next === 'project') setScopeId('') }} options={[{ value: 'space', label: 'Current Space' }, { value: 'project', label: 'Project' }, { value: 'system', label: 'System' }]} /></div>{scopeType === 'project' ? <ProjectSelector value={scopeId} onChange={setScopeId} label="Target Project" optional={false} /> : <div className="space-y-1.5"><Label>Target</Label><Input value={scopeType === 'space' ? 'Current Space' : 'System'} disabled /></div>}</div>
           <div className="space-y-2"><Label>Evaluation evidence</Label>{versionEvaluations.length === 0 ? <p className="text-xs text-muted-foreground">No evaluation runs recorded for this version.</p> : versionEvaluations.map(run => <label key={run.id} className="flex items-start gap-2 rounded border border-border p-2 text-sm"><input type="checkbox" checked={selectedEvaluationIds.includes(run.id)} onChange={event => setSelectedEvaluationIds(current => event.target.checked ? [...current, run.id] : current.filter(id => id !== run.id))} /><span><StatusBadge status={run.status} /><span className="ml-2 font-mono text-xs">{run.id.slice(0, 12)}</span><span className="mt-1 block text-xs text-muted-foreground">{JSON.stringify(run.metrics)}</span></span></label>)}</div>
           <div className="flex flex-wrap gap-4 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={pin} onChange={event => setPin(event.target.checked)} /> Pin after approval</label><label className="flex items-center gap-2"><input type="checkbox" checked={deprecate} onChange={event => setDeprecate(event.target.checked)} /> Deprecate previous</label></div>
           <div className="space-y-1.5"><Label>Reason</Label><Textarea value={reason} onChange={event => setReason(event.target.value)} /></div>

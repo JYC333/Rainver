@@ -86,7 +86,7 @@ async function insertMemory(over: Record<string, unknown>): Promise<void> {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    "TRUNCATE retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects, extracted_evidence, source_snapshots, source_items, provenance_links, content_access_grants, memory_entries, project_workspaces, projects, project_members, workspaces, space_memberships, spaces, memory_access_logs",
+    "TRUNCATE retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects, extracted_evidence, source_snapshots, source_items, provenance_links, content_access_grants, memory_entries, project_folders, projects, project_members, space_memberships, spaces, memory_access_logs",
   );
   await pool.query("INSERT INTO spaces (id, type) VALUES ($1, 'household')", [SPACE]);
   for (const userId of [USER, "other"]) {

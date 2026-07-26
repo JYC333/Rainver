@@ -3,12 +3,12 @@ import { sql } from "drizzle-orm";
 import { agents } from "./agents";
 import { users } from "./auth";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 
 export const runtimeToolBindings = pgTable("runtime_tool_bindings", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	agentId: varchar("agent_id", { length: 36 }),
 	capabilityId: varchar("capability_id", { length: 128 }),
 	runtimeAdapterType: varchar("runtime_adapter_type", { length: 64 }).notNull(),
@@ -31,7 +31,7 @@ export const runtimeToolBindings = pgTable("runtime_tool_bindings", {
 	index("ix_runtime_tool_bindings_enabled").using("btree", table.enabled.asc().nullsLast()),
 	index("ix_runtime_tool_bindings_runtime_adapter_type").using("btree", table.runtimeAdapterType.asc().nullsLast()),
 	index("ix_runtime_tool_bindings_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_runtime_tool_bindings_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_runtime_tool_bindings_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.agentId],
 			foreignColumns: [agents.id],
@@ -43,9 +43,9 @@ export const runtimeToolBindings = pgTable("runtime_tool_bindings", {
 			name: "runtime_tool_bindings_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "runtime_tool_bindings_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "runtime_tool_bindings_project_folder_id_fkey"
 		}),
 	check("ck_runtime_tool_bindings_data_exposure_level", sql`(data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text])`),
 	check("ck_runtime_tool_bindings_external_type", sql`(external_type)::text = ANY (ARRAY[('codex_plugin'::character varying)::text, ('claude_skill'::character varying)::text, ('claude_hook'::character varying)::text, ('mcp_server'::character varying)::text, ('app_integration'::character varying)::text, ('cli_tool'::character varying)::text])`),

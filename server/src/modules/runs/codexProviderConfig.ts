@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readlink, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export class CodexProviderConfigError extends Error {
@@ -25,7 +25,7 @@ export async function writeCodexProviderConfig(input: {
       "Codex provider configuration requires a run-scoped HOME.",
     );
   }
-  const codexDir = await materializeCodexProfileDir(input.tempHome);
+  const codexDir = await materializeRunCodexHome(input.tempHome);
   const catalogDir = join(codexDir, "model-catalogs");
   const catalogPath = join(catalogDir, "agent-space-provider.json");
   await mkdir(catalogDir, { recursive: true, mode: 0o700 });
@@ -48,7 +48,7 @@ export async function writeCodexProviderConfig(input: {
   return codexDir;
 }
 
-async function materializeCodexProfileDir(tempHome: string): Promise<string> {
+export async function materializeRunCodexHome(tempHome: string): Promise<string> {
   const codexDir = join(tempHome, ".codex");
   let sourcePath: string | null = null;
   try {
@@ -66,15 +66,14 @@ async function materializeCodexProfileDir(tempHome: string): Promise<string> {
     if ((error as { code?: string }).code !== "ENOENT") throw error;
     await mkdir(codexDir, { recursive: true, mode: 0o700 });
   }
-  if (sourcePath) await linkCodexProfileContents(sourcePath, codexDir);
+  if (sourcePath) await copyCodexCredential(sourcePath, codexDir);
   return codexDir;
 }
 
-async function linkCodexProfileContents(sourcePath: string, codexDir: string): Promise<void> {
-  for (const entry of await readdir(sourcePath, { withFileTypes: true })) {
-    if (entry.name === "config.toml" || entry.name === "model-catalogs") continue;
-    await symlink(join(sourcePath, entry.name), join(codexDir, entry.name));
-  }
+async function copyCodexCredential(sourcePath: string, codexDir: string): Promise<void> {
+  const target = join(codexDir, "auth.json");
+  await copyFile(join(sourcePath, "auth.json"), target);
+  await chmod(target, 0o600);
 }
 
 function renderCodexProviderToml(input: {

@@ -8,7 +8,7 @@ function fakeDb() {
     queries.push({ text, values });
     if (text.includes("INSERT INTO jobs")) {
       return {
-        rows: [{ id: "job-1", job_type: "project_research_reconcile", status: "pending" } as Row],
+        rows: [{ id: "job-1", job_type: "project_research_execution_nudge", status: "pending" } as Row],
         rowCount: 1,
       };
     }

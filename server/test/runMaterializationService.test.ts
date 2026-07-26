@@ -24,7 +24,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "live",
     prompt: "Say hello",
     instruction: null,
-    workspace_id: "workspace-1",
+    project_folder_id: "workspace-1",
     session_id: null,
     project_id: "project-1",
     adapter_type: "model_api",
@@ -77,7 +77,7 @@ class FakeDb implements Queryable {
           summary: params[9],
           payload_json: JSON.parse(String(params[10] ?? "{}")),
           created_at: params[11],
-          workspace_id: params[12],
+          project_folder_id: params[12],
           rationale: params[13],
           created_by_user_id: params[14],
           visibility: params[15],
@@ -86,14 +86,95 @@ class FakeDb implements Queryable {
         rowCount: 1,
       };
     }
+    if (sql.includes("INSERT INTO content_access_grants")) {
+      return { rows: [], rowCount: 1 };
+    }
     if (sql.includes("UPDATE proposals SET status='superseded'")) {
       return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("AND status = 'staged'")) {
+      return { rows: [], rowCount: 1 };
     }
     throw new Error(`Unexpected SQL: ${sql}`);
   }
 }
 
 describe("RunMaterializationService", () => {
+  it("stages proposals and reconciles delegation only from terminal output", async () => {
+    const db = new FakeDb();
+    const delegationCalls: unknown[] = [];
+    const service = new RunMaterializationService(
+      loadConfig({
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      }),
+      db,
+      {
+        async finalize() {
+          return {
+            id: "finalization-1",
+            run_evaluation_id: null,
+            task_evaluation_id: null,
+            finalizer_version: "test.v1",
+          };
+        },
+      } as never,
+      async () => ({ status: "allow" }),
+      {
+        async materialize(input) {
+          delegationCalls.push(input);
+          return {
+            items: [{ kind: "delegation", status: "succeeded" }],
+            errors: [],
+          };
+        },
+      },
+    );
+    const adapterResult = {
+      adapter_type: "model_api",
+      adapter_kind: "managed_api" as const,
+      success: true,
+      output_text: "done",
+      output_json: {
+        proposed_changes: [{
+          proposal_type: "memory_create",
+          payload_json: { content: "candidate" },
+        }],
+        delegations: [{ target_agent_id: "agent-2", instruction: "Review" }],
+      },
+      exit_code: 0,
+      error_code: null,
+      error_message: null,
+      started_at: "2026-06-12T10:00:00.000Z",
+      completed_at: "2026-06-12T10:00:01.000Z",
+      usage: null,
+    };
+
+    await service.materializeAdapterResult({
+      run: run(),
+      adapterResult,
+    }, {
+      proposal_status: "staged",
+    });
+
+    expect(db.proposals[0]?.[4]).toBe("staged");
+    expect(delegationCalls).toEqual([]);
+
+    const finalized = await service.finalizeRun({
+      ...run(),
+      status: "succeeded",
+      output_json: {
+        schema_version: "run_output.v1",
+        status: "succeeded",
+        summary: "done",
+        result: adapterResult.output_json,
+        output_manifest: [],
+      },
+    });
+
+    expect(delegationCalls).toHaveLength(1);
+    expect(finalized).toMatchObject({ kind: "activity", status: "succeeded" });
+  });
+
   it("serializes structured artifact content objects for the text-backed artifact store", async () => {
     const db = new FakeDb();
     const config = loadConfig({
@@ -102,7 +183,16 @@ describe("RunMaterializationService", () => {
     const service = new RunMaterializationService(
       config,
       db,
-      undefined,
+      {
+        async finalize() {
+          return {
+            id: "finalization-1",
+            run_evaluation_id: null,
+            task_evaluation_id: null,
+            finalizer_version: "test.v1",
+          };
+        },
+      } as never,
       async () => ({ status: "allow" }),
     );
 
@@ -174,33 +264,41 @@ describe("RunMaterializationService", () => {
       },
     );
 
+    const adapterResult = {
+      adapter_type: "model_api",
+      adapter_kind: "managed_api" as const,
+      success: true,
+      output_text: "",
+      output_json: {
+        delegations: [
+          {
+            target_agent_id: "agent-reader",
+            instruction: "Summarize the packet.",
+          },
+        ],
+      },
+      exit_code: 0,
+    };
     const result = await service.materializeAdapterResult({
       run: run({ run_group_id: "group-1", root_run_id: "run-root" }),
-      adapterResult: {
-        adapter_type: "model_api",
-        adapter_kind: "managed_api",
-        success: true,
-        output_text: "",
-        output_json: {
-          delegations: [
-            {
-              target_agent_id: "agent-reader",
-              instruction: "Summarize the packet.",
-            },
-          ],
-        },
-        exit_code: 0,
-      },
+      adapterResult,
     });
 
-    expect(seen).toHaveLength(1);
+    expect(seen).toHaveLength(0);
     expect(result.errors).toEqual([]);
-    expect(result.items).toEqual([
-      expect.objectContaining({
-        kind: "delegation",
-        metadata_json: expect.objectContaining({ delegation_id: "delegation-1" }),
-      }),
-    ]);
+    expect(result.items).toEqual([]);
+    await service.finalizeRun({
+      ...run({ run_group_id: "group-1", root_run_id: "run-root" }),
+      status: "succeeded",
+      output_json: {
+        schema_version: "run_output.v1",
+        status: "succeeded",
+        summary: "",
+        result: adapterResult.output_json,
+        output_manifest: [],
+      },
+    });
+    expect(seen).toHaveLength(1);
   });
 
   it("materializes artifacts and supported proposals natively", async () => {
@@ -243,7 +341,7 @@ describe("RunMaterializationService", () => {
           proposed_changes: [
             {
               proposal_type: "code_patch",
-              workspace_id: "workspace-1",
+              project_folder_id: "workspace-1",
               patch: {
                 operations: [
                   {
@@ -317,6 +415,123 @@ describe("RunMaterializationService", () => {
       'proposal:output_proposal_materialization_error:unsupported proposal_type "deployment_job"',
       "activity:output_activity_materialization_error:Activity materialization is intentionally deferred in the server backend.",
     ]);
+  });
+
+  it("materializes Room conversation capture packets as pending proposals", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-room-artifacts-"));
+    const exchangeRoot = await mkdtemp(join(tmpdir(), "aspace-room-exchange-"));
+    tempRoots.push(artifactRoot, exchangeRoot);
+    await writeFile(
+      join(exchangeRoot, "conversation_capture.json"),
+      JSON.stringify({
+        proposed_changes: [{
+          proposal_type: "memory_create",
+          title: "Remember the Room decision",
+          content: "The Room selected the read-only delivery path.",
+        }],
+      }),
+      "utf8",
+    );
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+        ARTIFACT_STORAGE_ROOT: artifactRoot,
+      }),
+      db,
+      undefined,
+      async () => ({ status: "allow" }),
+    );
+
+    const result = await service.materializeAdapterResult({
+      run: run({
+        session_id: "room-session-1",
+        visibility: "selected_users",
+        contract_snapshot_json: {
+          required_outputs_json: [{ name: "conversation_capture" }],
+        },
+      }),
+      exchange_output_cwd: exchangeRoot,
+      adapterResult: {
+        adapter_type: "claude_code",
+        adapter_kind: "local_cli",
+        success: true,
+        output_text: "Captured the decision for review.",
+        output_json: {},
+        exchange_artifact_paths: [{
+          output_name: "conversation_capture",
+          path: "conversation_capture.json",
+          declared: true,
+        }],
+        exit_code: 0,
+      },
+    });
+
+    expect(result.items).toMatchObject([
+      { kind: "artifact", status: "succeeded" },
+      { kind: "proposal", status: "succeeded" },
+    ]);
+    expect(db.proposals).toHaveLength(1);
+    expect(db.proposals[0][3]).toBe("memory_create");
+    expect(db.proposals[0][4]).toBe("pending");
+    expect(db.proposals[0][14]).toBe("user-1");
+    expect(db.artifacts[0][12]).toBe("selected_users");
+    expect(db.proposals[0][15]).toBe("selected_users");
+    expect(
+      db.calls
+        .filter(({ sql }) => sql.includes("INSERT INTO content_access_grants"))
+        .map(({ params }) => params.slice(1, 5)),
+    ).toEqual([
+      ["run", "run-1", "artifact", expect.any(String)],
+      ["run", "run-1", "proposal", expect.any(String)],
+    ]);
+  });
+
+  it("does not interpret undeclared exchange files as conversation captures", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-room-artifacts-"));
+    const exchangeRoot = await mkdtemp(join(tmpdir(), "aspace-room-exchange-"));
+    tempRoots.push(artifactRoot, exchangeRoot);
+    await writeFile(
+      join(exchangeRoot, "conversation_capture.json"),
+      JSON.stringify({ proposed_changes: [{ proposal_type: "memory_create", content: "No." }] }),
+      "utf8",
+    );
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+        ARTIFACT_STORAGE_ROOT: artifactRoot,
+      }),
+      db,
+      undefined,
+      async () => ({ status: "allow" }),
+    );
+
+    const result = await service.materializeAdapterResult({
+      run: run({
+        contract_snapshot_json: {
+          required_outputs_json: [{ name: "conversation_capture" }],
+        },
+      }),
+      exchange_output_cwd: exchangeRoot,
+      adapterResult: {
+        adapter_type: "claude_code",
+        adapter_kind: "local_cli",
+        success: true,
+        output_text: "",
+        output_json: {},
+        exchange_artifact_paths: [{
+          output_name: "conversation_capture",
+          path: "conversation_capture.json",
+          declared: false,
+        }],
+        exit_code: 0,
+      },
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ kind: "artifact", status: "succeeded" });
+    expect(db.proposals).toHaveLength(0);
   });
 
   it("keeps plain output_text as run display output instead of creating an artifact", async () => {

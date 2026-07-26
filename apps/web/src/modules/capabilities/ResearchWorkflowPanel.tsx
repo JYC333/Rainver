@@ -22,17 +22,16 @@ import { Textarea } from '../../components/ui/textarea'
 import { ContextArtifactPicker } from '../artifacts/ContextArtifactPicker'
 import { promptLibraryPath } from '../prompts/paths'
 
-interface WorkspaceOption {
+interface ProjectFolderOption {
   id: string
   name: string
-  role?: string
   root_path?: string | null
 }
 
 interface ResearchWorkflowPanelProps {
   projectId: string
   projectName?: string
-  workspaceOptions?: WorkspaceOption[]
+  folderOptions?: ProjectFolderOption[]
   onRunCreated?: (run: Run) => void | Promise<void>
 }
 
@@ -82,7 +81,7 @@ function warningLabel(warning: string): string {
 export function ResearchWorkflowPanel({
   projectId,
   projectName,
-  workspaceOptions = [],
+  folderOptions = [],
   onRunCreated,
 }: ResearchWorkflowPanelProps) {
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
@@ -96,7 +95,7 @@ export function ResearchWorkflowPanel({
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [runtimeProfiles, setRuntimeProfiles] = useState<AgentRuntimeProfileOut[]>([])
   const [selectedRuntimeProfileId, setSelectedRuntimeProfileId] = useState('')
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
+  const [selectedFolderId, setSelectedFolderId] = useState('')
   const [selectedOutputs, setSelectedOutputs] = useState<string[]>([])
   const [selectedContextArtifactIds, setSelectedContextArtifactIds] = useState<string[]>([])
   const [draft, setDraft] = useState<WorkflowRunDraftResponse | null>(null)
@@ -210,7 +209,7 @@ export function ResearchWorkflowPanel({
 
   useEffect(() => {
     setDraft(null)
-  }, [query, sourceMode, selectedWorkspaceId, selectedOutputs, selectedProfileId, selectedTemplateId])
+  }, [query, sourceMode, selectedFolderId, selectedOutputs, selectedProfileId, selectedTemplateId])
 
   async function savePreset(mode: 'create' | 'update') {
     const template = effectiveTemplate
@@ -266,7 +265,7 @@ export function ResearchWorkflowPanel({
       const draftRequest = {
         agent_id: selectedAgentId || null,
         runtime_profile_id: selectedRuntimeProfileId || null,
-        workspace_id: selectedWorkspaceId || null,
+        project_folder_id: selectedFolderId || null,
         config_json: configJson,
       }
       const result = selectedProfile
@@ -347,9 +346,9 @@ export function ResearchWorkflowPanel({
     value: profile.id,
     label: `${profile.name}${profile.is_default ? ' · default' : ''}`,
   }))
-  const workspaceSelectOptions = workspaceOptions.map(workspace => ({
-    value: workspace.id,
-    label: `${workspace.name}${workspace.role ? ` · ${workspace.role}` : ''}`,
+  const folderSelectOptions = folderOptions.map(folder => ({
+    value: folder.id,
+    label: folder.name,
   }))
   const runtimeAdapterLabel = selectedRuntimeProfile?.adapter_type ?? selectedAgent?.adapter_type ?? 'agent default'
   const runtimeProviderLabel =
@@ -457,11 +456,11 @@ export function ResearchWorkflowPanel({
               </div>
             )}
             <div className="space-y-1.5">
-              <Label className="text-xs">Workspace</Label>
+              <Label className="text-xs">Project Folder</Label>
               <Select
-                value={selectedWorkspaceId}
-                options={[{ value: '', label: 'Project default' }, ...workspaceSelectOptions]}
-                onChange={setSelectedWorkspaceId}
+                value={selectedFolderId}
+                options={[{ value: '', label: 'Project default' }, ...folderSelectOptions]}
+                onChange={setSelectedFolderId}
               />
             </div>
           </div>
@@ -486,7 +485,7 @@ export function ResearchWorkflowPanel({
             description="Selected artifacts will be attached to this research run when launched."
             selectedArtifactIds={selectedContextArtifactIds}
             onChange={setSelectedContextArtifactIds}
-            workspaceId={selectedWorkspaceId}
+            projectFolderId={selectedFolderId}
             projectId={projectId}
           />
 

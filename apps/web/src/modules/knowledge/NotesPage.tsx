@@ -297,7 +297,7 @@ export default function NotesPage() {
     return linkIds.size
   }, [])
 
-  const removeNoteIdsFromWorkspace = useCallback((removedIds: Set<string>) => {
+  const removeNoteIdsFromView = useCallback((removedIds: Set<string>) => {
     setNotes(prev => prev.filter(n => !removedIds.has(n.id)))
     setAllNotes(prev => prev.filter(n => !removedIds.has(n.id)))
     setResolvedTitles(prev => {
@@ -332,7 +332,7 @@ export default function NotesPage() {
     try {
       await Promise.all(uniqueNotes.map(note => notesApi.delete(note.id)))
       const deletedIds = new Set(uniqueNotes.map(note => note.id))
-      removeNoteIdsFromWorkspace(deletedIds)
+      removeNoteIdsFromView(deletedIds)
 
       toast.success(uniqueNotes.length === 1 ? 'Note deleted' : `${uniqueNotes.length} notes deleted`, {
         action: {
@@ -345,7 +345,7 @@ export default function NotesPage() {
       toast.error(errMsg(e))
       return false
     }
-  }, [removeNoteIdsFromWorkspace, restoreDeletedNotes])
+  }, [removeNoteIdsFromView, restoreDeletedNotes])
 
   const archiveNotes = useCallback(async (targetNotes: Array<Pick<NoteSummary, 'id' | 'title'>>) => {
     const uniqueNotes = resolveDeleteTargets(targetNotes)
@@ -353,13 +353,13 @@ export default function NotesPage() {
 
     try {
       await Promise.all(uniqueNotes.map(note => notesApi.update(note.id, { status: 'archived' })))
-      removeNoteIdsFromWorkspace(new Set(uniqueNotes.map(note => note.id)))
+      removeNoteIdsFromView(new Set(uniqueNotes.map(note => note.id)))
       toast.success(uniqueNotes.length === 1 ? 'Note archived' : `${uniqueNotes.length} notes archived`)
       await Promise.all([loadAllNotes(), loadNotes()])
     } catch (e) {
       toast.error(errMsg(e))
     }
-  }, [loadAllNotes, loadNotes, removeNoteIdsFromWorkspace, resolveDeleteTargets])
+  }, [loadAllNotes, loadNotes, removeNoteIdsFromView, resolveDeleteTargets])
 
   const deleteNotes = useCallback(async (targetNotes: Array<Pick<NoteSummary, 'id' | 'title'>>) => {
     const uniqueNotes = resolveDeleteTargets(targetNotes)

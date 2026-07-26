@@ -58,14 +58,14 @@ import {
 export class PgTaskRepository {
   constructor(private readonly pool: Pool) {}
 
-  async listBoards(identity: SpaceUserIdentity, filters: { workspaceId: string | null; projectId: string | null; status: string | null; limit: number; offset: number }) {
+  async listBoards(identity: SpaceUserIdentity, filters: { projectFolderId: string | null; projectId: string | null; status: string | null; limit: number; offset: number }) {
     const params: unknown[] = [identity.spaceId];
     const clauses = ["space_id = $1"];
     const add = (value: unknown) => {
       params.push(value);
       return `$${params.length}`;
     };
-    if (filters.workspaceId) clauses.push(`workspace_id = ${add(filters.workspaceId)}`);
+    if (filters.projectFolderId) clauses.push(`project_folder_id = ${add(filters.projectFolderId)}`);
     if (filters.projectId) clauses.push(`project_id = ${add(filters.projectId)}`);
     if (filters.status) clauses.push(`status = ${add(filters.status)}`);
     else clauses.push("deleted_at IS NULL");
@@ -86,18 +86,18 @@ export class PgTaskRepository {
       const boardId = randomUUID();
       await client.query(
         `INSERT INTO boards (
-           id, space_id, workspace_id, project_id, name, description, board_type, status,
+           id, space_id, project_folder_id, project_id, name, description, board_type, status,
            default_view, sort_order, metadata_json, created_by_user_id,
            created_at, updated_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::int, $11::jsonb, $12, $13, $13)`,
         [
           boardId,
           identity.spaceId,
-          optionalString(body.workspace_id),
+          optionalString(body.project_folder_id),
           optionalString(body.project_id),
           requiredString(body.name, "name"),
           optionalString(body.description),
-          optionalString(body.board_type) ?? "workspace",
+          optionalString(body.board_type) ?? "project_folder",
           optionalString(body.status) ?? "active",
           optionalString(body.default_view),
           numberValue(body.sort_order),
@@ -142,7 +142,7 @@ export class PgTaskRepository {
       `UPDATE boards SET
          name = COALESCE($3, name),
          description = CASE WHEN $4::boolean THEN $5 ELSE description END,
-         workspace_id = CASE WHEN $6::boolean THEN $7 ELSE workspace_id END,
+         project_folder_id = CASE WHEN $6::boolean THEN $7 ELSE project_folder_id END,
          project_id = CASE WHEN $8::boolean THEN $9 ELSE project_id END,
          board_type = COALESCE($10, board_type),
          status = COALESCE($11, status),
@@ -158,8 +158,8 @@ export class PgTaskRepository {
         optionalString(body.name),
         Object.hasOwn(body, "description"),
         optionalString(body.description),
-        Object.hasOwn(body, "workspace_id"),
-        optionalString(body.workspace_id),
+        Object.hasOwn(body, "project_folder_id"),
+        optionalString(body.project_folder_id),
         Object.hasOwn(body, "project_id"),
         optionalString(body.project_id),
         optionalString(body.board_type),
@@ -180,12 +180,12 @@ export class PgTaskRepository {
 
   async listBoardTasks(identity: SpaceUserIdentity, boardId: string, limit: number, offset: number) {
     if (!(await this.getBoard(identity, boardId))) throw new HttpError(404, "Board not found");
-    return this.listTasks(identity, { boardId, workspaceId: null, projectId: null, status: null, assignedToMe: false, q: null, limit, offset });
+    return this.listTasks(identity, { boardId, projectFolderId: null, projectId: null, status: null, assignedToMe: false, q: null, limit, offset });
   }
 
   async listTasks(identity: SpaceUserIdentity, filters: {
     boardId: string | null;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     projectId: string | null;
     status: string | null;
     assignedToMe: boolean;
@@ -234,7 +234,7 @@ export class PgTaskRepository {
     return page(rows.rows.map(taskOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
-  async createTask(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+  async createTask(identity: SpaceUserIdentity, body: Record<string, unknown>, db: Queryable = this.pool) {
     const now = new Date().toISOString();
     const visibility = optionalString(body.visibility) ?? "private";
     if (!isContentVisibility(visibility)) throw new HttpError(422, "Invalid visibility");
@@ -244,15 +244,15 @@ export class PgTaskRepository {
     if (taskRole === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
     if (taskRole === "subtask") {
       if (!parentTaskId) throw new HttpError(422, "Subtasks require a parent task");
-      const parent = await this.pool.query<{ id: string }>(
+      const parent = await db.query<{ id: string }>(
         `SELECT id FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
         [parentTaskId, identity.spaceId],
       );
       if (!parent.rows[0]) throw new HttpError(404, "Parent task not found");
     }
-    const result = await this.pool.query<TaskRow>(
+    const result = await db.query<TaskRow>(
       `INSERT INTO tasks (
-         id, space_id, workspace_id, project_id, board_id, column_id, parent_task_id,
+         id, space_id, project_folder_id, project_id, board_id, column_id, parent_task_id,
          task_role, title, description, task_type, status, priority, risk_level, visibility,
          owner_user_id, created_by_user_id, assigned_user_id, assigned_agent_id,
          source_activity_id, source_run_id, source_proposal_id, source_artifact_id,
@@ -271,7 +271,7 @@ export class PgTaskRepository {
       [
         randomUUID(),
         identity.spaceId,
-        optionalString(body.workspace_id),
+        optionalString(body.project_folder_id),
         optionalString(body.project_id),
         optionalString(body.board_id),
         optionalString(body.column_id),
@@ -333,7 +333,7 @@ export class PgTaskRepository {
       `UPDATE tasks SET
          title = COALESCE($3, title),
          description = CASE WHEN $4::boolean THEN $5 ELSE description END,
-         workspace_id = CASE WHEN $6::boolean THEN $7 ELSE workspace_id END,
+         project_folder_id = CASE WHEN $6::boolean THEN $7 ELSE project_folder_id END,
          project_id = CASE WHEN $8::boolean THEN $9 ELSE project_id END,
          board_id = CASE WHEN $10::boolean THEN $11 ELSE board_id END,
          column_id = CASE WHEN $12::boolean THEN $13 ELSE column_id END,
@@ -371,8 +371,8 @@ export class PgTaskRepository {
         optionalString(body.title),
         Object.hasOwn(body, "description"),
         optionalString(body.description),
-        Object.hasOwn(body, "workspace_id"),
-        optionalString(body.workspace_id),
+        Object.hasOwn(body, "project_folder_id"),
+        optionalString(body.project_folder_id),
         Object.hasOwn(body, "project_id"),
         optionalString(body.project_id),
         Object.hasOwn(body, "board_id"),
@@ -464,8 +464,8 @@ export class PgTaskRepository {
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
       const contextArtifactIds = contextArtifactIdsFromBody(body.context_artifact_ids);
-      const workspaceId = optionalString(body.workspace_id) ?? task.workspace_id;
-      await validateContextArtifactAttachments(client, identity, contextArtifactIds, workspaceId, null);
+      const projectFolderId = optionalString(body.project_folder_id) ?? task.project_folder_id;
+      await validateContextArtifactAttachments(client, identity, contextArtifactIds, projectFolderId, null);
       const run = await new PgRunRepository(client).createQueuedRun({
         agent_id: agentId,
         space_id: identity.spaceId,
@@ -474,7 +474,7 @@ export class PgTaskRepository {
         run_type: optionalString(body.run_type) ?? "agent",
         trigger_origin: optionalString(body.trigger_origin) ?? "manual",
         session_id: optionalString(body.session_id),
-        workspace_id: workspaceId,
+        project_folder_id: projectFolderId,
         project_id: task.project_id,
         prompt: optionalString(body.prompt),
         instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
@@ -484,7 +484,7 @@ export class PgTaskRepository {
         contract_snapshot: {
           source: { kind: "task", id: task.id },
           project_id: task.project_id,
-          workspace_id: workspaceId,
+          project_folder_id: projectFolderId,
           acceptance_criteria_json: task.acceptance_criteria_json,
           definition_of_done: task.definition_of_done,
           required_outputs_json: task.required_outputs_json,
@@ -561,7 +561,7 @@ export class PgTaskRepository {
         mode: "live",
         run_type: "planning",
         trigger_origin: "manual",
-        workspace_id: task.workspace_id,
+        project_folder_id: task.project_folder_id,
         project_id: task.project_id,
         prompt: optionalString(body.prompt) ?? `Plan Task: ${task.title}`,
         instruction: optionalString(body.instruction) ?? planningInstruction(task, referenceWorkflowVersionId),
@@ -570,7 +570,7 @@ export class PgTaskRepository {
         contract_snapshot: {
           source: { kind: "task", id: task.id },
           project_id: task.project_id,
-          workspace_id: task.workspace_id,
+          project_folder_id: task.project_folder_id,
           acceptance_criteria_json: task.acceptance_criteria_json,
           definition_of_done: task.definition_of_done,
           required_outputs_json: task.required_outputs_json,
@@ -593,7 +593,7 @@ export class PgTaskRepository {
         space_id: identity.spaceId,
         user_id: identity.userId,
         agent_id: agentId,
-        workspace_id: task.workspace_id,
+        project_folder_id: task.project_folder_id,
         payload: { run_id: run.id, task_id: task.id, planning: true },
       });
       return runToOut(run);
@@ -614,7 +614,7 @@ export class PgTaskRepository {
       `SELECT tr.id AS task_run_id, tr.space_id AS task_run_space_id, tr.task_id AS task_run_task_id,
               tr.run_id AS task_run_run_id, tr.role AS task_run_role, tr.created_at AS task_run_created_at,
               r.id, r.space_id, r.agent_id, r.agent_version_id, r.context_snapshot_id, r.run_type,
-              r.status, r.mode, r.prompt, r.instruction, r.workspace_id, r.session_id,
+              r.status, r.mode, r.prompt, r.instruction, r.project_folder_id, r.session_id,
               r.parent_run_id, r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.model_provider_id, r.model_override_json, r.required_sandbox_level,
               r.contract_snapshot_json, r.workflow_version_id, r.trigger_origin,
@@ -824,14 +824,14 @@ async function validateContextArtifactAttachments(
   db: Queryable,
   identity: SpaceUserIdentity,
   artifactIds: readonly string[],
-  workspaceId: string | null,
+  projectFolderId: string | null,
   projectId: string | null,
 ): Promise<void> {
   if (artifactIds.length === 0) return;
   const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
     spaceId: identity.spaceId,
     userId: identity.userId,
-    workspaceId,
+    projectFolderId,
     projectId,
     artifactIds,
   });
@@ -851,7 +851,7 @@ async function getVisibleTaskRow(db: Queryable, identity: SpaceUserIdentity, tas
   return result.rows[0] ?? null;
 }
 
-function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string | null; workspaceId: string | null; projectId: string | null; status: string | null; assignedToMe: boolean; q: string | null }) {
+function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string | null; projectFolderId: string | null; projectId: string | null; status: string | null; assignedToMe: boolean; q: string | null }) {
   const params: unknown[] = [identity.spaceId, identity.userId];
   const clauses = [
     "t.space_id = $1",
@@ -863,7 +863,7 @@ function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string 
     return `$${params.length}`;
   };
   if (filters.boardId) clauses.push(`t.board_id = ${add(filters.boardId)}`);
-  if (filters.workspaceId) clauses.push(`t.workspace_id = ${add(filters.workspaceId)}`);
+  if (filters.projectFolderId) clauses.push(`t.project_folder_id = ${add(filters.projectFolderId)}`);
   if (filters.projectId) clauses.push(`t.project_id = ${add(filters.projectId)}`);
   if (filters.status) clauses.push(`t.status = ${add(filters.status)}`);
   if (filters.assignedToMe) clauses.push("(t.assigned_user_id = $2 OR t.claimed_by_user_id = $2)");

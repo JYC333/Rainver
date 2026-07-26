@@ -20,7 +20,6 @@ import {
   safeNextUrl,
   sameState,
 } from "./oauth";
-import { registerSystemCoreWorkspace } from "../workspaces/systemCore";
 
 function isFailure(value: unknown): value is AuthFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -32,15 +31,6 @@ function query(request: { query: unknown }): Record<string, unknown> {
 
 function body(request: { body: unknown }): Record<string, unknown> {
   return (request.body ?? {}) as Record<string, unknown>;
-}
-
-function shouldRegisterSystemCoreForLogin(
-  config: ModuleContext["config"],
-  email: string,
-): boolean {
-  if (!config.enableSystemEvolution) return false;
-  const ownerEmail = config.systemCoreOwnerEmail ?? config.instanceAdminEmail;
-  return ownerEmail !== null && ownerEmail === email.trim().toLowerCase();
 }
 
 function cookieHeader(name: string, value: string, config: ModuleContext["config"], maxAge: number): string {
@@ -169,12 +159,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       displayName,
       avatarUrl: userInfo.picture ?? null,
     });
-    if (shouldRegisterSystemCoreForLogin(context.config, email)) {
-      await registerSystemCoreWorkspace(context.config, {
-        info: (msg) => app.log.info(msg),
-        warn: (msg) => app.log.warn(msg),
-      });
-    }
     const rawSession = await repository.createSession(user.id, context.config.sessionExpireDays);
     const pendingNext = safeNextUrl(
       cookieValue(request.headers.cookie, POST_LOGIN_NEXT_COOKIE),

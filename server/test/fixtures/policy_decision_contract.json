@@ -416,7 +416,7 @@
   },
   {
     "request": {
-      "action": "workspace.write_patch",
+      "action": "project_folder.write_patch",
       "proposal_id": "p1",
       "context": {
         "proposal_type": "code_patch",
@@ -426,20 +426,20 @@
     "decision": {
       "decision": "allow",
       "risk_level": "high",
-      "reason_code": "workspace_write_patch_via_proposal",
+      "reason_code": "project_folder_write_patch_via_proposal",
       "required_approver_role": null,
-      "policy_rule_id": "workspace_write_patch_via_proposal",
+      "policy_rule_id": "project_folder_write_patch_via_proposal",
       "policy_source": "builtin",
       "approval_capability": null,
-      "audit_code": "workspace_write_via_proposal",
-      "resource_type": "workspace",
-      "message": "workspace.write_patch via accepted code_patch proposal",
+      "audit_code": "project_folder_write_via_proposal",
+      "resource_type": "project_folder",
+      "message": "project_folder.write_patch via accepted code_patch proposal",
       "action": null
     }
   },
   {
     "request": {
-      "action": "workspace.write_patch"
+      "action": "project_folder.write_patch"
     },
     "decision": {
       "decision": "require_approval",
@@ -450,9 +450,9 @@
       "policy_source": "registry",
       "approval_capability": "approve_code_patch",
       "audit_code": null,
-      "resource_type": "workspace",
-      "message": "No rule matched; registry default for 'workspace.write_patch' is require_approval",
-      "action": "workspace.write_patch"
+      "resource_type": "project_folder",
+      "message": "No rule matched; registry default for 'project_folder.write_patch' is require_approval",
+      "action": "project_folder.write_patch"
     }
   },
   {

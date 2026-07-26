@@ -153,7 +153,7 @@ const artifactAdapter: PublicationAdapter = {
          storage_ref, storage_path, mime_type, exportable, export_formats_json,
          canonical_format, preview, relevant_period_start, relevant_period_end,
          created_at, updated_at, metadata_json, visibility, access_level,
-         owner_user_id, trust_level, project_id, workspace_id
+         owner_user_id, trust_level, project_id, project_folder_id
        ) VALUES (
          $1, $2, NULL, NULL, $3, $4, $5,
          NULL, NULL, $6, $7, $8::jsonb,
@@ -202,7 +202,7 @@ const taskAdapter: PublicationAdapter = {
     const p = parsed.payload;
     await db.query(
       `INSERT INTO tasks (
-         id, space_id, workspace_id, project_id, board_id, column_id, parent_task_id,
+         id, space_id, project_folder_id, project_id, board_id, column_id, parent_task_id,
          title, description, task_type, status, priority, risk_level,
          created_by_user_id, assigned_user_id, assigned_agent_id,
          claimed_by_user_id, claimed_by_agent_id, source_activity_id, source_run_id,
@@ -268,7 +268,7 @@ const memoryAdapter: PublicationAdapter = {
       `INSERT INTO memory_entries (
          id, space_id, scope_type, memory_type, content, status, created_at, updated_at,
          valid_from, valid_to, subject_user_id, owner_user_id, sensitivity_level,
-         last_confirmed_at, workspace_id, agent_id, namespace, title, visibility,
+         last_confirmed_at, project_folder_id, agent_id, namespace, title, visibility,
          access_level, confidence, importance, source_id, created_by, approved_by,
          deleted_at, version, access_count, last_accessed_at, tags, memory_layer,
          event_time, event_type, last_retrieved_at, root_memory_id,
@@ -328,7 +328,7 @@ const knowledgeAdapter: PublicationAdapter = {
       `WITH object_insert AS (
          INSERT INTO space_objects (
            id, space_id, object_type, title, summary, status, visibility, access_level,
-           owner_user_id, primary_project_id, workspace_id, created_by_user_id,
+           owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
            created_by_agent_id, created_by_run_id, created_at, updated_at,
            archived_at, deleted_at
          ) VALUES (

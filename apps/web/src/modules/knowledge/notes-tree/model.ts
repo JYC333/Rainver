@@ -88,7 +88,7 @@ export function isProtectedCollection(collection: NoteCollection) {
 }
 
 /** Project-backed folders retain protected actions but may be freely placed
- * in the tree; only fixed workspace roots remain immovable. */
+ * in the tree; only fixed collection roots remain immovable. */
 export function isDraggableCollection(collection: NoteCollection) {
   return collection.system_role === 'project'
     || (collection.system_role === 'normal' && !collection.is_system)

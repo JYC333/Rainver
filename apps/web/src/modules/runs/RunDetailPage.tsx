@@ -3,9 +3,9 @@ import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck, UserRoundCheck, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
-import { artifactsApi, evolutionApi, runsApi } from '../../api/client'
+import { artifactsApi, authorizationRequestsApi, evolutionApi, runsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { ActivityRecord, Artifact, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
+import type { ActivityRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -25,8 +25,8 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
 
-type RunDetailTab = 'activities' | 'artifacts' | 'proposals' | 'contract' | 'verification' | 'route' | 'attempts'
-type OptionalRunResource = 'activities' | 'artifacts' | 'proposals' | 'attempts' | 'evaluations' | 'verifications' | 'finalizations'
+type RunDetailTab = 'io' | 'activities' | 'artifacts' | 'proposals' | 'contract' | 'verification' | 'route' | 'attempts'
+type OptionalRunResource = 'io' | 'activities' | 'artifacts' | 'proposals' | 'authorization' | 'attempts' | 'evaluations' | 'verifications' | 'finalizations'
 
 async function loadOptionalRunResource<T>(loader: Promise<T>, fallback: T): Promise<{ value: T; error: string | null }> {
   try {
@@ -99,17 +99,20 @@ export default function RunDetailPage() {
   const [activities, setActivities] = useState<ActivityRecord[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
+  const [authorizationRequests, setAuthorizationRequests] = useState<AuthorizationRequest[]>([])
+  const [authorizationBusyId, setAuthorizationBusyId] = useState<string | null>(null)
   const [attempts, setAttempts] = useState<RunAttempt[]>([])
   const [supervisorDecisions, setSupervisorDecisions] = useState<RunSupervisorDecision[]>([])
   const [evaluations, setEvaluations] = useState<RunEvaluation[]>([])
   const [verifications, setVerifications] = useState<RunVerificationResult[]>([])
   const [finalizations, setFinalizations] = useState<RunFinalization[]>([])
+  const [logicalIO, setLogicalIO] = useState<RunLogicalIO | null>(null)
   const [subresourceErrors, setSubresourceErrors] = useState<Partial<Record<OptionalRunResource, string>>>({})
   const [routeDecision, setRouteDecision] = useState<Record<string, unknown> | null>(null)
   const [routeDecisionError, setRouteDecisionError] = useState<string | null>(null)
   const [resourceScopeKey, setResourceScopeKey] = useState<string | null>(null)
   const [tabLoading, setTabLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<RunDetailTab>('activities')
+  const [activeTab, setActiveTab] = useState<RunDetailTab>('io')
   const [workflowOpen, setWorkflowOpen] = useState(false)
   const [workflowName, setWorkflowName] = useState('')
   const [workflowDescription, setWorkflowDescription] = useState('')
@@ -156,11 +159,13 @@ export default function RunDetailPage() {
       setActivities([])
       setArtifacts([])
       setProposals([])
+      setAuthorizationRequests([])
       setAttempts([])
       setSupervisorDecisions([])
       setEvaluations([])
       setVerifications([])
       setFinalizations([])
+      setLogicalIO(null)
       setRouteDecision(null)
       setRouteDecisionError(null)
       setSubresourceErrors({})
@@ -173,20 +178,24 @@ export default function RunDetailPage() {
     setActivities([])
     setArtifacts([])
     setProposals([])
+    setAuthorizationRequests([])
     setAttempts([])
     setSupervisorDecisions([])
     setEvaluations([])
     setVerifications([])
     setFinalizations([])
+    setLogicalIO(null)
     setRouteDecision(null)
     setRouteDecisionError(null)
     setSubresourceErrors({})
     setTabLoading(true)
     try {
-      const [a, ar, pr, attemptResult, nextEvaluations, nextVerifications, nextFinalizations, nextRoute] = await Promise.all([
+      const [io, a, ar, pr, authRequests, attemptResult, nextEvaluations, nextVerifications, nextFinalizations, nextRoute] = await Promise.all([
+        loadOptionalRunResource(Promise.resolve().then(() => runsApi.logicalIO(runId)), null),
         loadOptionalRunResource(runsApi.activities(runId, { limit: '100' }), { items: [], total: 0, limit: 100, offset: 0 }),
         loadOptionalRunResource(runsApi.artifacts(runId, { limit: '100' }), { items: [], total: 0, limit: 100, offset: 0 }),
         loadOptionalRunResource(runsApi.proposals(runId, { limit: '100' }), { items: [], total: 0, limit: 100, offset: 0 }),
+        loadOptionalRunResource(runsApi.authorizationRequests(runId), []),
         loadOptionalRunResource(runsApi.attempts(runId), { attempts: [], supervisor_decisions: [] }),
         loadOptionalRunResource(runsApi.evaluations(runId), []),
         loadOptionalRunResource(runsApi.verifications(runId), []),
@@ -196,18 +205,22 @@ export default function RunDetailPage() {
           .catch(error => ({ value: null, error: errMsg(error) })),
       ])
       if (!isCurrentRequest()) return
+      setLogicalIO(io.value)
       setActivities(a.value.items)
       setArtifacts(ar.value.items)
       setProposals(pr.value.items)
+      setAuthorizationRequests(authRequests.value)
       setAttempts(attemptResult.value.attempts)
       setSupervisorDecisions(attemptResult.value.supervisor_decisions)
       setEvaluations(nextEvaluations.value)
       setVerifications(nextVerifications.value)
       setFinalizations(nextFinalizations.value)
       setSubresourceErrors({
+        io: io.error ?? undefined,
         activities: a.error ?? undefined,
         artifacts: ar.error ?? undefined,
         proposals: pr.error ?? undefined,
+        authorization: authRequests.error ?? undefined,
         attempts: attemptResult.error ?? undefined,
         evaluations: nextEvaluations.error ?? undefined,
         verifications: nextVerifications.error ?? undefined,
@@ -221,11 +234,13 @@ export default function RunDetailPage() {
       setActivities([])
       setArtifacts([])
       setProposals([])
+      setAuthorizationRequests([])
       setAttempts([])
       setSupervisorDecisions([])
       setEvaluations([])
       setVerifications([])
       setFinalizations([])
+      setLogicalIO(null)
       setRouteDecision(null)
       setRouteDecisionError(null)
       setSubresourceErrors({})
@@ -241,7 +256,7 @@ export default function RunDetailPage() {
   }, [loadSubs])
 
   useEffect(() => {
-    setActiveTab('activities')
+    setActiveTab('io')
   }, [runId])
 
   useEffect(() => {
@@ -259,7 +274,10 @@ export default function RunDetailPage() {
   // (mount-only loadSubs() would leave tabs empty after queued → succeeded without leaving the page).
   useEffect(() => {
     if (!runId || !polled?.status) return
-    if (!RUN_TERMINAL_STATUSES.has(polled.status)) return
+    if (
+      polled.status !== 'waiting_for_review'
+      && !RUN_TERMINAL_STATUSES.has(polled.status)
+    ) return
     void loadSubs()
   }, [runId, polled?.status, loadSubs])
 
@@ -316,6 +334,23 @@ export default function RunDetailPage() {
       toast.error(errMsg(e))
     } finally {
       setRecoveryBusy(false)
+    }
+  }
+
+  async function decideAuthorization(requestId: string, decision: 'approve' | 'reject') {
+    setAuthorizationBusyId(requestId)
+    try {
+      const updated = decision === 'approve'
+        ? await authorizationRequestsApi.approve(requestId)
+        : await authorizationRequestsApi.reject(requestId)
+      setAuthorizationRequests(current => current.map(item => item.id === updated.id ? updated : item))
+      toast.success(decision === 'approve' ? 'Authorization granted' : 'Authorization request rejected')
+      setReloadKey(key => key + 1)
+      await loadSubs()
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setAuthorizationBusyId(null)
     }
   }
 
@@ -422,12 +457,18 @@ export default function RunDetailPage() {
 
   const r: Run = polled
   const executionSpace = spaces.find(s => s.id === r.space_id)
+  const canReviewAuthorization = executionSpace?.role === 'owner'
   const instructedBy = r.instructed_by_user_id
-    ? `User ${r.instructed_by_user_id}`
+    ? 'User'
     : r.instructed_by_agent_id
-      ? `Agent ${r.instructed_by_agent_id}`
+      ? 'Agent'
       : '—'
   const promptRefs = promptRefsForRun(r)
+  const runAuthorizationId = stringOrNull(r.error_json?.authorization_request_id)
+  const runAuthorization = runAuthorizationId
+    ? authorizationRequests.find(request => request.id === runAuthorizationId)
+    : authorizationRequests.find(request => request.status === 'pending')
+  const hasAuthorizationPause = Boolean(runAuthorizationId || runAuthorization)
 
   return (
     <>
@@ -438,8 +479,8 @@ export default function RunDetailPage() {
 
       <div className="space-y-3 border-b border-border pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <h1 className="text-xl font-semibold tracking-tight font-mono">{r.id}</h1>
-          <div className="flex flex-wrap items-center gap-2"><ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{r.status === 'waiting_for_review' && <><Button size="sm" onClick={() => void resumeWaitingRun()} disabled={recoveryBusy}><UserRoundCheck className="size-3.5" /> Resume</Button><Button size="sm" variant="destructive" onClick={() => setAbandonOpen(true)} disabled={recoveryBusy}><XCircle className="size-3.5" /> Abandon</Button></>}{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
+          <h1 className="text-xl font-semibold tracking-tight">{r.instruction ?? r.prompt ?? `${r.run_type} Run`}</h1>
+          <div className="flex flex-wrap items-center gap-2"><ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{r.status === 'waiting_for_review' && !hasAuthorizationPause && <><Button size="sm" onClick={() => void resumeWaitingRun()} disabled={recoveryBusy}><UserRoundCheck className="size-3.5" /> Resume</Button><Button size="sm" variant="destructive" onClick={() => setAbandonOpen(true)} disabled={recoveryBusy}><XCircle className="size-3.5" /> Abandon</Button></>}{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
         </div>
         <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
         <div className="flex flex-wrap gap-1.5 items-center">
@@ -450,25 +491,31 @@ export default function RunDetailPage() {
           <ScopeBadge visibility={r.visibility} />
         </div>
         {r.mode === 'dry_run' && <DryRunBanner />}
-        <div className="grid gap-2 text-sm sm:grid-cols-2">
-          <p><span className="text-muted-foreground">agent_id</span><br /><span className="font-mono text-xs">{r.agent_id}</span></p>
-          <p><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono text-xs">{r.agent_version_id}</span></p>
-          <p><span className="text-muted-foreground">context_snapshot_id</span><br /><span className="font-mono text-xs">{r.context_snapshot_id ?? '—'}</span></p>
-          <p><span className="text-muted-foreground">timestamps</span><br />
-            <span className="text-xs">created {fmt(r.created_at)} · started {fmt(r.started_at)} · ended {fmt(r.ended_at)}</span>
-          </p>
-        </div>
+        <p className="text-xs text-muted-foreground">
+          created {fmt(r.created_at)} · started {fmt(r.started_at)} · ended {fmt(r.ended_at)}
+        </p>
         <Card className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <h2 className="text-sm font-semibold">Run Context</h2>
             <ScopeBadge visibility={r.visibility} />
           </div>
           <div className="grid gap-2 text-sm sm:grid-cols-2">
-            <p><span className="text-muted-foreground">Execution space</span><br /><span>{executionSpace?.name ?? r.space_id}</span></p>
-            <p><span className="text-muted-foreground">Workspace</span><br /><span className="font-mono text-xs">{r.workspace_id ?? '—'}</span></p>
-            <p><span className="text-muted-foreground">Instructed by</span><br /><span className="font-mono text-xs">{instructedBy}</span></p>
-            <p><span className="text-muted-foreground">Context snapshot</span><br /><span className="font-mono text-xs">{r.context_snapshot_id ?? '—'}</span></p>
+            <p><span className="text-muted-foreground">Execution space</span><br /><span>{executionSpace?.name ?? 'Unavailable space'}</span></p>
+            <p><span className="text-muted-foreground">Project context</span><br /><span>{r.project_folder_id ? 'Project Folder attached' : 'No Project Folder'}</span></p>
+            <p><span className="text-muted-foreground">Instructed by</span><br /><span>{instructedBy}</span></p>
+            <p><span className="text-muted-foreground">Context snapshot</span><br /><span>{r.context_snapshot_id ? 'Captured' : 'Not captured'}</span></p>
           </div>
+          <details className="rounded-md border border-border bg-muted/20 p-3 text-xs">
+            <summary className="cursor-pointer font-medium">Technical identifiers</summary>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <p className="break-all"><span className="text-muted-foreground">run_id</span><br /><span className="font-mono select-all">{r.id}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">agent_id</span><br /><span className="font-mono select-all">{r.agent_id}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono select-all">{r.agent_version_id}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">project_folder_id</span><br /><span className="font-mono select-all">{r.project_folder_id ?? '—'}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">context_snapshot_id</span><br /><span className="font-mono select-all">{r.context_snapshot_id ?? '—'}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">space_id</span><br /><span className="font-mono select-all">{r.space_id}</span></p>
+            </div>
+          </details>
           <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
             <div>Memory scope: Space-scoped memory.</div>
             <div>Personal context grants can be used for reasoning only.</div>
@@ -538,6 +585,51 @@ export default function RunDetailPage() {
           personalSpaceId={personalSpaceId}
           spaces={spaces}
         />
+        {authorizationRequests.length > 0 && (
+          <Card className="p-4 space-y-3">
+            <div>
+              <h2 className="text-sm font-semibold">Authorization requests</h2>
+              <p className="text-xs text-muted-foreground">Requests are bound to an audited denial from this Run. Credential and cross-space boundaries cannot appear here.</p>
+            </div>
+            {authorizationRequests.map(request => (
+              <div key={request.id} className="rounded-md border border-border p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">{request.action_id}</p>
+                    <p className="text-xs text-muted-foreground">{request.policy_action}</p>
+                  </div>
+                  <StatusBadge status={request.status} />
+                </div>
+                <p className="text-sm">{request.reason}</p>
+                <p className="text-xs text-muted-foreground">Requested {fmt(request.requested_at)}</p>
+                {request.status === 'pending' && canReviewAuthorization && (
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => void decideAuthorization(request.id, 'approve')} disabled={authorizationBusyId === request.id}>
+                      <ShieldCheck className="size-3.5" /> Approve
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => void decideAuthorization(request.id, 'reject')} disabled={authorizationBusyId === request.id}>
+                      Reject
+                    </Button>
+                  </div>
+                )}
+                {request.status === 'pending' && !canReviewAuthorization && (
+                  <p className="text-xs text-muted-foreground">A Space owner must review this request.</p>
+                )}
+              </div>
+            ))}
+          </Card>
+        )}
+        {r.status === 'waiting_for_review' && subresourceErrors.authorization && (
+          <Card className="p-4 space-y-3 border-destructive/30">
+            <div>
+              <h2 className="text-sm font-semibold">Authorization requests unavailable</h2>
+              <p className="text-sm text-muted-foreground">{subresourceErrors.authorization}</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => void loadSubs()}>
+              Retry authorization requests
+            </Button>
+          </Card>
+        )}
         {r.status === 'failed' && r.error_message && (
           <Card className="p-3 border-destructive/30 bg-destructive/5 text-sm text-destructive">
             {r.error_message}
@@ -586,6 +678,7 @@ export default function RunDetailPage() {
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as RunDetailTab)}>
         <TabsList>
+          <TabsTrigger value="io">Input / output</TabsTrigger>
           <TabsTrigger value="activities">Activities</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
           <TabsTrigger value="proposals">Proposals</TabsTrigger>
@@ -594,6 +687,29 @@ export default function RunDetailPage() {
           <TabsTrigger value="route">Route</TabsTrigger>
           <TabsTrigger value="attempts">Attempts ({resourcesReady ? attempts.length : 0})</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="io" className="mt-4 space-y-3">
+          {tabLoading || !resourcesReady ? <Skeleton className="h-24 w-full" /> : subresourceErrors.io ? (
+            <EmptyState title="Logical I/O unavailable" description={subresourceErrors.io} />
+          ) : !logicalIO ? (
+            <Card className="p-8 text-center text-sm text-muted-foreground">No logical I/O is available.</Card>
+          ) : (
+            <>
+              <Card className="p-4 space-y-2">
+                <h3 className="text-sm font-medium">Runtime-neutral input</h3>
+                <JsonBlock value={logicalIO.input} />
+              </Card>
+              <Card className="p-4 space-y-2">
+                <h3 className="text-sm font-medium">Canonical output</h3>
+                <JsonBlock value={logicalIO.output} />
+              </Card>
+              <Card className="p-4 space-y-2">
+                <h3 className="text-sm font-medium">Semantic runtime events</h3>
+                <JsonBlock value={logicalIO.events} />
+              </Card>
+            </>
+          )}
+        </TabsContent>
 
         <TabsContent value="activities" className="mt-4 space-y-3">
           {tabLoading || !resourcesReady ? <Skeleton className="h-24 w-full" /> : subresourceErrors.activities ? <EmptyState title="Activities unavailable" description={subresourceErrors.activities} /> : activities.length === 0 ? (

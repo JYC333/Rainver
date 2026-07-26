@@ -47,13 +47,13 @@ function fmt(dt: string | null | undefined) {
 }
 
 /**
- * The open-note editor for the Notes workspace. Rendered into {@link NotesPage}'s
- * Outlet at `/knowledge/notes/:noteId`, so the workspace tree + tabs stay mounted.
+ * The open-note editor for the Notes section. Rendered into {@link NotesPage}'s
+ * Outlet at `/knowledge/notes/:noteId`, so the section tree + tabs stay mounted.
  *
  * Layout is a full-bleed document: a borderless title + body that fill the pane,
  * with a bottom status bar. Links and backlinks are not rendered inline — they
  * live behind status-bar chips that open upward panels on demand. The editor
- * reports the resolved note up to the workspace so the open tab label stays in
+ * reports the resolved note up to the section so the open tab label stays in
  * sync (see {@link NotesOutletContext}).
  */
 export default function NoteEditor() {

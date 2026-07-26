@@ -28,7 +28,7 @@ interface MemRow {
   effective_access_level?: string;
   owner_user_id: string | null;
   scope_type: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
   title: string | null;
   content: string | null;
@@ -45,7 +45,7 @@ function memRow(overrides: Partial<MemRow> = {}): MemRow {
     access_level: "full",
     owner_user_id: USER_A,
     scope_type: "user",
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     title: "Coffee preferences",
     content: "Prefers oat milk flat white in the morning.",
@@ -447,7 +447,7 @@ class MemoryProjectionFakeDb implements Queryable {
           space_id: SPACE_A,
           status: "active",
           deleted_at: null,
-          workspace_id: null,
+          project_folder_id: null,
           owner_user_id: USER_A,
           visibility: "space_shared",
           access_level: "full",

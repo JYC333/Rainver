@@ -6,6 +6,8 @@ import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPost
 import { migrate } from "../src/db/migrator";
 import { SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService";
 import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundServices";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 // Real-Postgres coverage for ensureItemsProcessed dispatching only the items
 // that still lack a decision. Before this fix, any recovery pass with even
@@ -23,6 +25,7 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 const CHANNEL = "88888888-8888-4888-8888-888888888888";
 const AGENT = "99999999-9999-4999-8999-999999999999";
+const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const RULE = "cccccccc-1111-4111-8111-111111111111";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 const WORKFLOW = "88888888-1111-4111-8111-111111111111";
@@ -111,6 +114,14 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Screening Agent','active',NULL,$4,$4,'space_shared')`,
     [AGENT, SPACE, OWNER, now],
   );
+  await pool.query(
+    `INSERT INTO agent_versions (
+       id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
+       context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at
+     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
+    [AGENT_VERSION, AGENT, SPACE, now],
+  );
+  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
   await pool.query(
     `INSERT INTO source_post_processing_rules (
        id, space_id, source_channel_id, agent_id, project_id, name, status, trigger_type,
@@ -209,6 +220,12 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
   it("reconciles a succeeded project run from the durable scheduler scan when its hook was lost", async () => {
     if (!available || !pool) return;
     const now = new Date().toISOString();
+    const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+    const thread = await new InquiryThreadService(pool).createThread(
+      identity,
+      PROJECT,
+      { kind: "question", statement: "Research" },
+    );
     await pool.query(
       `INSERT INTO project_research_workflows (
          id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at
@@ -222,6 +239,8 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
           source_post_processing_rule_ids: [RULE],
           monitoring: { active: true, field: "submittedDate" },
           research_question: "Research",
+          research_question_version: thread.version,
+          thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
           report_depth: "full",
           question_refine_skipped: false,
           agent_id: AGENT,

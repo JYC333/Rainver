@@ -14,7 +14,10 @@ type AgentChatServicesFactory = NonNullable<
 >;
 type AgentChatServices = ReturnType<AgentChatServicesFactory>;
 type AgentChatServiceOverrides = {
-  [K in keyof AgentChatServices]?: Partial<AgentChatServices[K]>;
+  [K in Exclude<keyof AgentChatServices, "inTransaction">]?:
+    Partial<AgentChatServices[K]>;
+} & {
+  inTransaction?: AgentChatServices["inTransaction"];
 };
 
 afterEach(async () => {
@@ -31,14 +34,15 @@ function chatConfig() {
 }
 
 function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices {
-  const base: AgentChatServices = {
+  const base: Omit<AgentChatServices, "inTransaction"> = {
     agents: {
       async getAgentForChat() {
         return {
           id: "agent-1",
           space_id: "space-1",
-          name: "Personal Assistant",
+          name: "Assistant",
           current_version_id: "agent-version-1",
+          tool_permissions_json: {},
         };
       },
     },
@@ -46,20 +50,37 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
       async getSession() {
         throw new Error("getSession should not run");
       },
-      async createSession(_spaceId: string, _userId: string, input: { title?: string | null }) {
+      async createSession(
+        _spaceId: string,
+        _userId: string,
+        input: { title?: string | null; projectId?: string | null },
+      ) {
         return {
           id: "session-1",
           space_id: "space-1",
           user_id: "user-1",
-          workspace_id: null,
+          project_folder_id: null,
+          project_id: input.projectId ?? null,
           title: input.title ?? null,
           status: "active",
           created_at: "2026-06-14T10:00:00.000Z",
           updated_at: "2026-06-14T10:00:00.000Z",
         };
       },
-      async addMessage() {
-        throw new Error("addMessage should be overridden");
+      async addMessage(_spaceId, _userId, sessionId, input) {
+        return {
+          id: "message-user-1",
+          session_id: sessionId,
+          space_id: "space-1",
+          user_id: "user-1",
+          role: input.role,
+          content: input.content,
+          metadata_json: input.metadata ?? null,
+          created_at: "2026-06-14T10:00:00.000Z",
+        };
+      },
+      async attachRunToUserMessage() {
+        return true;
       },
       async listRecentMessagesForContext() {
         return [];
@@ -68,8 +89,35 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
         return null;
       },
     },
-    condense: {
-      async enqueue() {},
+    backends: {
+      async resolveBinding() {
+        return {
+          runtime_profile_id: "runtime-profile-1",
+          adapter_type: "model_api",
+          credential_profile_id: null,
+          binding_id: "binding-1",
+          runtime_state_key: "11111111-1111-4111-8111-111111111111",
+          runtime_session_id: null,
+          runtime_context_fingerprint: null,
+          model_name: null,
+          model_provider_id: null,
+          runtime_config_json: {},
+          runtime_policy_json: {},
+          retired_runtime_state_key: null,
+        };
+      },
+    },
+    runtimeSessions: {
+      async claimTurn() {},
+      async prepare(input) {
+        return {
+          binding_id: input.binding_id,
+          runtime_state_key: "11111111-1111-4111-8111-111111111111",
+          runtime_session_id: null,
+          runtime_context_fingerprint: null,
+          retired_runtime_state_key: null,
+        };
+      },
     },
     context: {
       async fetchCandidates() {
@@ -85,21 +133,7 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
     snapshots: {
       async persistChatSnapshot() {},
     },
-    orchestration: {
-      async executeRun() {
-        return { run_id: "run-1", status: "succeeded" };
-      },
-    },
     runs: {
-      async getChatRunResult() {
-        return {
-          id: "run-1",
-          space_id: "space-1",
-          status: "succeeded",
-          output_json: { output_text: "Hello from server." },
-          error_json: null,
-        };
-      },
       async createQueuedRun(input) {
         return {
           id: "run-1",
@@ -111,7 +145,7 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
           mode: input.mode,
           prompt: input.prompt ?? null,
           instruction: null,
-          workspace_id: null,
+          project_folder_id: null,
           session_id: input.session_id ?? null,
           project_id: null,
           adapter_type: null,
@@ -123,50 +157,72 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
         };
       },
     },
+    jobs: {
+      async enqueue() {},
+    },
   };
-  return {
+  const merged = {
     agents: { ...base.agents, ...overrides.agents },
     sessions: { ...base.sessions, ...overrides.sessions },
+    backends: { ...base.backends, ...overrides.backends },
+    runtimeSessions: { ...base.runtimeSessions, ...overrides.runtimeSessions },
     runs: { ...base.runs, ...overrides.runs },
-    orchestration: { ...base.orchestration, ...overrides.orchestration },
     context: { ...base.context, ...overrides.context },
     snapshots: { ...base.snapshots, ...overrides.snapshots },
-    condense: { ...base.condense, ...overrides.condense },
+    jobs: { ...base.jobs, ...overrides.jobs },
   };
+  const result: AgentChatServices = {
+    ...merged,
+    inTransaction: overrides.inTransaction ??
+      (async (work) => work(result)),
+  };
+  return result;
 }
 
-describe("agents chat-turn route", () => {
-  it("orchestrates a successful chat turn and persists user then assistant messages", async () => {
-    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const messages: Array<Record<string, unknown>> = [];
-    const condenseCalls: Array<Record<string, unknown>> = [];
+describe("agents asynchronous chat-turn route", () => {
+  it("applies the instructing user's Agent visibility before creating a turn", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-2" });
+    const lookups: string[][] = [];
+    let transactionStarted = false;
     __setAgentChatServicesFactoryForTests(() =>
       services({
-        condense: {
-          async enqueue(input) {
-            condenseCalls.push({ ...input, afterMessages: messages.length });
+        agents: {
+          async getAgentForChat(spaceId, userId, agentId) {
+            lookups.push([spaceId, userId, agentId]);
+            return null;
           },
         },
+        async inTransaction() {
+          transactionStarted = true;
+          throw new Error("transaction should not start");
+        },
+      }),
+    );
+    app = buildServer(chatConfig(), { logger: false });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/private-agent/chat",
+      payload: { message: "Use another member's private Agent" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(lookups).toEqual([["space-1", "user-2", "private-agent"]]);
+    expect(transactionStarted).toBe(false);
+  });
+
+  it("persists the user message, queues the Run, and returns immediately", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const messages: Array<Record<string, unknown>> = [];
+    const runLinks: Array<Record<string, unknown>> = [];
+    const jobs: Array<Record<string, unknown>> = [];
+    __setAgentChatServicesFactoryForTests(() =>
+      services({
         sessions: {
-          async getSession() {
-            throw new Error("getSession should not run");
-          },
-          async createSession(_spaceId, _userId, input) {
-            return {
-              id: "session-1",
-              space_id: "space-1",
-              user_id: "user-1",
-              workspace_id: null,
-              title: input.title ?? null,
-              status: "active",
-              created_at: "2026-06-14T10:00:00.000Z",
-              updated_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
           async addMessage(_spaceId, _userId, sessionId, input) {
             messages.push({ sessionId, ...input });
             return {
-              id: `message-${messages.length}`,
+              id: "message-user-1",
               session_id: sessionId,
               space_id: "space-1",
               user_id: "user-1",
@@ -176,87 +232,39 @@ describe("agents chat-turn route", () => {
               created_at: "2026-06-14T10:00:00.000Z",
             };
           },
-          async listRecentMessagesForContext() {
-            return messages.map((entry, index) => ({
-              id: `message-${index + 1}`,
-              session_id: String(entry.sessionId),
-              space_id: "space-1",
-              user_id: "user-1",
-              role: String(entry.role),
-              content: String(entry.content),
-              metadata_json: null,
-              created_at: "2026-06-14T10:00:00.000Z",
-            }));
-          },
-          async getLatestSummaryForContext() {
-            return null;
+          async attachRunToUserMessage(input) {
+            runLinks.push(input);
+            return true;
           },
         },
-        context: {
-          async fetchCandidates(input) {
-            return {
-              allowed_sources: [],
-              max_tokens: 4000,
-              max_items: 20,
-              context_policy_applied: true,
-              items: [],
-            };
-          },
-        },
-        runs: {
-          async createQueuedRun(input) {
-            return {
-              id: "run-1",
-              space_id: "space-1",
-              agent_id: input.agent_id,
-              agent_version_id: "agent-version-1",
-              context_snapshot_id: null,
-              status: "queued",
-              mode: input.mode,
-              prompt: input.prompt ?? null,
-              instruction: null,
-              workspace_id: null,
-              session_id: input.session_id ?? null,
-              project_id: null,
-              adapter_type: null,
-              model_provider_id: null,
-              required_sandbox_level: "none",
-              trigger_origin: input.trigger_origin,
-              started_at: null,
-              ended_at: null,
-            };
-          },
-          async getChatRunResult() {
-            return {
-              id: "run-1",
-              space_id: "space-1",
-              status: "succeeded",
-              output_json: { output_text: "Hello from server." },
-              error_json: null,
-            };
-          },
-        },
-        orchestration: {
-          async executeRun(input) {
-            return { run_id: input.run_id, status: "succeeded" };
+        jobs: {
+          async enqueue(input) {
+            jobs.push(input);
           },
         },
       }),
     );
     app = buildServer(chatConfig(), { logger: false });
 
-    const res = await app.inject({
+    const response = await app.inject({
       method: "POST",
       url: "/api/v1/agents/agent-1/chat",
       payload: { message: "  Hi there  " },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      schema_version: "chat_turn_accepted.v1",
       session_id: "session-1",
       run_id: "run-1",
-      ok: true,
-      reply: "Hello from server.",
+      user_message_id: "message-user-1",
+      status: "queued",
+      event_stream_url: "/api/v1/runs/run-1/events/stream",
+      backend: {
+        runtime_profile_id: "runtime-profile-1",
+        adapter_type: "model_api",
+        credential_profile_id: null,
+      },
     });
     expect(messages).toEqual([
       expect.objectContaining({
@@ -264,173 +272,52 @@ describe("agents chat-turn route", () => {
         role: "user",
         content: "Hi there",
       }),
-      expect.objectContaining({
-        sessionId: "session-1",
-        role: "assistant",
-        content: "Hello from server.",
-        metadata: { run_id: "run-1" },
-      }),
     ]);
-    // Condense is enqueued once, after both messages are durable, with the
-    // agent identity so the job can resolve the scenario profile.
-    expect(condenseCalls).toEqual([
-      {
-        space_id: "space-1",
-        user_id: "user-1",
-        session_id: "session-1",
-        agent_id: "agent-1",
-        agent_version_id: "agent-version-1",
-        afterMessages: 2,
+    expect(jobs).toEqual([{
+      run_id: "run-1",
+      space_id: "space-1",
+      user_id: "user-1",
+      agent_id: "agent-1",
+    }]);
+    expect(runLinks).toEqual([{
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      message_id: "message-user-1",
+      run_id: "run-1",
+    }]);
+  });
+
+  it("rolls back the durable turn when job enqueue fails", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const transactionEvents: string[] = [];
+    const configured = services({
+      jobs: {
+        async enqueue() {
+          throw new Error("queue unavailable");
+        },
       },
-    ]);
-  });
-
-  it("returns ok=false on run failure and does not persist an assistant message", async () => {
-    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const roles: string[] = [];
-    __setAgentChatServicesFactoryForTests(() =>
-      services({
-        sessions: {
-          async getSession() {
-            throw new Error("getSession should not run");
-          },
-          async createSession() {
-            return {
-              id: "session-1",
-              space_id: "space-1",
-              user_id: "user-1",
-              workspace_id: null,
-              title: "Personal Assistant chat",
-              status: "active",
-              created_at: "2026-06-14T10:00:00.000Z",
-              updated_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
-          async addMessage(_spaceId, _userId, sessionId, input) {
-            roles.push(input.role);
-            return {
-              id: `message-${roles.length}`,
-              session_id: sessionId,
-              space_id: "space-1",
-              user_id: "user-1",
-              role: input.role,
-              content: input.content,
-              metadata_json: input.metadata ?? null,
-              created_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
-          async listRecentMessagesForContext() {
-            return [];
-          },
-          async getLatestSummaryForContext() {
-            return null;
-          },
-        },
-        orchestration: {
-          async executeRun(input) {
-            return { run_id: input.run_id, status: "failed", error_code: "model_provider_required" };
-          },
-        },
-        runs: {
-          async getChatRunResult() {
-            return {
-              id: "run-1",
-              space_id: "space-1",
-              status: "failed",
-              output_json: null,
-              error_json: {
-                error_code: "model_provider_required",
-                error_text: "No model provider is configured.",
-              },
-            };
-          },
-        },
-      }),
-    );
+    });
+    configured.inTransaction = async (work) => {
+      transactionEvents.push("begin");
+      try {
+        return await work(configured);
+      } catch (error) {
+        transactionEvents.push("rollback");
+        throw error;
+      }
+    };
+    __setAgentChatServicesFactoryForTests(() => configured);
     app = buildServer(chatConfig(), { logger: false });
 
-    const res = await app.inject({
+    const response = await app.inject({
       method: "POST",
       url: "/api/v1/agents/agent-1/chat",
-      payload: { message: "Hello?" },
+      payload: { message: "Hi" },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      session_id: "session-1",
-      run_id: "run-1",
-      ok: false,
-      error: "No model provider is configured.",
-      error_code: "model_provider_required",
-    });
-    expect(roles).toEqual(["user"]);
-  });
-
-  it("fails closed when execution returns but the run row is not readable", async () => {
-    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const roles: string[] = [];
-    __setAgentChatServicesFactoryForTests(() =>
-      services({
-        sessions: {
-          async getSession() {
-            throw new Error("getSession should not run");
-          },
-          async createSession() {
-            return {
-              id: "session-1",
-              space_id: "space-1",
-              user_id: "user-1",
-              workspace_id: null,
-              title: "Personal Assistant chat",
-              status: "active",
-              created_at: "2026-06-14T10:00:00.000Z",
-              updated_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
-          async addMessage(_spaceId, _userId, sessionId, input) {
-            roles.push(input.role);
-            return {
-              id: `message-${roles.length}`,
-              session_id: sessionId,
-              space_id: "space-1",
-              user_id: "user-1",
-              role: input.role,
-              content: input.content,
-              metadata_json: input.metadata ?? null,
-              created_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
-          async listRecentMessagesForContext() {
-            return [];
-          },
-          async getLatestSummaryForContext() {
-            return null;
-          },
-        },
-        runs: {
-          async getChatRunResult() {
-            return null;
-          },
-        },
-      }),
-    );
-    app = buildServer(chatConfig(), { logger: false });
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/agents/agent-1/chat",
-      payload: { message: "Hello?" },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      session_id: "session-1",
-      run_id: "run-1",
-      ok: false,
-      error: "Run not found after server execution",
-      error_code: "run_not_found",
-    });
-    expect(roles).toEqual(["user"]);
+    expect(response.statusCode).toBe(503);
+    expect(transactionEvents).toEqual(["begin", "rollback"]);
   });
 
   it("404s an invisible existing session before writing a user message", async () => {
@@ -449,140 +336,85 @@ describe("agents chat-turn route", () => {
             wrote = true;
             throw new Error("addMessage should not run");
           },
-          async listRecentMessagesForContext() {
-            throw new Error("listRecentMessagesForContext should not run");
-          },
-          async getLatestSummaryForContext() {
-            throw new Error("getLatestSummaryForContext should not run");
-          },
         },
       }),
     );
     app = buildServer(chatConfig(), { logger: false });
 
-    const res = await app.inject({
+    const response = await app.inject({
       method: "POST",
       url: "/api/v1/agents/agent-1/chat",
       payload: { message: "Hello?", session_id: "missing-session" },
     });
 
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ detail: "session not found in this space" });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      detail: "session not found in this space",
+    });
     expect(wrote).toBe(false);
   });
 
-  it("rejects empty messages with the public 422 shape", async () => {
+  it("rejects empty messages before creating durable work", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setAgentChatServicesFactoryForTests(() => services());
     app = buildServer(chatConfig(), { logger: false });
 
-    const res = await app.inject({
+    const response = await app.inject({
       method: "POST",
       url: "/api/v1/agents/agent-1/chat",
       payload: { message: "   " },
     });
 
-    expect(res.statusCode).toBe(422);
-    expect(res.json()).toEqual({ detail: "message must not be empty" });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({
+      detail: "message must not be empty",
+    });
   });
 
-  it("assembles context in the server and persists the snapshot", async () => {
+  it("persists context and chat finalization metadata before enqueue", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const messages: Array<Record<string, unknown>> = [];
     const observed: {
-      fetchedForMessage?: string;
       queuedRun?: Record<string, unknown>;
-      executedRunId?: string;
       persisted?: Record<string, unknown>;
+      jobSawSnapshot?: boolean;
     } = {};
     __setAgentChatServicesFactoryForTests(() =>
       services({
-        sessions: {
-          async getSession() {
-            throw new Error("getSession should not run");
-          },
-          async createSession() {
-            return {
-              id: "session-1",
-              space_id: "space-1",
-              user_id: "user-1",
-              workspace_id: null,
-              title: "Personal Assistant chat",
-              status: "active",
-              created_at: "2026-06-14T10:00:00.000Z",
-              updated_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
-          async addMessage(_spaceId, _userId, sessionId, input) {
-            messages.push({ sessionId, ...input });
-            return {
-              id: `message-${messages.length}`,
-              session_id: sessionId,
-              space_id: "space-1",
-              user_id: "user-1",
-              role: input.role,
-              content: input.content,
-              metadata_json: input.metadata ?? null,
-              created_at: "2026-06-14T10:00:00.000Z",
-            };
-          },
-          async listRecentMessagesForContext() {
-            return [
-              {
-                id: "message-prev",
-                session_id: "session-1",
-                space_id: "space-1",
-                user_id: "user-1",
-                role: "assistant",
-                content: "Previous assistant answer.",
-                metadata_json: null,
-                created_at: "2026-06-14T09:59:00.000Z",
-              },
-              ...messages.map((entry, index) => ({
-                id: `message-${index + 1}`,
-                session_id: String(entry.sessionId),
-                space_id: "space-1",
-                user_id: "user-1",
-                role: String(entry.role),
-                content: String(entry.content),
-                metadata_json: null,
-                created_at: "2026-06-14T10:00:00.000Z",
-              })),
-            ];
-          },
-          async getLatestSummaryForContext() {
-            return {
-              id: "summary-1",
-              session_id: "session-1",
-              version: 1,
-              summary_text: "Earlier context summary.",
-              source_message_count: 0,
-              source_first_message_id: null,
-              source_last_message_id: null,
-              condenser_version: "pattern.v1",
-            };
-          },
-        },
         context: {
-          async fetchCandidates(input) {
-            observed.fetchedForMessage = input.message;
+          async fetchCandidates() {
             return {
               allowed_sources: ["memory"],
               max_tokens: 4000,
               max_items: 20,
               context_policy_applied: true,
-              items: [
-                {
-                  item_type: "memory",
-                  item_id: "memory-1",
-                  title: "A memory",
-                  excerpt: "remember this",
-                  score: 0.8,
-                  reason: "approved_memory",
-                  token_count: 3,
-                  metadata: {},
-                },
-              ],
+              items: [{
+                item_type: "memory",
+                item_id: "memory-1",
+                title: "A memory",
+                excerpt: "remember this",
+                score: 0.8,
+                reason: "approved_memory",
+                token_count: 3,
+                metadata: {},
+              }],
+            };
+          },
+        },
+        backends: {
+          async resolveBinding() {
+            return {
+              runtime_profile_id: "runtime-profile-1",
+              adapter_type: "claude_code",
+              credential_profile_id: "credential-1",
+              binding_id: "binding-1",
+              runtime_state_key: "11111111-1111-4111-8111-111111111111",
+              runtime_session_id: null,
+              runtime_context_fingerprint: null,
+              model_name: "claude-opus-5",
+              model_provider_id: null,
+              runtime_config_json: {},
+              runtime_policy_json: {},
+              retired_runtime_state_key: null,
             };
           },
         },
@@ -590,33 +422,8 @@ describe("agents chat-turn route", () => {
           async createQueuedRun(input) {
             observed.queuedRun = input as unknown as Record<string, unknown>;
             return {
-              id: "run-1",
-              space_id: "space-1",
-              agent_id: "agent-1",
-              agent_version_id: "agent-version-1",
+              ...(await services().runs.createQueuedRun(input)),
               context_snapshot_id: "snapshot-1",
-              status: "queued",
-              mode: "live",
-              prompt: input.prompt ?? null,
-              instruction: null,
-              workspace_id: null,
-              session_id: input.session_id ?? null,
-              project_id: null,
-              adapter_type: null,
-              model_provider_id: null,
-              required_sandbox_level: "none",
-              trigger_origin: "manual",
-              started_at: null,
-              ended_at: null,
-            };
-          },
-          async getChatRunResult() {
-            return {
-              id: "run-1",
-              space_id: "space-1",
-              status: "succeeded",
-              output_json: { output_text: "Hello from server." },
-              error_json: null,
             };
           },
         },
@@ -625,84 +432,187 @@ describe("agents chat-turn route", () => {
             observed.persisted = input as unknown as Record<string, unknown>;
           },
         },
-        orchestration: {
-          async executeRun(input) {
-            observed.executedRunId = input.run_id;
-            return { run_id: input.run_id, status: "succeeded" };
+        jobs: {
+          async enqueue() {
+            observed.jobSawSnapshot = Boolean(observed.persisted);
           },
         },
       }),
     );
     app = buildServer(chatConfig(), { logger: false });
 
-    const res = await app.inject({
+    const response = await app.inject({
       method: "POST",
       url: "/api/v1/agents/agent-1/chat",
       payload: { message: "Hi" },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      session_id: "session-1",
-      run_id: "run-1",
-      ok: true,
-      reply: "Hello from server.",
-    });
-    expect(observed.fetchedForMessage).toBe("Hi");
-    expect(observed.queuedRun).toMatchObject({
-      agent_id: "agent-1",
-      space_id: "space-1",
-      user_id: "user-1",
-      session_id: "session-1",
-      mode: "live",
-      run_type: "agent",
-      trigger_origin: "manual",
-    });
+    expect(response.statusCode).toBe(202);
     expect(String(observed.queuedRun?.prompt)).toContain("remember this");
-    expect(String(observed.queuedRun?.prompt)).toContain("Earlier context summary.");
-    expect(String(observed.queuedRun?.prompt)).toContain("Previous assistant answer.");
     expect(observed.queuedRun?.model_override_json).toMatchObject({
       chat_context_preamble: expect.stringContaining("remember this"),
       conversation_window_version: "conversation_window.v1",
-      messages: [
-        expect.objectContaining({
-          role: "user",
-          content: expect.stringContaining("Earlier context summary."),
-        }),
-        expect.objectContaining({
-          role: "assistant",
-          content: "Previous assistant answer.",
-        }),
-        expect.objectContaining({
-          role: "user",
-          content: "Hi",
-        }),
-      ],
+      conversation_backend: {
+        schema_version: "conversation_backend.v1",
+        runtime_profile_id: "runtime-profile-1",
+        adapter_type: "claude_code",
+        credential_profile_id: "credential-1",
+      },
+      conversation_runtime: {
+        schema_version: "conversation_runtime.v1",
+        binding_id: "binding-1",
+        runtime_state_key: "11111111-1111-4111-8111-111111111111",
+        runtime_session_id: null,
+        context_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+        replay_prompt: expect.stringContaining("remember this"),
+      },
+      execution_mode: "conversation_lightweight.v1",
+      chat_turn: {
+        schema_version: "chat_turn.v1",
+        session_id: "session-1",
+        user_id: "user-1",
+        user_message_id: "message-user-1",
+        agent_id: "agent-1",
+        agent_version_id: "agent-version-1",
+        project_id: null,
+      },
     });
-    expect(observed.executedRunId).toBe("run-1");
     expect(observed.persisted).toMatchObject({
       contextSnapshotId: "snapshot-1",
       spaceId: "space-1",
+      runId: "run-1",
     });
-    expect(Number(observed.persisted?.tokenEstimate)).toBeGreaterThan(3);
-    expect(observed.persisted?.requestJson).toMatchObject({
-      conversation_window: {
-        version: "conversation_window.v1",
-        summary: { summary_id: "summary-1" },
-      },
-    });
-    expect(observed.persisted?.retrievalTraceJson).toMatchObject({
-      conversation_window: {
-        version: "conversation_window.v1",
-      },
-    });
-    expect(messages).toEqual([
-      expect.objectContaining({ role: "user", content: "Hi" }),
-      expect.objectContaining({
-        role: "assistant",
-        content: "Hello from server.",
-        metadata: { run_id: "run-1" },
+    expect(observed.jobSawSnapshot).toBe(true);
+  });
+
+  it("sends only the increment when a CLI conversation session can resume", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let queuedRun: Record<string, unknown> | undefined;
+    __setAgentChatServicesFactoryForTests(() =>
+      services({
+        sessions: {
+          async listRecentMessagesForContext() {
+            return [{
+              id: "message-old",
+              session_id: "session-1",
+              space_id: "space-1",
+              user_id: "user-1",
+              role: "assistant",
+              content: "OLD HISTORY",
+              metadata_json: null,
+              created_at: "2026-06-14T09:00:00.000Z",
+            }];
+          },
+        },
+        backends: {
+          async resolveBinding() {
+            return {
+              runtime_profile_id: "runtime-profile-1",
+              adapter_type: "opencode",
+              credential_profile_id: "credential-1",
+              binding_id: "binding-1",
+              runtime_state_key: "11111111-1111-4111-8111-111111111111",
+              runtime_session_id: "ses_existing-opaque",
+              runtime_context_fingerprint: "old-fingerprint",
+              model_name: "provider/model",
+              model_provider_id: "provider-1",
+              runtime_config_json: {},
+              runtime_policy_json: {},
+              retired_runtime_state_key: null,
+            };
+          },
+        },
+        runtimeSessions: {
+          async prepare(input) {
+            return {
+              binding_id: input.binding_id,
+              runtime_state_key: "11111111-1111-4111-8111-111111111111",
+              runtime_session_id: "ses_existing-opaque",
+              runtime_context_fingerprint: input.context_fingerprint,
+              retired_runtime_state_key: null,
+            };
+          },
+        },
+        runs: {
+          async createQueuedRun(input) {
+            queuedRun = input as unknown as Record<string, unknown>;
+            return services().runs.createQueuedRun(input);
+          },
+        },
       }),
-    ]);
+    );
+    app = buildServer(chatConfig(), { logger: false });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/agent-1/chat",
+      payload: { message: "NEW TURN" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(queuedRun?.prompt).toContain("NEW TURN");
+    expect(queuedRun?.prompt).not.toContain("OLD HISTORY");
+    expect(queuedRun?.model_override_json).toMatchObject({
+      conversation_runtime: {
+        runtime_session_id: "ses_existing-opaque",
+        replay_prompt: expect.stringContaining("OLD HISTORY"),
+      },
+    });
+  });
+
+  it("changes the runtime fingerprint when an in-place backend config changes", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let runtimeRevision = 1;
+    const fingerprints: string[] = [];
+    __setAgentChatServicesFactoryForTests(() =>
+      services({
+        backends: {
+          async resolveBinding() {
+            return {
+              runtime_profile_id: "runtime-profile-1",
+              adapter_type: "claude_code",
+              credential_profile_id: "credential-1",
+              binding_id: "binding-1",
+              runtime_state_key: "11111111-1111-4111-8111-111111111111",
+              runtime_session_id: "22222222-2222-4222-8222-222222222222",
+              runtime_context_fingerprint: "old",
+              model_name: "claude",
+              model_provider_id: null,
+              runtime_config_json: { revision: runtimeRevision },
+              runtime_policy_json: { allow_permission_bypass: false },
+              retired_runtime_state_key: null,
+            };
+          },
+        },
+        runtimeSessions: {
+          async prepare(input) {
+            fingerprints.push(input.context_fingerprint);
+            return {
+              binding_id: input.binding_id,
+              runtime_state_key: input.runtime_state_key,
+              runtime_session_id: null,
+              runtime_context_fingerprint: null,
+              retired_runtime_state_key: null,
+            };
+          },
+        },
+      }),
+    );
+    app = buildServer(chatConfig(), { logger: false });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/agent-1/chat",
+      payload: { message: "first" },
+    });
+    runtimeRevision = 2;
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/agent-1/chat",
+      payload: { message: "second" },
+    });
+
+    expect(fingerprints).toHaveLength(2);
+    expect(fingerprints[0]).not.toBe(fingerprints[1]);
   });
 });

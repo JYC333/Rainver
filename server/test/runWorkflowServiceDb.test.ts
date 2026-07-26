@@ -197,7 +197,7 @@ describe("save run as workflow (real Postgres)", () => {
           risk_level: "high",
           preview: false,
           payload_json: proposal.rows[0]!.payload_json,
-          workspace_id: null,
+          project_folder_id: null,
           visibility: "space_shared",
           created_by_user_id: USER,
           created_by_agent_id: null,

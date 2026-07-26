@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
@@ -68,21 +68,17 @@ const config = {
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
 let available = false;
+const sharedPostgres = inject("sharedPostgres");
+const describeWithPostgres = describe.skipIf(
+  !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
+);
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
-    dbPoolMock.current = pool;
-    available = true;
-  } catch (err) {
-    console.warn(
-      `[automations-project-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
+  container = await getTestPostgres(__filename);
+  pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
+  await migrate(pool, MIGRATIONS_DIR);
+  dbPoolMock.current = pool;
+  available = true;
 }, 180_000);
 
 afterAll(async () => {
@@ -97,7 +93,7 @@ beforeEach(async () => {
        automation_runs, automation_credential_grants, automations, scheduler_tasks,
        jobs, context_snapshots, runs, agent_runtime_profiles, agent_versions, agents,
        source_items, project_source_item_links, project_source_bindings, source_connections, source_connectors,
-       workspaces, project_members, projects, space_memberships, users, spaces CASCADE`,
+       project_folders, project_members, projects, space_memberships, users, spaces CASCADE`,
   );
   const now = new Date().toISOString();
   for (const [spaceId, name] of [[SPACE, "Main"], [OTHER_SPACE, "Other"]] as const) {
@@ -158,7 +154,7 @@ function service(): AutomationService {
   return new AutomationService(config, new PgAutomationRepository(pool!));
 }
 
-describe("Automation × Project binding (real Postgres)", () => {
+describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("joins an existing transaction for project-fenced create and update", async () => {
     if (!available || !pool) return;
     const client = await pool.connect();
@@ -531,6 +527,105 @@ describe("Automation × Project binding (real Postgres)", () => {
     await expect(assertBudgetSourcesAvailable(pool, SPACE, [
       { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
+  });
+
+  it("rejects a space-scoped Workflow budget source that belongs to another space", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    const otherAsset = randomUUID();
+    const otherVersion = randomUUID();
+    await pool.query(
+      `INSERT INTO evolvable_assets (
+         id, space_id, asset_type, asset_key, display_name, description,
+         owner_scope_type, status, metadata_json, created_at, updated_at
+       ) VALUES ($1, $2, 'workflow_template', 'workflow.other-space', 'Other space workflow',
+                 'Other space workflow', 'space', 'active', '{}'::jsonb, $3, $3)`,
+      [otherAsset, OTHER_SPACE, now],
+    );
+    await pool.query(
+      `INSERT INTO evolvable_asset_versions (
+         id, asset_id, space_id, scope_type, scope_id, version, status, source,
+         content_hash, content_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, 'space', $3, 1, 'approved', 'built_in', 'other-space-budget-test', '{}'::jsonb, $4, $4)`,
+      [otherVersion, otherAsset, OTHER_SPACE, now],
+    );
+
+    // Approved, active, and correctly scoped — but only within OTHER_SPACE.
+    // A caller in SPACE must never admit against it, and a caller in
+    // OTHER_SPACE must be able to.
+    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+      { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
+    ])).rejects.toMatchObject({ code: "budget_source_not_found" });
+    await expect(assertBudgetSourcesAvailable(pool, OTHER_SPACE, [
+      { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
+    ])).resolves.toBeUndefined();
+
+    await pool.query(
+      `UPDATE evolvable_asset_versions
+          SET scope_type = 'system', scope_id = NULL
+        WHERE id = $1`,
+      [otherVersion],
+    );
+    await expect(assertBudgetSourcesAvailable(pool, OTHER_SPACE, [
+      { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
+    ])).resolves.toBeUndefined();
+  });
+
+  it("rejects a Workflow Version whose scope is forbidden by its parent Asset ownership", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    const privateAsset = randomUUID();
+    const mismatchedVersion = randomUUID();
+    await pool.query(
+      `INSERT INTO evolvable_assets (
+         id, space_id, asset_type, asset_key, display_name, description,
+         owner_scope_type, owner_scope_id, status, metadata_json, created_at, updated_at
+       ) VALUES ($1, $2, 'workflow_template', 'workflow.private-scope', 'Private workflow',
+                 'Private workflow', 'user', $3, 'active', '{}'::jsonb, $4, $4)`,
+      [privateAsset, SPACE, OWNER, now],
+    );
+    await pool.query(
+      `INSERT INTO evolvable_asset_versions (
+         id, asset_id, space_id, scope_type, scope_id, version, status, source,
+         content_hash, content_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, 'space', $3, 1, 'approved', 'user_authored',
+                 'private-scope-budget-test', '{}'::jsonb, $4, $4)`,
+      [mismatchedVersion, privateAsset, SPACE, now],
+    );
+
+    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+      { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
+    ])).rejects.toMatchObject({ code: "budget_source_not_found" });
+
+    await pool.query(
+      `UPDATE evolvable_asset_versions
+          SET scope_type = 'user', scope_id = $2
+        WHERE id = $1`,
+      [mismatchedVersion, OWNER],
+    );
+    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+      { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
+    ])).resolves.toBeUndefined();
+
+    await pool.query(
+      `UPDATE evolvable_assets
+          SET owner_scope_type = 'space', owner_scope_id = NULL
+        WHERE id = $1`,
+      [privateAsset],
+    );
+    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+      { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
+    ])).rejects.toMatchObject({ code: "budget_source_not_found" });
+
+    await pool.query(
+      `UPDATE evolvable_assets
+          SET metadata_json = '{"allow_user_override":true}'::jsonb
+        WHERE id = $1`,
+      [privateAsset],
+    );
+    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+      { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
+    ])).resolves.toBeUndefined();
   });
 
   it("resolves a pinned workflow target and launches one execution with bounded input", async () => {

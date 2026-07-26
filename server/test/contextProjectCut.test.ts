@@ -18,13 +18,13 @@ function row(id: string, projectId: string | null): ContextMemoryRow {
     visibility: "space_shared",
     sensitivity_level: "normal",
     deleted_at: null,
-    workspace_id: null,
+    project_folder_id: null,
     access_level: "full",
     project_id: projectId,
   } as unknown as ContextMemoryRow;
 }
 
-const base = { spaceId: SPACE, userId: USER, workspaceId: null, includeSystemScope: false };
+const base = { spaceId: SPACE, userId: USER, projectFolderId: null, includeSystemScope: false };
 const rows = [row("m-free", null), row("m-P", "P"), row("m-Q", "Q")];
 
 describe("per-run project cut (hardFilterRows)", () => {

@@ -8,7 +8,10 @@ contract or runtime policy did not already allow.
 
 1. Candidate profiles are loaded for the run's agent and space. Credential
    availability is checked against the configured model-provider credential or
-   owner-bound CLI credential profile.
+   a CLI credential selected only from the Run owner's enabled space grants.
+   A conversation's explicit user × session binding pins both the runtime
+   profile and that user's credential; an invalid or foreign credential produces
+   no candidate and never falls back to another member's capacity.
 2. Hard filters reject disabled/unimplemented profiles, missing capabilities or
    tools, insufficient sandbox support, incompatible execution mode, and a
    trust level below the risk requirement. A candidate's declared minimum
@@ -39,13 +42,13 @@ capability restriction when present, otherwise from the AgentVersion currently
 attached to the agent. A runtime profile describes execution transport and
 does not need to duplicate the agent's declared task capabilities.
 
-Persistent workspace availability is evaluated separately from a runtime's
+Persistent Project Folder availability is evaluated separately from a runtime's
 minimum sandbox level. A file-access CLI whose adapter declares
 `requires_workspace_for_execution=false` may be routed without a project
-workspace for low/medium-risk work; execution then provisions an ephemeral
-run directory. High-risk work requires a persistent workspace/worktree, while
+Folder for low/medium-risk work; execution then provisions an ephemeral
+run directory. High-risk work requires a persistent Project Folder/worktree, while
 critical local-CLI work uses the explicit one-shot Docker path. Managed/API
-runtimes that do not access files continue to run without a workspace.
+runtimes that do not access files continue to run without a Project Folder.
 
 Hints are merged with provenance from task contract, workflow node, and
 evolution strategy. They influence preference and stricter constraints only; a

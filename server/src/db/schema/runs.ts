@@ -1,10 +1,10 @@
-import { pgTable, index, unique, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { actors, agentRuntimeProfiles, agentVersions, agents } from "./agents";
 import { users } from "./auth";
 import { sessions } from "./sessions";
 import { spaces } from "./spaces";
-import { workingDirs, workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { modelProviders } from "./providers";
 import { agentRunGroups, runDelegations } from "./agentGroups";
 import { artifacts } from "./artifacts";
@@ -25,9 +25,8 @@ export const runs = pgTable("runs", {
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
 	runtimeProfileSelectionSource: varchar("runtime_profile_selection_source", { length: 16 }),
 	contextSnapshotId: varchar("context_snapshot_id", { length: 36 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
-	workingDirId: varchar("working_dir_id", { length: 36 }),
 	parentRunId: varchar("parent_run_id", { length: 36 }),
 	rootRunId: varchar("root_run_id", { length: 36 }),
 	runGroupId: varchar("run_group_id", { length: 36 }),
@@ -98,8 +97,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_runs_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_runs_trigger_origin").using("btree", table.triggerOrigin.asc().nullsLast()),
-	index("ix_runs_working_dir_id").using("btree", table.workingDirId.asc().nullsLast()),
-	index("ix_runs_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_runs_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({ columns: [table.workflowVersionId], foreignColumns: [evolvableAssetVersions.id], name: "runs_workflow_version_fkey" }),
 	foreignKey({
 			columns: [table.ownerUserId],
@@ -115,11 +113,6 @@ export const runs = pgTable("runs", {
 			columns: [table.projectId, table.spaceId],
 			foreignColumns: [projects.id, projects.spaceId],
 			name: "fk_runs_project_id_projects"
-		}),
-	foreignKey({
-			columns: [table.workingDirId],
-			foreignColumns: [workingDirs.id],
-			name: "fk_runs_working_dir_id"
 		}),
 	foreignKey({
 			columns: [table.agentId],
@@ -180,7 +173,7 @@ export const runs = pgTable("runs", {
 			columns: [table.runGroupId],
 			foreignColumns: [agentRunGroups.id],
 			name: "runs_run_group_id_fkey"
-		}).onDelete("set null"),
+		}),
 	foreignKey({
 			columns: [table.sessionId],
 			foreignColumns: [sessions.id],
@@ -192,9 +185,9 @@ export const runs = pgTable("runs", {
 			name: "runs_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "runs_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "runs_project_folder_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.delegationId, table.spaceId],
@@ -217,9 +210,19 @@ export const runs = pgTable("runs", {
 			name: "fk_runs_root_run_same_space"
 		}),
 	foreignKey({
-			columns: [table.runGroupId, table.spaceId],
-			foreignColumns: [agentRunGroups.id, agentRunGroups.spaceId],
-			name: "fk_runs_run_group_same_space"
+			columns: [
+				table.runGroupId,
+				table.spaceId,
+				table.sessionId,
+				table.projectId,
+			],
+			foreignColumns: [
+				agentRunGroups.id,
+				agentRunGroups.spaceId,
+				agentRunGroups.sessionId,
+				agentRunGroups.projectId,
+			],
+			name: "runs_run_group_scope_fkey",
 		}),
 	unique("uq_runs_space_id_id").on(table.id, table.spaceId),
 	check("ck_runs_data_exposure_level", sql`(data_exposure_level IS NULL) OR ((data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))`),
@@ -227,7 +230,7 @@ export const runs = pgTable("runs", {
 	check("ck_runs_mode", sql`(mode)::text = ANY (ARRAY[('live'::character varying)::text, ('dry_run'::character varying)::text])`),
 	check("ck_runs_run_role", sql`(run_role)::text = ANY (ARRAY[('execution'::character varying)::text, ('coordinator'::character varying)::text])`),
 	check("ck_runs_observability_level", sql`(observability_level IS NULL) OR ((observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text]))`),
-	check("ck_runs_required_sandbox_level", sql`(required_sandbox_level)::text = ANY (ARRAY[('none'::character varying)::text, ('dry_run'::character varying)::text, ('ephemeral'::character varying)::text, ('worktree'::character varying)::text, ('one_shot_docker'::character varying)::text])`),
+	check("ck_runs_required_sandbox_level", sql`(required_sandbox_level)::text = ANY (ARRAY[('none'::character varying)::text, ('dry_run'::character varying)::text, ('ephemeral'::character varying)::text, ('read_only'::character varying)::text, ('worktree'::character varying)::text, ('one_shot_docker'::character varying)::text])`),
 	check("ck_runs_run_type", sql`(run_type)::text = ANY (ARRAY[('agent'::character varying)::text, ('planning'::character varying)::text, ('system'::character varying)::text, ('workflow'::character varying)::text, ('validation'::character varying)::text, ('reflection'::character varying)::text, ('export'::character varying)::text, ('evolution'::character varying)::text])`),
 	check("ck_runs_source", sql`(source IS NULL) OR ((source)::text = ANY (ARRAY[('managed'::character varying)::text, ('ide_assist'::character varying)::text, ('manual_import'::character varying)::text, ('remote_import'::character varying)::text, ('scheduled'::character varying)::text, ('webhook'::character varying)::text]))`),
 	check("ck_runs_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
@@ -407,7 +410,7 @@ export const runSteps = pgTable("run_steps", {
 	stepType: varchar("step_type", { length: 64 }).notNull(),
 	status: varchar({ length: 32 }).notNull(),
 	title: varchar({ length: 512 }),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	taskId: varchar("task_id", { length: 36 }),
 	artifactId: varchar("artifact_id", { length: 36 }),
@@ -433,7 +436,7 @@ export const runSteps = pgTable("run_steps", {
 	index("ix_run_steps_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_run_steps_step_type").using("btree", table.stepType.asc().nullsLast()),
 	index("ix_run_steps_task_id").using("btree", table.taskId.asc().nullsLast()),
-	index("ix_run_steps_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_run_steps_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.taskId],
 			foreignColumns: [tasks.id],
@@ -475,9 +478,9 @@ export const runSteps = pgTable("run_steps", {
 			name: "run_steps_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "run_steps_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "run_steps_project_folder_id_fkey"
 		}),
 	unique("uq_run_steps_run_step_index").on(table.runId, table.stepIndex),
 	check("ck_run_steps_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('cancelled'::character varying)::text])`),
@@ -532,7 +535,7 @@ export const runEvents = pgTable("run_events", {
 	summary: text(),
 	errorCode: varchar("error_code", { length: 128 }),
 	errorMessage: text("error_message"),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	artifactId: varchar("artifact_id", { length: 36 }),
 	proposalId: varchar("proposal_id", { length: 36 }),
 	dataExposureLevel: varchar("data_exposure_level", { length: 64 }),
@@ -550,7 +553,8 @@ export const runEvents = pgTable("run_events", {
 	index("ix_run_events_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_run_events_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_run_events_step_id").using("btree", table.stepId.asc().nullsLast()),
-	index("ix_run_events_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_run_events_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
+	uniqueIndex("uq_run_events_chat_completed").on(table.spaceId, table.runId).where(sql`event_type = 'chat_completed'`),
 	foreignKey({
 			columns: [table.actorId],
 			foreignColumns: [actors.id],
@@ -582,13 +586,13 @@ export const runEvents = pgTable("run_events", {
 			name: "run_events_step_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "run_events_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "run_events_project_folder_id_fkey"
 		}),
 	unique("uq_run_events_space_run_event_index").on(table.eventIndex, table.runId, table.spaceId),
 	check("ck_run_events_data_exposure_level", sql`(data_exposure_level IS NULL) OR ((data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))`),
-	check("ck_run_events_event_type", sql`(event_type)::text = ANY (ARRAY[('context_compiled'::character varying)::text, ('runtime_selected'::character varying)::text, ('credential_granted'::character varying)::text, ('sandbox_created'::character varying)::text, ('policy_checked'::character varying)::text, ('adapter_invoked'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_ingested'::character varying)::text, ('patch_collected'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('proposal_created'::character varying)::text, ('evaluation_created'::character varying)::text, ('run_finalized'::character varying)::text, ('delegation_requested'::character varying)::text, ('delegation_policy_denied'::character varying)::text, ('delegation_queued'::character varying)::text, ('delegation_started'::character varying)::text, ('delegation_completed'::character varying)::text, ('action_invoked'::character varying)::text, ('action_completed'::character varying)::text])`),
+	check("ck_run_events_event_type", sql`(event_type)::text = ANY (ARRAY[('context_compiled'::character varying)::text, ('runtime_selected'::character varying)::text, ('credential_granted'::character varying)::text, ('sandbox_created'::character varying)::text, ('policy_checked'::character varying)::text, ('adapter_invoked'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_ingested'::character varying)::text, ('patch_collected'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('proposal_created'::character varying)::text, ('evaluation_created'::character varying)::text, ('run_finalized'::character varying)::text, ('chat_completed'::character varying)::text, ('delegation_requested'::character varying)::text, ('delegation_policy_denied'::character varying)::text, ('delegation_queued'::character varying)::text, ('delegation_started'::character varying)::text, ('delegation_completed'::character varying)::text, ('action_invoked'::character varying)::text, ('action_completed'::character varying)::text, ('assistant_message_completed'::character varying)::text, ('tool_call_started'::character varying)::text, ('tool_call_completed'::character varying)::text, ('tool_call_failed'::character varying)::text, ('approval_requested'::character varying)::text, ('approval_resolved'::character varying)::text, ('artifact_produced'::character varying)::text, ('output_validation_completed'::character varying)::text, ('warning'::character varying)::text, ('error'::character varying)::text, ('state_transition'::character varying)::text])`),
 	check("ck_run_events_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('warning'::character varying)::text, ('cancelled'::character varying)::text])`),
 	check("ck_run_events_trust_level", sql`(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))`),
 ]);

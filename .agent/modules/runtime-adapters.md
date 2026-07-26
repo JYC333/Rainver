@@ -14,7 +14,7 @@ live in `server/src/modules/runtimeAdapters/specs.ts`. Specs define:
 - runtime tool requirement, command argv template, and parser behavior
 - context target file and compiler target
 - credential mode and credential profile runtime name
-- sandbox and workspace requirements
+- sandbox and Project Folder requirements
 - model override support
 - permission bypass capability and policy key
 - output parser and artifact strategy
@@ -26,6 +26,15 @@ default `AgentRuntimeProfile`. Server execution then uses the resulting
 `Run.adapter_type` plus the run's snapshotted
 `runtime_profile_snapshot_json.runtime_config_json`. Agents without an enabled
 runtime profile cannot create normal agent runs.
+
+Before dispatch, orchestration assembles the shared `run_input.v1` contract.
+Managed adapters forward it on the runtime-host request; local CLI adapters
+receive the same contract alongside their native prompt/config projection.
+Adapter-specific payloads are projections of this envelope, not independent
+input authorities. Run creation snapshots the intersection of declared Run
+capabilities, immutable AgentVersion tool permissions, and the System Action
+Registry into `run_input.v1.tool_grants`; local CLI and managed execution share
+the same governed tool authority.
 
 The old `/api/v1/runtime-adapters` CRUD, detect, status, probe, and usage API
 is retired. Do not reintroduce instance-level runtime adapter configuration.
@@ -133,20 +142,24 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    routing is taken from the Provider's NetworkProfile. No provider selected
    means no base URL override; the CLI uses its managed login state and the
    CLI credential profile's default NetworkProfile, if one is configured.
-   OpenCode is CLI-profile-only in this slice; it runs headlessly with JSONL
-   output, a sandbox `--dir`, and a run-scoped locked-agent `opencode.json`
-   denying Task and webfetch.
-7. server workspace/sandbox services validate and prepare the worktree.
+   OpenCode can use a CLI profile or a run-scoped ModelProvider binding. It runs
+   through the ACP stdio protocol with a sandbox `--cwd` and a run-scoped
+   `opencode.json` that makes `agent-space-locked` the primary default agent,
+   sets subagent depth to zero, and denies Task and webfetch. Every worktree CLI
+   run receives a freshly cleared private `HOME`; login-backed runs copy only
+   the adapter credential file. Shared sessions, transcripts, databases, and
+   general CLI config are never mounted or linked into a run.
+7. server Project Folder/sandbox services validate and prepare the worktree.
    `ContextPrepareService` renders runtime context files only inside the
    sandbox/worktree.
-8. server command rendering produces `string[]` argv and never uses `shell=True`.
-   Codex CLI headless runs use
-   `codex --ask-for-approval never exec --skip-git-repo-check --sandbox workspace-write <prompt>`;
-   invoking `codex <prompt>` enters the interactive TUI and requires a
-   terminal, the default `codex exec` sandbox is read-only, and the git-repo
-   check would block ephemeral/no-workspace sandbox directories. When the
-   prompt is rendered through argv, the CLI executor does not open a stdin
-   pipe; otherwise Codex treats piped stdin as additional input context.
+8. server command rendering produces `string[]` argv and never uses
+   `shell=True`. Claude receives its prompt through the measured stream-JSON
+   CLI invocation. Codex runs `codex app-server --stdio`; the executor performs
+   initialize → thread/start → turn/start and consumes
+   `item/agentMessage/delta`. OpenCode runs `opencode acp --cwd <sandbox>`; the
+   executor performs initialize → session/new → session/prompt and consumes
+   `agent_message_chunk`. The NDJSON controller owns stdin until the terminal
+   turn response, then closes it so the protocol subprocess exits.
 9. The server CLI executor starts the subprocess and registers it in the shared
    `CliProcessRegistry`; `PATCH /runs/{id}/stop` SIGTERMs the registered
    process before writing terminal cancellation state.
@@ -229,9 +242,9 @@ closed with `runtime_tool_version_unavailable` before credential resolution.
 ## Credential Profile Binding
 
 CLI credential profile ids are UUIDs from `cli_credential_profiles.id`.
-`AgentRuntimeProfile` stores the selected `credential_profile_id`; runs snapshot
-it at creation. When absent, execution falls back to the active-space default
-grant for that runtime.
+They are user-owned and selected through the user × session conversation
+backend binding. The router snapshots the selected profile id into the Run at
+creation. Shared Agent runtime profiles contain no credential reference.
 
 CLI runs fail closed with `runtime_credential_profile_required` when a required
 profile is missing. No ambient HOME or inherited API-key fallback is allowed.
@@ -243,8 +256,47 @@ trigger origin, fallback flags/reason, and cleanup status. Raw tokens, HOME
 paths, and credential file content are never stored.
 
 OpenCode CLI login state is brokered from its documented
-`~/.local/share/opencode/auth.json` location into the per-run credential home;
-the host user's home is never used by the run.
+`~/.local/share/opencode/auth.json` location into an isolated credential home;
+the host user's home and OpenCode session database are never used by the run.
+Provider-backed OpenCode runs also receive a clean private `HOME`, without a
+CLI login profile.
+
+## CLI Conversation Runtime Sessions
+
+Lightweight CLI conversation owns one runtime-state binding per
+user × session × Agent. The database stores an opaque vendor session id,
+context fingerprint, and an internal UUID state key; the id is not assumed to
+be a UUID. Turns for the same user and session are serialized before a Run is
+created so two processes never concurrently mutate one vendor session.
+
+The first turn sends the full Agent Space replay prompt. Later turns resume the
+vendor session and send only the new message plus newly retrieved context:
+
+- Claude Code uses `--resume <session-id>` and a stable conversation cwd,
+  because its transcript lookup is cwd-partitioned.
+- Codex uses app-server `thread/resume`; restored cumulative token usage is
+  captured before `turn/start` and subtracted from the new cumulative total.
+- OpenCode uses ACP `session/resume`; each conversation has a private `HOME`
+  because OpenCode stores all sessions in one SQLite database.
+
+Conversation runtime state lives only under
+`cache/conversation-runtime-homes/<state-key>` and
+`sandboxes/conversation-sessions/<state-key>/workspace`. It is server-owned,
+excluded from backup, and separate from the shared credential profile. A
+backend/model/provider/runtime-config/runtime-policy/Agent-version/summary
+change or failed turn rotates the state binding and forces full replay. A
+missing or partial state directory clears its counterpart and also forces
+replay without treating the filesystem as authority. Retired state is removed
+after the binding transaction;
+Run terminal visibility and binding record/invalidation commit in one
+PostgreSQL statement. An hourly 30-day retention sweep removes only
+interrupted/session-deletion orphans after excluding keys referenced by a
+binding or nonterminal Run. Vendor state is therefore an optimization, never
+conversation authority.
+
+CLI quota probe homes are unique per probe and removed in `finally`. Cached
+quota snapshots are partitioned by runtime and credential profile id so one
+user's subscription state cannot be returned for another profile.
 
 ## Managed API Lifecycle
 
@@ -294,8 +346,9 @@ Agent flows and are not removed from the adapter registry.
   `tool_use` / `tool_result` blocks. The runtime host reports an unsupported
   provider with the `runtime_tool_provider_unsupported` code, and the managed-run
   tool loop degrades to a single no-tool turn rather than failing the run.
-- Managed API runs inside Agent Rooms expose room tools when the run belongs to
-  an active group. `agent.delegate` is available when there are active target
+- Managed API and local CLI runs inside Agent Rooms expose room tools when the
+  run belongs to an active group and carries the corresponding snapshotted tool
+  grant. `agent.delegate` is available when there are active target
   members and creates child runs through the agent group service and
   `run.spawn_child` policy gate. `agent.wait_for_results` lets the current run
   pause on current-turn sibling runs, its own delegated child runs, or explicit
@@ -304,8 +357,9 @@ Agent flows and are not removed from the adapter registry.
   These tools are not free-form provider tools and do not parse natural-language
   text server-side.
 
-General MCP/tool scheduling is deferred to the extended server runtime stage;
-CLI adapters remain the broad tool-bearing agent loop path for the near term.
+General MCP/tool scheduling is deferred to the extended server runtime stage.
+Local CLI adapters use the same `AgentToolGateway` through the Run-scoped MCP
+transport rather than a separate tool authority.
 
 ## Permission Bypass
 
@@ -321,11 +375,27 @@ Blocked requests fail before invocation with `permission_bypass_not_allowed`.
 
 ## Isolation Limits
 
-Worktree isolation protects repository state and proposal review flow. It does
-not provide OS, process, network, or resource isolation. Vendor context files
-are generated into the worktree only so real workspace files such as
-`CLAUDE.md`, `AGENTS.md`, or `prompt.md` are never mutated by runtime context
-rendering.
+Low/medium-risk Folder-bound CLI runs use `read_only`: the real Project Folder
+is exposed through a rootless bubblewrap mount namespace with an OS-enforced
+read-only view. Generated vendor context lives under
+`SANDBOX_ROOT/read-only-context/<space>/<run>` and is overlaid only inside that
+view. The brokered HOME and Run Exchange output are the only persistent
+writable mounts. The namespace begins with an empty filesystem and exposes only
+system runtime trees, exact DNS/NSS/linker/CA configuration files (not the
+whole `/etc`), runtime tools, the current Folder view, the current
+brokered HOME, and Run Exchange input/output; other host paths, spaces,
+credential profiles, and runtime-state directories are not readable. Network remains shared for
+subscription access. Official
+Compose relaxes its seccomp profile solely because Docker's built-in profile
+blocks rootless namespace creation; it grants no capabilities or privileged
+mode. Namespace preflight failure is terminal and never downgrades to a normal
+subprocess.
+
+Worktree isolation protects repository state and proposal review flow for
+high-risk mutation. It does not provide OS, process, network, or resource
+isolation. Vendor context files are generated into the worktree only so real
+Project Folder files such as `CLAUDE.md`, `AGENTS.md`, or `prompt.md` are never
+mutated by runtime context rendering.
 
 `one_shot_docker` is the critical-risk execution mode for implemented local CLI
 adapters. The executor uses a deny-by-default network namespace, read-only
@@ -338,14 +408,19 @@ leases are rejected until an egress-enabled profile has its own policy review.
 The retired `/runtime-adapters/*/usage` endpoint is not part of the current
 product. Run history and trace read models remain the source for execution
 evidence, while token accounting lives under `/usage`: managed provider calls
-and provider-proxy responses emit ledger events, and managed CLI profiles can
-import transcript-derived lower bounds. CLI login/quota snapshots remain under
-`/credentials/cli/usage*` and are not token-accounting events.
+and provider-proxy responses emit ledger events, subscription CLI runs emit
+Run-attributed `local_cli` events from their exact runtime envelopes, and
+managed CLI profiles can import transcript-derived lower bounds only as a
+recovery path. Claude's live `rate_limit_event` updates the selected profile's
+quota cache. CLI quota snapshots remain under `/credentials/cli/usage*` and
+are not token-accounting events.
 
-Current CLI specs use generic/plain-text output parser behavior: normalized
-output text, redacted stdout/stderr, stable nonzero/timeout error codes, and no
-artifact paths unless explicitly parseable. Raw output and transcripts are not
-stored in the usage ledger.
+Claude Code uses its structured JSON stream; Codex uses app-server JSON-RPC;
+OpenCode uses ACP JSON-RPC. Their protocol controllers validate scoped
+responses and terminal usage before producing the adapter envelope. Output
+text remains normalized, stdout/stderr are redacted, and nonzero/timeout errors
+use stable codes. Raw output and transcripts are not stored in the usage
+ledger.
 
 ## Adding an Adapter
 

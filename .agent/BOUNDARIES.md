@@ -24,7 +24,18 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 
 **B7** — Users and agents have independent identity, permissions, and memory policies. Do not merge them into a single model.
 
-**B8** — Agents can be user-owned, space-owned, workspace-owned, or system-owned. Ownership affects visibility and permission inheritance.
+**B8** — Agents can be user-owned, space-owned, project-owned, or system-owned. Project Folder selection is an execution input, not an Agent ownership class. Ownership affects visibility and permission inheritance.
+
+**B8A** — Room speaking and execution identity is resolved per message. A
+Room's creator and a task group's `manager_user_id` are lifecycle provenance,
+not authority to substitute one human's retrieval visibility or CLI
+subscription for another's. Each Room message creates its own collaboration
+task and its Runs carry that message sender as `instructed_by_user_id`.
+Room creation requires Project writer authority, every human roster member
+must currently be able to read that Project, and revoking Project access also
+revokes Room and Room-task reads. Room Run artifacts and proposals cannot widen
+past the Run's `selected_users` boundary: they inherit the active Run grants
+and remain subject to the Project ACL on every read.
 
 ---
 
@@ -62,13 +73,23 @@ Every writer validates endpoint space/access through the owning module, and
 every reader must tolerate deleted or inaccessible endpoints without treating
 the link as canonical object existence.
 
+**B12C** — New Project-domain aggregates (Inquiry Thread, Experiment,
+Decision Case, and their state/relation tables) are never `space_objects`
+rows and never write `object_relations`. They use their own explicit,
+narrowly-owned FK link tables (e.g. `inquiry_thread_relations`,
+`inquiry_thread_note_links`, `experiment_thread_links`,
+`decision_thread_links`). Cross-domain navigation/discovery association that
+is not a business relationship is served by `retrieval_edges` (rebuildable,
+non-authoritative), not by a new generic association table. See
+[ADR 0011](decisions/0011-domain-owned-inquiry-model.md).
+
 ---
 
 ## Execution Boundaries
 
-**B13** — `_SANDBOXED_ADAPTERS` (claude_code, codex_cli, and future coding runtimes) are always sandboxed. High-risk file-access CLI runs use a git worktree + local executor; critical local-CLI runs use the one-shot Docker executor. Docker failures are fail-closed rather than silently downgraded. An agent can escalate `risk_level` but cannot remove an adapter from `_SANDBOXED_ADAPTERS`.
+**B13** — `_SANDBOXED_ADAPTERS` (claude_code, codex_cli, and future coding runtimes) are always sandboxed. Low/medium-risk Project Folder reads use the rootless bubblewrap `read_only` mount boundary; high-risk file-access CLI runs use a git worktree + local executor; critical local-CLI runs use the one-shot Docker executor. Namespace/Docker failures are fail-closed rather than silently downgraded. An agent can escalate `risk_level` but cannot remove an adapter from `_SANDBOXED_ADAPTERS`.
 
-**B14** — Vendor context files (CLAUDE.md, AGENTS.md, Cursor rules) are generated artefacts written by ContextCompiler to the sandbox directory. They are not the source of truth and are never written directly to the real workspace by default.
+**B14** — Vendor context files (CLAUDE.md, AGENTS.md, Cursor rules) are generated artefacts written by ContextCompiler to a server-owned sandbox/staging directory. They are not the source of truth and are never written directly to the real Project Folder.
 
 **B15** — Formal agent runs (automated, tracked, sandbox-enforced) must go through agent-space managed mode. IDE plugin usage is assist/manual mode — it is not tracked the same way.
 
@@ -76,15 +97,15 @@ the link as canonical object existence.
 
 ---
 
-## Workspace Boundaries
+## Project Folder Boundaries
 
-**B17** — Workspace file access must go through `WorkspaceManager` and `PathPolicy`. Adapters must not access arbitrary host paths.
+**B17** — Project Folder file access must go through `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`. Adapters must not access arbitrary host paths.
 
 **B18** — Sandboxes are short-lived execution areas. Long-term records are: artifacts, diffs, logs, and approved proposals. Sandbox directories may be cleaned up after artifact collection.
 
-**B19** — Agents should not directly modify real workspaces. Preferred flow: `workspace → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`.
+**B19** — Agents do not directly modify a real Project Folder. Read-only work uses an OS-enforced `read_only` namespace; mutation uses `Project Folder → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`.
 
-**B19A** — Workspace console reads are policy-gated. `workspace.read` is enforced for tree, file, git status, and git diff. system_core, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
+**B19A** — Files & Code reads are policy-gated. `project_folder.read` is enforced for tree, file, git status, and git diff. Protected-Folder, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
 
 ---
 
@@ -114,7 +135,7 @@ profile records remain the source of truth.
 
 **B24A** — The Activity Inbox holds pointers, never content. Any module that wants user attention delivers a clearable notification row into `ActivityRecord`; the content itself lives in that module's own reading surface (e.g. Sources-derived digests read in Library, not in Inbox). Inbox rows disappear when handled; the underlying content stays where it lives and remains revisitable from its owning surface.
 
-**B25** — The workspace console (file browser, diff viewer) is for workspace operators. It must not be shown as the primary entry point for personal-use features (capture, review, chat).
+**B25** — Files & Code (file browser, diff viewer) is for Project Folder operators. It must not be shown as the primary entry point for personal-use features (capture, review, chat).
 
 **B26** — Git diff review is approval-oriented, not merge-tool-oriented. The UI must show attribution (which agent run produced the diff) and make accept/reject the primary actions. Inline editing in the diff view is not supported in v1.
 

@@ -16,13 +16,13 @@ Raw-input layer (L0). Everything entering the system lands as an `ActivityRecord
 
 Canonical `source_kind` / `activity_type` values: `user_capture`,
 `chat_message`, `external_chat`, `file_import`, `web_capture`, `run_event`,
-`workspace_event`, `system_event`, `external_source`, and `source`. Legacy input
+`project_folder_event`, `system_event`, `external_source`, and `source`. Legacy input
 aliases such as `user_input`, `manual`, `agent_run`, `task_log`,
 `imported_chat`, `file_capture`, and `voice_capture` are normalized at ingest.
 
 Default `source_trust` by kind:
 - `user_capture`, `chat_message`, `external_chat`, `file_import` → `user_confirmed`
-- `run_event`, `system_event`, `workspace_event`, `source` → `internal_system`
+- `run_event`, `system_event`, `project_folder_event`, `source` → `internal_system`
 - `web_capture`, `external_source` → `untrusted_external`
 - Unknown/empty → `untrusted_external`
 
@@ -32,7 +32,7 @@ If `ActivityRecord.source_trust` is already set to a valid enum value, that valu
 
 ```
 ActivityRecord:
-  id, space_id, user_id, workspace_id, agent_id
+  id, space_id, user_id, project_folder_id, agent_id
   source_kind, source_trust, activity_type, title, content
   source_run_id, source_task_id, source_session_id, source_url
   subject_user_id
@@ -45,7 +45,7 @@ ActivityRecord:
 
 ```
 POST   /api/v1/activity                    — ingest
-GET    /api/v1/activity                    — list (filter: source_type, status, workspace)
+GET    /api/v1/activity                    — list (filter: source_type, status, project_folder)
 GET    /api/v1/activity/{id}
 PATCH  /api/v1/activity/{id}/review        — mark as reviewed (status-only; no proposals)
 PATCH  /api/v1/activity/{id}/archive

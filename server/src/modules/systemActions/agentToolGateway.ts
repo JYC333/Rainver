@@ -31,13 +31,18 @@ import { SourceChannelService } from "../sources/channels/sourceChannelService";
 import { ProjectSourceProposalService } from "../projects/projectSourceProposalService";
 import { SourceBackfillPlanningService } from "../sources/sourceBackfillService";
 import { PgPlanRepository } from "../plans/repository";
+import { assembleRunInputEnvelope } from "../runs/runInputEnvelope";
+import { AuthorizationRequestService } from "../policy/authorizationRequestService";
+import { SystemActionGatewayError } from "./gateway";
+import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService";
 
 export interface AgentToolGatewayDeps extends ManagedApiRetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
   actionEventSink?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
 }
 
-const GENERIC_PROPOSAL_ACTION_IDS = ["source.channel.propose_activation", "project.source.propose_bind", "source.backfill.propose_start", "task.plan.propose"];
+const GENERIC_TRANSPORT_ACTION_IDS = ["authorization.request", "source.channel.propose_activation", "project.source.propose_bind", "source.backfill.propose_start", "task.plan.propose"];
+const GENERIC_PROPOSAL_ACTION_IDS = GENERIC_TRANSPORT_ACTION_IDS.filter((id) => id !== "authorization.request");
 
 /** Managed-run adapter over the registry-driven action surface. */
 export class AgentToolGateway {
@@ -55,10 +60,16 @@ export class AgentToolGateway {
     ]);
     const registry = await loadSystemActionRegistry();
     const executors = new Map<SystemActionId, SystemActionExecutor>();
+    const grantedActionIds = new Set(
+      assembleRunInputEnvelope(run).tool_grants.map((grant) => grant.action_id),
+    );
 
-    const enabledGenericActions = await this.resolveEnabledGenericActions(run);
     const genericDefinitions: CanonicalToolDefinition[] = [...registry.values()]
-      .filter((definition) => GENERIC_PROPOSAL_ACTION_IDS.includes(definition.id) && enabledGenericActions.has(definition.id))
+      .filter(
+        (definition) =>
+          GENERIC_TRANSPORT_ACTION_IDS.includes(definition.id) &&
+          grantedActionIds.has(definition.id),
+      )
       .map((definition) => ({ name: definition.id, description: definition.description, input_schema: proposalActionJsonSchema(definition.id) }));
 
     if (genericDefinitions.length && !retrieval) {
@@ -84,7 +95,12 @@ export class AgentToolGateway {
 
     const permitted = new Set(
       [...registry.values()]
-        .filter((definition) => definition.visibility.has("agent_tool") && definition.allowed_actor_types.includes("agent"))
+        .filter(
+          (definition) =>
+            grantedActionIds.has(definition.id) &&
+            definition.visibility.has("agent_tool") &&
+            definition.allowed_actor_types.includes("agent"),
+        )
         .map((definition) => definition.id),
     );
     if (retrieval) {
@@ -176,6 +192,21 @@ export class AgentToolGateway {
     );
 
     const dispatch = async (call: CanonicalToolCall) => {
+      if (!grantedActionIds.has(call.name)) {
+        return {
+          modelResult: {
+            ok: false,
+            tool: call.name,
+            error_code: "system_action_not_granted",
+            error: "This system action is not granted to the Run.",
+          },
+          summary: {
+            tool_name: call.name,
+            ok: false,
+            error_code: "system_action_not_granted",
+          },
+        };
+      }
       let input: unknown;
       try {
         input = JSON.parse(call.arguments_json || "{}");
@@ -208,31 +239,6 @@ export class AgentToolGateway {
   }
 
   /**
-   * Resolves the generic proposal-type actions this run's agent is permitted
-   * to call. This is a fail-closed intersection of the run's declared
-   * `capabilities_json` and the immutable AgentVersion
-   * `tool_permissions_json.allowed_tools`. When the AgentVersion cannot be
-   * resolved (no database, or the run carries no `agent_version_id`), no
-   * generic action is enabled — capabilities_json alone is never sufficient.
-   */
-  private async resolveEnabledGenericActions(run: RunRecord): Promise<Set<string>> {
-    const enabled = new Set<string>();
-    const declared = Array.isArray(run.capabilities_json)
-      ? run.capabilities_json.filter((value): value is string => typeof value === "string" && GENERIC_PROPOSAL_ACTION_IDS.includes(value))
-      : [];
-    if (declared.length === 0) return enabled;
-    if (!this.config.databaseUrl || !run.agent_version_id) return enabled;
-    const permissionRow = await getDbPool(this.config.databaseUrl).query<{ tool_permissions_json: Record<string, unknown> }>(
-      `SELECT tool_permissions_json FROM agent_versions WHERE id=$1 AND agent_id=$2 AND space_id=$3`,
-      [run.agent_version_id, run.agent_id, run.space_id],
-    );
-    for (const actionId of filterGenericActionCapabilities(declared, permissionRow.rows[0]?.tool_permissions_json)) {
-      enabled.add(actionId);
-    }
-    return enabled;
-  }
-
-  /**
    * A run with no other retrieval-domain tools enabled still needs a
    * `ResolvedRetrievalToolBinding` carrier for the generic proposal tools
    * (they're transported alongside retrieval tool definitions/bindings). Its
@@ -258,6 +264,27 @@ export class AgentToolGateway {
   private registerGenericProposalExecutors(executors: Map<SystemActionId, SystemActionExecutor>, run: RunRecord): void {
     const db = getDbPool(this.config.databaseUrl!);
     const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };
+
+    executors.set("authorization.request" as SystemActionId, async (input) => {
+      const body = input as { policy_decision_record_id: string; reason: string };
+      const request = await new AuthorizationRequestService(db, this.config).createFromDeniedDecision({
+        spaceId: run.space_id,
+        runId: run.id,
+        agentId: run.agent_id,
+        policyDecisionRecordId: body.policy_decision_record_id,
+        reason: body.reason,
+      });
+      return {
+        modelResult: { ok: true, authorization_request: request },
+        summary: {
+          tool_name: "authorization.request",
+          ok: true,
+          authorization_request_id: request.id,
+          status: request.status,
+        },
+        suspend: authorizationRequestPauseResponse(request.id),
+      };
+    });
 
     executors.set("source.channel.propose_activation" as SystemActionId, async (input, context) => {
       const result = await new SourceChannelService(db, this.config).proposeActivation(identity, input as Record<string, unknown>, {
@@ -330,6 +357,27 @@ export class AgentToolGateway {
     actor: { spaceId: string; instructedByUserId: string; agentId: string; runId: string },
     delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
   ) {
+    if (definition.id === "authorization.request" && this.config.databaseUrl) {
+      const decision = await enforce({ databaseUrl: this.config.databaseUrl }, await loadActionRegistry(), {
+        action: definition.policy_action,
+        force_record: true,
+        actor_type: "agent",
+        actor_id: run.agent_id,
+        space_id: run.space_id,
+        resource_space_id: run.space_id,
+        resource_type: "authorization_request",
+        resource_id: run.id,
+        run_id: run.id,
+        context: { action_id: definition.id, instructed_by_user_id: run.instructed_by_user_id },
+        metadata_json: { surface: "managed_run_system_action_gateway", action_id: definition.id },
+      });
+      return {
+        allowed: decision.status === "allow",
+        policy_decision_record_id: decision.policy_decision_record_id ?? null,
+        reason: decision.message ?? undefined,
+        details: decision,
+      };
+    }
     if (definition.id === "agent.delegate" && delegation?.service.preflightSpawnChildRunPolicy) {
       const call = { id: definition.id, name: definition.id, arguments_json: JSON.stringify(input) };
       const prepared = agentDelegatePolicyInput(call, delegation, run);
@@ -376,7 +424,12 @@ export class AgentToolGateway {
         context: { tool_name: definition.id, instructed_by_user_id: run.instructed_by_user_id },
         metadata_json: { surface: "managed_run_system_action_gateway", action_id: definition.id },
       });
-      return { allowed: decision.status === "allow", policy_decision_record_id: decision.policy_decision_record_id ?? null, reason: decision.message ?? undefined };
+      return {
+        allowed: decision.status === "allow",
+        policy_decision_record_id: decision.policy_decision_record_id ?? null,
+        reason: decision.message ?? undefined,
+        details: decision,
+      };
     }
 
     if (GENERIC_PROPOSAL_ACTION_IDS.includes(definition.id) && this.config.databaseUrl) {
@@ -386,6 +439,17 @@ export class AgentToolGateway {
         : definition.id === "task.plan.propose"
           ? String((input as Record<string, unknown>).task_id ?? run.id)
         : (run.project_id ?? run.id);
+      const hasActionGrant = await new ActionApprovalGrantService(
+        getDbPool(this.config.databaseUrl),
+      ).hasMatching({
+        spaceId: run.space_id,
+        agentId: run.agent_id,
+        actionId: definition.id,
+        runId: run.id,
+        projectId: run.project_id,
+        resourceKind: resourceType,
+        resourceId,
+      });
       const decision = await enforce({ databaseUrl: this.config.databaseUrl }, await loadActionRegistry(), {
         action: definition.policy_action,
         force_record: true,
@@ -396,10 +460,24 @@ export class AgentToolGateway {
         resource_type: resourceType,
         resource_id: resourceId,
         run_id: run.id,
-        context: { action_id: definition.id, project_id: run.project_id, instructed_by_user_id: run.instructed_by_user_id },
-        metadata_json: { surface: "managed_run_system_action_gateway" },
+        context: {
+          action_id: definition.id,
+          project_id: run.project_id,
+          instructed_by_user_id: run.instructed_by_user_id,
+          surface: "managed_run_system_action_gateway",
+          has_action_approval_grant: hasActionGrant,
+        },
+        metadata_json: {
+          surface: "managed_run_system_action_gateway",
+          action_id: definition.id,
+        },
       });
-      return { allowed: decision.status === "allow", policy_decision_record_id: decision.policy_decision_record_id ?? null, reason: decision.message ?? undefined };
+      return {
+        allowed: decision.status === "allow",
+        policy_decision_record_id: decision.policy_decision_record_id ?? null,
+        reason: decision.message ?? undefined,
+        details: decision,
+      };
     }
 
     return { allowed: false, reason: "No canonical policy adapter is registered for this action" };
@@ -414,13 +492,20 @@ export class AgentToolGateway {
       modelResult: {
         ok: false,
         tool: call.name,
+        error_code: errorCode,
         error: disabledRetrievalDomain ? "Retrieval tool domain is not enabled for this run." : error instanceof Error ? error.message : "Action failed",
+        ...(policyDecisionRecordId(error)
+          ? { policy_decision_record_id: policyDecisionRecordId(error) }
+          : {}),
       },
       summary: {
         tool_name: call.name,
         ...(disabledRetrievalDomain ? { domain: call.name.split(".")[0] === "memory" ? "memory" : call.name.split(".")[0] } : {}),
         ok: false,
         error_code: errorCode,
+        ...(policyDecisionRecordId(error)
+          ? { policy_decision_record_id: policyDecisionRecordId(error) }
+          : {}),
       },
     };
   }
@@ -450,18 +535,44 @@ export class AgentToolGateway {
   }
 }
 
-function allowedTools(value: Record<string, unknown> | undefined): string[] {
-  return Array.isArray(value?.allowed_tools) ? value.allowed_tools.filter((item): item is string => typeof item === "string") : [];
+function policyDecisionRecordId(error: unknown): string | null {
+  if (error instanceof SystemActionGatewayError) return error.policy_decision_record_id;
+  if (!error || typeof error !== "object") return null;
+  const value = (error as { policy_decision_record_id?: unknown }).policy_decision_record_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-export function filterGenericActionCapabilities(capabilities: string[], permissions: Record<string, unknown> | undefined): string[] {
-  const allowed = new Set(allowedTools(permissions));
-  return capabilities.filter((action) => allowed.has(action));
+function authorizationRequestPauseResponse(requestId: string): RuntimeHostExecuteResponse {
+  return {
+    success: false,
+    stdout: "",
+    stderr: "",
+    output_text: "",
+    output_json: {
+      authorization_request_id: requestId,
+      authorization_request_status: "pending",
+    },
+    exit_code: null,
+    error_text: "Agent authorization request is pending review.",
+    error_code: "authorization_request_pending",
+    started_at: null,
+    completed_at: new Date().toISOString(),
+    model: null,
+    usage: null,
+    events: [],
+    adapter_metadata: {},
+    adapter_log_json: null,
+  };
 }
 
 export function proposalActionJsonSchema(actionId: string): Record<string, unknown> {
   const properties: Record<string, unknown> =
-      actionId === "task.plan.propose"
+      actionId === "authorization.request"
+        ? {
+            policy_decision_record_id: { type: "string" },
+            reason: { type: "string", minLength: 1, maxLength: 1000 },
+          }
+      : actionId === "task.plan.propose"
         ? {
             task_id: { type: "string" },
             plan_id: { type: ["string", "null"] },

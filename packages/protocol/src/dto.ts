@@ -12,7 +12,7 @@ import type {
   SpaceRefSchema,
   UserRefSchema,
   AgentRefSchema,
-  WorkspaceRefSchema,
+  ProjectFolderRefSchema,
   ProjectRefSchema,
   ActivityDTOSchema,
   ProposalDTOSchema,
@@ -27,7 +27,7 @@ import type {
 export type SpaceRef = z.infer<typeof SpaceRefSchema>;
 export type UserRef = z.infer<typeof UserRefSchema>;
 export type AgentRef = z.infer<typeof AgentRefSchema>;
-export type WorkspaceRef = z.infer<typeof WorkspaceRefSchema>;
+export type ProjectFolderRef = z.infer<typeof ProjectFolderRefSchema>;
 export type ProjectRef = z.infer<typeof ProjectRefSchema>;
 
 // Domain DTOs

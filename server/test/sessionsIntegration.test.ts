@@ -60,7 +60,7 @@ describe("PgSessionRepository against real Postgres", () => {
     if (!available || !repo) return;
     const out = await repo.createSession(SPACE, USER, {
       title: "new chat",
-      workspaceId: null,
+      projectFolderId: null,
       metadata: { source: "test" },
     });
 
@@ -120,6 +120,31 @@ describe("PgSessionRepository against real Postgres", () => {
     expect(new Date(after!.updated_at).getTime()).toBeGreaterThanOrEqual(
       new Date(created.updated_at).getTime(),
     );
+  });
+
+  it("persists at most one assistant message for a retried chat Run", async () => {
+    if (!available || !repo) return;
+    const created = await repo.createSession(SPACE, USER, {});
+
+    const first = await repo.addAssistantMessageForRun(
+      SPACE,
+      USER,
+      created.id,
+      "run-1",
+      { content: "durable reply", metadata: { artifact_refs: ["artifact-1"] } },
+    );
+    const retried = await repo.addAssistantMessageForRun(
+      SPACE,
+      USER,
+      created.id,
+      "run-1",
+      { content: "must not replace the durable reply" },
+    );
+
+    expect(retried).toEqual(first);
+    expect(await repo.listMessages(SPACE, USER, created.id, 100, 0)).toEqual([
+      first,
+    ]);
   });
 
   it("refuses to append to a session the user cannot see (null, no insert)", async () => {

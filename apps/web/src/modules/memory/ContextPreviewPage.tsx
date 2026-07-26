@@ -12,9 +12,11 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Badge } from '../../components/ui/badge'
 import { ContextArtifactPicker } from '../artifacts/ContextArtifactPicker'
+import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
+import { TechnicalIdField } from '../../components/TechnicalIdField'
 
 interface ContextForm {
-  workspace_id: string
+  project_folder_id: string
   project_id: string
   session_id: string
   capability_id: string
@@ -36,7 +38,7 @@ interface AttachmentPreview {
 
 const SUMMARY_ROWS: [string, keyof ContextPackage][] = [
   ['User Memory',       'user_memory'],
-  ['Workspace Memory',  'workspace_memory'],
+  ['Folder Memory',      'project_folder_memory'],
   ['Capability Memory', 'capability_memory'],
   ['Agent Memory',      'agent_memory'],
   ['System Policy',     'system_policy'],
@@ -48,7 +50,7 @@ export default function ContextPreviewPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
   const [form, setForm] = useState<ContextForm>({
-    workspace_id: searchParams.get('workspace_id') ?? '',
+    project_folder_id: searchParams.get('project_folder_id') ?? '',
     project_id: searchParams.get('project_id') ?? '',
     session_id: '',
     capability_id: '',
@@ -63,9 +65,9 @@ export default function ContextPreviewPage() {
   useEffect(() => {
     const urlIds = initialArtifactIds(searchParams)
     if (urlIds.length > 0) setSelectedArtifactIds(urlIds.slice(0, 8))
-    const workspaceId = searchParams.get('workspace_id')
+    const projectFolderId = searchParams.get('project_folder_id')
     const projectId = searchParams.get('project_id')
-    if (workspaceId) setForm(current => ({ ...current, workspace_id: workspaceId }))
+    if (projectFolderId) setForm(current => ({ ...current, project_folder_id: projectFolderId }))
     if (projectId) setForm(current => ({ ...current, project_id: projectId }))
   }, [searchParams])
 
@@ -77,10 +79,10 @@ export default function ContextPreviewPage() {
         params.delete('artifact_ids')
         params.delete('artifact_id')
       }
-      const workspaceId = form.workspace_id.trim()
+      const projectFolderId = form.project_folder_id.trim()
       const projectId = form.project_id.trim()
-      if (workspaceId) params.set('workspace_id', workspaceId)
-      else params.delete('workspace_id')
+      if (projectFolderId) params.set('project_folder_id', projectFolderId)
+      else params.delete('project_folder_id')
       if (projectId) params.set('project_id', projectId)
       else params.delete('project_id')
       return params
@@ -95,7 +97,7 @@ export default function ContextPreviewPage() {
     setLoading(true)
     try {
       setPkg(await contextApi.build({
-        workspace_id:   form.workspace_id.trim()   || null,
+        project_folder_id:   form.project_folder_id.trim()   || null,
         project_id:     form.project_id.trim()     || null,
         session_id:    form.session_id.trim()    || null,
         capability_id: form.capability_id.trim() || null,
@@ -131,22 +133,14 @@ export default function ContextPreviewPage() {
       <Card>
         <CardTitle>Build Context Package</CardTitle>
         <div className="grid grid-cols-2 gap-3 mb-3">
-          <div>
-            <Label>Workspace ID (optional)</Label>
-            <Input value={form.workspace_id} onChange={e => setField('workspace_id', e.target.value)} placeholder="Required for workspace-scoped artifacts…" />
-          </div>
-          <div>
-            <Label>Project ID (optional)</Label>
-            <Input value={form.project_id} onChange={e => setField('project_id', e.target.value)} placeholder="Required for project-scoped artifact revocation…" />
-          </div>
-          <div>
-            <Label>Session ID (optional)</Label>
-            <Input value={form.session_id} onChange={e => setField('session_id', e.target.value)} placeholder="Paste session ID…" />
-          </div>
-          <div>
-            <Label>Capability ID (optional)</Label>
-            <Input value={form.capability_id} onChange={e => setField('capability_id', e.target.value)} placeholder="e.g. memory.reflect" />
-          </div>
+          <ProjectFolderSelectors
+            projectId={form.project_id}
+            folderId={form.project_folder_id}
+            onProjectChange={value => setField('project_id', value)}
+            onFolderChange={value => setField('project_folder_id', value)}
+          />
+          <TechnicalIdField label="Session ID (optional)" value={form.session_id} onChange={value => setField('session_id', value)} />
+          <TechnicalIdField label="Capability ID (optional)" value={form.capability_id} onChange={value => setField('capability_id', value)} placeholder="e.g. memory.reflect" />
         </div>
         <div className="mb-3">
           <Label>Query (optional — relevance search)</Label>
@@ -162,7 +156,7 @@ export default function ContextPreviewPage() {
         <ContextArtifactPicker
           selectedArtifactIds={selectedArtifactIds}
           onChange={updateSelectedArtifactIds}
-          workspaceId={form.workspace_id}
+          projectFolderId={form.project_folder_id}
           projectId={form.project_id}
         />
       </Card>

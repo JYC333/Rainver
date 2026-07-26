@@ -33,7 +33,7 @@ export interface MemoryListFilters {
   namespace?: string | null;
   memoryType?: string | null;
   status?: string | null;
-  workspaceId?: string | null;
+  projectFolderId?: string | null;
   projectId?: string | null;
   includeSystem?: boolean;
   limit: number;
@@ -45,7 +45,7 @@ export interface MemorySearchFilters {
   scope?: string | null;
   namespace?: string | null;
   memoryType?: string | null;
-  workspaceId?: string | null;
+  projectFolderId?: string | null;
   includeSystem?: boolean;
   limit: number;
 }
@@ -66,7 +66,7 @@ export class MemoryReadValidationError extends Error {}
 
 // All columns the read model needs: the MemoryOut wire fields plus the columns
 // canReadMemory inspects.
-export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id, workspace_id,
+export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id, project_folder_id,
   scope_type, namespace, memory_type, title, content, status, visibility, access_level,
   sensitivity_level, last_confirmed_at, confidence, importance,
   source_id, created_by, created_at, updated_at, deleted_at, version, tags,
@@ -172,7 +172,7 @@ export class PgMemoryReadRepository {
       canReadMemory(row, {
         userId,
         spaceId,
-        workspaceId: filters.workspaceId ?? null,
+        projectFolderId: filters.projectFolderId ?? null,
         includeSystemScope: includeSystem && row.scope_type === "system",
         oversightLevel,
       }),
@@ -196,7 +196,7 @@ export class PgMemoryReadRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    workspaceId: string | null,
+    projectFolderId: string | null,
   ): Promise<MemoryOut | null> {
     const result = await this.db.query<MemoryRow>(
       `SELECT ${MEMORY_COLUMNS},
@@ -212,7 +212,7 @@ export class PgMemoryReadRepository {
     const includeSystemScope = row.scope_type === "system";
     const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
     if (
-      !canReadMemory(row, { userId, spaceId, workspaceId, includeSystemScope, oversightLevel })
+      !canReadMemory(row, { userId, spaceId, projectFolderId, includeSystemScope, oversightLevel })
     ) {
       return null;
     }
@@ -270,7 +270,7 @@ export class PgMemoryReadRepository {
       canReadMemory(row, {
         userId,
         spaceId,
-        workspaceId: filters.workspaceId ?? null,
+        projectFolderId: filters.projectFolderId ?? null,
         includeSystemScope: includeSystem && row.scope_type === "system",
         oversightLevel,
       }),
@@ -437,7 +437,7 @@ export function serializeMemoryRow(row: MemoryRow, viewerUserId: string): Memory
       space_id: row.space_id,
       subject_user_id: row.subject_user_id,
       owner_user_id: row.owner_user_id,
-      workspace_id: row.workspace_id,
+      project_folder_id: row.project_folder_id,
       scope: row.scope_type ?? "",
       namespace: row.namespace,
       type: row.memory_type,

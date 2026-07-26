@@ -24,6 +24,10 @@ services:
       target: dev-runtime
       network: host
     container_name: agent-space-test-server
+    # Required by the rootless bubblewrap read-only Project Folder boundary.
+    # Keep the container unprivileged and do not add SYS_ADMIN.
+    security_opt:
+      - seccomp=unconfined
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

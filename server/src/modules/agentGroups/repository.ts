@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
+import {
+  contentReadSql,
+  projectReadAccessSql,
+} from "../access/contentAccessSql";
+import { canReadProject } from "../projects/access";
 
 export interface AgentRunGroupRecord {
   id: string;
@@ -8,6 +12,11 @@ export interface AgentRunGroupRecord {
   root_run_id: string | null;
   manager_user_id: string;
   manager_agent_id: string | null;
+  room_id: string | null;
+  session_id: string | null;
+  trigger_message_id: string | null;
+  project_id: string | null;
+  project_folder_id: string | null;
   title: string;
   goal: string;
   status: string;
@@ -68,6 +77,7 @@ export interface RunDelegationRecord {
   budget_json: Record<string, unknown> | null;
   context_policy_json: Record<string, unknown> | null;
   result_summary: string | null;
+  tool_call_id: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -92,7 +102,8 @@ export interface AgentCapabilitySnapshotRecord {
 }
 
 const GROUP_COLUMNS = `
-  id, space_id, root_run_id, manager_user_id, manager_agent_id, title, goal,
+  id, space_id, root_run_id, manager_user_id, manager_agent_id, room_id,
+  session_id, trigger_message_id, project_id, project_folder_id, title, goal,
   status, budget_json, policy_snapshot_json, created_at, updated_at, ended_at
 `;
 
@@ -116,16 +127,30 @@ const DELEGATION_COLUMNS = `
   id, space_id, group_id, parent_run_id, child_run_id, request_message_id,
   requesting_agent_id, target_agent_id, requested_by_user_id,
   policy_decision_record_id, status, instruction, reason, budget_json,
-  context_policy_json, result_summary, created_at, updated_at, completed_at
+  context_policy_json, result_summary, tool_call_id, created_at, updated_at,
+  completed_at
 `;
 
 export class PgAgentGroupRepository {
   constructor(private readonly db: Queryable) {}
 
+  async canReadProject(
+    spaceId: string,
+    projectId: string,
+    userId: string,
+  ): Promise<boolean> {
+    return canReadProject(this.db, spaceId, projectId, userId);
+  }
+
   async createGroup(input: {
     space_id: string;
     manager_user_id: string;
     manager_agent_id: string;
+    room_id?: string | null;
+    session_id?: string | null;
+    trigger_message_id?: string | null;
+    project_id?: string | null;
+    project_folder_id?: string | null;
     title: string;
     goal: string;
     budget_json?: Record<string, unknown> | null;
@@ -135,10 +160,12 @@ export class PgAgentGroupRepository {
     const now = input.now ?? new Date().toISOString();
     const result = await this.db.query<AgentRunGroupRecord>(
       `INSERT INTO agent_run_groups (
-         id, space_id, root_run_id, manager_user_id, manager_agent_id, title,
-         goal, status, budget_json, policy_snapshot_json, created_at, updated_at
+         id, space_id, root_run_id, manager_user_id, manager_agent_id, room_id,
+         session_id, trigger_message_id, project_id, project_folder_id, title, goal, status,
+         budget_json, policy_snapshot_json, created_at, updated_at
        ) VALUES (
-         $1, $2, NULL, $3, $4, $5, $6, 'active', $7::jsonb, $8::jsonb, $9, $9
+         $1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active',
+         $12::jsonb, $13::jsonb, $14, $14
        )
        RETURNING ${GROUP_COLUMNS}`,
       [
@@ -146,6 +173,11 @@ export class PgAgentGroupRepository {
         input.space_id,
         input.manager_user_id,
         input.manager_agent_id,
+        input.room_id ?? null,
+        input.session_id ?? null,
+        input.trigger_message_id ?? null,
+        input.project_id ?? null,
+        input.project_folder_id ?? null,
         input.title,
         input.goal,
         JSON.stringify(input.budget_json ?? {}),
@@ -242,6 +274,58 @@ export class PgAgentGroupRepository {
     return result.rows[0] ?? null;
   }
 
+  async isActiveRoomUser(
+    spaceId: string,
+    roomId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const result = await this.db.query<{ allowed: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM room_user_members room_member
+           JOIN rooms room
+             ON room.id = room_member.room_id
+            AND room.space_id = room_member.space_id
+           JOIN projects project
+             ON project.id = room.project_id
+            AND project.space_id = room.space_id
+            AND project.deleted_at IS NULL
+           JOIN spaces space
+             ON space.id = project.space_id
+           LEFT JOIN project_members project_member
+             ON project_member.space_id = project.space_id
+            AND project_member.project_id = project.id
+            AND project_member.user_id = $3
+            AND project_member.status = 'active'
+          WHERE room_member.space_id = $1
+            AND room_member.room_id = $2
+            AND room_member.user_id = $3
+            AND room_member.status = 'active'
+            AND room.status = 'active'
+            AND (
+              space.type = 'personal'
+              OR project.owner_user_id = $3
+              OR project_member.user_id IS NOT NULL
+            )
+       ) AS allowed`,
+      [spaceId, roomId, userId],
+    );
+    return result.rows[0]?.allowed === true;
+  }
+
+  async listActiveRoomUserIds(spaceId: string, roomId: string): Promise<string[]> {
+    const result = await this.db.query<{ user_id: string }>(
+      `SELECT user_id
+         FROM room_user_members
+        WHERE space_id = $1
+          AND room_id = $2
+          AND status = 'active'
+        ORDER BY created_at ASC, id ASC`,
+      [spaceId, roomId],
+    );
+    return result.rows.map((row) => row.user_id);
+  }
+
   async listGroups(input: {
     space_id: string;
     manager_user_id: string;
@@ -250,17 +334,25 @@ export class PgAgentGroupRepository {
     offset: number;
   }): Promise<AgentRunGroupRecord[]> {
     const params: unknown[] = [input.space_id, input.manager_user_id];
-    const clauses = ["space_id = $1", "manager_user_id = $2"];
+    const clauses = [
+      "agent_run_groups.space_id = $1",
+      "agent_run_groups.manager_user_id = $2",
+      `(agent_run_groups.project_id IS NULL OR ${projectReadAccessSql(
+        "agent_run_groups.space_id",
+        "agent_run_groups.project_id",
+        "$2",
+      )})`,
+    ];
     if (input.status) {
       params.push(input.status);
-      clauses.push(`status = $${params.length}`);
+      clauses.push(`agent_run_groups.status = $${params.length}`);
     }
     params.push(input.limit, input.offset);
     const result = await this.db.query<AgentRunGroupRecord>(
       `SELECT ${GROUP_COLUMNS}
          FROM agent_run_groups
         WHERE ${clauses.join(" AND ")}
-        ORDER BY updated_at DESC, id DESC
+        ORDER BY agent_run_groups.updated_at DESC, agent_run_groups.id DESC
         LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
@@ -273,10 +365,18 @@ export class PgAgentGroupRepository {
     status?: string | null;
   }): Promise<number> {
     const params: unknown[] = [input.space_id, input.manager_user_id];
-    const clauses = ["space_id = $1", "manager_user_id = $2"];
+    const clauses = [
+      "agent_run_groups.space_id = $1",
+      "agent_run_groups.manager_user_id = $2",
+      `(agent_run_groups.project_id IS NULL OR ${projectReadAccessSql(
+        "agent_run_groups.space_id",
+        "agent_run_groups.project_id",
+        "$2",
+      )})`,
+    ];
     if (input.status) {
       params.push(input.status);
-      clauses.push(`status = $${params.length}`);
+      clauses.push(`agent_run_groups.status = $${params.length}`);
     }
     const result = await this.db.query<{ count: string }>(
       `SELECT count(*)::text AS count
@@ -546,6 +646,7 @@ export class PgAgentGroupRepository {
     reason?: string | null;
     budget_json?: Record<string, unknown> | null;
     context_policy_json?: Record<string, unknown> | null;
+    tool_call_id?: string | null;
     now?: string;
   }): Promise<RunDelegationRecord> {
     const now = input.now ?? new Date().toISOString();
@@ -554,11 +655,11 @@ export class PgAgentGroupRepository {
          id, space_id, group_id, parent_run_id, child_run_id,
          request_message_id, requesting_agent_id, target_agent_id,
          requested_by_user_id, policy_decision_record_id, status, instruction,
-         reason, budget_json, context_policy_json, result_summary,
+         reason, budget_json, context_policy_json, result_summary, tool_call_id,
          created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, NULL, $5, $6, $7, $8, NULL, 'requested', $9,
-         $10, $11::jsonb, $12::jsonb, NULL, $13, $13
+         $10, $11::jsonb, $12::jsonb, NULL, $13, $14, $14
        )
        RETURNING ${DELEGATION_COLUMNS}`,
       [
@@ -574,10 +675,25 @@ export class PgAgentGroupRepository {
         input.reason ?? null,
         JSON.stringify(input.budget_json ?? {}),
         JSON.stringify(input.context_policy_json ?? {}),
+        input.tool_call_id ?? null,
         now,
       ],
     );
     return requiredRow(result.rows[0], "run_delegations insert returned no row");
+  }
+
+  async findDelegationByToolCallId(
+    space_id: string,
+    parent_run_id: string,
+    tool_call_id: string,
+  ): Promise<RunDelegationRecord | null> {
+    const result = await this.db.query<RunDelegationRecord>(
+      `SELECT ${DELEGATION_COLUMNS}
+         FROM run_delegations
+        WHERE space_id = $1 AND parent_run_id = $2 AND tool_call_id = $3`,
+      [space_id, parent_run_id, tool_call_id],
+    );
+    return result.rows[0] ?? null;
   }
 
   async updateDelegationAfterPolicy(input: {

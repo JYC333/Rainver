@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import {
   FolderKanban, Target, Edit2, Archive, Plus, Trash2, ChevronLeft,
@@ -7,17 +7,19 @@ import {
   BookOpen, MessageSquareText, Settings as SettingsIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectsApi, workspacesApi, activityApi, artifactsApi, proposalsApi, runsApi, memoryApi, sourcesApi, readerApi, automationsApi, projectPresetsApi, projectResearchApi, providersApi } from '../../api/client'
+import { projectsApi, projectFoldersApi, activityApi, artifactsApi, proposalsApi, runsApi, memoryApi, sourcesApi, readerApi, automationsApi, projectResearchApi, providersApi, inquiryApi } from '../../api/client'
+import { ACADEMIC_TEMPLATE_KEY, templateKeyFromProject } from './templateUtils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg, isNotFoundError } from '../../lib/utils'
 import type {
-  Project, ProjectSummary, ProjectWorkspaceLinkOut, Workspace,
+  Project, ProjectOverview, ProjectSummary, ProjectFolder, ProjectFolderScanCandidate,
   ActivityInboxRecord, Artifact, Proposal, Run, Memory,
   SourceChannel, ProjectSourceBinding, SourceItem, ExtractedEvidence,
   ReaderAnnotation, AutomationOut, SourcePostProcessingItemDecision,
   ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem,
   ProjectResearchQuestionRefinement, ProjectResearchWorkflow,
   ProjectOperation, ProjectResearchScanSummary,
+  InquiryThread,
 } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -29,7 +31,7 @@ import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ResearchWorkflowPanel } from '../capabilities/ResearchWorkflowPanel'
-import { AcademicResearchWorkbench, activeResearchWorkflowFrom, researchOperationStage, objectValue, numberValue } from './AcademicResearchWorkbench'
+import { AcademicResearchWorkbench, researchOperationStage, objectValue, numberValue } from './AcademicResearchWorkbench'
 import { isResearchHumanReviewCheckpoint, researchCheckpointLabel } from './researchReviewAttention'
 import { researchSetupDraftFromWorkflow } from './researchSetupDraft'
 import { researchWorkflowForDisplayFrom } from './researchWorkflowView'
@@ -49,22 +51,13 @@ function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
 }
 
-const WORKSPACE_ROLES = [
-  { value: 'reference', label: 'Reference' },
-  { value: 'primary_codebase', label: 'Primary codebase' },
-  { value: 'capability_library', label: 'Capability library' },
-  { value: 'docs', label: 'Docs' },
+const FOLDER_KINDS = [
+  { value: 'code', label: 'Code' },
   { value: 'data', label: 'Data' },
-  { value: 'deployment', label: 'Deployment' },
+  { value: 'docs', label: 'Docs' },
 ]
 
-const ACADEMIC_PRESET_KEY = 'academic_research'
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'degraded', 'cancelled', 'waiting_for_review', 'waiting_for_dependency'])
-
-function presetKeyFromProject(project: Project): string | null {
-  const value = project.settings_json?.preset
-  return typeof value === 'string' ? value : null
-}
 
 function upsertById<T extends { id: string }>(current: T[], next: T): T[] {
   const index = current.findIndex(item => item.id === next.id)
@@ -139,8 +132,8 @@ interface EditDialogProps {
 }
 
 // Project settings is one dialog with a "General" section every project has,
-// plus preset-specific sections (only "Research", for academic_research
-// projects, today). New project presets add their own section here rather
+// plus Profile-specific sections (only "Research", for academic_research
+// projects, today). New Project Profiles add their own section here rather
 // than a bespoke settings entry point elsewhere on the page.
 function EditProjectDialog({ project, open, onOpenChange, onSaved, research }: EditDialogProps) {
   const [name, setName] = useState(project.name)
@@ -186,7 +179,7 @@ function EditProjectDialog({ project, open, onOpenChange, onSaved, research }: E
         <DialogHeader>
           <DialogTitle>Project settings</DialogTitle>
           <DialogDescription className="sr-only">
-            Update this project's name, description, current focus, and preset-specific settings.
+            Update this project's name, description, current focus, and Profile-specific settings.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-5 py-2">
@@ -284,77 +277,131 @@ function EditProjectDialog({ project, open, onOpenChange, onSaved, research }: E
   )
 }
 
-/* ── Link workspace dialog ────────────────────────────────────────────────── */
-interface LinkWorkspaceDialogProps {
+/* ── Create Project Folder dialog ─────────────────────────────────────────── */
+type FolderCreateSource = 'managed' | 'clone' | 'connect'
+
+interface CreateProjectFolderDialogProps {
   projectId: string
-  existingIds: Set<string>
   open: boolean
   onOpenChange: (v: boolean) => void
-  onLinked: () => void
+  onCreated: () => void
 }
 
-function LinkWorkspaceDialog({ projectId, existingIds, open, onOpenChange, onLinked }: LinkWorkspaceDialogProps) {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [selectedId, setSelectedId] = useState('')
-  const [role, setRole] = useState('reference')
-  const [linking, setLinking] = useState(false)
+function CreateProjectFolderDialog({ projectId, open, onOpenChange, onCreated }: CreateProjectFolderDialogProps) {
+  const [source, setSource] = useState<FolderCreateSource>('managed')
+  const [name, setName] = useState('')
+  const [kind, setKind] = useState('code')
+  const [repoUrl, setRepoUrl] = useState('')
+  const [candidates, setCandidates] = useState<ProjectFolderScanCandidate[]>([])
+  const [selectedCandidatePath, setSelectedCandidatePath] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [creating, setCreating] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    workspacesApi.list({ limit: '100' }).then(p => {
-      setWorkspaces(p.items.filter(w => w.status === 'active' && !existingIds.has(w.id)))
-    }).catch(() => {})
-    setSelectedId('')
-    setRole('reference')
-  }, [open, existingIds])
+    setSource('managed')
+    setName('')
+    setKind('code')
+    setRepoUrl('')
+    setCandidates([])
+    setSelectedCandidatePath('')
+  }, [open])
 
-  const wsOptions = workspaces.map(w => ({ value: w.id, label: w.name }))
+  useEffect(() => {
+    if (!open || source !== 'connect') return
+    setScanning(true)
+    projectFoldersApi.scan(projectId)
+      .then(result => setCandidates(result.items))
+      .catch(() => setCandidates([]))
+      .finally(() => setScanning(false))
+  }, [open, source, projectId])
 
   async function submit() {
-    if (!selectedId) {
-      toast.error('Select a workspace')
+    if (!name.trim()) {
+      toast.error('Name is required')
       return
     }
-    setLinking(true)
+    if (source === 'connect' && !selectedCandidatePath) {
+      toast.error('Select a directory to connect')
+      return
+    }
+    setCreating(true)
     try {
-      await projectsApi.linkWorkspace(projectId, { workspace_id: selectedId, role })
-      toast.success('Workspace linked')
-      onLinked()
+      await projectFoldersApi.create(projectId, {
+        name: name.trim(),
+        kind: kind as ProjectFolder['kind'],
+        repo_url: source === 'clone' ? repoUrl.trim() || null : null,
+        root_path: source === 'connect' ? selectedCandidatePath : null,
+      })
+      toast.success('Project Folder created')
+      onCreated()
       onOpenChange(false)
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
-      setLinking(false)
+      setCreating(false)
     }
   }
+
+  const candidateOptions = candidates.map(c => ({ value: c.path, label: c.name }))
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Link workspace</DialogTitle>
+          <DialogTitle>New Project Folder</DialogTitle>
           <DialogDescription>
-            Link workspaces that this project uses for code, docs, data, deployment, or reference material.
+            Create a managed directory, clone a repository, or connect an existing directory as a Folder owned by this Project.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-1.5">
-            <Label>Workspace</Label>
-            {wsOptions.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No available workspaces to link.</p>
-            ) : (
-              <Select value={selectedId} options={[{ value: '', label: 'Select a workspace…' }, ...wsOptions]} onChange={setSelectedId} />
-            )}
+            <Label>Source</Label>
+            <Select
+              value={source}
+              options={[
+                { value: 'managed', label: 'Create managed Folder' },
+                { value: 'clone', label: 'Clone repository' },
+                { value: 'connect', label: 'Connect existing Folder' },
+              ]}
+              onChange={value => setSource(value as FolderCreateSource)}
+            />
           </div>
           <div className="space-y-1.5">
-            <Label>Role</Label>
-            <Select value={role} options={WORKSPACE_ROLES} onChange={setRole} />
+            <Label>Name</Label>
+            <Input value={name} onChange={e => setName(e.target.value)} placeholder="Folder name" />
           </div>
+          <div className="space-y-1.5">
+            <Label>Kind</Label>
+            <Select value={kind} options={FOLDER_KINDS} onChange={setKind} />
+          </div>
+          {source === 'clone' && (
+            <div className="space-y-1.5">
+              <Label>Repository URL</Label>
+              <Input value={repoUrl} onChange={e => setRepoUrl(e.target.value)} placeholder="https://…" />
+            </div>
+          )}
+          {source === 'connect' && (
+            <div className="space-y-1.5">
+              <Label>Existing directory</Label>
+              {scanning ? (
+                <p className="text-xs text-muted-foreground">Scanning…</p>
+              ) : candidateOptions.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No unregistered directories found.</p>
+              ) : (
+                <Select
+                  value={selectedCandidatePath}
+                  options={[{ value: '', label: 'Select a directory…' }, ...candidateOptions]}
+                  onChange={setSelectedCandidatePath}
+                />
+              )}
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={linking || !selectedId}>
-            {linking ? 'Linking…' : 'Link workspace'}
+          <Button onClick={submit} disabled={creating || !name.trim()}>
+            {creating ? 'Creating…' : 'Create Folder'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -492,13 +539,14 @@ function SaveProjectUrlDialog({ open, onOpenChange, sourceOptions, onSaved }: Sa
 /* ── Main page ─────────────────────────────────────────────────────────────── */
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const { activeSpaceId } = useSpace()
 
   const [project, setProject] = useState<Project | null>(null)
   const [summary, setSummary] = useState<ProjectSummary | null>(null)
-  const [links, setLinks] = useState<ProjectWorkspaceLinkOut[]>([])
-  const [workspaceMap, setWorkspaceMap] = useState<Record<string, Workspace>>({})
+  const [kernelOverview, setKernelOverview] = useState<ProjectOverview | null>(null)
+  const [folders, setFolders] = useState<ProjectFolder[]>([])
   const [recentActivities, setRecentActivities] = useState<ActivityInboxRecord[]>([])
   const [recentArtifacts, setRecentArtifacts] = useState<Artifact[]>([])
   const [pendingProposals, setPendingProposals] = useState<Proposal[]>([])
@@ -512,13 +560,14 @@ export default function ProjectDetailPage() {
   const [readerAnnotations, setReaderAnnotations] = useState<ReaderAnnotation[]>([])
   const [automations, setAutomations] = useState<AutomationOut[]>([])
   const [operations, setOperations] = useState<ProjectOperation[]>([])
-  const [projectPresetKey, setProjectPresetKey] = useState<string | null>(null)
   const [researchWorkflows, setResearchWorkflows] = useState<ProjectResearchWorkflow[]>([])
+  const [selectedResearchWorkflowId, setSelectedResearchWorkflowId] = useState<string | null>(null)
   const [researchScanSummaries, setResearchScanSummaries] = useState<ProjectResearchScanSummary[]>([])
   const [researchCheckpoints, setResearchCheckpoints] = useState<ProjectResearchCheckpoint[]>([])
   const [literatureMatrix, setLiteratureMatrix] = useState<ProjectResearchLiteratureMatrixItem[]>([])
   const [researchReports, setResearchReports] = useState<ProjectResearchReport[]>([])
   const [modelProviders, setModelProviders] = useState<Awaited<ReturnType<typeof providersApi.list>>>([])
+  const [inquiryThreads, setInquiryThreads] = useState<InquiryThread[]>([])
   const [researchActionBusy, setResearchActionBusy] = useState<string | null>(null)
   const [researchDataLoading, setResearchDataLoading] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -534,6 +583,21 @@ export default function ProjectDetailPage() {
   const [backfillingBindingId, setBackfillingBindingId] = useState<string | null>(null)
   const [removingBindingId, setRemovingBindingId] = useState<string | null>(null)
   const [archiving, setArchiving] = useState(false)
+
+  useEffect(() => {
+    if (searchParams.get('create_folder') === '1') setLinkOpen(true)
+  }, [searchParams])
+
+  const setFolderDialogOpen = useCallback((open: boolean) => {
+    setLinkOpen(open)
+    if (!open && searchParams.has('create_folder')) {
+      setSearchParams(previous => {
+        const next = new URLSearchParams(previous)
+        next.delete('create_folder')
+        return next
+      }, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   // React StrictMode (dev only) intentionally double-invokes this effect on
   // mount, and the mount effect below has no cleanup to cancel the first
@@ -567,19 +631,19 @@ export default function ProjectDetailPage() {
     setLoading(true)
     setResearchDataLoading(true)
     setNotFound(false)
-    let resolvedPresetKey: string | null = null
+    let resolvedTemplateKey: string | null = null
     try {
-      const [proj, summ, linkedWs, projectPresetSelection] = await Promise.all([
+      const [proj, summ, folderPage, overview] = await Promise.all([
         projectsApi.get(projectId),
         projectsApi.getSummary(projectId),
-        projectsApi.listWorkspaces(projectId),
-        projectPresetsApi.getProjectPreset(projectId).catch(() => ({ preset_key: null })),
+        projectFoldersApi.list(projectId, { limit: '200' }),
+        projectsApi.getOverview(projectId),
       ])
       setProject(proj)
       setSummary(summ)
-      setLinks(linkedWs)
-      resolvedPresetKey = projectPresetSelection.preset_key ?? presetKeyFromProject(proj)
-      setProjectPresetKey(resolvedPresetKey)
+      setFolders(folderPage.items)
+      setKernelOverview(overview)
+      resolvedTemplateKey = templateKeyFromProject(proj)
       setLoading(false)
     } catch (e) {
       setDetailsLoading(false)
@@ -612,13 +676,13 @@ export default function ProjectDetailPage() {
     // data that would just sit unused, and reset it to empty explicitly (not
     // "leave whatever's there") so navigating from a non-academic project to
     // an academic one doesn't leave stale data in state.
-    const isAcademic = resolvedPresetKey === ACADEMIC_PRESET_KEY
+    // Academic Research presentation is a Template-provenance default (what
+    // a Project created from the academic Template looks like from day
+    // one) — it is not a permanent Area/capability gate: a Project's
+    // primary_mode and every installed Area remain independently reachable
+    // regardless of this value. See the Project Model Clean-Cutover plan.
+    const isAcademic = resolvedTemplateKey === ACADEMIC_TEMPLATE_KEY
     const genericLoad = Promise.all([
-      isAcademic ? Promise.resolve(setWorkspaceMap({})) : workspacesApi.list({ limit: '200' }).then(allWs => {
-        const map: Record<string, Workspace> = {}
-        allWs.items.forEach(w => { map[w.id] = w })
-        setWorkspaceMap(map)
-      }),
       isAcademic ? Promise.resolve(setRecentActivities([])) : activityApi.list({ project_id: projectId, limit: 5 }).then(setRecentActivities),
       isAcademic ? Promise.resolve(setRecentArtifacts([])) : artifactsApi.list({ project_id: projectId, limit: 5 }).then(arts => setRecentArtifacts(arts.items)),
       isAcademic ? Promise.resolve(setPendingProposals([])) : proposalsApi.list({ project_id: projectId, status: 'pending', limit: 5 }).then(props => setPendingProposals(props.items)),
@@ -645,8 +709,11 @@ export default function ProjectDetailPage() {
               projectResearchApi.reports(projectId).then(setResearchReports),
               projectResearchApi.scanSummaries(projectId).then(setResearchScanSummaries),
               providersApi.list().catch(() => []).then(setModelProviders),
+              inquiryApi.listThreads(projectId).then(setInquiryThreads),
             ])
-            const activeWorkflow = activeResearchWorkflowFrom(workflows)
+            const storedWorkflowId = window.localStorage.getItem(`project:${projectId}:research-workflow`)
+            const activeWorkflow = researchWorkflowForDisplayFrom(workflows, storedWorkflowId)
+            setSelectedResearchWorkflowId(activeWorkflow?.id ?? null)
             setResearchCheckpoints(
               activeWorkflow ? await projectResearchApi.checkpoints(projectId, activeWorkflow.id) : [],
             )
@@ -657,6 +724,7 @@ export default function ProjectDetailPage() {
             setLiteratureMatrix([])
             setResearchReports([])
             setModelProviders([])
+            setInquiryThreads([])
             throw researchError
           }
         })()
@@ -703,7 +771,7 @@ export default function ProjectDetailPage() {
         projectsApi.operations(projectId),
         projectResearchApi.workflows(projectId),
       ])
-      const activeWorkflow = activeResearchWorkflowFrom(workflows)
+      const activeWorkflow = researchWorkflowForDisplayFrom(workflows, selectedResearchWorkflowId)
       setOperations(operationRows)
       setResearchWorkflows(workflows)
       const [checkpoints, matrix, reports, scanSummaries] = await Promise.all([
@@ -721,7 +789,7 @@ export default function ProjectDetailPage() {
     } catch {
       // Keep the last known research state visible on a transient refresh failure.
     }
-  }, [projectId, activeSpaceId])
+  }, [projectId, activeSpaceId, selectedResearchWorkflowId])
 
   const refreshSourceSelection = useCallback(async () => {
     if (!projectId) return
@@ -755,17 +823,17 @@ export default function ProjectDetailPage() {
     }
   }, [projectId])
 
-  const refreshWorkspaceData = useCallback(async () => {
+  const refreshFolderData = useCallback(async () => {
     if (!projectId) return
     try {
-      const [linkedWorkspaces, nextSummary] = await Promise.all([
-        projectsApi.listWorkspaces(projectId),
+      const [folderPage, nextSummary] = await Promise.all([
+        projectFoldersApi.list(projectId, { limit: '200' }),
         projectsApi.getSummary(projectId),
       ])
-      setLinks(linkedWorkspaces)
+      setFolders(folderPage.items)
       setSummary(nextSummary)
     } catch {
-      // Keep the current workspace module visible on a transient refresh failure.
+      // Keep the current Folder module visible on a transient refresh failure.
     }
   }, [projectId])
 
@@ -877,11 +945,11 @@ export default function ProjectDetailPage() {
     }
   }
 
-  async function unlink(link: ProjectWorkspaceLinkOut) {
+  async function unregisterFolder(folder: ProjectFolder) {
     try {
-      await projectsApi.unlinkWorkspace(project!.id, link.workspace_id, link.role)
-      toast.success('Workspace unlinked')
-      setLinks(prev => prev.filter(l => l.id !== link.id))
+      await projectFoldersApi.unregister(project!.id, folder.id)
+      toast.success('Project Folder unregistered')
+      setFolders(prev => prev.filter(f => f.id !== folder.id))
     } catch (e) {
       toast.error(errMsg(e))
     }
@@ -934,8 +1002,10 @@ export default function ProjectDetailPage() {
     if (!project) return
     setResearchActionBusy('start-initial-intake')
     try {
-      const response = await projectResearchApi.startInitialIntake(project.id, config)
-      setProject(current => current ? { ...current, current_focus: config.research_question } : current)
+      const response = await projectResearchApi.startInitialIntake(project.id, {
+        ...config,
+        ...(selectedResearchWorkflowId ? { workflow_id: selectedResearchWorkflowId } : {}),
+      })
       if (response.workflow) setResearchWorkflows(current => upsertById(current, response.workflow!))
       setOperations(current => upsertById(current, response.operation))
       setSourceChannels(current => mergeById(current, response.source_channels))
@@ -952,8 +1022,10 @@ export default function ProjectDetailPage() {
     if (!project) return false
     setResearchActionBusy('save-initial-intake')
     try {
-      const workflow = await projectResearchApi.saveInitialIntakeDraft(project.id, config)
-      setProject(current => current ? { ...current, current_focus: config.research_question } : current)
+      const workflow = await projectResearchApi.saveInitialIntakeDraft(project.id, {
+        ...config,
+        ...(selectedResearchWorkflowId ? { workflow_id: selectedResearchWorkflowId } : {}),
+      })
       setResearchWorkflows((current) => {
         const existing = current.findIndex((item) => item.id === workflow.id)
         if (existing === -1) return [workflow, ...current]
@@ -976,14 +1048,16 @@ export default function ProjectDetailPage() {
 
   async function loadResearchQuestionImpact() {
     if (!project) throw new Error('Project is not loaded')
-    return projectResearchApi.questionChangeImpact(project.id)
+    if (!selectedResearchWorkflowId) throw new Error('Select a research question first')
+    return projectResearchApi.questionChangeImpact(project.id, selectedResearchWorkflowId)
   }
 
   async function resolveResearchQuestion(strategy: import('../../types/api').ProjectResearchQuestionResolutionStrategy): Promise<boolean> {
     if (!project) return false
     setResearchActionBusy('apply-question')
     try {
-      await projectResearchApi.resolveQuestionChange(project.id, strategy)
+      if (!selectedResearchWorkflowId) throw new Error('Select a research question first')
+      await projectResearchApi.resolveQuestionChange(project.id, selectedResearchWorkflowId, strategy)
       toast.success(strategy === 'rescreen' ? 'Corpus re-screening started' : strategy === 'synthesis_only' ? 'New synthesis started' : 'Research question applied to future runs')
       await loadAll()
       return true
@@ -997,7 +1071,7 @@ export default function ProjectDetailPage() {
 
   async function extendResearchHistory(config: { from: string; to?: string; max_items: number }) {
     if (!project) return
-    const workflow = activeResearchWorkflowFrom(researchWorkflows)
+    const workflow = researchWorkflowForDisplayFrom(researchWorkflows, selectedResearchWorkflowId)
     if (!workflow) {
       toast.error('Start and complete the initial literature intake before extending history')
       return
@@ -1016,7 +1090,7 @@ export default function ProjectDetailPage() {
 
   async function triggerIncrementalResearch() {
     if (!project) return
-    const workflow = activeResearchWorkflowFrom(researchWorkflows)
+    const workflow = researchWorkflowForDisplayFrom(researchWorkflows, selectedResearchWorkflowId)
     if (!workflow) {
       toast.error('Start the initial literature intake before running an incremental scan')
       return
@@ -1083,6 +1157,7 @@ export default function ProjectDetailPage() {
   async function rescanResearchBackfill() {
     if (!project) return
     const operation = operations.find(item => item.kind === 'research'
+      && item.progress_json.workflow_id === selectedResearchWorkflowId
       && ['baseline', 'historical_backfill'].includes(String(item.progress_json.run_kind))
       && researchOperationStage(item) !== 'monitor_setup'
       && item.progress_json.partial !== true)
@@ -1127,7 +1202,7 @@ export default function ProjectDetailPage() {
     try {
       const rows = await projectResearchApi.rebuildLiteratureMatrix(project.id)
       setLiteratureMatrix(rows)
-      const workflow = activeResearchWorkflowFrom(researchWorkflows)
+      const workflow = researchWorkflowForDisplayFrom(researchWorkflows, selectedResearchWorkflowId)
       if (workflow?.status === 'active') {
         const updatedWorkflow = await projectResearchApi.runStage(project.id, workflow.id, 'screening_matrix')
         setResearchWorkflows(current => upsertById(current, updatedWorkflow))
@@ -1142,7 +1217,8 @@ export default function ProjectDetailPage() {
 
   async function runIntegrityGate() {
     if (!project) return
-    const report = researchReports.find(item => item.status !== 'rejected') ?? researchReports[0]
+    const scopedReports = researchReports.filter(item => item.workflow_id === selectedResearchWorkflowId)
+    const report = scopedReports.find(item => item.status !== 'rejected') ?? scopedReports[0]
     if (!report) {
       toast.error('Generate a research report before running integrity')
       return
@@ -1191,16 +1267,11 @@ export default function ProjectDetailPage() {
     )
   }
 
-  const existingIds = new Set(links.map(l => l.workspace_id))
-  const workflowWorkspaceOptions = links.map(link => {
-    const ws = workspaceMap[link.workspace_id]
-    return {
-      id: link.workspace_id,
-      name: ws?.name ?? link.workspace_id,
-      role: link.role,
-      root_path: ws?.root_path ?? null,
-    }
-  })
+  const workflowFolderOptions = folders.map(folder => ({
+    id: folder.id,
+    name: folder.name,
+    root_path: folder.root_path,
+  }))
   const sourceChannelById = Object.fromEntries(sourceChannels.map(channel => [channel.id, channel])) as Record<string, SourceChannel>
   const linkedSourceChannels = sourceBindings
     .map(binding => sourceChannelById[binding.source_channel_id])
@@ -1217,16 +1288,19 @@ export default function ProjectDetailPage() {
       ]),
     ).values(),
   )
-  const isAcademicProject = projectPresetKey === ACADEMIC_PRESET_KEY
+  // Academic Research presentation is a Template-provenance default; see
+  // the matching comment in loadAllImpl's isAcademic computation.
+  const isAcademicProject = templateKeyFromProject(project) === ACADEMIC_TEMPLATE_KEY
   // Item limit is a Research setting: it is independent of the question and
   // monitor setup. Once a backfill operation has plans, editing raises the
   // live plans' budget; before that, it updates only the saved limit draft.
   const researchOperationForSettings = operations.find(item => item.kind === 'research'
+    && item.progress_json.workflow_id === selectedResearchWorkflowId
     && ['baseline', 'historical_backfill'].includes(String(item.progress_json.run_kind))
     && numberValue(objectValue(item.progress_json.history).max_items) > 0)
   const researchSetupDraft = researchSetupDraftFromWorkflow(
-    researchWorkflowForDisplayFrom(researchWorkflows),
-    project.current_focus?.trim() ?? '',
+    researchWorkflowForDisplayFrom(researchWorkflows, selectedResearchWorkflowId),
+    String(researchWorkflowForDisplayFrom(researchWorkflows, selectedResearchWorkflowId)?.state_json.research_question ?? ''),
     sourceBindings.filter(binding => binding.status === 'active').map(binding => binding.source_channel_id),
   )
   const researchMonitorLabels = linkedSourceChannels.length
@@ -1254,7 +1328,7 @@ export default function ProjectDetailPage() {
     }
     setResearchActionBusy('update-item-limit')
     try {
-      const workflow = await projectResearchApi.updateInitialItemLimit(project.id, newLimit)
+      const workflow = await projectResearchApi.updateInitialItemLimit(project.id, newLimit, selectedResearchWorkflowId)
       setResearchWorkflows(current => upsertById(current, workflow))
       toast.success('Research item limit updated')
     } catch (e) {
@@ -1303,7 +1377,7 @@ export default function ProjectDetailPage() {
           </div>
         </div>
         <div className="flex gap-2 shrink-0">
-          <Button asChild size="sm" className="gap-1.5"><Link to={`/projects/${project.id}/chat`}><MessageSquareText className="size-3.5" />Chat</Link></Button>
+          <Button asChild size="sm" className="gap-1.5"><Link to={`/projects/${project.id}/rooms`}><MessageSquareText className="size-3.5" />Rooms</Link></Button>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <SettingsIcon className="size-3.5" />
             Settings
@@ -1317,6 +1391,86 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
+      {kernelOverview && (
+        <Card className="p-4 space-y-3">
+          <div className="flex items-start gap-4 flex-wrap">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline">{kernelOverview.project.primary_mode}</Badge>
+                <span className="text-xs text-muted-foreground">Primary mode</span>
+              </div>
+              <p className="mt-2 text-sm font-medium">{kernelOverview.brief?.goal ?? 'Add a Project Brief goal to orient the work.'}</p>
+              <p className="text-xs text-muted-foreground">{kernelOverview.mode_projection.current_state_summary}</p>
+            </div>
+            <Select
+              value={kernelOverview.project.primary_mode}
+              options={kernelOverview.available_modes.map(mode => ({
+                value: mode,
+                label: mode.charAt(0).toUpperCase() + mode.slice(1),
+              }))}
+              onChange={async value => {
+                try {
+                  await projectsApi.transitionMode(project.id, value, 'Changed from Project shell')
+                  const next = await projectsApi.getOverview(project.id)
+                  setKernelOverview(next)
+                  setProject(current => current ? { ...current, primary_mode: next.project.primary_mode } : current)
+                } catch (e) { toast.error(errMsg(e)) }
+              }}
+            />
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {kernelOverview.area_summaries.map(item => (
+              <Badge key={item.mode} variant="secondary">
+                {item.mode}: {item.summary.count}
+              </Badge>
+            ))}
+            {kernelOverview.attention.length > 0 && (
+              <Badge variant="destructive">{kernelOverview.attention.length} need attention</Badge>
+            )}
+          </div>
+          {(kernelOverview.mode_projection.next_actions.length > 0 || kernelOverview.mode_projection.focus_set.length > 0) && (
+            <div className="flex gap-2 flex-wrap">
+              {kernelOverview.mode_projection.next_actions.map(action => (
+                <Button key={action.id} size="sm" asChild><Link to={action.href}>{action.label}</Link></Button>
+              ))}
+              {kernelOverview.mode_projection.focus_set.slice(0, 3).map(item => (
+                <Button key={item.id} size="sm" variant="outline" asChild><Link to={item.href}>{item.label}</Link></Button>
+              ))}
+            </div>
+          )}
+          {(kernelOverview.setup_checklist?.length ?? 0) > 0 && (
+            <div className="border-t pt-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Setup checklist</p>
+                {kernelOverview.template && <Badge variant="outline">Created from {kernelOverview.template.name}</Badge>}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {kernelOverview.setup_checklist?.map(item => (
+                  <Link key={item.id} to={item.href} className="flex items-start justify-between gap-2 rounded-md border p-2 text-sm hover:bg-muted/40">
+                    <span><span className="block">{item.label}{item.required ? ' *' : ''}</span><span className="text-xs text-muted-foreground">{item.detail}</span></span>
+                    <Badge variant={item.status === 'ready' ? 'success' : item.required ? 'warning' : 'outline'}>{item.status}</Badge>
+                  </Link>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">A Workflow is created only when its required inputs are ready and you explicitly start it.</p>
+            </div>
+          )}
+          {kernelOverview.attention.length > 0 && (
+            <div className="border-t pt-3">
+              <p className="mb-2 text-sm font-medium">Needs attention</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {kernelOverview.attention.map(item => (
+                  <Link key={item.id} to={item.href} className="rounded-md border border-destructive/30 p-3 hover:bg-destructive/5">
+                    <p className="text-sm font-medium">{item.title}</p>
+                    {item.summary && <p className="mt-1 text-xs text-muted-foreground">{item.summary}</p>}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* Summary cards */}
       {summary && !isAcademicProject && (
         <section className="space-y-2">
@@ -1325,7 +1479,7 @@ export default function ProjectDetailPage() {
             <SummaryCard icon={<Activity className="size-3.5" />} label="Activities" count={summary.activity_count} />
             <SummaryCard icon={<Package className="size-3.5" />} label="Artifacts" count={summary.artifact_count} />
             <SummaryCard icon={<CheckCircle className="size-3.5" />} label="Proposals" count={summary.pending_proposal_count} />
-            <SummaryCard icon={<Folder className="size-3.5" />} label="Workspaces" count={summary.workspace_count} />
+            <SummaryCard icon={<Folder className="size-3.5" />} label="Project Folders" count={summary.project_folder_count} />
             <SummaryCard icon={<Cpu className="size-3.5" />} label="Active runs" count={summary.active_run_count} />
             <SummaryCard icon={<Database className="size-3.5" />} label="Memory" count={summary.memory_entry_count} />
           </div>
@@ -1342,8 +1496,9 @@ export default function ProjectDetailPage() {
         </div>
       </section>}
 
-      {/* Current focus */}
-      <section className="space-y-2">
+      {/* Project focus is presentation state for non-Inquiry work. Academic
+          Questions are owned by the selected Inquiry Thread/Workflow. */}
+      {!isAcademicProject && <section className="space-y-2">
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
           {isAcademicProject ? 'Research question' : 'Current focus'}
         </h2>
@@ -1373,7 +1528,7 @@ export default function ProjectDetailPage() {
             </Button>
           </Card>
         )}
-      </section>
+      </section>}
 
       {isAcademicProject && (
         <AcademicResearchWorkbench
@@ -1384,14 +1539,23 @@ export default function ProjectDetailPage() {
           recentEvidence={recentEvidence}
           readerAnnotations={readerAnnotations}
           researchWorkflows={researchWorkflows}
-          researchScanSummaries={researchScanSummaries}
+          selectedWorkflowId={selectedResearchWorkflowId}
+          onSelectWorkflow={workflowId => {
+            setSelectedResearchWorkflowId(workflowId)
+            window.localStorage.setItem(`project:${project.id}:research-workflow`, workflowId)
+            projectResearchApi.checkpoints(project.id, workflowId)
+              .then(setResearchCheckpoints)
+              .catch(error => toast.error(errMsg(error)))
+          }}
+          researchScanSummaries={researchScanSummaries.filter(item => item.workflow_id === selectedResearchWorkflowId)}
           researchCheckpoints={researchCheckpoints}
           literatureMatrix={literatureMatrix}
-          researchReports={researchReports}
+          researchReports={researchReports.filter(item => item.workflow_id === selectedResearchWorkflowId)}
           researchOperations={operations}
           researchRunStatuses={Object.fromEntries(recentRuns.map(run => [run.id, run.status]))}
           researchDataLoading={researchDataLoading}
           modelProviders={modelProviders}
+          questionThreads={inquiryThreads}
           researchActionBusy={researchActionBusy}
           onSaveInitialIntake={saveInitialIntake}
           onRefineQuestion={refineResearchQuestion}
@@ -1407,7 +1571,7 @@ export default function ProjectDetailPage() {
           onDecideCheckpoint={decideResearchCheckpoint}
           onRebuildMatrix={rebuildLiteratureMatrix}
           onRunIntegrity={runIntegrityGate}
-          onEditQuestion={() => setEditOpen(true)}
+          onEditQuestion={() => navigate(`/projects/${project.id}/inquiry`)}
         />
       )}
 
@@ -1421,7 +1585,7 @@ export default function ProjectDetailPage() {
             <Link className="text-accent-foreground hover:underline" to={`/proposals?project_id=${project.id}`}>{summary?.pending_proposal_count ?? pendingProposals.length} pending proposals</Link>
             <Link className="text-accent-foreground hover:underline" to={`/artifacts?project_id=${project.id}`}>{summary?.artifact_count ?? recentArtifacts.length} artifacts</Link>
             <Link className="text-accent-foreground hover:underline" to="/automations">{automations.length} automations</Link>
-            <button type="button" className="text-accent-foreground hover:underline" onClick={() => setLinkOpen(true)}>{links.length} linked workspaces</button>
+            <button type="button" className="text-accent-foreground hover:underline" onClick={() => setLinkOpen(true)}>{folders.length} Project Folders</button>
           </div>
         </details>
       )}
@@ -1432,7 +1596,7 @@ export default function ProjectDetailPage() {
           <ResearchWorkflowPanel
             projectId={project.id}
             projectName={project.name}
-            workspaceOptions={workflowWorkspaceOptions}
+            folderOptions={workflowFolderOptions}
             onRunCreated={handleWorkflowRunCreated}
           />
         </section>
@@ -1648,52 +1812,54 @@ export default function ProjectDetailPage() {
         </div>
       </section>}
 
-      {/* Linked workspaces */}
+      {/* Project Folders */}
       {!isAcademicProject && <section className="space-y-2">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Linked workspaces</h2>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Project Folders</h2>
           {project.status === 'active' && (
             <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setLinkOpen(true)}>
               <Plus className="size-3.5" />
-              Link workspace
+              New Folder
             </Button>
           )}
         </div>
-        {links.length === 0 ? (
-          <Card className="p-4">
+        {folders.length === 0 ? (
+          <Card className="flex items-center justify-between gap-3 p-4">
             <p className="text-sm text-muted-foreground">
-              No workspaces linked. Link workspaces that this project uses for code, docs, data, deployment, or reference material.
+              No Project Folders yet. Create a managed Folder, clone a repository, or connect an existing directory for code, docs, or data.
             </p>
+            <div className="flex shrink-0 gap-2">
+              <Button size="sm" variant="outline" asChild><Link to={`/projects/${project.id}/files`}>Files &amp; Code</Link></Button>
+              {project.status === 'active' && <Button size="sm" onClick={() => setLinkOpen(true)}>Create Folder</Button>}
+            </div>
           </Card>
         ) : (
           <div className="space-y-2">
-            {links.map(link => {
-              const ws = workspaceMap[link.workspace_id]
-              return (
-                <Card key={link.id} className="p-3 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Folder className="size-4 text-muted-foreground shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{ws?.name ?? link.workspace_id}</p>
-                      {ws?.root_path && (
-                        <p className="text-xs text-muted-foreground font-mono truncate">{ws.root_path}</p>
-                      )}
-                    </div>
-                    <Badge variant="outline" className="shrink-0">{link.role}</Badge>
+            {folders.map(folder => (
+              <Card key={folder.id} className="p-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Folder className="size-4 text-muted-foreground shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{folder.name}</p>
+                    {folder.root_path && (
+                      <p className="text-xs text-muted-foreground font-mono truncate">{folder.root_path}</p>
+                    )}
                   </div>
-                  {project.status === 'active' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-muted-foreground hover:text-destructive shrink-0"
-                      onClick={() => unlink(link)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  )}
-                </Card>
-              )
-            })}
+                  <Badge variant="outline" className="shrink-0">{folder.kind}</Badge>
+                  {folder.is_primary && <Badge variant="secondary" className="shrink-0">primary</Badge>}
+                </div>
+                {project.status === 'active' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => unregisterFolder(folder)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                )}
+              </Card>
+            ))}
           </div>
         )}
       </section>}
@@ -1881,12 +2047,11 @@ export default function ProjectDetailPage() {
         } : null}
       />
 
-      <LinkWorkspaceDialog
+      <CreateProjectFolderDialog
         projectId={project.id}
-        existingIds={existingIds}
         open={linkOpen}
-        onOpenChange={setLinkOpen}
-        onLinked={refreshWorkspaceData}
+        onOpenChange={setFolderDialogOpen}
+        onCreated={refreshFolderData}
       />
 
       <ProjectSourceLinkDialog

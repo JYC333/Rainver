@@ -27,6 +27,11 @@ function group(overrides: Record<string, unknown> = {}) {
     root_run_id: "run-root",
     manager_user_id: "user-1",
     manager_agent_id: "agent-manager",
+    room_id: null,
+    session_id: null,
+    trigger_message_id: null,
+    project_id: null,
+    project_folder_id: null,
     title: "Research room",
     goal: "Answer the question",
     status: "active",
@@ -334,9 +339,9 @@ describe("agent group routes", () => {
   it("detects delegated context authority widening", () => {
     expect(
       authorityWidening(
-        { workspace_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
+        { project_folder_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
         {
-          workspace_id: "workspace-1",
+          project_folder_id: "workspace-1",
           project_id: "project-1",
           model_provider_id: "provider-1",
           memory_scope: "project",
@@ -344,10 +349,10 @@ describe("agent group routes", () => {
       ).context_widens_authority,
     ).toBe(false);
     const widened = authorityWidening(
-      { workspace_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
+      { project_folder_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
       {
         nested: {
-          workspace_id: "workspace-2",
+          project_folder_id: "workspace-2",
           project_id: "project-2",
           model_provider_id: "provider-2",
           credential_profile_id: "credential-1",
@@ -360,7 +365,7 @@ describe("agent group routes", () => {
     expect(widened.context_widens_authority).toBe(true);
 
     const directDurableWrite = authorityWidening(
-      { workspace_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
+      { project_folder_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
       {
         memory_policy_json: { writable_scopes: ["semantic"], requires_proposal: false },
         output_policy_json: { proposal_only: false },

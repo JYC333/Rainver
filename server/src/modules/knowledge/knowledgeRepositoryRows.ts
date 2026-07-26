@@ -2,7 +2,7 @@ export interface KnowledgeItemRow {
   id: string;
   space_id: string;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   root_item_id: string | null;
   supersedes_item_id: string | null;
   redirect_to_item_id: string | null;
@@ -29,6 +29,7 @@ export interface KnowledgeItemRow {
   created_from_proposal_id: string | null;
   approved_by_user_id: string | null;
   version: unknown;
+  pinned_source_ref_json: unknown;
   created_at: unknown;
   updated_at: unknown;
   archived_at: unknown;
@@ -76,7 +77,7 @@ export interface ClaimRow {
   excerpt: string | null;
   owner_user_id: string | null;
   primary_project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   created_by_user_id: string | null;
   created_by_agent_id: string | null;
   created_by_run_id: string | null;
@@ -209,7 +210,7 @@ export interface ProvenanceLinkRow {
 
 export const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
-  so.workspace_id, ki.root_item_id, ki.supersedes_item_id,
+  so.project_folder_id, ki.root_item_id, ki.supersedes_item_id,
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
   so.title, ki.content, ki.content_json, ki.content_format,
   ki.content_schema_version, ki.plain_text, so.summary AS excerpt,
@@ -217,7 +218,7 @@ export const KNOWLEDGE_ITEM_COLUMNS = `
   ki.tags_json, ki.confidence, so.owner_user_id,
   so.created_by_user_id, so.created_by_agent_id, so.created_by_run_id,
   ki.created_from_proposal_id,
-  ki.approved_by_user_id, ki.version, so.created_at, so.updated_at,
+  ki.approved_by_user_id, ki.version, ki.pinned_source_ref_json, so.created_at, so.updated_at,
   so.archived_at, ki.deprecated_at
 `;
 
@@ -241,7 +242,7 @@ export const CLAIM_COLUMNS = `
   c.holder_type, c.holder_id, c.confidence, c.confidence_method,
   c.resolution_state, c.valid_from, c.valid_until, c.observed_at,
   c.metadata_json, so.status, so.visibility, so.title, so.summary AS excerpt,
-  so.owner_user_id, so.primary_project_id, so.workspace_id,
+  so.owner_user_id, so.primary_project_id, so.project_folder_id,
   so.created_by_user_id, so.created_by_agent_id, so.created_by_run_id,
   c.created_from_proposal_id, c.approved_by_user_id, so.created_at,
   so.updated_at, so.archived_at

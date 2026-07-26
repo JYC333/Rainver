@@ -21,14 +21,14 @@ describe('navigation model', () => {
     expect(labels).not.toContain('my view')
     expect(labels).not.toContain('personalview')
     expect(labels).toEqual(expect.arrayContaining([
-      'home', 'inbox', 'sources', 'review', 'knowledge', 'tasks', 'projects', 'agents', 'evolution', 'workspaces', 'instance settings', 'settings',
+      'home', 'inbox', 'sources', 'review', 'knowledge', 'tasks', 'projects', 'agents', 'evolution', 'instance settings', 'settings',
     ]))
   })
 
-  it('places Evolution after Agents and before Workspaces without a badge model', () => {
+  it('places Evolution after Agents and before Instance Settings without a badge model', () => {
     const ids = RAIL_ITEMS.map(i => i.id)
     expect(ids.indexOf('evolution')).toBe(ids.indexOf('agents') + 1)
-    expect(ids.indexOf('workspaces')).toBe(ids.indexOf('evolution') + 1)
+    expect(ids.indexOf('instance-settings')).toBe(ids.indexOf('evolution') + 1)
     const evolution = RAIL_ITEMS.find(i => i.id === 'evolution')
     expect(evolution?.label).toBe('Evolution')
     expect(evolution?.to).toBe('/evolution')
@@ -64,9 +64,9 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/proposals')?.id).toBe('review')
     expect(sceneForPath('/spaces/x/projects')).toBeNull()
     expect(sceneForPath('/spaces/x/agents')?.id).toBe('agents')
-    expect(sceneForPath('/spaces/x/agent-groups')?.id).toBe('agents')
+    expect(sceneForPath('/spaces/x/rooms')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/sessions')?.id).toBe('agents')
-    expect(sceneForPath('/spaces/x/workspaces')?.id).toBe('workspaces')
+    expect(sceneForPath('/spaces/x/artifacts')?.id).toBe('artifacts')
     // Knowledge intentionally has no scene sidebar — it uses an in-header breadcrumb switcher.
     expect(sceneForPath('/spaces/x/knowledge')).toBeNull()
     expect(sceneForPath('/spaces/x/knowledge/notes')).toBeNull()
@@ -76,12 +76,12 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/activity')?.id).not.toBe(sceneForPath('/spaces/x/proposals')?.id)
   })
 
-  it('includes Agent Rooms in the Agents scene sidebar', () => {
-    const agentsScene = sceneForPath('/spaces/x/agent-groups')
+  it('includes Rooms in the Agents scene sidebar', () => {
+    const agentsScene = sceneForPath('/spaces/x/rooms')
     expect(agentsScene?.kind).toBe('route')
     if (agentsScene?.kind !== 'route') throw new Error('expected route scene')
     expect(agentsScene.items).toEqual(expect.arrayContaining([
-      { label: 'Rooms', to: '/agent-groups' },
+      { label: 'Rooms', to: '/rooms' },
     ]))
   })
 })

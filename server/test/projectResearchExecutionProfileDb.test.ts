@@ -63,7 +63,10 @@ afterAll(async () => {
 describe("ProjectResearchExecutionProfileService managed agent capabilities (real Postgres)", () => {
   it("provisions the full capability set for a new agent and backfills a pre-existing one missing newer capabilities", async () => {
     if (!available || !pool || !container) return;
-    const config = loadConfig({ ...process.env, SERVER_DATABASE_URL: container.getConnectionUri() });
+    const config = loadConfig({
+      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_INTERNAL_TOKEN: "test-internal-token",
+    });
     const service = new ProjectResearchExecutionProfileService(pool, config);
 
     await service.resolve(identity, {});

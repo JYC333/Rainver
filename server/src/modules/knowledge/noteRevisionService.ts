@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common";
 import { applyNoteOps, normalizePmText, parseNoteOps, pmBlocksText, type NoteOp } from "./noteDocument";
+import { emitDomainChangeEvent } from "../knowledgePromotion/outbox";
 
 export type NoteRevisionSource = "user_edit" | "ai_monitoring" | "ai_adhoc" | "seed" | "rollback";
 
@@ -183,14 +184,30 @@ async function insertRevision(db: Queryable, input: {
   spaceId: string; noteId: string; version: number; doc: Record<string, unknown>; normalized: string; hash: string;
   refs: string[]; source: NoteRevisionSource; userId: string | null; runId: string | null; diff: unknown; at: string;
 }): Promise<void> {
-  await db.query(
+  const revisionId = randomUUID();
+  const inserted = await db.query<{ id: string }>(
     `INSERT INTO note_revisions
        (id, space_id, note_id, version, content_json, normalized_text, content_hash, refs_json, source, diff_json, created_by_user_id, created_by_run_id, created_at)
      VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10::jsonb,$11,$12,$13)
-     ON CONFLICT (note_id, version) DO NOTHING`,
-    [randomUUID(), input.spaceId, input.noteId, input.version, JSON.stringify(input.doc), input.normalized, input.hash,
+     ON CONFLICT (note_id, version) DO NOTHING
+     RETURNING id`,
+    [revisionId, input.spaceId, input.noteId, input.version, JSON.stringify(input.doc), input.normalized, input.hash,
       JSON.stringify(input.refs), input.source, input.diff === null || input.diff === undefined ? null : JSON.stringify(input.diff), input.userId, input.runId, input.at],
   );
+  // ON CONFLICT DO NOTHING means a raced/duplicate call for the same
+  // (note_id, version) never double-reports a change event either — the
+  // FOR UPDATE lock in writeNote() makes this a defensive no-op, not a path
+  // this codebase normally takes.
+  if (!inserted.rows[0]) return;
+  await emitDomainChangeEvent(db, {
+    spaceId: input.spaceId,
+    sourceKind: "note",
+    sourceId: input.noteId,
+    sourceRef: { kind: "note_revision", note_id: input.noteId, revision_id: revisionId, version: input.version, content_hash: input.hash },
+    changeKind: "note_revision_created",
+    changeSignificance: null,
+    occurredAt: input.at,
+  });
 }
 
 export function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }

@@ -20,7 +20,7 @@ Persistent, approved, scoped knowledge. Key invariants:
 | Private memory only in personal space | Policy hard invariant + memory proposal/apply validation |
 | Deleted rows invisible | `deleted_at IS NULL` filter in every retrieval query |
 
-Key columns: `scope_type` (user / workspace / agent / system / capability),
+Key columns: `scope_type` (user / project_folder / agent / system / capability),
 `memory_type` (public category), `memory_layer` (semantic / episodic),
 `visibility`, `status` (proposed / active / archived / superseded),
 `version`, `fitness_score`, and `created_from_proposal_id`.
@@ -47,7 +47,7 @@ No route, run, condenser, retriever, context builder, activity processor, or age
 ## 2. Read authorization (`server/src/modules/access/contentAccess*.ts`)
 
 ```
-can_read_memory(entry, user_id, space_id, workspace_id, include_system_scope) -> bool
+can_read_memory(entry, user_id, space_id, project_folder_id, include_system_scope) -> bool
 ```
 
 Hard filter applied before any ranking:
@@ -69,14 +69,14 @@ Policy-aware retrieval pipeline. The server runtime path implements this in
 
 ```
 MemoryRetriever(db).retrieve(
-    space_id, user_id, workspace_id, agent_id,
+    space_id, user_id, project_folder_id, agent_id,
     query, agent_memory_policy, max_memories, include_system_scope
 ) -> RetrievalResult
 ```
 
 Stages (in order, each filters the already-hard-filtered universe):
 1. **Hard filter** — space, deleted_at, status=active, visibility, agent permission
-2. **Symbol match** — workspace-scoped, agent-scoped, user identity memories
+2. **Symbol match** — project_folder-scoped, agent-scoped, user identity memories
 3. **Graph expansion** — BFS on MemoryRelation, max 2 hops, bounded by space
 4. **Keyword fallback** — ILIKE on title/content
 5. **Embedding fallback** — stub (delegates to keyword)
@@ -100,9 +100,9 @@ Security boundary: `space_id` and `user_id` are required. No cross-space reads.
 ```
 ContextBuilder(db).build(
     space_id, user_id,
-    workspace_id?, task_type?, capability_id?, session_id?,
+    project_folder_id?, task_type?, capability_id?, session_id?,
     query?, agent_memory_policy?, agent_id?, run_id?,
-    context_reason?, attachments?, workspace_path?
+    context_reason?, attachments?, project_folder_path?
 ) -> ContextPackage
 ```
 
@@ -115,7 +115,7 @@ Responsibilities:
    through the sessions-owned read
    (`PgSessionRepository.getLatestSummaryForContext(...)`), consuming only the
    `SessionSummaryForContext` DTO boundary
-6. Partitions memories into sections: user_memory, workspace_memory, capability_memory, agent_memory, system_policy, relevant_episodes
+6. Partitions memories into sections: user_memory, project_folder_memory, capability_memory, agent_memory, system_policy, relevant_episodes
 7. Produces `ContextPackage` with stable_prefix_refs / dynamic_tail_refs split
 
 `recent_session_summary` is populated from `SessionSummary` rows (derived context, **not** MemoryEntry).
@@ -148,7 +148,7 @@ When a `SessionSummary` is loaded, `ContextBuilder` records:
 
 ---
 
-## 4a. Chat context — Personal Assistant path (`server/src/modules/agents/chatContextBuilder.ts`)
+## 4a. Conversation context (`server/src/modules/agents/chatContextBuilder.ts`)
 
 The existing `ContextBuilder` (§4 above) handles the CLI agent path: it produces a `ContextPackage`
 rendered by `ContextCompiler` into an instruction file.  The chat context path is different:
@@ -169,7 +169,7 @@ decisions are local to `build()` and stored only in `ContextBundle` / `ContextSn
 
 ```json
 {
-  "sources": ["memory", "knowledge_item", "workspace", "activity_record"],
+  "sources": ["memory", "knowledge_item", "project_folder", "activity_record"],
   "max_tokens": 4000,
   "max_items": 20,
   "condenser": {
@@ -203,7 +203,7 @@ Supported `item_type` values in a `ContextBundle` / `ContextSnapshotItem`:
 | `idea` | `knowledge_items` (item_type = idea) |
 | `source` | `sources` (status = processed) |
 | `activity_record` | `activity_records` (recent-first) |
-| `workspace` | `workspaces` (current workspace metadata) |
+| `project_folder` | `project_folders` (current Project Folder metadata) |
 | `project` | `projects` (current project metadata) |
 | `manual_context` | Caller-supplied explicit context (highest priority) |
 | `task`, `run`, `proposal`, `artifact` | Reserved; not yet selected automatically |
@@ -212,7 +212,7 @@ Supported `item_type` values in a `ContextBundle` / `ContextSnapshotItem`:
 
 ```
 1. manual_context       (score=1.0, always first)
-2. workspace metadata   (score=0.9, current workspace only)
+2. project_folder metadata (score=0.9, current Project Folder only)
 3. project metadata     (score=0.9, current project only)
 4. approved memory      (score=0.8, via server memory/context repositories)
 5. knowledge_item/idea  (score=0.7, recent-first + keyword filter)
@@ -257,7 +257,7 @@ workflow orchestration.
 
 ### Conversation window projection
 
-The Personal Assistant chat route projects session history into each queued run
+The direct agent conversation route projects session history into each queued run
 before execution:
 
 1. The current user message is appended to `messages`.
@@ -284,11 +284,19 @@ before execution:
    The structure is persisted in `ContextSnapshot.request_json`,
    `retrieval_trace_json`, and `token_budget_json`.
 
-The prompt shape is:
+Room conversations use the same durable `sessions` / `messages` authority but
+add multi-party cursor semantics. A local CLI binding is keyed by
+user × session × agent. Its first Room turn receives bounded chronological
+history. After a successful turn the binding records the triggering Room
+message as its cursor; a resumed turn receives messages after that cursor,
+including other humans and agents but excluding the recipient agent's own
+already-known output. If the cursor is absent from the bounded window, or the
+backend/context fingerprint changes, the run starts a new vendor session from
+the replay prompt. The vendor session remains a cache, never context authority.
+
+The CLI fallback prompt shape is:
 
 ```text
-[Context from your space ...]
-
 [Conversation window - use this for continuity. Recent turns override older summaries.]
 
 [Condensed earlier conversation]
@@ -301,6 +309,8 @@ assistant:
 [Current user message]
 user:
 ...
+
+[Context from your space ...]
 ```
 
 The managed API message shape is:
@@ -324,7 +334,10 @@ The managed API message shape is:
 
 The selected chat context preamble is appended to the managed API
 `system_prompt`, while the fallback `runs.prompt` still contains the fully
-rendered prompt for audit and CLI compatibility.
+rendered prompt for audit and CLI compatibility. In that fallback prompt the
+conversation window is the stable prefix and the per-turn retrieved context is
+the dynamic tail, so local CLI prompt caches are not invalidated at the first
+token by changing retrieval results.
 
 `conversationWindowToMessages` normalizes the native `messages[]` for managed
 chat providers (e.g. Anthropic Messages): empty turns are dropped, leading
@@ -351,10 +364,11 @@ referenced tables in the baseline migration.
 - Embeddings / vector search (no numpy, faiss, pgvector)
 - Graph traversal beyond what MemoryRetriever already provides
 - Source chunking pipeline
-- Full workspace file search
+- Full Project Folder file search
 - Frontend context picker UI
-- Tool-call message preservation in conversation windows. Current chat
-  execution is tool-disabled; tool result messages are future scheduler scope.
+- Tool-call message preservation in conversation windows. Governed Chat tools
+  execute through the normal Run tool gateway, but tool-result turns are not
+  yet projected back into the conversation window.
 
 ---
 
@@ -362,11 +376,13 @@ referenced tables in the baseline migration.
 
 Context assembly consumes the context-safe `SessionSummaryForContext` DTO from
 the sessions module. Condense/create writes are owned by the sessions module
-(`PgSessionRepository.condenseSession`, which owns session internals). The agent
-chat route **enqueues a background `session_condense` job** after each turn (it
-does not condense inline — chat responses must not block on the condenser's LLM
-call); the job runs the condenser off the request path. Context code still
-consumes only the DTO boundary and never writes summaries itself.
+(`PgSessionRepository.condenseSession`, which owns session internals). The Chat
+worker finalizer **enqueues a background `session_condense` job** after it
+durably persists a successful assistant message (it does not condense inline or
+on the HTTP request path). The job payload carries `source_run_id`, and a
+database unique index makes that Run-scoped enqueue idempotent across worker
+retries and concurrent reconcilers. Context code still consumes only the DTO
+boundary and never writes summaries itself.
 
 ### Design invariants
 
@@ -477,7 +493,7 @@ prepared run path uses `stable_prefix` / `dynamic_tail`; the older raw
 | 1 | policy | no | — |
 | 2 | user_context | no | 8 000 chars |
 | 3 | project_docs | no | 24 000 chars |
-| 4 | workspace | no | 12 000 chars |
+| 4 | project_folder | no | 12 000 chars |
 | 5 | capability | no | — |
 | 6 | agent | no | 8 000 chars |
 | 7 | attachments | no | 16 000 chars |
@@ -515,7 +531,7 @@ These are **distinct** — do not conflate them:
 
 Versioned derived cache of approved Memory + Policy content. **Not a source of truth.**
 
-Supported `digest_type` values: `policy_bundle`, `workspace`, `agent`.
+Supported `digest_type` values: `policy_bundle`, `project_folder`, `agent`.
 
 Lifecycle:
 1. Not auto-generated. Must be seeded by explicit `generate_*()` call.
@@ -524,12 +540,12 @@ Lifecycle:
    `ProposalApplyService` inside the proposal-apply transaction.
 4. Generation and dirty-marking take the same per-digest
    `pg_advisory_xact_lock` key (`policy_bundle:<space>`,
-   `workspace:<space>:<workspace_id>`, `agent:<space>:<agent_id>`) so a refresh
+   `project_folder:<space>:<project_folder_id>`, `agent:<space>:<agent_id>`) so a refresh
    cannot reactivate a stale digest after a concurrent change marked it dirty.
 5. Dirty digests are loaded for traceability, but are dropped at prepare time and
    never injected. Regeneration is explicit.
 
-Workspace/agent digest generation also verifies the target scope is still
+Project_folder/agent digest generation also verifies the target scope is still
 `status='active'` in the same space and locks that row `FOR UPDATE`; explicit
 refreshes/jobs fail closed for archived or missing scopes.
 
@@ -538,7 +554,7 @@ refreshes/jobs fail closed for archived or missing scopes.
 `ContextPrepareService` uses a digest only when it is usable:
 
 - `policy_bundle`: status is `active`.
-- `workspace` / `agent`: the run agent's `readable_scopes` includes the digest
+- `project_folder` / `agent`: the run agent's `readable_scopes` includes the digest
   scope, status is `active`, and every claimed `source_memory_ids_json` id still
   revalidates against live `memory_entries` for the same space/scope, active,
   undeleted, canonically readable by the run owner, and non-`highly_restricted`.
@@ -568,8 +584,8 @@ Never writes `MemoryEntry`, `Proposal`, or `Policy`.
 - `extra="forbid"`: unknown fields return 422.
 - Empty object `{}` refreshes all dirty digests in the space.
 - `scope_type` and `digest_type` must be provided together (neither alone).
-- `digest_type` must be one of `policy_bundle`, `workspace`, `agent`.
-- `digest_type="workspace"` or `"agent"` → `scope_id` required.
+- `digest_type` must be one of `policy_bundle`, `project_folder`, `agent`.
+- `digest_type="project_folder"` or `"agent"` → `scope_id` required.
 - `digest_type="policy_bundle"` + `scope_type="space"` → `scope_id` may be null.
 
 ---
@@ -586,7 +602,7 @@ population and propagates as a run failure. No memory is retrieved or injected
 after a DENY.
 
 Stable prefix strategy:
-- Resolves `ContextDigest` rows for space / workspace / agent via
+- Resolves `ContextDigest` rows for space / project_folder / agent via
   `loadDigestBundle()`, then filters them through the usable-digest rules above
 - Falls back to direct `MemoryRetriever` / direct active policies when a digest
   is missing, dirty, out-of-scope, malformed, or stale
@@ -619,11 +635,11 @@ Supported proposal types:
   `egress_review` applier is registered yet
 
 After applying `memory_create` / `memory_update` / `memory_archive`:
-- Calls the digest dirty-marker for affected workspace/agent memory scopes
+- Calls the digest dirty-marker for affected project_folder/agent memory scopes
 - Calls `SourceMonitoringService.record_proposal_apply(...)` for provenance tracking
 
 After applying `policy_change`:
-- Marks only the `policy_bundle` digest dirty. Workspace/agent digests are
+- Marks only the `policy_bundle` digest dirty. Project_folder/agent digests are
   memory-only and never embed policy content.
 
 ---
@@ -639,11 +655,11 @@ After applying `policy_change`:
 | Write authority boundary | `server/src/modules/proposals/applyService.ts` | Accepted proposals only |
 | Agent memory scope | `agent_memory_policy.readable_scopes` | Context repository |
 | Egress approval | `server/src/modules/proposals/applyService.ts` | PersonalMemoryGrant egress |
-| Workspace root validation | `server/src/modules/workspaces/pathPolicy.ts` | Before workspace file access |
+| Project Folder root validation | `server/src/modules/projectFolders/pathPolicy.ts` | Before Project Folder file access |
 | Per-run execution lock | run worker/orchestration locking in `server/src/modules/runs/` | Run execution service |
 | **context.inject_memory** | `PolicyGateway` in `server/src/modules/context/prepareService.ts` | Before context assembly |
 | **context.render_for_runtime** | `PolicyGateway` in `server/src/modules/runs/orchestrationService.ts` | Before adapter execution |
-| **proposal.create** | `PolicyGateway.enforce()` in proposals/workspace target modules | Before Proposal row insert |
+| **proposal.create** | `PolicyGateway.enforce()` in proposals/projectFolders target modules | Before Proposal row insert |
 | **proposal.apply** | `PolicyGateway.enforceProposalApply()` in `server/src/modules/proposals/applyService.ts` | Before accepted proposal side effects |
 | ProposalApplyService accept_context | `server/src/modules/proposals/applyService.ts` | Defense-in-depth at apply() entry |
 

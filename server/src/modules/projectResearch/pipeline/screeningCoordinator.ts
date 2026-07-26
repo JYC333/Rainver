@@ -6,10 +6,10 @@ import {
   deriveSkippedAfterScreeningSteps,
   researchStage,
   researchState,
-  transition as transitionResearchOperation,
+  advanceOperation as advanceResearchOperation,
   type ResearchOperationState,
   type ResearchStepOverride,
-} from "../stateMachine";
+} from "../operationProjection";
 
 export interface ScreeningOperationRow {
   id: string;
@@ -114,7 +114,7 @@ export class ProjectResearchScreeningCoordinator {
       message: state.empty_result.message,
       updated_at: now,
     };
-    await transitionResearchOperation(this.db, operation.space_id, operation.id, {
+    await advanceResearchOperation(this.db, operation.space_id, operation.id, {
       from: [researchStage(base.current_stage)],
       to: "complete",
       mutate: async ({ db, state: current }) => {
@@ -156,7 +156,7 @@ export class ProjectResearchScreeningCoordinator {
         );
       },
       stepOverrides: deriveSkippedAfterScreeningSteps(),
-      onIllegal: "noop",
+      onStale: "noop",
     });
   }
 

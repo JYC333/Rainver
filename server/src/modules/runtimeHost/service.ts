@@ -16,6 +16,10 @@ export interface RuntimeHostLogger {
   error(details: Record<string, unknown>, message: string): void;
 }
 
+export interface RuntimeHostExecutionHooks {
+  onTextDelta?: (delta: string) => void;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -137,6 +141,7 @@ export async function executeRuntimeHost(
   config: ServerConfig,
   input: RuntimeHostExecuteRequest,
   logger?: RuntimeHostLogger,
+  hooks: RuntimeHostExecutionHooks = {},
 ): Promise<RuntimeHostExecuteResponse> {
   const startedAt = nowIso();
   const toolMode = input.tool_mode ?? "disabled";
@@ -179,6 +184,8 @@ export async function executeRuntimeHost(
           : [{ role: "user", content: input.prompt }],
         max_tokens: input.max_tokens,
         output_format: input.output_format ?? null,
+        cache_strategy: input.cache_strategy,
+        on_text_delta: hooks.onTextDelta,
         task: "runtime_host",
         tools: toolMode === "authorized_bindings" ? tools : undefined,
         metering: {
@@ -196,7 +203,7 @@ export async function executeRuntimeHost(
           session_id: input.session_id ?? null,
           agent_id: input.agent_id ?? null,
           project_id: input.project_id ?? null,
-          workspace_id: input.workspace_id ?? null,
+          project_folder_id: input.project_folder_id ?? null,
           trigger_origin: input.trigger_origin ?? null,
           adapter_type: "ts_agent_host",
           task: "runtime_host",

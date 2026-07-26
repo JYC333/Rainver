@@ -18,7 +18,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "live",
     prompt: null,
     instruction: null,
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "model_api",
@@ -37,7 +37,7 @@ class VerificationDb implements Queryable {
   readonly inserts: unknown[][] = [];
 
   async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
-    if (sql.includes("FROM workspaces")) return { rows: [], rowCount: 0 } as { rows: Row[]; rowCount: number };
+    if (sql.includes("FROM project_folders")) return { rows: [], rowCount: 0 } as { rows: Row[]; rowCount: number };
     if (sql.includes("INSERT INTO verification_results")) {
       this.inserts.push([...params]);
       return {

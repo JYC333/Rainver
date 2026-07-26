@@ -5,8 +5,8 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { toast } from 'sonner'
 import ProjectDetailPage from '../ProjectDetailPage'
 import {
-  automationsApi, sourcesApi, readerApi, projectsApi, workspacesApi, projectPresetsApi, projectResearchApi,
-  activityApi, artifactsApi, proposalsApi,
+  automationsApi, sourcesApi, readerApi, projectsApi, projectResearchApi,
+  activityApi, artifactsApi, proposalsApi, inquiryApi,
 } from '../../../api/client'
 
 vi.mock('sonner', () => ({
@@ -39,6 +39,9 @@ vi.mock('../../../api/client', () => ({
       status: 'active',
       current_focus: null,
       settings_json: null,
+      template_key: 'blank',
+      primary_mode: 'inquiry',
+      active_brief_version_id: null,
       created_at: '2026-06-30T00:00:00.000Z',
       updated_at: '2026-06-30T00:00:00.000Z',
       archived_at: null,
@@ -48,15 +51,21 @@ vi.mock('../../../api/client', () => ({
       activity_count: 0,
       artifact_count: 0,
       pending_proposal_count: 0,
-      workspace_count: 0,
+      project_folder_count: 0,
       active_run_count: 0,
       memory_entry_count: 0,
     }),
-    listWorkspaces: vi.fn().mockResolvedValue([]),
+    getOverview: vi.fn().mockResolvedValue({
+      project: { id: 'project-1', name: 'Project One', primary_mode: 'inquiry', template_key: 'blank', status: 'active' },
+      brief: null,
+      mode_projection: { mode: 'inquiry', current_state_summary: 'No active Threads.', progress_indicators: [], focus_set: [], next_actions: [] },
+      available_modes: ['inquiry'],
+      attention: [],
+      area_summaries: [],
+    }),
+    transitionMode: vi.fn(),
     update: vi.fn(),
     archive: vi.fn(),
-    linkWorkspace: vi.fn(),
-    unlinkWorkspace: vi.fn(),
     deleteSourceBinding: vi.fn().mockResolvedValue({ id: 'binding-1', status: 'archived' }),
     createSourceBinding: vi.fn().mockResolvedValue({
       id: 'binding-new',
@@ -65,9 +74,6 @@ vi.mock('../../../api/client', () => ({
       binding_key: 'default',
       status: 'active',
     }),
-  },
-  projectPresetsApi: {
-    getProjectPreset: vi.fn().mockResolvedValue({ preset_key: null }),
   },
   projectResearchApi: {
     profile: vi.fn().mockRejectedValue(new Error('404 Research profile not found')),
@@ -106,10 +112,13 @@ vi.mock('../../../api/client', () => ({
   providersApi: {
     list: vi.fn().mockResolvedValue([]),
   },
+  inquiryApi: {
+    listThreads: vi.fn().mockResolvedValue([]),
+  },
   credentialsApi: {
     profiles: vi.fn().mockResolvedValue([]),
   },
-  workspacesApi: {
+  projectFoldersApi: {
     list: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 }),
   },
   activityApi: {
@@ -374,6 +383,29 @@ function renderPage() {
   )
 }
 
+// Template key is read directly off `projectsApi.get`'s `template_key` field
+// (renamed from `profile_key`), not from a separate profile-lookup call.
+// `overrides` lets a test also vary fields like `current_focus`.
+function mockAcademicProject(overrides: Partial<Awaited<ReturnType<typeof projectsApi.get>>> = {}) {
+  vi.mocked(projectsApi.get).mockResolvedValueOnce({
+    id: 'project-1',
+    space_id: 'space-1',
+    owner_user_id: 'user-1',
+    name: 'Project One',
+    description: null,
+    status: 'active',
+    current_focus: null,
+    settings_json: null,
+    template_key: 'academic_research',
+    primary_mode: 'inquiry',
+    active_brief_version_id: null,
+    created_at: '2026-06-30T00:00:00.000Z',
+    updated_at: '2026-06-30T00:00:00.000Z',
+    archived_at: null,
+    ...overrides,
+  })
+}
+
 describe('ProjectDetailPage Source consumption', () => {
   it('shows Source summaries and links management back to Source', async () => {
     renderPage()
@@ -383,6 +415,10 @@ describe('ProjectDetailPage Source consumption', () => {
     expect(await screen.findByText('Release item')).toBeInTheDocument()
     expect(await screen.findByText('Useful evidence')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^link source$/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Rooms' })).toHaveAttribute(
+      'href',
+      '/projects/project-1/rooms',
+    )
     expect(screen.getByRole('link', { name: /manage sources/i })).toHaveAttribute('href', '/projects/project-1/sources')
     expect(screen.queryByText(/create connection/i)).toBeNull()
 
@@ -391,14 +427,14 @@ describe('ProjectDetailPage Source consumption', () => {
       expect(sourcesApi.projectItems).toHaveBeenCalledWith({ project_id: 'project-1', limit: 5 })
       expect(sourcesApi.evidence).toHaveBeenCalledWith({ project_id: 'project-1', status: 'active', limit: 5 })
       expect(automationsApi.list).toHaveBeenCalledWith({ project_id: 'project-1' })
-      expect(projectPresetsApi.getProjectPreset).toHaveBeenCalledWith('project-1')
+      expect(projectsApi.get).toHaveBeenCalledWith('project-1')
       expect(sourcesApi.createSourceRecipe).not.toHaveBeenCalled()
       expect(sourcesApi.createCustomSourceDraft).not.toHaveBeenCalled()
     })
   })
 
-  it('renders the Academic Research workbench from the creation-time project preset', async () => {
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+  it('renders the Academic Research workbench from the creation-time Project Profile', async () => {
+    mockAcademicProject()
     renderPage()
 
     expect(await screen.findByText('Research status')).toBeInTheDocument()
@@ -418,12 +454,48 @@ describe('ProjectDetailPage Source consumption', () => {
     expect(screen.getByText(/Engineering feed/)).toBeInTheDocument()
   })
 
+  it('restores the selected Research Workflow and scopes its checkpoint reads explicitly', async () => {
+    mockAcademicProject()
+    const workflow = (id: string, question: string) => ({
+      id,
+      project_id: 'project-1',
+      workflow_type: 'literature_review',
+      current_stage: 'monitoring',
+      status: 'active',
+      mode: 'autonomous',
+      state_json: {
+        research_question: question,
+        research_question_version: 1,
+        thread_scope: [{ thread_id: `thread-${id}`, version: 1, kind: 'question', statement: question }],
+        monitoring: { active: true },
+      },
+      started_by_user_id: 'user-1',
+      started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z',
+      updated_at: '2026-07-24T00:00:00.000Z',
+    })
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([
+      workflow('workflow-1', 'Does caching improve latency?'),
+      workflow('workflow-2', 'Does batching improve throughput?'),
+    ] as never)
+    window.localStorage.setItem('project:project-1:research-workflow', 'workflow-2')
+
+    renderPage()
+
+    const selector = await screen.findByLabelText('Selected research question workflow')
+    expect(selector).toHaveTextContent('Does batching improve throughput?')
+    await waitFor(() => {
+      expect(projectResearchApi.checkpoints).toHaveBeenCalledWith('project-1', 'workflow-2')
+    })
+    expect(projectResearchApi.checkpoints).not.toHaveBeenCalledWith('project-1', 'workflow-1')
+    window.localStorage.removeItem('project:project-1:research-workflow')
+  })
+
   it('skips fetching data that only the non-academic sections render', async () => {
     // This suite has no global mock-clearing between tests (other cases rely
     // on accumulated call history), so the calls asserted "not called" below
     // must be cleared of whatever earlier non-academic tests already left on
     // these same shared spies.
-    vi.mocked(workspacesApi.list).mockClear()
     vi.mocked(activityApi.list).mockClear()
     vi.mocked(artifactsApi.list).mockClear()
     vi.mocked(proposalsApi.list).mockClear()
@@ -432,7 +504,7 @@ describe('ProjectDetailPage Source consumption', () => {
     vi.mocked(readerApi.listByProject).mockClear()
     vi.mocked(projectResearchApi.screeningCriteria).mockClear()
 
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+    mockAcademicProject()
     renderPage()
 
     expect(await screen.findByText('Research status')).toBeInTheDocument()
@@ -444,7 +516,6 @@ describe('ProjectDetailPage Source consumption', () => {
     // activity" sections and the non-academic ResearchWorkflowPanel, none of
     // which render for an academic project — fetching them would be pure
     // waste on this page.
-    expect(workspacesApi.list).not.toHaveBeenCalled()
     expect(activityApi.list).not.toHaveBeenCalled()
     expect(artifactsApi.list).not.toHaveBeenCalled()
     expect(proposalsApi.list).not.toHaveBeenCalled()
@@ -466,7 +537,7 @@ describe('ProjectDetailPage Source consumption', () => {
     const workflows = new Promise<Awaited<ReturnType<typeof projectResearchApi.workflows>>>(resolve => {
       resolveWorkflows = resolve
     })
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+    mockAcademicProject()
     vi.mocked(projectResearchApi.workflows).mockReturnValueOnce(workflows)
 
     renderPage()
@@ -480,7 +551,7 @@ describe('ProjectDetailPage Source consumption', () => {
   })
 
   it('announces a pending research review instead of silently pausing', async () => {
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+    mockAcademicProject()
     vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
       id: 'workflow-1',
       project_id: 'project-1',
@@ -534,28 +605,17 @@ describe('ProjectDetailPage Source consumption', () => {
     await waitFor(() => expect(projectsApi.deleteSourceBinding).toHaveBeenCalledWith('project-1', 'binding-1'))
   })
 
-  it('keeps the research question editable after it has been set', async () => {
-    vi.mocked(projectsApi.get).mockResolvedValueOnce({
-      id: 'project-1',
-      space_id: 'space-1',
-      owner_user_id: 'user-1',
-      name: 'Project One',
-      description: null,
-      status: 'active',
-      current_focus: 'How should agents use source evidence?',
-      settings_json: null,
-      created_at: '2026-06-30T00:00:00.000Z',
-      updated_at: '2026-06-30T00:00:00.000Z',
-      archived_at: null,
-    })
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+  it('does not expose project current_focus as the academic research question', async () => {
+    mockAcademicProject({ current_focus: 'How should agents use source evidence?' })
     renderPage()
 
-    expect(await screen.findByRole('button', { name: /edit question/i })).toBeInTheDocument()
+    expect(await screen.findByText('Project One')).toBeInTheDocument()
+    expect(screen.queryByText('How should agents use source evidence?')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /edit question/i })).not.toBeInTheDocument()
   })
 
   it('warns that saving a changed question does not rewrite started research', async () => {
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+    mockAcademicProject()
     vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
       id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'complete',
       status: 'active', mode: 'autonomous', state_json: { research_question: 'Old question', research_question_version: 1 },
@@ -568,16 +628,21 @@ describe('ProjectDetailPage Source consumption', () => {
   })
 
   it('resolves question drift through the impact-aware decision dialog', async () => {
-    vi.mocked(projectsApi.get).mockResolvedValueOnce({
-      id: 'project-1', space_id: 'space-1', owner_user_id: 'user-1', name: 'Project One', description: null,
-      status: 'active', current_focus: 'New question', settings_json: null,
-      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z', archived_at: null,
-    })
-    vi.mocked(projectPresetsApi.getProjectPreset).mockResolvedValueOnce({ preset_key: 'academic_research' })
+    mockAcademicProject({ current_focus: 'New question' })
     vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
       id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'complete',
-      status: 'active', mode: 'autonomous', state_json: { research_question: 'Old question', research_question_version: 3, monitoring: { active: true } },
+      status: 'active', mode: 'autonomous', state_json: {
+        research_question: 'Old question', research_question_version: 3, monitoring: { active: true },
+        thread_scope: [{ thread_id: 'thread-1', version: 3, kind: 'question', statement: 'Old question' }],
+      },
       started_by_user_id: 'user-1', started_run_id: null, created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
+    }])
+    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
+      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'New question',
+      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
+      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+      version: 4, created_from: 'user', created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
     }])
     vi.mocked(projectResearchApi.questionChangeImpact).mockResolvedValueOnce({
       workflow_id: 'workflow-1', previous_question: 'Old question', current_question: 'New question',
@@ -591,7 +656,8 @@ describe('ProjectDetailPage Source consumption', () => {
     expect(screen.getByText('Question version 3 → 4')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /re-screen against the new question/i }))
 
-    await waitFor(() => expect(projectResearchApi.resolveQuestionChange).toHaveBeenCalledWith('project-1', 'rescreen'))
+    await waitFor(() => expect(projectResearchApi.questionChangeImpact).toHaveBeenCalledWith('project-1', 'workflow-1'))
+    await waitFor(() => expect(projectResearchApi.resolveQuestionChange).toHaveBeenCalledWith('project-1', 'workflow-1', 'rescreen'))
   })
 
   it('uses the unified confirmation dialog before archiving a project', async () => {
@@ -617,44 +683,6 @@ describe('ProjectDetailPage Source consumption', () => {
   })
 
   it('links a Source directly from the Project page', async () => {
-    vi.mocked(projectsApi.listWorkspaces).mockResolvedValue([
-      {
-        id: 'project-workspace-1',
-        project_id: 'project-1',
-        workspace_id: 'workspace-1',
-        role: 'reference',
-        created_at: '2026-06-30T00:00:00.000Z',
-        updated_at: '2026-06-30T00:00:00.000Z',
-      },
-    ])
-    vi.mocked(workspacesApi.list).mockResolvedValue({
-      items: [{
-        id: 'workspace-1',
-        owner_space_id: 'space-1',
-        created_by_user_id: 'user-1',
-        name: 'Project workspace',
-        slug: 'project-workspace',
-        description: null,
-        workspace_type: 'project',
-        kind: 'standard',
-        repo_url: null,
-        root_path: null,
-        default_branch: null,
-        visibility: 'space_shared',
-        status: 'active',
-        protected: false,
-        system_managed: false,
-        registered_from: null,
-        metadata_json: null,
-        snapshot_retention_days: null,
-        snapshot_max_count: null,
-        created_at: '2026-06-30T00:00:00.000Z',
-        updated_at: '2026-06-30T00:00:00.000Z',
-      }],
-      total: 1,
-      limit: 200,
-      offset: 0,
-    })
     vi.mocked(sourcesApi.projectSourceBindings).mockResolvedValue([])
 
     renderPage()

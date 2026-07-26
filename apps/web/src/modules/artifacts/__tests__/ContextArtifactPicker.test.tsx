@@ -56,7 +56,7 @@ const briefArtifact: Artifact = {
   owner_user_id: 'user-1',
   content: null,
   project_id: null,
-  workspace_id: 'workspace-1',
+  project_folder_id: 'workspace-1',
   created_at: '2026-06-26T10:00:00.000Z',
   updated_at: '2026-06-26T10:00:00.000Z',
 }
@@ -75,7 +75,7 @@ describe('ContextArtifactPicker', () => {
       id: 'revocation-1',
       space_id: 'space-1',
       artifact_id: 'brief-1',
-      scope_type: 'workspace',
+      scope_type: 'project_folder',
       scope_id: 'workspace-1',
       reason: null,
       created_by_user_id: 'user-1',
@@ -83,14 +83,14 @@ describe('ContextArtifactPicker', () => {
     })
   })
 
-  it('attaches artifacts and revokes future workspace attachment', async () => {
+  it('attaches artifacts and revokes future Folder attachment', async () => {
     const onChange = vi.fn()
     render(
       <MemoryRouter>
         <ContextArtifactPicker
           selectedArtifactIds={['brief-1']}
           onChange={onChange}
-          workspaceId="workspace-1"
+          projectFolderId="workspace-1"
         />
       </MemoryRouter>,
     )
@@ -98,7 +98,7 @@ describe('ContextArtifactPicker', () => {
     expect((await screen.findAllByText('Brief artifact')).length).toBeGreaterThan(0)
     await waitFor(() => {
       expect(contextApi.listArtifactRevocations).toHaveBeenCalledWith(expect.objectContaining({
-        workspace_id: 'workspace-1',
+        project_folder_id: 'workspace-1',
         artifact_ids: expect.arrayContaining(['brief-1']),
       }))
     })
@@ -108,7 +108,7 @@ describe('ContextArtifactPicker', () => {
     await waitFor(() => {
       expect(contextApi.revokeArtifact).toHaveBeenCalledWith({
         artifact_id: 'brief-1',
-        scope_type: 'workspace',
+        scope_type: 'project_folder',
         scope_id: 'workspace-1',
       })
     })

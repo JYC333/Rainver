@@ -147,15 +147,20 @@ export default function MemoryDetailPage() {
             <Card>
               <CardTitle>Scope</CardTitle>
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <Field label="Memory ID" value={<code className="text-xs">{memory.id}</code>} />
-                <Field label="Space ID" value={<code className="text-xs">{memory.space_id}</code>} />
                 <Field label="Namespace" value={<code className="text-xs">{val(memory.namespace)}</code>} />
-                <Field label="Workspace ID" value={<code className="text-xs">{val(memory.workspace_id)}</code>} />
-                <Field label="Project ID" value={<code className="text-xs">{val(memory.project_id)}</code>} />
-                <Field label="Owner user" value={<code className="text-xs">{val(memory.owner_user_id)}</code>} />
-                <Field label="Subject user" value={<code className="text-xs">{val(memory.subject_user_id)}</code>} />
                 <Field label="Access level" value={memory.access_level} />
               </div>
+              <details className="mt-4 rounded-md border border-border bg-muted/20 p-3 text-xs">
+                <summary className="cursor-pointer font-medium">Technical identifiers</summary>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  <Field label="Memory ID" value={<code className="text-xs">{memory.id}</code>} />
+                  <Field label="Space ID" value={<code className="text-xs">{memory.space_id}</code>} />
+                  <Field label="Project Folder ID" value={<code className="text-xs">{val(memory.project_folder_id)}</code>} />
+                  <Field label="Project ID" value={<code className="text-xs">{val(memory.project_id)}</code>} />
+                  <Field label="Owner user" value={<code className="text-xs">{val(memory.owner_user_id)}</code>} />
+                  <Field label="Subject user" value={<code className="text-xs">{val(memory.subject_user_id)}</code>} />
+                </div>
+              </details>
             </Card>
 
             <Card>

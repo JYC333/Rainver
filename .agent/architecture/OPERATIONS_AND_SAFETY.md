@@ -18,11 +18,11 @@ AGENT_SPACE_HOME/
   storage/     Artifact storage files
   secrets/     Encrypted provider key files (AES key, CLI credentials)
   config/      Runtime configuration
-  workspaces/  Workspace metadata
+  workspaces/  Project Folder files
   backups/     Backup archives (auto-pruned to BACKUP_RETENTION_COUNT)
   logs/        Application logs (optional; excluded from backup by default)
-  sandboxes/   Ephemeral sandbox state (never backed up)
-  cache/       Ephemeral cache (never backed up)
+  sandboxes/   Ephemeral sandbox state and stable CLI conversation cwd state (never backed up)
+  cache/       Ephemeral cache, including isolated CLI conversation HOME state (never backed up)
 ```
 
 ## Backup — Canonical: Server BackupService
@@ -52,11 +52,33 @@ the archive to finish.
 | `storage/` — artifact files | Always |
 | `secrets/` — master key and CLI login state | **Never**; separate credential archive only |
 | `config/` — runtime config | Always |
-| `workspaces/` — workspace metadata | Always |
+| `workspaces/` — Project Folder files | Always |
 | `backups/` — previous archives | **Never** (recursion prevention) |
 | `sandboxes/` — ephemeral sandbox | **Never** |
 | `cache/` — ephemeral cache | **Never** |
 | `logs/` — application logs | Only if `BACKUP_INCLUDE_LOGS=true` |
+
+CLI conversation resume state is deliberately outside durable backup:
+`cache/conversation-runtime-homes/<state-key>` contains the private vendor
+HOME, while `sandboxes/conversation-sessions/<state-key>/workspace` provides
+the stable cwd required by cwd-partitioned runtimes. The state key is
+server-generated and never derived from user input. If either directory is
+missing, execution clears any partial counterpart and reconstructs the vendor
+session by replaying Agent Space's authoritative conversation context.
+Runtime-state path construction rejects symlinks at every component below the
+configured roots. Binding rotation removes the retired state after commit;
+the hourly retention task prunes unreferenced orphan state older than 30 days
+after excluding every binding and nonterminal Run state key.
+
+Read-only Project Folder runs create only
+`sandboxes/read-only-context/<space>/<run>` for generated vendor context; the
+physical Folder is neither copied nor modified. The staging directory is
+removed with Run sandbox cleanup. Official Compose installs bubblewrap and
+uses `seccomp=unconfined` for the unprivileged server container because
+Docker's built-in seccomp profile blocks rootless namespace creation. No
+capability or privileged mode is granted. Non-Compose deployments must permit
+unprivileged user namespaces; otherwise `read_only` execution fails closed
+with `read_only_sandbox_unavailable`.
 
 **PostgreSQL backup:** `BackupService` uses `pg_dump -Fc --no-owner --no-acl` (custom format) for a consistent snapshot. It fails closed if `BACKUP_DATABASE_URL` is unset or `pg_dump` fails — no partial archive is produced. `db_snapshot_method` in the manifest is `"pg_dump_custom"`. The dump is restored with `pg_restore`. The live `db/postgres` data directory is **never** copied into an archive — the database is only captured logically.
 
@@ -140,11 +162,19 @@ ops/scripts/system/restore.sh ~/.aspace/dev/backups/auto-<timestamp>.tar.gz --mo
 - **Soft delete** — marks status `deleted`. Row retained for audit. Content may be redacted.
 - **Hard delete** — permanently removes row and linked files. **Not exposed through any public API.** Reserved for legal compliance only, requiring `pending_delete` → review → execute sequence.
 
-## Workspace Lifecycle
+## Project Folder Lifecycle
 
-Missing workspace paths: `POST /workspaces/scan` marks workspace `stale`, **never** hard-deletes. All metadata (id, name, tasks, runs, artifacts, proposals, audit references) is fully preserved.
+Archiving a Project Folder (`DELETE /projects/{id}/folders/{folderId}`) disables
+new Folder-backed execution but never deletes, moves, or rewrites the
+physical directory; all metadata (id, name, tasks, runs, artifacts,
+proposals, audit references) is fully preserved. Unregistering
+(`POST /projects/{id}/folders/{folderId}/unregister`) removes only the
+Agent-Space registration row — it never touches disk either. There is no
+automatic missing-path detection or stale-marking scan; `POST
+/projects/{id}/folders/scan` only lists unregistered directories eligible
+for the "connect existing" creation flow.
 
-Operator restores a stale workspace: `PATCH /workspaces/{id}` setting `status=active`.
+Operator restores an archived Folder: `PATCH /projects/{id}/folders/{folderId}` setting `status=active`.
 
 ## Minimal Failure Alerting
 
@@ -169,13 +199,6 @@ Operator restores a stale workspace: `PATCH /workspaces/{id}` setting `status=ac
 - The instance must not be exposed directly to the public internet until TLS termination,
   rate limiting, and general CSRF-token hardening have been implemented and reviewed.
 
-## Self-Evolution Default Off
-
-- `register_system_core_workspace` is called only when `ENABLE_SYSTEM_EVOLUTION=true`.
-- The public workspace create API rejects `workspace_type="system_core"` requests.
-- Disabled in all deployment configurations by default.
-- Do not change `ENABLE_SYSTEM_EVOLUTION` for dogfooding.
-
 ## Stop Conditions
 
 Dogfooding must stop immediately on any of these:
@@ -188,7 +211,7 @@ Dogfooding must stop immediately on any of these:
 6. Raw secret in run output, RunStep, artifact, logs, or UI.
 7. BackupService fails repeatedly (no `backup_manifest.json` after two intervals).
 8. Restore rehearsal fails or key data missing after restore.
-9. Workspace scan hard-deletes metadata instead of marking stale.
+9. Project Folder archive or unregister deletes, moves, or rewrites the physical directory.
 10. Deployer accepts a job type not in `ALLOWED_JOB_TYPES`.
 11. Self-evolution executes behavior changes without approved proposal and deployer gate.
 12. Code patch partial apply with rollback failure.

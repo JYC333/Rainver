@@ -32,7 +32,7 @@ function claimRow(overrides: Partial<ClaimRow> = {}): ClaimRow {
     excerpt: null,
     owner_user_id: "user-1",
     primary_project_id: null,
-    workspace_id: null,
+    project_folder_id: null,
     created_by_user_id: "user-1",
     created_by_agent_id: null,
     created_by_run_id: null,

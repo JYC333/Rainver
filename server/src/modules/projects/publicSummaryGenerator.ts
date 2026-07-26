@@ -325,7 +325,7 @@ export class ProjectPublicSummaryGenerator {
   // happens to have oversight visibility (Decision Matrix #4/#7).
   private async loadMemories(identity: SpaceUserIdentity, projectId: string): Promise<GeneratorMemoryRow[]> {
     const result = await this.db.query<GeneratorMemoryRow>(
-      `SELECT me.id, me.space_id, me.subject_user_id, me.owner_user_id, me.workspace_id,
+      `SELECT me.id, me.space_id, me.subject_user_id, me.owner_user_id, me.project_folder_id,
               scope_type, namespace, memory_type, title, content, visibility,
               access_level, ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$3", includeOversight: false })} AS effective_access_level,
               sensitivity_level, tags, importance, updated_at,

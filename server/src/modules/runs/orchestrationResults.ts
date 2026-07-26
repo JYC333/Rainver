@@ -1,5 +1,7 @@
 import type {
+  CanonicalRunOutput,
   RunAdapterResultEnvelope,
+  RunInputEnvelope,
   RunMaterializationItemSummary,
   RunStatus,
   RunTerminalStatus,
@@ -17,6 +19,7 @@ interface PreparedRuntimeInput {
   context_text: string | null;
   adapter_config: Record<string, unknown>;
   risk_level: string | null;
+  run_input: RunInputEnvelope;
 }
 
 export function terminalStatusFromAdapter(result: RunAdapterResultEnvelope): RunTerminalStatus {
@@ -41,6 +44,52 @@ export function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
   });
 }
 
+export interface SemanticRunFailure {
+  error_code:
+    | "semantic_rejection"
+    | "verification_failed"
+    | "usage_recording_failed";
+  error_message: string;
+}
+
+export function semanticRunFailure(
+  result: RunAdapterResultEnvelope,
+  verificationResults: readonly { status: string }[],
+): SemanticRunFailure | null {
+  if (!result.success) return null;
+  const output = recordValue(result.output_json);
+  if (output.status === "rejected") {
+    return {
+      error_code: "semantic_rejection",
+      error_message: "Agent reported that it could not complete the requested work.",
+    };
+  }
+  if (verificationResults.some(
+    (verification) => verification.status === "failed" || verification.status === "error",
+  )) {
+    return {
+      error_code: "verification_failed",
+      error_message: "Run output did not satisfy its deterministic acceptance checks.",
+    };
+  }
+  return null;
+}
+
+export function semanticFailureErrorJson(
+  result: RunAdapterResultEnvelope,
+  failure: SemanticRunFailure | null,
+): unknown {
+  return failure
+    ? sanitizeEvidenceJson({
+        error_code: failure.error_code,
+        error_text: failure.error_message,
+        adapter_type: result.adapter_type,
+        adapter_kind: result.adapter_kind,
+        exit_code: result.exit_code,
+      })
+    : adapterErrorJson(result);
+}
+
 export function outputJsonWithMaterialization(
   outputJson: unknown,
   items: RunMaterializationItemSummary[],
@@ -50,6 +99,61 @@ export function outputJsonWithMaterialization(
   if (items.length > 0) output.materialization = sanitizeEvidenceJson(items);
   if (errors.length > 0) output.materialization_errors = errors.map((error) => redactEvidenceText(error));
   return sanitizeEvidenceJson(output);
+}
+
+export function canonicalRunOutput(input: {
+  success: boolean;
+  outputText: string;
+  outputJson: unknown;
+}): CanonicalRunOutput {
+  const output = recordValue(input.outputJson);
+  const manifest = normalizeOutputManifest(output.output_manifest);
+  const { output_manifest: _manifest, ...result } = output;
+  const semanticStatus = output.status === "rejected" ? "rejected" : input.success ? "succeeded" : "failed";
+  return {
+    schema_version: "run_output.v1",
+    status: semanticStatus,
+    summary: redactEvidenceText(input.outputText) ?? "",
+    result: sanitizeEvidenceJson(result) as CanonicalRunOutput["result"],
+    output_manifest: manifest,
+  };
+}
+
+export function runOutputResult(value: unknown): Record<string, unknown> {
+  const output = recordValue(value);
+  return output.schema_version === "run_output.v1"
+    ? recordValue(output.result)
+    : {};
+}
+
+function normalizeOutputManifest(value: unknown): CanonicalRunOutput["output_manifest"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = recordValue(item);
+    const name = stringValue(record.name ?? record.path);
+    const status = stringValue(record.status);
+    if (
+      !name ||
+      !["valid", "missing", "invalid", "oversized", "undeclared"].includes(status ?? "")
+    ) return [];
+    return [{
+      name,
+      status: status as CanonicalRunOutput["output_manifest"][number]["status"],
+      artifact_id: stringValue(record.artifact_id),
+      media_type: stringValue(record.media_type),
+      size_bytes: typeof record.size_bytes === "number" &&
+        Number.isInteger(record.size_bytes) &&
+        record.size_bytes >= 0
+        ? record.size_bytes
+        : null,
+      validation_errors: Array.isArray(record.validation_errors)
+        ? record.validation_errors.flatMap((error) => {
+            const text = stringValue(error);
+            return text ? [text] : [];
+          })
+        : [],
+    }];
+  });
 }
 
 export function waitingForDependencyFromAdapter(
@@ -153,6 +257,7 @@ export function inputWithPreparedRuntime<T extends {
   context_text?: string | null;
   adapter_config?: Record<string, unknown>;
   risk_level?: string | null;
+  run_input?: RunInputEnvelope;
 }>(
   input: T,
   prepared: PreparedRuntimeInput,
@@ -164,6 +269,7 @@ export function inputWithPreparedRuntime<T extends {
     context_text: prepared.context_text,
     adapter_config: prepared.adapter_config,
     risk_level: prepared.risk_level ?? input.risk_level ?? null,
+    run_input: prepared.run_input,
   };
 }
 
@@ -231,6 +337,10 @@ export function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function stringArrayValue(value: unknown): string[] {

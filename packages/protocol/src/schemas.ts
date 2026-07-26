@@ -38,7 +38,7 @@ export const AgentRefSchema = z.object({
   name: z.string(),
 });
 
-export const WorkspaceRefSchema = z.object({
+export const ProjectFolderRefSchema = z.object({
   id: IdSchema,
   name: z.string(),
 });
@@ -62,7 +62,7 @@ export const ActivityDTOSchema = z.object({
   source_url: z.string().nullish(),
   user_id: IdSchema.nullish(),
   agent_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   status: z.string().nullish(),
   source_kind: z.string().nullish(),
@@ -83,7 +83,7 @@ export const ProposalDTOSchema = z.object({
   proposed_title: z.string(),
   proposed_content: z.string(),
   rationale: z.string(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   source_activity_id: IdSchema.nullish(),
   resulting_memory_id: IdSchema.nullish(),
@@ -107,7 +107,7 @@ export const RunDTOSchema = z.object({
   run_type: z.string(),
   trigger_origin: z.string(),
   mode: z.string(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   session_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   parent_run_id: IdSchema.nullish(),
@@ -159,7 +159,7 @@ export const ArtifactDTOSchema = z.object({
   preview: z.boolean(),
   visibility: z.string(),
   project_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
 });
@@ -175,7 +175,7 @@ export const MemoryDTOSchema = z.object({
   sensitivity_level: z.string(),
   title: z.string().nullish(),
   content: z.string().nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   subject_user_id: IdSchema.nullish(),
   owner_user_id: IdSchema.nullish(),
@@ -196,7 +196,7 @@ export const KnowledgeItemDTOSchema = z.object({
   status: z.string(),
   visibility: z.string(),
   slug: z.string().nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   source_url: z.string().nullish(),
   version: z.number().int(),

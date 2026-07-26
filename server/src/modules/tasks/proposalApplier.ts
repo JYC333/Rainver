@@ -108,17 +108,17 @@ async function applyFollowUpTaskProposal(ctx: ProposalApplyContext): Promise<Pro
     throw new HttpError(422, "follow_up_task task.metadata_json must be a dict if provided");
   }
 
-  // Workspace cross-space safety: verify workspace belongs to this space.
-  const workspaceId = optionalString(ctx.proposal.workspace_id);
-  if (workspaceId) {
-    const ws = await ctx.db.query<{ id: string }>(
-      `SELECT id FROM workspaces WHERE id = $1 AND space_id = $2 LIMIT 1`,
-      [workspaceId, ctx.proposal.space_id],
+  // Project Folder cross-space safety: verify the Folder belongs to this space.
+  const projectFolderId = optionalString(ctx.proposal.project_folder_id);
+  if (projectFolderId) {
+    const folder = await ctx.db.query<{ id: string }>(
+      `SELECT id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
+      [projectFolderId, ctx.proposal.space_id],
     );
-    if (!ws.rows[0]) {
+    if (!folder.rows[0]) {
       throw new HttpError(
         422,
-        `workspace ${JSON.stringify(workspaceId)} not found in space ${JSON.stringify(ctx.proposal.space_id)}`,
+        `project_folder ${JSON.stringify(projectFolderId)} not found in space ${JSON.stringify(ctx.proposal.space_id)}`,
       );
     }
   }
@@ -139,7 +139,7 @@ async function applyFollowUpTaskProposal(ctx: ProposalApplyContext): Promise<Pro
   const now = new Date().toISOString();
   const inserted = await ctx.db.query<{ id: string; space_id: string; title: string; status: string }>(
     `INSERT INTO tasks (
-       id, space_id, workspace_id, title, description, task_type, status, priority,
+       id, space_id, project_folder_id, title, description, task_type, status, priority,
        risk_level, visibility, owner_user_id, created_by_user_id, source_proposal_id, source_run_id,
        acceptance_criteria_json, required_outputs_json, tags, metadata_json,
        created_at, updated_at
@@ -152,7 +152,7 @@ async function applyFollowUpTaskProposal(ctx: ProposalApplyContext): Promise<Pro
     [
       randomUUID(),
       ctx.proposal.space_id,
-      workspaceId,
+      projectFolderId,
       title,
       typeof description === "string" ? description : null,
       taskType,

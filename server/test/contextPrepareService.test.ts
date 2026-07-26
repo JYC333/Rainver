@@ -68,7 +68,6 @@ function config(): ServerConfig {
     retrievalQueryRewriteEnabled: false,
     agentSpaceEnv: "",
     appVersion: null,
-    enableSystemEvolution: false,
     customSourceAllowedLanguages: ["typescript_node"],
     customSourceNetworkHardDenyRules: [],
     customSourceTimeoutMsMax: 30_000,
@@ -82,8 +81,6 @@ function config(): ServerConfig {
     customSourceArtifactRetentionEnabled: true,
     customSourceArtifactRetentionDays: 30,
     customSourceArtifactRetentionIntervalSeconds: 3600,
-    systemCoreOwnerEmail: null,
-    systemCoreBaseBranch: "main",
     backupEnabled: false,
     backupIntervalHours: 24,
     backupRetentionCount: 7,
@@ -101,7 +98,7 @@ function memory(over: Partial<ContextMemoryRow> = {}): ContextMemoryRow {
     space_id: "space-1",
     subject_user_id: "user-1",
     owner_user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     scope_type: "user",
     namespace: null,
     memory_type: "fact",
@@ -177,7 +174,7 @@ class FakeContextRepo extends PgRunContextRepository {
     agent_version_id: "version-1",
     context_snapshot_id: "snapshot-1",
     prompt: "Do the work",
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     session_id: "session-1",
     instructed_by_user_id: "user-1",
@@ -190,13 +187,13 @@ class FakeContextRepo extends PgRunContextRepository {
     request_json: {},
     system_prompt: "You are a test agent.",
     capabilities_json: [],
-    memory_policy_json: { readable_scopes: ["user", "system", "workspace", "agent"] },
+    memory_policy_json: { readable_scopes: ["user", "system", "project_folder", "agent"] },
     model_config_json: null,
   };
   rows: ContextMemoryRow[] = [memory()];
   digest: DigestBundle = {
     policy_bundle: null,
-    workspace: null,
+    project_folder: null,
     agent: null,
   };
   grant = {
@@ -267,7 +264,7 @@ class FakeContextRepo extends PgRunContextRepository {
   digestIneligibleIds = new Set<string>();
   override async filterEligibleDigestMemoryIds(input: {
     spaceId: string;
-    scopeType: "workspace" | "agent";
+    scopeType: "project_folder" | "agent";
     scopeId: string;
     memoryIds: readonly string[];
   }): Promise<string[]> {
@@ -548,7 +545,7 @@ describe("ContextPrepareService", () => {
     const repo = new FakeContextRepo();
     repo.run = {
       ...repo.run!,
-      workspace_id: "ws-current",
+      project_folder_id: "ws-current",
       request_json: { context_artifact_ids: ["brief-1"] },
     };
     repo.artifactAttachments.push({
@@ -588,7 +585,7 @@ describe("ContextPrepareService", () => {
     });
 
     expect(repo.artifactAttachmentInputs[0]).toMatchObject({
-      workspaceId: "ws-current",
+      projectFolderId: "ws-current",
       artifactIds: ["brief-1"],
     });
     expect(result.runtime_context_text).not.toContain("[attachment:Context Brief]");
@@ -636,7 +633,7 @@ describe("ContextPrepareService", () => {
       source_hash: "agent-source-hash",
       content_hash: "agent-content-hash",
     };
-    repo.digest = { policy_bundle: digest, workspace: null, agent: agentDigest };
+    repo.digest = { policy_bundle: digest, project_folder: null, agent: agentDigest };
 
     await new ContextPrepareService(config(), repo).prepare({
       runId: "run-1",
@@ -663,12 +660,12 @@ describe("ContextPrepareService", () => {
 
   it("falls back per missing digest scope instead of suppressing policies globally", async () => {
     const repo = new FakeContextRepo();
-    repo.run = { ...repo.run!, workspace_id: "ws-1" };
+    repo.run = { ...repo.run!, project_folder_id: "ws-1" };
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 2,
         status: "active",
         content: "Workspace digest content",
@@ -691,9 +688,9 @@ describe("ContextPrepareService", () => {
     });
 
     const snapshot = repo.snapshots[0]!;
-    expect(snapshot.compiledPrefixText).toContain("[digest:workspace:v2]");
+    expect(snapshot.compiledPrefixText).toContain("[digest:project_folder:v2]");
     expect(snapshot.compiledPrefixText).toContain("[policy:runtime:Policy]");
-    expect(snapshot.workspaceDigestVersion).toBe("2");
+    expect(snapshot.projectFolderDigestVersion).toBe("2");
     expect(snapshot.retrievalTrace[0]).toMatchObject({
       digest_used: true,
       fallback_to_memory_retriever: true,
@@ -709,20 +706,20 @@ describe("ContextPrepareService", () => {
         id: "shared-mem",
         title: "Shared direct title",
         content: "Shared direct content should be replaced by digest.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "space_shared",
       }),
       memory({
         id: "private-mem",
         title: "Private memory",
         content: "Private owner-specific content remains direct.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "private",
       }),
     ];
-    repo.run = { ...repo.run!, workspace_id: "ws-1" };
+    repo.run = { ...repo.run!, project_folder_id: "ws-1" };
     repo.retrieve = async () => ({
       memories: repo.rows,
       activePolicies: [],
@@ -737,9 +734,9 @@ describe("ContextPrepareService", () => {
     });
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 4,
         status: "active",
         content: "Digest-safe shared memory summary.",
@@ -779,12 +776,12 @@ describe("ContextPrepareService", () => {
         id: "private-mem",
         title: "Private memory",
         content: "Private owner-specific content must stay direct.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "private",
       }),
     ];
-    repo.run = { ...repo.run!, workspace_id: "ws-1" };
+    repo.run = { ...repo.run!, project_folder_id: "ws-1" };
     repo.retrieve = async () => ({
       memories: repo.rows,
       activePolicies: [],
@@ -800,9 +797,9 @@ describe("ContextPrepareService", () => {
     // A stale/tampered digest claims a private memory id it does not legitimately cover.
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 4,
         status: "active",
         content: "Digest summary.",
@@ -828,7 +825,7 @@ describe("ContextPrepareService", () => {
     const snapshot = repo.snapshots[0]!;
     // The whole digest is dropped (its summary may embed the now-ineligible memory).
     expect(snapshot.compiledPrefixText).not.toContain("Digest summary.");
-    expect(snapshot.workspaceDigestVersion).toBeNull();
+    expect(snapshot.projectFolderDigestVersion).toBeNull();
     // Not suppressed by the poisoned digest: the private memory still renders directly.
     expect(snapshot.compiledPrefixText).toContain("Private owner-specific content must stay direct.");
     // And it is not falsely audited as a digest-sourced read (empty → real repo no-ops).
@@ -837,7 +834,7 @@ describe("ContextPrepareService", () => {
     ]);
     expect(snapshot.retrievalTrace[0]).toMatchObject({
       digest_used: false,
-      digest_dropped: [{ digest_type: "workspace", reason: "stale_source_memory" }],
+      digest_dropped: [{ digest_type: "project_folder", reason: "stale_source_memory" }],
     });
   });
 
@@ -848,12 +845,12 @@ describe("ContextPrepareService", () => {
         id: "shared-mem",
         title: "Shared direct title",
         content: "Current shared content from the live retriever.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "space_shared",
       }),
     ];
-    repo.run = { ...repo.run!, workspace_id: "ws-1" };
+    repo.run = { ...repo.run!, project_folder_id: "ws-1" };
     repo.retrieve = async () => ({
       memories: repo.rows,
       activePolicies: [],
@@ -869,9 +866,9 @@ describe("ContextPrepareService", () => {
     // A pending memory change has marked the digest dirty; its cached summary is stale.
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 6,
         status: "dirty",
         content: "Stale digest summary that must not be injected.",
@@ -897,21 +894,21 @@ describe("ContextPrepareService", () => {
     // Dirty digest content is not injected; the live memory renders directly instead.
     expect(snapshot.compiledPrefixText).not.toContain("Stale digest summary");
     expect(snapshot.compiledPrefixText).toContain("Current shared content from the live retriever.");
-    expect(snapshot.workspaceDigestVersion).toBeNull();
+    expect(snapshot.projectFolderDigestVersion).toBeNull();
     expect(snapshot.retrievalTrace[0]).toMatchObject({
       digest_used: false,
       fallback_to_memory_retriever: true,
-      digest_dropped: [{ digest_type: "workspace", reason: "dirty" }],
+      digest_dropped: [{ digest_type: "project_folder", reason: "dirty" }],
     });
   });
 
   it("drops a workspace digest when the agent may not read the workspace scope", async () => {
     const repo = new FakeContextRepo();
-    // readable_scopes excludes "workspace": the direct retriever already filters
+    // readable_scopes excludes "project_folder": the direct retriever already filters
     // workspace memory out, so the derived workspace digest must not be injected.
     repo.run = {
       ...repo.run!,
-      workspace_id: "ws-1",
+      project_folder_id: "ws-1",
       memory_policy_json: { readable_scopes: ["user", "agent"] },
     };
     repo.retrieve = async () => ({
@@ -923,9 +920,9 @@ describe("ContextPrepareService", () => {
     });
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 3,
         status: "active",
         content: "Workspace summary the agent is not allowed to read.",
@@ -949,11 +946,11 @@ describe("ContextPrepareService", () => {
 
     const snapshot = repo.snapshots[0]!;
     expect(snapshot.compiledPrefixText).not.toContain("Workspace summary the agent is not allowed to read.");
-    expect(snapshot.workspaceDigestVersion).toBeNull();
+    expect(snapshot.projectFolderDigestVersion).toBeNull();
     expect(snapshot.retrievalTrace[0]).toMatchObject({
       digest_used: false,
       digest_missing_types: ["policy_bundle", "agent"],
-      digest_dropped: [{ digest_type: "workspace", reason: "scope_not_readable" }],
+      digest_dropped: [{ digest_type: "project_folder", reason: "scope_not_readable" }],
     });
   });
 
@@ -961,7 +958,7 @@ describe("ContextPrepareService", () => {
     const repo = new FakeContextRepo();
     repo.run = {
       ...repo.run!,
-      memory_policy_json: { readable_scopes: ["user", "workspace"] },
+      memory_policy_json: { readable_scopes: ["user", "project_folder"] },
     };
     repo.retrieve = async () => ({
       memories: [],
@@ -983,7 +980,7 @@ describe("ContextPrepareService", () => {
         source_hash: "policy-source-hash",
         content_hash: "policy-content-hash",
       },
-      workspace: null,
+      project_folder: null,
       agent: {
         id: "agent-digest",
         digest_type: "agent",
@@ -1021,7 +1018,7 @@ describe("ContextPrepareService", () => {
 
   it("drops a dirty policy_bundle and falls back to direct active policies", async () => {
     const repo = new FakeContextRepo();
-    repo.run = { ...repo.run!, workspace_id: null };
+    repo.run = { ...repo.run!, project_folder_id: null };
     repo.retrieve = async () => ({
       memories: [],
       activePolicies: [
@@ -1052,7 +1049,7 @@ describe("ContextPrepareService", () => {
         source_hash: "source-hash",
         content_hash: "content-hash",
       },
-      workspace: null,
+      project_folder: null,
       agent: null,
     };
 
@@ -1082,12 +1079,12 @@ describe("ContextPrepareService", () => {
         id: "shared-mem",
         title: "Shared memory",
         content: "Current shared content from live retrieval.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "space_shared",
       }),
     ];
-    repo.run = { ...repo.run!, workspace_id: "ws-1" };
+    repo.run = { ...repo.run!, project_folder_id: "ws-1" };
     repo.retrieve = async () => ({
       memories: repo.rows,
       activePolicies: [],
@@ -1102,9 +1099,9 @@ describe("ContextPrepareService", () => {
     });
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 5,
         status: "active",
         content: "Digest summary with unprovable source metadata.",
@@ -1129,37 +1126,37 @@ describe("ContextPrepareService", () => {
     const snapshot = repo.snapshots[0]!;
     expect(snapshot.compiledPrefixText).not.toContain("Digest summary with unprovable");
     expect(snapshot.compiledPrefixText).toContain("Current shared content from live retrieval.");
-    expect(snapshot.workspaceDigestVersion).toBeNull();
+    expect(snapshot.projectFolderDigestVersion).toBeNull();
     expect(snapshot.retrievalTrace[0]).toMatchObject({
       digest_used: false,
-      digest_dropped: [{ digest_type: "workspace", reason: "stale_source_memory" }],
+      digest_dropped: [{ digest_type: "project_folder", reason: "stale_source_memory" }],
     });
   });
 
   it("renders digest-backed context into CLI instruction files and runtime text", async () => {
     const root = await mkdtemp(join(tmpdir(), "aspace-context-"));
     const sandbox = join(root, "sandbox");
-    const workspace = join(root, "workspace");
+    const workspace = join(root, "project_folder");
     await mkdir(sandbox, { recursive: true });
     await mkdir(workspace, { recursive: true });
 
     const repo = new FakeContextRepo();
-    repo.run = { ...repo.run!, workspace_id: "ws-1" };
+    repo.run = { ...repo.run!, project_folder_id: "ws-1" };
     repo.rows = [
       memory({
         id: "shared-mem",
         title: "Shared direct title",
         content: "Shared direct content should not reach runtime file.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "space_shared",
       }),
       memory({
         id: "private-mem",
         title: "Private memory",
         content: "Private owner-specific content remains direct.",
-        scope_type: "workspace",
-        workspace_id: "ws-1",
+        scope_type: "project_folder",
+        project_folder_id: "ws-1",
         visibility: "private",
       }),
     ];
@@ -1177,9 +1174,9 @@ describe("ContextPrepareService", () => {
     });
     repo.digest = {
       policy_bundle: null,
-      workspace: {
+      project_folder: {
         id: "workspace-digest",
-        digest_type: "workspace",
+        digest_type: "project_folder",
         version: 5,
         status: "active",
         content: "Digest-safe shared memory summary.",
@@ -1214,7 +1211,7 @@ describe("ContextPrepareService", () => {
   it("renders enabled runtime skills into the sandbox and records binding trace metadata", async () => {
     const root = await mkdtemp(join(tmpdir(), "aspace-runtime-skill-"));
     const sandbox = join(root, "sandbox");
-    const workspace = join(root, "workspace");
+    const workspace = join(root, "project_folder");
     await mkdir(sandbox, { recursive: true });
     await mkdir(workspace, { recursive: true });
 
@@ -1324,7 +1321,7 @@ describe("ContextPrepareService", () => {
 
   it("refuses to write runtime skill files into the real workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "aspace-runtime-skill-ws-"));
-    const workspace = join(root, "workspace");
+    const workspace = join(root, "project_folder");
     await mkdir(workspace, { recursive: true });
 
     const repo = new FakeContextRepo();
@@ -1519,7 +1516,7 @@ describe("ContextPrepareService stable prefix compaction", () => {
 describe("ContextCompiler", () => {
   it("writes vendor files to the sandbox and refuses the real workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "aspace-context-"));
-    const workspace = join(root, "workspace");
+    const workspace = join(root, "project_folder");
     const sandbox = join(root, "sandbox");
     await mkdir(join(workspace, ".agent"), { recursive: true });
     await mkdir(sandbox, { recursive: true });
@@ -1532,7 +1529,7 @@ describe("ContextCompiler", () => {
       workspacePath: workspace,
       context: {
         user_memory: [serializeMemoryRow(memory(), "user-1")],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],
@@ -1565,7 +1562,7 @@ describe("ContextCompiler", () => {
         workspacePath: workspace,
         context: {
           user_memory: [],
-          workspace_memory: [],
+          project_folder_memory: [],
           capability_memory: [],
           agent_memory: [],
           system_policy: [],
@@ -1587,7 +1584,7 @@ describe("ContextCompiler", () => {
 
   it("loads .agent docs through routing manifests instead of legacy Python filenames", async () => {
     const root = await mkdtemp(join(tmpdir(), "aspace-context-routing-"));
-    const workspace = join(root, "workspace");
+    const workspace = join(root, "project_folder");
     const sandbox = join(root, "sandbox");
     await mkdir(join(workspace, ".agent", "modules"), { recursive: true });
     await mkdir(sandbox, { recursive: true });
@@ -1612,7 +1609,7 @@ describe("ContextCompiler", () => {
       touchedFiles: ["server/src/modules/context/models.py"],
       context: {
         user_memory: [],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],
@@ -1648,7 +1645,7 @@ describe("ContextCompiler", () => {
       budgetChars: 20_000,
       context: {
         user_memory: [],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],
@@ -1695,7 +1692,7 @@ describe("ContextCompiler", () => {
       budgetChars: 700,
       context: {
         user_memory: [serializeMemoryRow(memory({ content: longContent }), "user-1")],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],
@@ -1730,7 +1727,7 @@ describe("ContextCompiler", () => {
       budgetChars: 15, // only task fits (mandatory)
       context: {
         user_memory: [serializeMemoryRow(memory({ content: "x".repeat(500) }), "user-1")],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],
@@ -1776,7 +1773,7 @@ describe("ContextCompiler", () => {
       ].join("\n"),
       context: {
         user_memory: [],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],
@@ -1822,7 +1819,7 @@ describe("ContextCompiler", () => {
       runtimeSkillText: ["# Runtime Skills", "", "## Big Skill", "", "BODY ".repeat(20_000)].join("\n"),
       context: {
         user_memory: [],
-        workspace_memory: [],
+        project_folder_memory: [],
         capability_memory: [],
         agent_memory: [],
         system_policy: [],

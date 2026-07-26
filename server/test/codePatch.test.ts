@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   __codePatchTestHooks,
   collectWorktreeChanges,
-} from "../src/modules/workspaces/codePatch";
+} from "../src/modules/projectFolders/codePatch";
 
 const execFileAsync = promisify(execFile);
 const tmpRoots: string[] = [];
@@ -78,7 +78,7 @@ describe("code patch file transaction", () => {
     const root = await tmpRoot();
     await writeFile(join(root, "a.txt"), "old a\n", "utf8");
     await writeFile(join(root, "b.txt"), "old b\n", "utf8");
-    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, "project");
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
 
     await expect(tx.apply([
       {

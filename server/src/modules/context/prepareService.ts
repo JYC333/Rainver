@@ -47,7 +47,7 @@ const MODEL_CONTEXT_WINDOW_TOKENS: Array<[RegExp, number]> = [
 const STABLE_PREFIX_SCOPE_PRIORITY: Record<string, number> = {
   system: 20,
   user: 25,
-  workspace: 30,
+  project_folder: 30,
   capability: 32,
   agent: 40,
 };
@@ -79,6 +79,7 @@ export interface ContextPrepareInput {
   sandboxCwd: string | null;
   targetFormat: string | null;
   workspacePath: string | null;
+  promptOverride?: string | null;
 }
 
 export interface ContextPrepareResult {
@@ -134,6 +135,7 @@ export class ContextPrepareService {
             `Run ${run.id} has no ContextSnapshot; execution blocked to preserve auditability.`,
           );
         }
+        const runtimePrompt = input.promptOverride ?? run.prompt ?? "";
 
         await this.enforceContextInjectMemory(run);
 
@@ -148,9 +150,9 @@ export class ContextPrepareService {
         const retrieval = await repo.retrieve({
           spaceId: run.space_id,
           userId,
-          workspaceId: run.workspace_id,
+          projectFolderId: run.project_folder_id,
           agentId: run.agent_id,
-          query: run.prompt,
+          query: runtimePrompt,
           agentMemoryPolicy: memoryPolicy,
           includeSystemScope,
           // Project cut: a run bound to project P sees P's memory (only if the
@@ -175,14 +177,14 @@ export class ContextPrepareService {
         const evidenceSelections = await repo.selectEvidenceForContext({
           spaceId: run.space_id,
           userId,
-          workspaceId: run.workspace_id,
+          projectFolderId: run.project_folder_id,
           projectId: run.project_id,
           runId: run.id,
         });
         const artifactAttachments = await repo.selectArtifactAttachments({
           spaceId: run.space_id,
           userId,
-          workspaceId: run.workspace_id,
+          projectFolderId: run.project_folder_id,
           projectId: run.project_id,
           artifactIds: contextArtifactIdsForRun(run),
         });
@@ -194,7 +196,7 @@ export class ContextPrepareService {
           tokenBudget: retrieval.tokenBudget,
           userId,
           spaceId: run.space_id,
-          workspaceId: run.workspace_id,
+          projectFolderId: run.project_folder_id,
           sessionSummary,
           evidenceSelections,
           artifactAttachments,
@@ -230,7 +232,10 @@ export class ContextPrepareService {
         const stablePrefixResult = renderStablePrefix(pkg, run, digestBundle, validatedDigestMemoryIds);
         const stableText = stablePrefixResult.text;
         const runtimeSkillText = renderRuntimeSkillContextSection(runtimeSkills);
-        const tailText = appendRuntimeSkillText(renderDynamicTail(pkg, run), runtimeSkillText);
+        const tailText = appendRuntimeSkillText(
+          renderDynamicTail(pkg, { ...run, prompt: runtimePrompt }),
+          runtimeSkillText,
+        );
         const compilerDynamicTailText = renderDynamicTail(pkg, run, { includePrompt: false });
         const runtimeTailText = appendRuntimeSkillText(
           compilerDynamicTailText,
@@ -299,15 +304,15 @@ export class ContextPrepareService {
           memoryDigestVersion: digestBundle.agent
             ? String(digestBundle.agent.version)
             : null,
-          workspaceDigestVersion: digestBundle.workspace
-            ? String(digestBundle.workspace.version)
+          projectFolderDigestVersion: digestBundle.project_folder
+            ? String(digestBundle.project_folder.version)
             : null,
         });
 
         await this.enforceContextRender(run, input.adapterType);
 
         const composedRuntimePrompt = composeRuntimePrompt(
-          run.prompt ?? "",
+          runtimePrompt,
           pkg.personal_context_block,
           upstreamInputsBlock(run.contract_snapshot_json),
         );
@@ -380,7 +385,7 @@ export class ContextPrepareService {
       },
       metadata_json: {
         agent_id: run.agent_id,
-        workspace_id: run.workspace_id,
+        project_folder_id: run.project_folder_id,
         data_exposure_level: run.data_exposure_level,
         trust_level: run.trust_level,
         has_personal_grant_context: Boolean(run.has_personal_grant_context),
@@ -423,11 +428,11 @@ export class ContextPrepareService {
       resource_type: "evidence",
       run_id: run.id,
       context: {
-        workspace_id: run.workspace_id,
+        project_folder_id: run.project_folder_id,
         project_id: run.project_id,
       },
       metadata_json: {
-        workspace_id: run.workspace_id,
+        project_folder_id: run.project_folder_id,
         project_id: run.project_id,
       },
     });
@@ -519,13 +524,13 @@ async function loadDigestBundleSafely(
   try {
     const bundle = await repo.loadDigestBundle({
       spaceId: run.space_id,
-      workspaceId: run.workspace_id,
+      projectFolderId: run.project_folder_id,
       agentId: run.agent_id,
     });
     return { bundle, loadError: null };
   } catch (error) {
     return {
-      bundle: { policy_bundle: null, workspace: null, agent: null },
+      bundle: { policy_bundle: null, project_folder: null, agent: null },
       loadError: `${error instanceof Error ? error.name : "Error"}: ${
         error instanceof Error ? error.message : String(error)
       }`,
@@ -534,7 +539,7 @@ async function loadDigestBundleSafely(
 }
 
 interface DroppedDigest {
-  digest_type: "policy_bundle" | "workspace" | "agent";
+  digest_type: "policy_bundle" | "project_folder" | "agent";
   reason: "dirty" | "stale_source_memory" | "scope_not_readable";
 }
 
@@ -577,7 +582,7 @@ async function resolveUsableDigests(
   }
 
   const workspace = await resolveMemoryDigest(
-    repo, run, "workspace", run.workspace_id, loaded.workspace, readableScopes, dropped,
+    repo, run, "project_folder", run.project_folder_id, loaded.project_folder, readableScopes, dropped,
   );
   for (const id of workspace.validatedIds) digestMemoryIds.add(id);
   const agent = await resolveMemoryDigest(
@@ -586,7 +591,7 @@ async function resolveUsableDigests(
   for (const id of agent.validatedIds) digestMemoryIds.add(id);
 
   return {
-    bundle: { policy_bundle: policyBundle, workspace: workspace.digest, agent: agent.digest },
+    bundle: { policy_bundle: policyBundle, project_folder: workspace.digest, agent: agent.digest },
     digestMemoryIds,
     dropped,
   };
@@ -595,7 +600,7 @@ async function resolveUsableDigests(
 async function resolveMemoryDigest(
   repo: PgRunContextRepository,
   run: RunContextRecord,
-  scopeType: "workspace" | "agent",
+  scopeType: "project_folder" | "agent",
   scopeId: string | null,
   digest: ContextDigestRow | null,
   readableScopes: ReadonlySet<string>,
@@ -676,7 +681,7 @@ function expectedDigestTypes(
   readableScopes: ReadonlySet<string>,
 ): Array<keyof DigestBundle> {
   const types: Array<keyof DigestBundle> = ["policy_bundle"];
-  if (run.workspace_id && readableScopes.has("workspace")) types.push("workspace");
+  if (run.project_folder_id && readableScopes.has("project_folder")) types.push("project_folder");
   if (run.agent_id && readableScopes.has("agent")) types.push("agent");
   return types;
 }
@@ -727,7 +732,7 @@ function renderStablePrefix(
   const memorySections = [
     pkg.system_policy,
     pkg.user_memory,
-    pkg.workspace_memory,
+    pkg.project_folder_memory,
     pkg.capability_memory,
     pkg.agent_memory,
   ];
@@ -1021,7 +1026,7 @@ function digestUsed(bundle: DigestBundle): boolean {
 }
 
 function allDigests(bundle: DigestBundle): ContextDigestRow[] {
-  return [bundle.policy_bundle, bundle.workspace, bundle.agent].filter(
+  return [bundle.policy_bundle, bundle.project_folder, bundle.agent].filter(
     (row): row is ContextDigestRow => row !== null,
   );
 }

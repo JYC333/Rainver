@@ -167,7 +167,7 @@ export class RetrievalProjectionService {
     });
     const inserted = await this.db.query<RetrievalObjectRow>(
       `INSERT INTO retrieval_objects (
-         id, space_id, object_type, object_id, workspace_id, owner_user_id,
+         id, space_id, object_type, object_id, project_folder_id, owner_user_id,
          visibility, status, title, slug, object_kind, content_hash,
          source_connection_ids_json, indexed_at, updated_at, source_updated_at
        ) VALUES (
@@ -181,7 +181,7 @@ export class RetrievalProjectionService {
         spaceId,
         object.objectType,
         object.objectId,
-        object.workspaceId,
+        object.projectFolderId,
         object.ownerUserId,
         object.visibility,
         object.status,

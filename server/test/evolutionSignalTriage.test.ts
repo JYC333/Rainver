@@ -20,7 +20,7 @@ class TriageDb implements Queryable {
         space_id: "space-1",
         target_id: "target-1",
         target_name: "Task task-1",
-        target_type: "workspace",
+        target_type: "project_folder",
         capability_key: null,
         signal_type: "run_finalization_failed",
         source_type: "run",

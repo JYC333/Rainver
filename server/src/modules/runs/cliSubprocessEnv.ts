@@ -16,6 +16,10 @@ const RUNTIME_ENV_KEYS = new Set([
   "https_proxy",
   "all_proxy",
   "no_proxy",
+  "AGENT_SPACE_EXCHANGE_INPUT",
+  "AGENT_SPACE_EXCHANGE_OUTPUT",
+  "AGENT_SPACE_MCP_URL",
+  "AGENT_SPACE_TOOL_TOKEN",
 ]);
 
 export function buildSubprocessEnv(

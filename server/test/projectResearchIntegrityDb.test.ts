@@ -5,7 +5,7 @@ import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
-import { ProjectExperimentRepository } from "../src/modules/projectResearch/experimentRepository";
+import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 // Real-Postgres coverage for Academic Research integrity checks:
@@ -44,8 +44,8 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE project_research_claim_links, project_research_reports, project_research_checkpoints,
-       project_research_workflows, project_research_profiles, project_experiment_provenance,
-       project_experiment_runs, project_experiment_campaigns, claim_sources, claims, academic_papers, sources,
+       project_research_workflows, project_research_profiles, experiment_definitions,
+       claim_sources, claims, academic_papers, sources,
        space_objects, project_corpus_items, artifacts, projects, space_memberships, users, spaces CASCADE`,
   );
   const now = new Date().toISOString();
@@ -67,8 +67,8 @@ function repo(): ProjectResearchRepository {
   return new ProjectResearchRepository(pool!);
 }
 
-function experimentRepo(): ProjectExperimentRepository {
-  return new ProjectExperimentRepository(pool!);
+function experimentDefinitions(): ExperimentDefinitionService {
+  return new ExperimentDefinitionService(pool!);
 }
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
@@ -277,25 +277,27 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
     expect(afterReport.blocking).toBe(false);
   });
 
-  it("flags an experiment-backed claim with no provenance record, and passes once one is declared", async () => {
+  it("flags an experiment-backed claim with no Experiment Definition, and passes once the planned Experiment is declared", async () => {
     if (!available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     const paperObjectId = await seedPaperObject("2401.00003");
     await addEvidence(claimId, paperObjectId);
     await addToCorpus(paperObjectId);
-    await repo().createClaimLink(identity, PROJECT, {
+    const notYetDefinedId = randomUUID();
+    const link = await repo().createClaimLink(identity, PROJECT, {
       claim_id: claimId,
       workflow_id: workflowId,
-      planned_experiment_ids: ["exp-1"],
-    });
+      planned_experiment_ids: [notYetDefinedId],
+    }) as { id: string };
 
     const before = await repo().evaluateWorkflowIntegrity(identity, PROJECT, workflowId);
     const beforeReport = before as { blocking: boolean; findings: Array<{ code: string; severity: string }> };
     expect(beforeReport.blocking).toBe(true);
     expect(beforeReport.findings).toContainEqual(expect.objectContaining({ code: "experiment_provenance_not_found", severity: "high" }));
 
-    await experimentRepo().createProvenance(identity, PROJECT, { experiment_key: "exp-1", planned_summary: "Ablate module X" });
+    const definition = await experimentDefinitions().createDefinition(identity, PROJECT, { name: "Ablate module X" });
+    await repo().updateClaimLink(identity, PROJECT, link.id, { planned_experiment_ids: [definition.id] });
     const after = await repo().evaluateWorkflowIntegrity(identity, PROJECT, workflowId);
     const afterReport = after as { blocking: boolean; findings: Array<{ code: string }> };
     expect(afterReport.findings.some((f) => f.code === "experiment_provenance_not_found")).toBe(false);

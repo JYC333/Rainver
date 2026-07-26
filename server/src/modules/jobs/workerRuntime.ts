@@ -17,7 +17,11 @@ import { RunMaterializationService } from "../runs/materializationService";
 import { OperationalAlertService } from "../notifications/operationalAlerts";
 import { registerEvaluationHarnessHandler } from "../evolution/evaluationJob";
 import { registerProjectResearchHandler } from "../projectResearch";
+import { registerKnowledgeExtractionHandler } from "../knowledgePromotion/extractionJob";
+import { registerExperimentReconcileHandler } from "../experiments/reconcileJob";
 import type { RuntimeHostLogger } from "../runtimeHost";
+import { finalizeChatTurn } from "../runs/chatTurnFinalizer";
+import { isHardTerminalRunStatus } from "../runs/orchestrationResults";
 
 const POLL_INTERVAL_MS = 1_000;
 const RECLAIM_INTERVAL_MS = 120_000;
@@ -52,6 +56,8 @@ export function buildJobHandlerRegistry(
   registerRetrievalEmbeddingHandler(registry, config);
   registerEvaluationHarnessHandler(registry, config);
   registerProjectResearchHandler(registry, config);
+  registerKnowledgeExtractionHandler(registry, config);
+  registerExperimentReconcileHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   return registry;
@@ -114,6 +120,7 @@ export function startJobsWorker(
           }
         }
       }
+      await reconcileTerminalChatRuns(config, runs, log);
     } catch (error) {
       log?.error(
         `[jobs-worker] stale run recovery failed: ${
@@ -127,6 +134,7 @@ export function startJobsWorker(
         if (now - lastReclaim >= RECLAIM_INTERVAL_MS) {
           const reclaimed = await worker.reclaimStuckJobs(STUCK_AFTER_SECONDS);
           if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
+          await reconcileTerminalChatRuns(config, runs, log);
           lastReclaim = now;
         }
         const result = await worker.processOne();
@@ -154,6 +162,38 @@ export function startJobsWorker(
       await loop;
     },
   };
+}
+
+export async function reconcileTerminalChatRuns(
+  config: ServerConfig,
+  runs: PgRunRepository,
+  log?: JobsWorkerLogger,
+  materializer: Pick<RunMaterializationService, "finalizeRun"> =
+    RunMaterializationService.fromConfig(config),
+): Promise<void> {
+  const pending = await runs.listTerminalChatRunsAwaitingCompletion();
+  for (const item of pending) {
+    const run = await runs.getRun(item.space_id, item.id);
+    if (!run) continue;
+    try {
+      const finalization = await materializer.finalizeRun(run);
+      if (finalization.status !== "succeeded") {
+        throw new Error(
+          finalization.error_message ?? "Run finalization reconciliation failed.",
+        );
+      }
+      const current = await runs.getRun(item.space_id, item.id);
+      if (current && isHardTerminalRunStatus(current.status)) {
+        await finalizeChatTurn(config, runs, current);
+      }
+    } catch (error) {
+      log?.warn(
+        `[jobs-worker] chat Run ${item.id} completion deferred: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 }
 
 function sleep(ms: number): Promise<void> {

@@ -1,49 +1,49 @@
 # Module: Git Diff Review
 
 ## Status
-**PLANNED REVIEW WORKFLOW** — Basic workspace git status/diff reads exist under
-the `workspaces` module's `/workspace-console*` routes, but the dedicated diff
+**PLANNED REVIEW WORKFLOW** — Basic Project Folder git status/diff reads exist under
+the `projectFolders` module's Files & Code routes, but the dedicated diff
 review record/comment/approval workflow is not implemented yet.
 
 ## Purpose
 Allow users to review, annotate, and approve agent-generated or human-authored code changes before they are committed or pushed. Git diff review is the checkpoint surface for agentic code changes — the place where AI output meets human approval before entering version control.
 
 ## Owns
-- Diff fetch and parse (from workspace git repos)
+- Diff fetch and parse (from Project Folder git repos)
 - DiffViewer UI component (unified and split modes)
 - Inline comment / annotation on diff hunks
 - Approval and reject actions for staged diffs
 - Agent-change attribution (which run produced this diff?)
 
 ## Does Not Own
-- Git operations execution (`workspaces` module / future workspace execution surface)
-- File editing (workspace console)
+- Git operations execution (`projectFolders` module / future Folder execution surface)
+- File editing (Files & Code)
 - Agent run orchestration (agents module)
 
 ## Key Concepts
 
-- **Staged diff**: changes in the workspace git index (git diff --cached)
+- **Staged diff**: changes in the Project Folder git index (git diff --cached)
 - **Working diff**: unstaged changes (git diff)
 - **Patch set**: a named collection of diffs from a single agent run or user session
 - **Annotation**: a comment attached to a specific line or hunk in the diff
-- **Approval**: user confirms the diff is acceptable — triggers `git commit` via workspace runner
+- **Approval**: user confirms the diff is acceptable — triggers `git commit` via Folder runner
 
 ## Data Flow
 
 ```
-Agent run modifies files in workspace
+Agent run modifies files in Project Folder
     ↓
-WorkspaceRunner detects changed files (git diff --stat)
+FolderRunner detects changed files (git diff --stat)
     ↓
 Patch set created and stored (raw git patch text)
     ↓
 DiffReview record created (status=pending)
     ↓
-User sees pending review in Workspaces nav or Proposals inbox
+User sees pending review in Files & Code or Proposals inbox
     ↓
 User opens DiffViewer: reads hunk by hunk, adds annotations
     ↓
-Approve → WorkspaceRunner runs git commit -m "..." 
+Approve → FolderRunner runs git commit -m "..." 
 Reject → git checkout -- . (discard)
 Request changes → agent re-runs with annotation context
 ```
@@ -52,7 +52,7 @@ Request changes → agent re-runs with annotation context
 
 ```
 DiffReview:
-  id, space_id, workspace_id, user_id
+  id, space_id, project_folder_id, user_id
   source_run_id   — FK → Run (null if human-authored)
   patch_text      — raw unified diff
   file_paths      — JSON list of affected paths
@@ -96,7 +96,7 @@ DiffAnnotation:
 - `apps/web/src/pages/` — TODO: diff review page
 
 ## Related Modules
-- [workspace-console.md](workspace-console.md) — file browser and workspace operations
+- [project-files.md](project-files.md) — file browser and Project Folder operations
 - [agents.md](agents.md) — source of agent-generated diffs
 - [proposals.md](proposals.md) — diff approval is a specialized proposal flow
 - [frontend-layout.md](frontend-layout.md) — DiffViewer is a center-panel primitive

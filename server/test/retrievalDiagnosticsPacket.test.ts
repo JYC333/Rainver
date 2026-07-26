@@ -81,7 +81,7 @@ describe("retrieval diagnostics packets", () => {
           report_artifact_id: "artifact-1",
           recommended_actions: [{ kind: "retrieval_quality_review" }],
         },
-        workspace_id: null,
+        project_folder_id: null,
         created_by_user_id: "user-1",
         created_by_run_id: null,
         project_id: null,

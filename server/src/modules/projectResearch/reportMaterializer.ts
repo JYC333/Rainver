@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common";
 import { buildResearchReportReaderProjection } from "./reportProjection";
 import { assignReportReferenceIds } from "./reportReferenceNumbering";
-import { ProjectResearchWorkspaceService } from "./workspaceService";
+import { ProjectResearchAreaService } from "./areaService";
 
 export interface MaterializeResearchReportInput {
   spaceId: string; projectId: string; workflowId: string; operationId: string; synthesisRunId: string;
@@ -20,7 +20,7 @@ export class ProjectResearchReportMaterializer {
     );
     const ideaCount = Array.isArray(input.report.ideas) ? input.report.ideas.length : 0;
     if (existing.rows[0]) {
-      await new ProjectResearchWorkspaceService(this.db).seedFromReport({
+      await new ProjectResearchAreaService(this.db).seedFromReport({
         spaceId: input.spaceId,
         projectId: input.projectId,
         runId: input.synthesisRunId,
@@ -51,7 +51,7 @@ export class ProjectResearchReportMaterializer {
         input.researchQuestion, input.researchQuestionVersion, JSON.stringify(report), JSON.stringify(projection.readerDocument),
         projection.normalizedText, projection.contentHash, input.archiveArtifactId, input.literatureMatrixArtifactId, now],
     );
-    await new ProjectResearchWorkspaceService(this.db).seedFromReport({
+    await new ProjectResearchAreaService(this.db).seedFromReport({
       spaceId: input.spaceId, projectId: input.projectId, runId: input.synthesisRunId, report,
     });
     return { id, ideaCount };

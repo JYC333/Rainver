@@ -14,6 +14,7 @@ import { loadProtocol } from "../providers/protocolRuntime";
 import { loadActionRegistry } from "./actionRegistry";
 import { enforce, enforceProposalApply } from "./service";
 import { ActionApprovalGrantService } from "./actionApprovalGrantService";
+import { AuthorizationRequestService } from "./authorizationRequestService";
 import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common";
 
 function jsonBody(request: FastifyRequest): unknown {
@@ -28,12 +29,35 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const grants = () => new ActionApprovalGrantService(dbPool(context.config));
+  const authorizationRequests = () => new AuthorizationRequestService(
+    dbPool(context.config),
+    context.config,
+  );
+  app.get("/api/v1/runs/:runId/authorization-requests", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const runId = requiredString(params(request).runId, "run_id");
+      return reply.send(await authorizationRequests().listForRun(identity, runId));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+  app.post("/api/v1/authorization-requests/:requestId/approve", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const requestId = requiredString(params(request).requestId, "request_id");
+      return reply.send(await authorizationRequests().decide(identity, requestId, "approved"));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+  app.post("/api/v1/authorization-requests/:requestId/reject", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const requestId = requiredString(params(request).requestId, "request_id");
+      return reply.send(await authorizationRequests().decide(identity, requestId, "rejected"));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
   app.post("/api/v1/policy/action-grants", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const result = await enforce(context.config, await loadActionRegistry(), { action: "policy.action_grant.create", actor_type: "user", actor_id: identity.userId, space_id: identity.spaceId, resource_type: "action_approval_grant", resource_id: null, force_record: true });
-      if (result.status !== "allow") return reply.code(result.status === "blocked" ? 403 : 503).send({ detail: result.message ?? "Policy enforcement failed" });
-      return reply.code(201).send(await grants().create(identity, publicJsonBody(request)));
+      return reply.code(201).send(await grants().create(context.config, identity, publicJsonBody(request)));
     } catch (error) { return sendRouteError(reply, error); }
   });
   app.post("/api/v1/policy/action-grants/:grantId/revoke", async (request, reply) => {

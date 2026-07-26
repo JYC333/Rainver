@@ -8,7 +8,7 @@ a React/Vite frontend (PWA), and a server-authoritative agent execution model: a
 sandboxes, memory is written only through a proposal → approval workflow, and policy and
 credentials are enforced centrally. The system is **not** local-first; it supports offline capture
 and draft queuing for personal convenience but agent execution, active memory, proposals,
-credentials, workspace operations, and deployment remain server-authoritative. See
+credentials, Project Folder operations, and deployment remain server-authoritative. See
 [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) for the
 durable position on this boundary.
 
@@ -51,6 +51,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Doc | What it covers |
 |---|---|
 | [architecture/PRODUCT_AND_BOUNDARIES.md](architecture/PRODUCT_AND_BOUNDARIES.md) | Product identity, current enforcement points, architecture fitness checks |
+| [architecture/PRODUCT_ACCEPTANCE.md](architecture/PRODUCT_ACCEPTANCE.md) | Deterministic gate, manual Project acceptance procedure, evidence requirements, and opt-in real integration smoke |
 | [architecture/NON_GOALS_AND_DISABLED_SURFACES.md](architecture/NON_GOALS_AND_DISABLED_SURFACES.md) | Disabled surfaces, allowed surfaces, non-goals |
 | [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) | Capability line roadmap, future risks |
 | [architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md) | Capability definitions, packs, workflows, Open Skill import, runtime skill rendering |
@@ -113,7 +114,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Planned Memory-quality work after Knowledge-first retrieval: duplicate signals, ranking, synthesis + gap loop, consolidation cycle |
 | [architecture/EVOLUTION_SIGNAL_SYSTEM.md](architecture/EVOLUTION_SIGNAL_SYSTEM.md) | Current rule-based evolution signal emitters, target resolution, deduplication, A2 verification facts, and deferred A3/C3 hooks |
 
-### Workspace / Sandbox / Artifact
+### Project Folder / Sandbox / Artifact
 
 | Doc | What it covers |
 |---|---|
@@ -149,8 +150,9 @@ Load only the module docs relevant to your task.
 
 | Task area | Module doc |
 |---|---|
-| Space / user / workspace data model | [modules/space.md](modules/space.md) |
+| Space / user / Project Folder data model | [modules/space.md](modules/space.md) |
 | Agent profiles, runs, adapters | [modules/agents.md](modules/agents.md) |
+| Rooms (project-bound multi-party conversation, agent dispatch) | [modules/rooms.md](modules/rooms.md) |
 | Automations (manual/schedule/event triggers, project binding) | [modules/automations.md](modules/automations.md) |
 | Long-term memory | [modules/memory.md](modules/memory.md) |
 | Raw input and event capture | [modules/activity.md](modules/activity.md) |
@@ -163,7 +165,7 @@ Load only the module docs relevant to your task.
 | Capability lifecycle | [modules/capability.md](modules/capability.md) |
 | Context assembly and vendor files | [modules/context-compiler.md](modules/context-compiler.md) |
 | Sandbox execution | [modules/sandbox.md](modules/sandbox.md) |
-| Workspace browser / file UI | [modules/workspace-console.md](modules/workspace-console.md) |
+| Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
 | Runtime tools / adapter types | [modules/runtime-adapters.md](modules/runtime-adapters.md) |
 | Credentials | [modules/credentials.md](modules/credentials.md) |
 | Deployment | [modules/deployment.md](modules/deployment.md) |
@@ -195,6 +197,7 @@ Load only the module docs relevant to your task.
 | [0008](decisions/0008-credential-channel-isolation.md) | Credential channel isolation |
 | [0009](decisions/0009-capability-workflow-open-skill-system.md) | Capability, Workflow, and Open Skill framework |
 | [0010](decisions/0010-agent-workbench-product-direction.md) | Personal + small-team Agent Workbench direction, dogfooding checkpoint, dual runtime stance |
+| [0011](decisions/0011-domain-owned-inquiry-model.md) | New Project domains (Inquiry Thread, Experiment, Decision Case) are domain-owned, not `space_objects`; `object_relations` scope unchanged; generic association maps to `retrieval_edges`; `WorkflowExecution` node_kind extended for Action/Model/Checkpoint |
 
 ---
 
@@ -238,14 +241,14 @@ load all docs for every task.
 | Testing change | `TESTING_STRATEGY.md` + the specific test file's domain doc |
 | Runtime / agent / run change | `runtime-agent` bundle: `EXECUTION_MODEL.md`, `RUNS_AND_OUTPUTS.md`, `agents.md`, `BOUNDARIES.md` |
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
-| Workspace / artifact / path change | `workspace-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `sandbox.md`, `workspace-console.md` |
+| Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `sandbox.md`, `project-files.md` |
 | Dogfooding / product slice | `current-focus.md` + `PRODUCT_AND_BOUNDARIES.md` + `NON_GOALS_AND_DISABLED_SURFACES.md` |
 | Sync / offline / local-first compatibility | `local-first-compatibility` bundle: `LOCAL_FIRST_COMPATIBILITY.md`, `sync-and-conflicts.md`, `mobile-client.md` |
 
 Additional agent rules:
 - Never write to `instance/` from code in `core/`.
 - Never write active memory directly — use proposals.
-- Never write vendor context files to the real workspace — write to sandbox only.
+- Never write vendor context files to the real Project Folder — write to sandbox only.
 - Read `BOUNDARIES.md` before making structural changes.
 - New backend routes go in `server/src/modules/<module>/routes.ts` and
   the module is registered in `server/src/gateway/routeRegistry.ts`.

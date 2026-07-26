@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { BarChart3, FilePlus2, FileSearch, FolderKanban, Loader2, Package, SlidersHorizontal, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { artifactsApi, knowledgeApi, workspacesApi } from '../../api/client'
+import { artifactsApi, knowledgeApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
 import type {
@@ -13,7 +13,6 @@ import type {
   RetrievalCalibrationMechanic,
   RetrievalObjectType,
   RetrievalSearchMode,
-  Workspace,
 } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -24,6 +23,8 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { PreviewBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { CONTEXT_ATTACHABLE_ARTIFACT_TYPES, isContextAttachableArtifactType } from './contextArtifactTypes'
+import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
+import { TechnicalIdField } from '../../components/TechnicalIdField'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -34,10 +35,9 @@ export default function ArtifactsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const projectFilter = searchParams.get('project_id') ?? ''
   const artifactTypeFilter = searchParams.get('artifact_type') ?? ''
-  const workspaceFilter = searchParams.get('workspace_id') ?? ''
+  const folderFilter = searchParams.get('project_folder_id') ?? ''
 
   const [items, setItems] = useState<Artifact[]>([])
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [loading, setLoading] = useState(true)
   const [fType, setFType] = useState(artifactTypeFilter)
   const [windowDays, setWindowDays] = useState('30')
@@ -78,7 +78,7 @@ export default function ArtifactsPage() {
         limit: 100,
         artifact_type: fType.trim() || undefined,
         project_id: projectFilter || undefined,
-        workspace_id: workspaceFilter || undefined,
+        project_folder_id: folderFilter || undefined,
       })
       setItems(p.items)
     } catch (e) {
@@ -87,27 +87,10 @@ export default function ArtifactsPage() {
     } finally {
       setLoading(false)
     }
-  }, [fType, projectFilter, workspaceFilter, activeSpaceId])
+  }, [fType, projectFilter, folderFilter, activeSpaceId])
 
   useEffect(() => { setFType(artifactTypeFilter) }, [artifactTypeFilter])
   useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    if (!activeSpaceId) {
-      setWorkspaces([])
-      return
-    }
-    let cancelled = false
-    ;(async () => {
-      try {
-        const page = await workspacesApi.list({ limit: '200' })
-        if (!cancelled) setWorkspaces(page.items)
-      } catch {
-        if (!cancelled) setWorkspaces([])
-      }
-    })()
-    return () => { cancelled = true }
-  }, [activeSpaceId])
 
   function setArtifactTypeFilter(value: string) {
     setFType(value)
@@ -118,22 +101,14 @@ export default function ArtifactsPage() {
     })
   }
 
-  function setWorkspaceFilter(value: string) {
-    setSearchParams(params => {
-      if (value) params.set('workspace_id', value)
-      else params.delete('workspace_id')
-      return params
-    })
-  }
-
   function artifactHref(id: string): string {
-    return `/artifacts/${id}${workspaceFilter ? `?workspace_id=${encodeURIComponent(workspaceFilter)}` : ''}`
+    return `/artifacts/${id}${folderFilter ? `?project_folder_id=${encodeURIComponent(folderFilter)}` : ''}`
   }
 
   function contextHref(artifact: Artifact): string {
     const params = new URLSearchParams({ artifact_id: artifact.id })
-    const workspaceId = artifact.workspace_id ?? workspaceFilter
-    if (workspaceId) params.set('workspace_id', workspaceId)
+    const projectFolderId = artifact.project_folder_id ?? folderFilter
+    if (projectFolderId) params.set('project_folder_id', projectFolderId)
     return `/context?${params.toString()}`
   }
 
@@ -145,7 +120,7 @@ export default function ArtifactsPage() {
 
   async function dl(id: string) {
     try {
-      await artifactsApi.export(id, { workspace_id: workspaceFilter || undefined })
+      await artifactsApi.export(id, { project_folder_id: folderFilter || undefined })
       toast.success('Download started')
     } catch (e) {
       toast.error(errMsg(e))
@@ -305,15 +280,22 @@ export default function ArtifactsPage() {
             onChange={setArtifactTypeFilter}
           />
         </div>
-        <div className="min-w-[220px]">
-          <Label className="text-xs">workspace_id</Label>
-          <Select
-            value={workspaceFilter}
-            options={[
-              { value: '', label: 'All space-visible' },
-              ...workspaces.map(workspace => ({ value: workspace.id, label: workspace.name || workspace.id })),
-            ]}
-            onChange={setWorkspaceFilter}
+        <div className="grid min-w-[360px] grid-cols-2 gap-2">
+          <ProjectFolderSelectors
+            projectId={projectFilter}
+            folderId={folderFilter}
+            onProjectChange={value => setSearchParams(params => {
+              if (value) params.set('project_id', value)
+              else params.delete('project_id')
+              return params
+            })}
+            onFolderChange={value => setSearchParams(params => {
+              if (value) params.set('project_folder_id', value)
+              else params.delete('project_folder_id')
+              return params
+            })}
+            projectLabel="Project"
+            folderLabel="Project Folder"
           />
         </div>
         <Button variant="secondary" size="sm" onClick={load}>Refresh</Button>
@@ -419,14 +401,7 @@ export default function ArtifactsPage() {
                 onChange={value => setExplainObjectType(value as RetrievalObjectType)}
               />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">object_id</Label>
-              <input
-                value={explainObjectId}
-                onChange={event => setExplainObjectId(event.target.value)}
-                className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm font-mono"
-              />
-            </div>
+            <TechnicalIdField label="Object ID" value={explainObjectId} onChange={setExplainObjectId} />
             <div className="space-y-1">
               <Label className="text-xs">max</Label>
               <input
@@ -523,14 +498,8 @@ export default function ArtifactsPage() {
                 onChange={value => setCalibrationDecision(value as RetrievalCalibrationDecisionValue)}
               />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">evidence artifact ids</Label>
-              <input
-                value={calibrationEvidenceIds}
-                onChange={event => setCalibrationEvidenceIds(event.target.value)}
-                placeholder="comma-separated"
-                className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm font-mono"
-              />
+            <div className="space-y-1 self-end">
+              <TechnicalIdField label="Evidence artifact identifiers" value={calibrationEvidenceIds} onChange={setCalibrationEvidenceIds} placeholder="comma-separated internal artifact ids" />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">eval delta</Label>
@@ -630,7 +599,7 @@ export default function ArtifactsPage() {
                 <div className="flex flex-wrap gap-1.5 mt-1 items-center">
                   <Badge variant="secondary">{a.artifact_type}</Badge>
                   <ScopeBadge visibility={a.visibility} omitShared />
-                  {a.workspace_id && <Badge variant="outline">workspace</Badge>}
+                  {a.project_folder_id && <Badge variant="outline">folder</Badge>}
                   {a.preview && <PreviewBadge />}
                   <span className="text-xs text-muted-foreground">{fmt(a.created_at)}</span>
                 </div>

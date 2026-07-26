@@ -25,9 +25,10 @@ export const SessionOutSchema = z
   .object({
     id: IdSchema,
     space_id: IdSchema,
-    user_id: IdSchema,
-    workspace_id: IdSchema.nullish(),
+    user_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     project_id:IdSchema.nullish(),
+    room_id: IdSchema.nullish(),
     title: z.string().nullish(),
     status: z.string(),
     created_at: ISODateTimeSchema,
@@ -42,7 +43,8 @@ export const MessageOutSchema = z
     id: IdSchema,
     session_id: IdSchema,
     space_id: IdSchema,
-    user_id: IdSchema,
+    user_id: IdSchema.nullish(),
+    sender_agent_id: IdSchema.nullish(),
     role: z.string(),
     content: z.string(),
     metadata_json: JsonObjectSchema.nullish(),
@@ -67,7 +69,7 @@ export const SessionCreateRequestSchema = z
   .object({
     space_id: IdSchema.nullish(),
     user_id: IdSchema.nullish(),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     title: z.string().nullish(),
     metadata: JsonObjectSchema.nullish(),
   })
@@ -76,11 +78,9 @@ export type SessionCreateRequest = z.infer<typeof SessionCreateRequestSchema>;
 
 export const MessageCreateRequestSchema = z
   .object({
-    role: z.string(),
     content: z.string().min(1),
-    metadata: JsonObjectSchema.nullish(),
   })
-  .passthrough();
+  .strict();
 export type MessageCreateRequest = z.infer<typeof MessageCreateRequestSchema>;
 
 export const SessionSummaryForContextSchema = z
@@ -122,24 +122,106 @@ export const ChatTurnRequestSchema = z
   .object({
     message: z.string().trim().min(1).max(8000),
     session_id: IdSchema.nullish(),
-    project_id:IdSchema.nullish(),
+    project_id: IdSchema.nullish(),
+    backend: z.object({
+      runtime_profile_id: IdSchema,
+      credential_profile_id: IdSchema.nullish(),
+    }).strict().optional(),
   })
-  .passthrough();
+  .strict();
 export type ChatTurnRequest = z.infer<typeof ChatTurnRequestSchema>;
 
-export const ChatTurnResultSchema = z
+export const ConversationBackendBindingSchema = z.object({
+  runtime_profile_id: IdSchema,
+  adapter_type: z.string().trim().min(1),
+  credential_profile_id: IdSchema.nullish(),
+}).strict();
+export type ConversationBackendBinding = z.infer<
+  typeof ConversationBackendBindingSchema
+>;
+
+export const ConversationBackendOptionSchema = z.object({
+  runtime_profile_id: IdSchema,
+  name: z.string().trim().min(1),
+  adapter_type: z.string().trim().min(1),
+  model_name: z.string().nullish(),
+  requires_cli_credential: z.boolean(),
+  credential_profiles: z.array(z.object({
+    id: IdSchema,
+    name: z.string().trim().min(1),
+    is_default: z.boolean(),
+  }).strict()),
+}).strict();
+export type ConversationBackendOption = z.infer<
+  typeof ConversationBackendOptionSchema
+>;
+
+export const ConversationBackendCatalogSchema = z.object({
+  options: z.array(ConversationBackendOptionSchema),
+  binding: ConversationBackendBindingSchema.nullable(),
+}).strict();
+export type ConversationBackendCatalog = z.infer<
+  typeof ConversationBackendCatalogSchema
+>;
+
+export const AssistantMessageSchema = z
   .object({
+    schema_version: z.literal("assistant_message.v1"),
+    id: IdSchema,
+    session_id: IdSchema,
+    run_id: IdSchema,
+    content: z.string(),
+    artifact_refs: z.array(IdSchema).default([]),
+    tool_call_refs: z.array(z.string().min(1)).default([]),
+    created_at: ISODateTimeSchema,
+    ...SecretResponseGuards,
+  })
+  .strict();
+export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
+
+export const ChatTurnAcceptedSchema = z
+  .object({
+    schema_version: z.literal("chat_turn_accepted.v1"),
+    session_id: IdSchema,
+    run_id: IdSchema,
+    user_message_id: IdSchema,
+    status: z.literal("queued"),
+    event_stream_url: z.string().min(1),
+    backend: ConversationBackendBindingSchema,
+    ...SecretResponseGuards,
+  })
+  .strict();
+export type ChatTurnAccepted = z.infer<typeof ChatTurnAcceptedSchema>;
+
+export const ChatTurnCompletionSchema = z
+  .object({
+    schema_version: z.literal("chat_turn_completion.v1"),
     session_id: IdSchema,
     run_id: IdSchema,
     ok: z.boolean(),
     reply: z.string().nullish(),
     error: z.string().nullish(),
     error_code: z.string().nullish(),
-    action_previews:z.array(z.object({action_id:z.string(),status:z.enum(["proposed","auto_applied","completed","failed"]),proposal_id:IdSchema.nullish(),proposal_type:z.string().nullish(),title:z.string().nullish(),summary:z.string().nullish(),risk_level:z.string().nullish(),scope:JsonObjectSchema.nullish()})).optional(),
+    assistant_message: AssistantMessageSchema.nullish(),
+    action_previews: z
+      .array(
+        z.object({
+          action_id: z.string(),
+          tool_call_id: z.string().nullish(),
+          status: z.enum(["proposed", "auto_applied", "completed", "failed"]),
+          proposal_id: IdSchema.nullish(),
+          proposal_type: z.string().nullish(),
+          title: z.string().nullish(),
+          summary: z.string().nullish(),
+          risk_level: z.string().nullish(),
+          scope: JsonObjectSchema.nullish(),
+        }),
+      )
+      .optional(),
     ...SecretResponseGuards,
   })
-  .passthrough();
-export type ChatTurnResult = z.infer<typeof ChatTurnResultSchema>;
+  .strict();
+export type ChatTurnCompletion = z.infer<typeof ChatTurnCompletionSchema>;
 
 export const ChatTurnPrepareRunRequestSchema = z.object({
   agent_id: IdSchema,
@@ -235,7 +317,7 @@ export const MemoryOutSchema = z
     space_id: IdSchema,
     subject_user_id: IdSchema.nullish(),
     owner_user_id: IdSchema.nullish(),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     scope: z.string(),
     namespace: z.string().nullish(),
     type: z.string(),
@@ -291,7 +373,7 @@ const MemoryCreateFieldsSchema = z.object({
   subject_user_id: IdSchema.nullish(),
   owner_user_id: IdSchema.nullish(),
   last_confirmed_at: ISODateTimeSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   memory_layer: z.string().nullish(),
 });
 
@@ -309,7 +391,7 @@ const MemoryUpdateFieldsSchema = z.object({
   tags: z.array(z.string()).nullish(),
   subject_user_id: IdSchema.nullish(),
   owner_user_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   memory_layer: z.string().nullish(),
 });
 
@@ -335,7 +417,7 @@ export type MemoryProposalUpdateCommand = z.infer<
 export const MemoryProposalArchiveCommandSchema = z.object({
   operation: z.literal("archive"),
   target_memory_id: IdSchema,
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   actor_user_id: IdSchema.nullish(),
   provenance_entries: z.array(TraceSafeObjectSchema).default([]),
 });
@@ -387,7 +469,7 @@ export const MemorySearchRequestSchema = z
     namespace: z.string().nullish(),
     type: z.string().nullish(),
     limit: z.number().int().nonnegative().default(10),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     include_system: z.boolean().default(false),
   })
   .passthrough();
@@ -398,7 +480,7 @@ export const MemoryReadRequestSchema = z.object({
   user_id: IdSchema.nullish(),
   agent_id: IdSchema.nullish(),
   run_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   memory_id: IdSchema.nullish(),
   query: z.string().nullish(),
@@ -595,7 +677,7 @@ export type ContextSourceRef = z.infer<typeof ContextSourceRefSchema>;
 export const ContextBuildRequestSchema = z.object({
   space_id: IdSchema,
   user_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   task_type: z.string().nullish(),
   capability_id: z.string().nullish(),
@@ -607,7 +689,7 @@ export const ContextBuildRequestSchema = z.object({
 });
 export type ContextBuildRequest = z.infer<typeof ContextBuildRequestSchema>;
 
-export const ContextArtifactRevocationScopeSchema = z.enum(["workspace", "project"]);
+export const ContextArtifactRevocationScopeSchema = z.enum(["project_folder", "project"]);
 export type ContextArtifactRevocationScope = z.infer<typeof ContextArtifactRevocationScopeSchema>;
 
 export const ContextArtifactRevocationSchema = z
@@ -663,7 +745,7 @@ export type ContextArtifactAttachment = z.infer<typeof ContextArtifactAttachment
 export const ContextPackageSchema = z
   .object({
     user_memory: z.array(MemoryOutSchema).default([]),
-    workspace_memory: z.array(MemoryOutSchema).default([]),
+    project_folder_memory: z.array(MemoryOutSchema).default([]),
     capability_memory: z.array(MemoryOutSchema).default([]),
     agent_memory: z.array(MemoryOutSchema).default([]),
     system_policy: z.array(MemoryOutSchema).default([]),
@@ -708,7 +790,7 @@ export const ContextCompileRequestSchema = z.object({
   target: ContextCompileTargetSchema,
   task_goal: z.string(),
   context_package: ContextPackageSchema,
-  workspace_path: z.string().nullish(),
+  project_folder_path: z.string().nullish(),
   budget_chars: z.number().int().positive().nullish(),
 });
 export type ContextCompileRequest = z.infer<typeof ContextCompileRequestSchema>;
@@ -744,7 +826,7 @@ export const ContextSnapshotAuditSchema = z
     token_budget_json: TraceSafeObjectSchema.nullish(),
     policy_bundle_version: z.string().nullish(),
     memory_digest_version: z.string().nullish(),
-    workspace_digest_version: z.string().nullish(),
+    project_folder_digest_version: z.string().nullish(),
     included_memory_refs_json: z.array(ContextSourceRefSchema).nullish(),
     included_evidence_refs_json: z.array(ContextSourceRefSchema).nullish(),
     included_file_refs_json: z.array(ContextSourceRefSchema).nullish(),

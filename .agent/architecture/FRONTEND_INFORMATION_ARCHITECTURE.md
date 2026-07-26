@@ -3,7 +3,7 @@
 ## 1. Frontend Role
 
 The frontend is the primary command surface for the agent-space product loop. It provides
-access to: capture, activity inbox, proposals, runs, tasks, memory, workspaces, runtime
+access to: capture, activity inbox, proposals, runs, tasks, memory, Project Folders, runtime
 status, structured Plan execution, Automation scheduling, and the self-evolution review loop.
 
 The frontend must respect backend security and access boundaries at all times. Every data
@@ -86,9 +86,6 @@ Rules enforced by the frontend:
 ### Home (`/home`) — user-level Today Command Center
 
 Prioritizes, all cross-space with source-Space badges:
-- **Personal Assistant entry** — a space-aware entry point (memory, projects, notes, wiki,
-  captures, runs, proposals). Opening expands into the Assistant surface; chat execution is not wired yet,
-  so it never fabricates a reply. It is labelled **Personal Assistant**, never "DirectChat".
 - **Needs attention** — pending proposals, assigned tasks, failed runs.
 - **Review packets** — pending proposals grouped/labelled by source Space; opening enters the
   owning Space.
@@ -118,20 +115,21 @@ accept/reject, sources, projects, providers, runtime, recent. Writes default to 
 Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/components/shell/`):
 
 - **Global Rail** (`RAIL_ITEMS`) — narrow, icon-only desktop rail of major destinations, Home
-  first and stable: Home · Inbox · Library · Sources · Review · Knowledge · Tasks · Projects · Agents · Workspaces · Settings.
-  Collapsible/expandable. On mobile this becomes the bottom tab bar (`MOBILE_TAB_ITEMS`).
+  first and stable: Home · Inbox · Library · Sources · Review · Knowledge · Shared · Tasks ·
+  Projects · Agents · Settings. Collapsible/expandable. On mobile this becomes the bottom tab bar
+  (`MOBILE_TAB_ITEMS`).
 - **Scene Sidebar** (`SCENES`) — second-level navigation for the current scene, changes by
-  scene (Inbox / Library / Review / Agents / Workspaces). Collapsible; when collapsed the expand
+  scene (Inbox / Library / Review / Agents / Artifacts). Collapsible; when collapsed the expand
   handle is shown in the main header next to the scene title (e.g. "☰ Agents"). Home needs no
   scene sidebar. On mobile it becomes a horizontal tab strip. Filter scenes (Inbox)
   drive a single real, API-backed query param the page reads — no fabricated views; route
-  scenes (Review / Agents / Workspaces) link real sibling routes. Review links the real
+  scenes (Review / Agents / Artifacts) link real sibling routes. Review links the real
   `Proposals` and `Memory` surfaces; proposal-type filters (All / Memory / Knowledge / Code /
   Tasks) live inside the Proposals page because they are filters, not routes.
 - **Knowledge has no scene.** It switches sub-areas via a lightweight in-header breadcrumb
-  switcher (`Knowledge / Notes ▼`, `KnowledgeSectionHeader`) so each workspace owns its own
+  switcher (`Knowledge / Notes ▼`, `KnowledgeSectionHeader`) so each section owns its own
   layout — notably the backend-driven Notes collection tree, which would collide with a
-  persistent section sidebar or tab strip. The Notes tree is local to the Notes workspace
+  persistent section sidebar or tab strip. The Notes tree is local to the Notes section
   and is never a global nav tier; PARA is only the default initialization template.
 - **Right Inspector** — scene/object-specific and owned by individual pages, never an
   app-level feature menu.
@@ -173,9 +171,9 @@ re-run a page-level aggregate loader as a shortcut.
   remove it locally when the response is terminal, and update only the affected collection.
 - When a response cannot contain the complete read model, refresh the owning module only — for
   example, Project Research refreshes operations/workflows/checkpoints/artifacts, Project Sources
-  refreshes bindings/health/items/corpus, and workspace linking refreshes workspace links and
-  the workspace summary.
-- Unrelated page data such as activities, memory, providers, agents, workspaces, and other
+  refreshes bindings/health/items/corpus, and Project Folder linking refreshes Project Folder
+  links and the Project Folder summary.
+- Unrelated page data such as activities, memory, providers, agents, Project Folders, and other
   project summaries must not be re-requested after a mutation unless that mutation explicitly
   changes that data.
 - `loadAll`/page-level loaders are reserved for first load, route/entity/space changes, or an
@@ -206,16 +204,16 @@ not be navigable.
 | Activity Inbox | Enabled | Functional |
 | Sessions | Enabled | Functional |
 | Tasks | Enabled | Functional; New Task is a compact natural-language form with a few routing selectors and server-applied execution defaults. Task Detail keeps generated acceptance criteria, required outputs, policy, and metadata out of manual JSON inputs; advanced execution limits are collapsed and editable when needed. |
-| Runs | Enabled | Functional; Run Detail exposes contract/evidence panels and `waiting_for_review` Resume/Abandon actions with explicit failure states. |
+| Runs | Enabled | Functional; Run Detail opens on permission-filtered, runtime-neutral logical input/output and exposes semantic events, Artifact/Proposal outputs, contract, verification, routing/model provenance, retry attempts, and `waiting_for_review` Resume/Abandon actions with explicit unavailable/failure states. |
 | Proposals | Enabled | Functional |
 | Artifacts | Enabled | Functional |
 | Shared Content | Enabled | Space-scoped targeted publication inbox/outbox at `/publications`; import creates an independent private copy. |
 | Memory | Enabled | Functional |
 | Context Preview | Enabled | Developer tool |
 | Job Queue | Enabled | Infrastructure debug tool |
-| Workspaces | Enabled | Functional |
-| Workspace Console | Enabled | Functional |
-| Workspace Snapshot Settings | Enabled | Space-admin-only UI for snapshot retention policy (`/workspace-snapshot-settings`); configures `snapshot_retention_days` / `snapshot_max_count` at space and per-workspace level |
+| Files & Code | Enabled | Project-scoped Project Folder browser at `/projects/:projectId/files` (Folder selector, tree, file, Git status/diff). Its zero-Folder action opens the Project-owned managed/clone/allowed-connect flow; Folder execution/configuration and unregister live in Folder Settings, while code writes, validation evidence, apply, and rollback remain governed through Runs and code-patch Proposals rather than direct file editing. |
+| Project Folder Settings | Enabled | Per-Project-Folder settings page at `/projects/:projectId/folders/:folderId`, including a Snapshot settings section that overrides `snapshot_retention_days` / `snapshot_max_count` for that Folder |
+| Snapshot Rollback Defaults | Enabled | Space-admin-only section on Space Settings (`/space-settings`) configuring the space-wide `snapshot_retention_days_default` / `snapshot_max_count_default` that Project Folders inherit absent a per-Folder override |
 | Retrieval Settings | Enabled | Space-scoped UI for the `retrieval.space.settings` scoped setting and retrieval `provider_task_policies` (`/retrieval-settings`); members can view retrieval models, while owner/admin users can edit default search mode, retrieval embedding dimensions/models, native rerank model, rerank/rewrite availability, rewrite/cache/trace defaults, and default result budget. Query rewrite, rerank, and synthesis prompt editing links to Prompt Library rather than duplicating prompt controls here. |
 | Settings | Enabled | Functional |
 | Capabilities | Enabled | Capability/skill control-plane; developer-heavy but user-visible for review |
@@ -227,17 +225,25 @@ not be navigable.
 | Providers | Enabled | Functional; provider cards and create/edit forms show capability labels for Chat, Embeddings, and Native rerank, and creation is split into chat-provider, embedding-provider, and rerank-provider flows so retrieval-only providers are not confused with ordinary chat providers |
 | Token Usage | Enabled | Reached from personal Settings (`/settings` → Usage card) at `/usage`, visible to every active member — not a primary rail destination, since it is a lower-frequency review surface and Space Settings is admin-gated and would hide it from ordinary members. Defaults to `Mine` and supports `Shared in space` and `All visible`; all server aggregations are permission-filtered before grouping. The dashboard shows model token usage, estimated cost, accuracy, platform attribution, sessions, dimensions, read-only budget preview, and private local CLI history imports without exposing prompt or completion content. |
 | Runtime (CLI Adapters) | Enabled | Functional |
-| Agent Rooms | Enabled | Space-scoped room surface at `/agent-groups`; starts on create/list, then opens a chat-style room with conversation history and a Tiptap composer. Creating a room only creates the room and members; goal is optional room metadata that can be added or edited later. The first user message creates the room/root run, with the room goal passed as background instruction only when present rather than inserted as a synthetic chat message. User messages go to the manager agent by default when no structured mention is present. Structured `@agent` mention tokens are parsed into a visible route preview before send: one mention routes that segment directly to that agent, adjacent mentions fan out the same segment in parallel, and separated mention groups create segmented recipient prompts. The user can explicitly switch the turn to Agent coordination, which routes the full message to the manager for decomposition/delegation instead of directly fanning out. Room members are the automatic `agent.delegate` target pool for every active room agent, not only the manager; `agent.wait_for_results` lets any room agent wait for sibling/delegated same-room results when its answer depends on them. Member capability snapshots are included in room tool context. Chat history treats recipient/delegating agent `agent_message` rows as the main conversation and folds child-agent delegation details by user turn by default; advanced lifecycle controls, trace/run links, and policy records live behind room settings / advanced audit rather than the chat first screen. |
+| Rooms | Enabled | Project-bound conversation is a first-level Project workspace at `/projects/:projectId/rooms`, reachable from the persistent Project sidebar and Overview without leaving the Project Shell. `/rooms` is the space-scoped cross-Project Room index. Both routes render the same Room implementation and authority. A Room has one optional execution-enabled Project Folder binding, human and agent rosters, and multiple durable conversations. Each human message executes under that speaker's retrieval identity and user × session × agent backend binding, opens one auditable collaboration task, supports direct `@agent` segmentation or manager coordination, and shows paged history, active Run lifecycle/status links, plus terminal agent replies in the conversation. `/agent-groups` remains the backend task/audit authority, not a second conversation UI. There is no separate Project Chat route or default-Assistant chat entry. |
 | **Home** (user-scoped) | Enabled | Cross-space command center at `/home`; **not** a Space, not in the switcher |
 | **Today** (Space) | Enabled | Space-scoped dashboard at `/spaces/:spaceId/today` for the active Space |
 | **Inbox** (Activity) | Enabled | Capture inputs (rail label "Inbox"; route `/activity`) |
 | **Library** | Enabled | Space-scoped, per-user reading surface at `/library` for Sources-derived items and digests. `/library` is a shell that defaults to `/library/items`; scene-sidebar routes keep `All Items` and `Digests` as siblings, with soft type filters under `All Items` (`/library/items/articles`, `/library/items/emails`, `/library/items/videos`, `/library/items/podcasts`, `/library/items/pdfs`). It only shows items/digests from sources the current user follows, plus that user's manual unconnected URLs. Source digest detail routes live under `/library/digests/:connectionId/:date`; single-item readers live under `/library/items/:itemId` or the day-scoped `/library/digests/:connectionId/:date/items/:itemId`. |
 | **Sources** | Enabled | Space-scoped information stream control plane at `/sources`; owns RSS/Atom/web page connections, owner/visibility metadata, opt-in delivery subscriptions, source-level health, scan state, and source governance. Pending source recommendations show source metadata and Follow/Dismiss/Mute actions without exposing the item stream until the user follows. Project item feeds do not live here. |
 | **Project Sources** | Enabled | Acquisition/control surface at `/projects/:projectId/sources`; binds existing Sources, shows health, runs scans/backfills, pauses/removes bindings, renders newly materialized source items, and syncs Project Corpus. It does not own article-level corpus review. |
-| **Research Workspace** | Enabled | Academic Project living-document surface at `/projects/:projectId/research`; four-section Notebook with per-section version history, AI-edit diff highlight, and one-click rollback, filterable Reading List with triage/read, WHY/HOW/WHAT, and monitoring stance cards, draggable Checklist with agent-origin badges, immutable Reports snapshots, scoped Ask AI (daily-capped, direct co-edit), and a recent-monitoring rail. Project overview shows daily support/contradiction/new-direction columns plus publication-integrity warnings; Project Sources remains acquisition-only with a pointer to the Reading List. |
-| **Project Presets** | Enabled | Creation-time Project shape selector for code-owned workflow packs. The optional `academic_research` preset is selected when creating a Project and then drives the Project-specific shell, visual treatment, and primary operations; it is not a post-create enable toggle. It reuses Project Sources, Project Corpus, and Project Graph for literature monitoring, paper screening, corpus triage, and citation/relation visualization. |
+| **Research Area** | Enabled | Academic Project living-document surface at `/projects/:projectId/research`; four-section Notebook with per-section version history, AI-edit diff highlight, and one-click rollback, filterable Reading List with triage/read, WHY/HOW/WHAT, and monitoring stance cards, draggable Checklist with agent-origin badges, immutable Reports snapshots, scoped Ask AI (daily-capped, direct co-edit), and a recent-monitoring rail. Project overview shows daily support/contradiction/new-direction columns plus publication-integrity warnings; Project Sources remains acquisition-only with a pointer to the Reading List. |
+| **Project Templates** | Enabled | Creation-time defaults selector. Every Project chooses a code-owned Template (including `blank`); Templates initialize Primary Mode and starter Workflow requirements but do not create a permanent Project type or a Workflow. Creation captures the first Brief inputs, and the Project Shell shows Template provenance plus named readiness links for required Provider, Agent, Source, and optional Folder setup before the user explicitly starts work. |
+| **Project Shell** | Enabled | Every `/projects/:projectId/*` destination shares persistent grouped navigation: Project (Overview, Rooms); Explore (Inquiry, Research, Sources, Files & Code, Experiments); Decide & Learn (Decisions, Learning, Knowledge Review); Execute (Delivery, Operations). Overview shows a compact active Brief/mode projection, actionable setup checklist, and exact Attention links without copying domain detail. Primary Mode changes foreground presentation only and never hides or converts another Area's objects; zero-Folder Projects keep every Area reachable. |
+| **Inquiry Area** | Enabled | Project-owned Question/Hypothesis tree at `/projects/:projectId/inquiry`, with Thread detail, cognitive Iterations, work state/Next Focus, typed relations, named Project Note links, bounded Candidate checkpoint review/merge, Delta summary, and backlinks to referencing Decisions. A visual relationship Map is owned by the graph projection rather than this write surface. |
+| **Experiments Area** | Enabled | `/projects/:projectId/experiments`; manages Definitions, immutable protocol Versions, manual and managed comparison Runs, Observations, reviewed Interpretations, and explicit conversion to Inquiry Signals. Managed setup selects an execution-enabled Folder and active Agent by name; the Agent carries the governed runtime profile. Terminal reconciliation returns status and parsed metrics to the Experiment Run. |
+| **Decisions Area** | Enabled | `/projects/:projectId/decisions`; creates standalone or explicitly Inquiry-linked Decision Cases, shows named Thread references, manages Options, Criteria, trade-off scores, Commitments, and explicit Delivery Tasks. |
+| **Learning Area** | Enabled | `/projects/:projectId/learning`; searches and selects visible Project/global Knowledge by title and version, creates Project learning objectives and version-pinned cards/exercises, then records per-user review outcomes. |
+| **Project Knowledge Review** | Enabled | `/projects/:projectId/knowledge-review`; summarizes new source information, selects eligible Notes/Threads/Interpretations and Agents by name for extraction, opens bounded Candidate checkpoints, supports view-all, edit-and-promote, defer/reopen, and dismiss. Canonical Knowledge writes remain proposal-gated. |
+| **Delivery Area** | Enabled | `/projects/:projectId/delivery`; an ACL-filtered Project Task view supporting create, named Agent/self assignment, start, complete, reopen, and exact Task Detail links through the Task authority. It does not create a separate Delivery object model. |
+| **Operations Area** | Enabled | `/projects/:projectId/operations`; composes Project Operations, Automations, visible governed Runs, and project-scoped `operational_alert` Activity. Attention query selection highlights the exact operation/alert; Automation pause/resume/run-now and Run Detail links preserve owning authority. Active/waiting, review, degraded fallback, terminal failure, and archived Project states are distinct. No Incident aggregate is implied by this projection. |
 | **Review** (Proposals + Memory) | Enabled | Governance area (rail label "Review"; routes `/proposals` and `/memory`). The scene sidebar links real surfaces; proposal-type filters live inside `/proposals`. |
-| **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used workspace (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge workspace — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards** |
+| **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used section (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge Area — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards** |
 | **Graph** | Enabled | Space-scoped relationship projection at `/graph`; renders the shared `GraphProjection` contract through `apps/web/src/components/graph/`, reads core `/api/v1/graph/*`, persists per-user view state under `scope_key='core:graph'`, `core:graph:<lens_id>`, `project:graph:<project_id>`, or `project:graph:<project_id>:<lens_id>`, and remains read-only over visible `space_objects` / `object_relations`. `?project_id=` narrows the graph to active object-backed Project corpus rows; `?lens_id=academic_citation_v1` applies the academic citation/authorship lens. |
 | **Cards** | `enabled: false, visible: false` | Standalone module hidden; surfaced as the Knowledge › Cards placeholder until the spaced-repetition model exists |
 | Time | `planned: true` | Shows "soon" badge |
@@ -288,13 +294,22 @@ Errors on proposal accept/reject must distinguish:
 
 The frontend is ready for personal dogfooding. The core product loop is usable:
 - Capture → Activity Inbox → Consolidate → Proposals → Accept/Reject → Memory/Task
-- Sessions, Runs, Artifacts, Memory, Workspaces, Settings are functional.
+- Sessions, Runs, Artifacts, Memory, Project Folders, Settings are functional.
+- Normal product forms resolve Projects, Project Folders, Agents, runtime
+  profiles, Runs, Artifacts, Knowledge Items, and graph roots through named or
+  contextual choices. They do not request internal UUIDs. Diagnostic workflows
+  that genuinely require an opaque identifier use an explicitly collapsed
+  technical-details control; detail pages keep copyable provenance identifiers
+  behind the same kind of affordance.
+- A static frontend test scans user-facing labels, placeholders, and accessible
+  labels so new raw `ID`/`UUID` inputs cannot silently return to normal flows.
 - Auth, space context, and RequireAuth wrapper are correctly wired.
-- Project creation includes a Project type selector. Selecting Academic Research
-  stores `settings_json.preset = "academic_research"` and routes the resulting
-  Project into an Academic Research shell with literature monitoring, paper
-  screening/corpus, arXiv provider monitors, and citation graph actions. The preset
-  is not exposed as a post-create enable/use/clear toggle. Project detail pages
+- Project creation requires a starting Template and captures Name, Goal, and
+  Scope; the server atomically creates the Project, initial Mode Transition,
+  and first Brief Version. `projects.template_key` records provenance, while
+  later Primary Mode changes only change presentation/focus and auto-enable
+  that Area without moving or deleting its data. Academic Research is a
+  Template, not a Project type. Project detail pages
   include a Research workflow panel that creates
   optional project-scoped saved workflow presets, builds run drafts directly
   from templates or saved presets, and queues normal agent runs. Runtime profile
@@ -326,7 +341,8 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
   out across raw domain APIs to reconstruct those counts.
 - Quick Capture supports text and links; file/image drag-drop and voice are shown as
   coming-soon (no upload endpoint yet).
-- Assistant chat execution is not wired; the Home Assistant is an entry point only.
+- Home has no Assistant chat entry; project-bound conversation lives only in
+  the Rooms surface.
 - Activity / Run / Artifact cross-linking can be improved (e.g., post-consolidate navigation
   to generated proposals; post-accept link to created memory record).
 - Board visibility notice can be added before heavier shared-space use.

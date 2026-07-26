@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   DuplicateJobHandlerError,
+  JobDeferredError,
   JobHandlerRegistry,
   UnknownJobTypeError,
 } from "../src/modules/jobs/handlerRegistry";
@@ -284,6 +285,57 @@ describe("JobWorker", () => {
       "event:warning:Job completion skipped because ownership or status changed",
     ]);
   });
+
+  it("defers lock-bound work without burning retries in a tight loop", async () => {
+    const deferred: Date[] = [];
+    const queue = {
+      async claimNext() {
+        return makeJob({ job_type: "authorization_request_reconcile", attempts: 1 });
+      },
+      async startJob() {
+        return true;
+      },
+      async completeJob() {
+        return true;
+      },
+      async failJob() {
+        throw new Error("deferred jobs must not use immediate failure retry");
+      },
+      async deferJob(
+        _jobId: string,
+        _error: string,
+        _workerId: string,
+        scheduledAt: Date,
+      ) {
+        deferred.push(scheduledAt);
+        return true;
+      },
+      async touchHeartbeat() {
+        return true;
+      },
+      async appendJobEvent() {
+        return {};
+      },
+    };
+    const registry = new JobHandlerRegistry();
+    registry.register("authorization_request_reconcile", async () => {
+      throw new JobDeferredError("execution lock remains held", 2_000);
+    });
+    const before = Date.now();
+    const worker = new JobWorker(
+      queue as never,
+      registry,
+      "worker-1",
+      ["authorization_request_reconcile"],
+    );
+
+    await expect(worker.processOne()).resolves.toEqual({
+      status: "deferred",
+      job_id: "job-1",
+    });
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]!.getTime()).toBeGreaterThanOrEqual(before + 2_000);
+  });
 });
 
 describe("PgJobQueueRepository", () => {
@@ -306,6 +358,28 @@ describe("PgJobQueueRepository", () => {
     expect(status).toBe("failed");
     expect(calls[0]?.sql).toContain("completed_at = CASE WHEN attempts < max_attempts THEN NULL ELSE $3::timestamptz END");
     expect(calls[0]?.sql).toContain("updated_at = $3::timestamptz");
+  });
+
+  it("moves deferred jobs back to pending at a future scheduled time", async () => {
+    const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
+    const db: Queryable = {
+      async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<QueryResult<Row>> {
+        calls.push({ sql, params });
+        return { rows: [], rowCount: 1 };
+      },
+    };
+    const scheduledAt = new Date("2026-07-26T12:00:02.000Z");
+    await expect(new PgJobQueueRepository(db).deferJob(
+      "job-1",
+      "lock held",
+      "worker-1",
+      scheduledAt,
+      new Date("2026-07-26T12:00:00.000Z"),
+    )).resolves.toBe(true);
+    expect(calls[0]?.sql).toContain("scheduled_at = $3");
+    expect(calls[0]?.sql).toContain("attempts = GREATEST(0, attempts - 1)");
+    expect(calls[0]?.sql).not.toContain("attempts < max_attempts");
+    expect(calls[0]?.params[2]).toBe(scheduledAt.toISOString());
   });
 });
 
@@ -778,6 +852,7 @@ describe("AutomationService policy preflight", () => {
       dedupeKey: `automation_fire_failed:${due.id}`,
       spaceId: due.space_id,
       userId: due.owner_user_id,
+      projectId: due.project_id,
     }));
   });
 
@@ -1396,7 +1471,7 @@ function sampleAutomation(overrides: Partial<AutomationRow> = {}): AutomationRow
     space_id: "space-1",
     owner_user_id: "owner-1",
     agent_id: "agent-1",
-    workspace_id: null,
+    project_folder_id: null,
     project_id: null,
     name: "Nightly",
     description: null,
@@ -1417,7 +1492,7 @@ function makeJob(overrides: Partial<JobRecord> = {}): JobRecord {
     id: "job-1",
     space_id: "space-1",
     user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     agent_id: null,
     job_type: "agent_run",
     status: "claimed",

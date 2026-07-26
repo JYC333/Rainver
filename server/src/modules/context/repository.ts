@@ -10,7 +10,7 @@ import {
 } from "../memory/repository";
 import { HttpError } from "../routeUtils/common";
 import { canAccessProject } from "../memory/projectAccess";
-import { workspaceProjectReadAccessSql } from "../workspaces/access";
+import { projectFolderReadAccessSql } from "../projectFolders/access";
 import {
   contentAccessLevelSql,
   contentOwnerFilterSql,
@@ -78,7 +78,7 @@ export interface RunContextRecord {
   agent_version_id: string | null;
   context_snapshot_id: string | null;
   prompt: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   project_id: string | null;
   session_id: string | null;
   instructed_by_user_id: string | null;
@@ -116,7 +116,7 @@ export interface SessionSummaryRow {
 
 export interface ContextDigestRow {
   id: string;
-  digest_type: "policy_bundle" | "workspace" | "agent";
+  digest_type: "policy_bundle" | "project_folder" | "agent";
   version: number | string;
   status: string;
   content: string | null;
@@ -129,7 +129,7 @@ export interface ContextDigestRow {
 
 export interface DigestBundle {
   policy_bundle: ContextDigestRow | null;
-  workspace: ContextDigestRow | null;
+  project_folder: ContextDigestRow | null;
   agent: ContextDigestRow | null;
 }
 
@@ -159,7 +159,7 @@ export interface ContextArtifactAttachmentSelection {
   ref: Record<string, unknown>;
 }
 
-export type ContextArtifactRevocationScope = "workspace" | "project";
+export type ContextArtifactRevocationScope = "project_folder" | "project";
 
 export interface ContextArtifactRevocationRecord {
   id: string;
@@ -181,7 +181,7 @@ interface ContextArtifactRow {
   visibility: string;
   owner_user_id: string | null;
   project_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   created_at: unknown;
 }
 
@@ -221,7 +221,7 @@ export interface SnapshotUpdateInput {
   tokenEstimate: number;
   policyBundleVersion?: string | null;
   memoryDigestVersion?: string | null;
-  workspaceDigestVersion?: string | null;
+  projectFolderDigestVersion?: string | null;
 }
 
 /**
@@ -251,7 +251,7 @@ export class PgRunContextRepository {
   async loadRun(spaceId: string, runId: string): Promise<RunContextRecord | null> {
     const result = await this.db.query<RunContextRecord>(
       `SELECT r.id, r.space_id, r.agent_id, r.agent_version_id,
-              r.context_snapshot_id, r.prompt, r.workspace_id, r.project_id,
+              r.context_snapshot_id, r.prompt, r.project_folder_id, r.project_id,
               r.session_id, r.instructed_by_user_id, r.capability_id, r.trigger_origin,
               r.data_exposure_level, r.trust_level,
               r.has_personal_grant_context, r.personal_grant_context_json,
@@ -277,7 +277,7 @@ export class PgRunContextRepository {
   async retrieve(params: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     agentId: string | null;
     capabilityId?: string | null;
     query: string | null;
@@ -548,13 +548,13 @@ export class PgRunContextRepository {
    */
   async filterEligibleDigestMemoryIds(input: {
     spaceId: string;
-    scopeType: "workspace" | "agent";
+    scopeType: "project_folder" | "agent";
     scopeId: string;
     memoryIds: readonly string[];
   }): Promise<string[]> {
     const ids = [...new Set(input.memoryIds.filter((id) => id.length > 0))];
     if (ids.length === 0) return [];
-    const idColumn = input.scopeType === "workspace" ? "workspace_id" : "agent_id";
+    const idColumn = input.scopeType === "project_folder" ? "project_folder_id" : "agent_id";
     const result = await this.db.query<{ id: string }>(
       `SELECT me.id
          FROM memory_entries me
@@ -593,7 +593,7 @@ export class PgRunContextRepository {
   async selectEvidenceForContext(input: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     projectId: string | null;
     runId: string | null;
     limit?: number;
@@ -601,8 +601,8 @@ export class PgRunContextRepository {
     const targets: Array<{ type: string; id: string }> = [
       { type: "space", id: input.spaceId },
     ];
-    if (input.workspaceId) {
-      targets.push({ type: "workspace", id: input.workspaceId });
+    if (input.projectFolderId) {
+      targets.push({ type: "project_folder", id: input.projectFolderId });
     }
     if (
       input.projectId &&
@@ -725,7 +725,7 @@ export class PgRunContextRepository {
   async selectArtifactAttachments(input: {
     spaceId: string;
     userId: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
     artifactIds: readonly string[];
     ignoreRevocations?: boolean;
@@ -734,18 +734,18 @@ export class PgRunContextRepository {
     if (ids.length === 0) return [];
     const result = await this.db.query<ContextArtifactRow>(
       `SELECT a.id, a.artifact_type, a.title, a.content, a.metadata_json, a.visibility,
-              a.owner_user_id, a.project_id, a.workspace_id, a.created_at
+              a.owner_user_id, a.project_id, a.project_folder_id, a.created_at
          FROM artifacts a
         WHERE a.space_id = $1
           AND a.id = ANY($2::varchar[])
           AND ${contentReadSql("artifact", "a", "$3")}
-          AND (a.workspace_id IS NULL OR ($4::varchar IS NOT NULL AND a.workspace_id = $4))
+          AND (a.project_folder_id IS NULL OR ($4::varchar IS NOT NULL AND a.project_folder_id = $4))
           AND (a.project_id IS NULL OR ($5::varchar IS NOT NULL AND a.project_id = $5))`,
       [
         input.spaceId,
         ids,
         input.userId,
-        input.workspaceId ?? null,
+        input.projectFolderId ?? null,
         input.projectId ?? null,
       ],
     );
@@ -755,7 +755,7 @@ export class PgRunContextRepository {
       : await this.activeArtifactRevocationsForContext({
           spaceId: input.spaceId,
           artifactIds: ids,
-          workspaceId: input.workspaceId ?? null,
+          projectFolderId: input.projectFolderId ?? null,
           projectId: input.projectId ?? null,
         });
     const selections: ContextArtifactAttachmentSelection[] = [];
@@ -802,7 +802,7 @@ export class PgRunContextRepository {
   async listArtifactRevocations(input: {
     spaceId: string;
     userId: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
     artifactIds?: readonly string[];
   }): Promise<ContextArtifactRevocationRecord[]> {
@@ -845,12 +845,12 @@ export class PgRunContextRepository {
     reason?: string | null;
   }): Promise<ContextArtifactRevocationRecord> {
     await this.assertRevocationScopeAccess(input.spaceId, input.userId, input.scopeType, input.scopeId);
-    const workspaceId = input.scopeType === "workspace" ? input.scopeId : null;
+    const projectFolderId = input.scopeType === "project_folder" ? input.scopeId : null;
     const projectId = input.scopeType === "project" ? input.scopeId : null;
     const selections = await this.selectArtifactAttachments({
       spaceId: input.spaceId,
       userId: input.userId,
-      workspaceId,
+      projectFolderId,
       projectId,
       artifactIds: [input.artifactId],
       ignoreRevocations: true,
@@ -923,12 +923,12 @@ export class PgRunContextRepository {
   private async activeArtifactRevocationsForContext(input: {
     spaceId: string;
     artifactIds: readonly string[];
-    workspaceId: string | null;
+    projectFolderId: string | null;
     projectId: string | null;
   }): Promise<Map<string, ContextArtifactRevocationRecord>> {
     const scopes: Array<{ scope_type: ContextArtifactRevocationScope; scope_id: string }> = [];
     if (input.projectId) scopes.push({ scope_type: "project", scope_id: input.projectId });
-    if (input.workspaceId) scopes.push({ scope_type: "workspace", scope_id: input.workspaceId });
+    if (input.projectFolderId) scopes.push({ scope_type: "project_folder", scope_id: input.projectFolderId });
     if (scopes.length === 0 || input.artifactIds.length === 0) return new Map();
     const params: unknown[] = [input.spaceId, [...input.artifactIds]];
     const scopePredicates = scopes.map((scope) => {
@@ -960,13 +960,13 @@ export class PgRunContextRepository {
   private async accessibleRevocationScopes(input: {
     spaceId: string;
     userId: string;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
   }): Promise<Array<{ scope_type: ContextArtifactRevocationScope; scope_id: string }>> {
     const scopes: Array<{ scope_type: ContextArtifactRevocationScope; scope_id: string }> = [];
-    if (input.workspaceId) {
-      await this.assertRevocationScopeAccess(input.spaceId, input.userId, "workspace", input.workspaceId);
-      scopes.push({ scope_type: "workspace", scope_id: input.workspaceId });
+    if (input.projectFolderId) {
+      await this.assertRevocationScopeAccess(input.spaceId, input.userId, "project_folder", input.projectFolderId);
+      scopes.push({ scope_type: "project_folder", scope_id: input.projectFolderId });
     }
     if (input.projectId) {
       await this.assertRevocationScopeAccess(input.spaceId, input.userId, "project", input.projectId);
@@ -983,25 +983,25 @@ export class PgRunContextRepository {
   ): Promise<void> {
     const accessible = scopeType === "project"
       ? await canAccessProject(this.db, spaceId, scopeId, userId)
-      : await this.canAccessWorkspace(spaceId, scopeId, userId);
+      : await this.canAccessProjectFolder(spaceId, scopeId, userId);
     if (!accessible) {
       throw new HttpError(403, `${scopeType} scope is not accessible`);
     }
   }
 
-  private async canAccessWorkspace(
+  private async canAccessProjectFolder(
     spaceId: string,
-    workspaceId: string,
+    projectFolderId: string,
     userId: string,
   ): Promise<boolean> {
     const result = await this.db.query<{ one: number }>(
       `SELECT 1 AS one
-         FROM workspaces w
+         FROM project_folders w
         WHERE w.space_id = $1
           AND w.id = $2
-          AND ${workspaceProjectReadAccessSql({ spaceExpr: "w.space_id", workspaceExpr: "w.id", userExpr: "$3" })}
+          AND ${projectFolderReadAccessSql({ spaceExpr: "w.space_id", projectFolderExpr: "w.id", userExpr: "$3" })}
         LIMIT 1`,
-      [spaceId, workspaceId, userId],
+      [spaceId, projectFolderId, userId],
     );
     return result.rows.length > 0;
   }
@@ -1073,7 +1073,7 @@ export class PgRunContextRepository {
 
   async loadDigestBundle(input: {
     spaceId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     agentId: string | null;
   }): Promise<DigestBundle> {
     const policy = await this.loadActiveDigest(
@@ -1082,18 +1082,18 @@ export class PgRunContextRepository {
       null,
       "policy_bundle",
     );
-    const workspace = input.workspaceId
+    const workspace = input.projectFolderId
       ? await this.loadActiveDigest(
           input.spaceId,
-          "workspace",
-          input.workspaceId,
-          "workspace",
+          "project_folder",
+          input.projectFolderId,
+          "project_folder",
         )
       : null;
     const agent = input.agentId
       ? await this.loadActiveDigest(input.spaceId, "agent", input.agentId, "agent")
       : null;
-    return { policy_bundle: policy, workspace, agent };
+    return { policy_bundle: policy, project_folder: workspace, agent };
   }
 
   async updateSnapshot(input: SnapshotUpdateInput): Promise<void> {
@@ -1111,7 +1111,7 @@ export class PgRunContextRepository {
               token_estimate = $10,
               policy_bundle_version = $11,
               memory_digest_version = $12,
-              workspace_digest_version = $13
+              project_folder_digest_version = $13
         WHERE id = $14
           AND space_id = $15`,
       [
@@ -1127,7 +1127,7 @@ export class PgRunContextRepository {
         input.tokenEstimate,
         input.policyBundleVersion ?? null,
         input.memoryDigestVersion ?? null,
-        input.workspaceDigestVersion ?? null,
+        input.projectFolderDigestVersion ?? null,
         input.snapshotId,
         input.spaceId,
       ],
@@ -1279,7 +1279,7 @@ export class PgRunContextRepository {
   private async symbolMatch(input: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     agentId: string | null;
     capabilityId?: string | null;
     readableScopes: ReadonlySet<string>;
@@ -1299,7 +1299,7 @@ export class PgRunContextRepository {
           AND (
             subject_user_id = $3
             OR owner_user_id = $3
-            OR ($4::varchar IS NOT NULL AND workspace_id = $4)
+            OR ($4::varchar IS NOT NULL AND project_folder_id = $4)
             OR ($5::varchar IS NOT NULL AND agent_id = $5)
           )
         ORDER BY importance DESC, updated_at DESC
@@ -1308,7 +1308,7 @@ export class PgRunContextRepository {
         input.spaceId,
         [...input.readableScopes],
         input.userId,
-        input.workspaceId,
+        input.projectFolderId,
         input.agentId,
       ],
     );
@@ -1318,7 +1318,7 @@ export class PgRunContextRepository {
   private async graphExpand(input: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     agentId: string | null;
     seedIds: Set<string>;
     readableScopes: ReadonlySet<string>;
@@ -1363,7 +1363,7 @@ export class PgRunContextRepository {
   private async keywordFallback(input: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     agentId: string | null;
     query: string | null;
     readableScopes: ReadonlySet<string>;
@@ -1393,7 +1393,7 @@ export class PgRunContextRepository {
   private async loadAndRank(input: {
     spaceId: string;
     userId: string;
-    workspaceId: string | null;
+    projectFolderId: string | null;
     agentId: string | null;
     ids: string[];
     includeSystemScope: boolean;
@@ -1452,7 +1452,7 @@ export class PgRunContextRepository {
     spaceId: string,
     scopeType: string,
     scopeId: string | null,
-    digestType: "policy_bundle" | "workspace" | "agent",
+    digestType: "policy_bundle" | "project_folder" | "agent",
   ): Promise<ContextDigestRow | null> {
     const result = await this.db.query<ContextDigestRow>(
       `SELECT id, digest_type, version, status, content,
@@ -1652,7 +1652,7 @@ function artifactAttachmentFromRow(
     visibility: row.visibility,
     owner_user_id: row.owner_user_id,
     project_id: row.project_id,
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     section: "dynamic_tail",
     attachment_type: "artifact_evidence_pack",
     included: true,
@@ -1675,7 +1675,7 @@ function artifactAttachmentFromRow(
         visibility: row.visibility,
         owner_user_id: row.owner_user_id,
         project_id: row.project_id,
-        workspace_id: row.workspace_id,
+        project_folder_id: row.project_folder_id,
         content_mode: "bounded_summary",
         raw_artifact_content_included: false,
       },

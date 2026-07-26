@@ -101,7 +101,7 @@ interface MemoryAccessLogJoinedRow extends MemoryRow {
 }
 
 const MEMORY_ACCESS_LOG_MEMORY_COLUMNS = `m.id, m.space_id, m.subject_user_id,
-  m.owner_user_id, m.workspace_id, m.scope_type, m.namespace, m.memory_type,
+  m.owner_user_id, m.project_folder_id, m.scope_type, m.namespace, m.memory_type,
   m.title, NULL::text AS content, m.status, m.visibility, m.access_level, m.sensitivity_level,
   m.last_confirmed_at, m.confidence, m.importance,
   m.source_id, m.created_by, m.created_at, m.updated_at, m.deleted_at,
@@ -160,7 +160,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           namespace: optionalString(q.namespace),
           memoryType: optionalString(q.type),
           status: q.status === undefined ? "active" : q.status,
-          workspaceId: optionalString(q.workspace_id),
+          projectFolderId: optionalString(q.project_folder_id),
           projectId: optionalString(q.project_id),
           includeSystem: boolQuery(q.include_system),
           limit,
@@ -193,7 +193,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const memoryId = optionalString(q.memory_id);
     const accessType = optionalString(q.access_type);
-    const workspaceId = optionalString(q.workspace_id);
+    const projectFolderId = optionalString(q.project_folder_id);
     const projectId = optionalString(q.project_id);
     try {
       const db = getDbPool(context.config.databaseUrl);
@@ -204,7 +204,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         offset,
         memoryId,
         accessType,
-        workspaceId,
+        projectFolderId,
         projectId,
       });
       return reply.send(page);
@@ -217,12 +217,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
-    const workspaceId = optionalString(query(request).workspace_id);
+    const projectFolderId = optionalString(query(request).project_folder_id);
     const memory = await memoryServices(context).repository.get(
       identity.spaceId,
       identity.userId,
       memoryId,
-      workspaceId,
+      projectFolderId,
     );
     if (!memory) return reply.code(404).send({ detail: "Memory not found" });
     return reply.send(memory);
@@ -243,7 +243,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         scope: body.scope ?? null,
         namespace: body.namespace ?? null,
         memoryType: body.type ?? null,
-        workspaceId: body.workspace_id ?? null,
+        projectFolderId: body.project_folder_id ?? null,
         includeSystem: body.include_system,
         limit: body.limit,
       });
@@ -783,7 +783,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
-    const workspaceId = optionalString(query(request).workspace_id);
+    const projectFolderId = optionalString(query(request).project_folder_id);
     try {
       const protocol = await loadProtocol();
       const command = protocol.MemoryProposalUpdateCommandSchema.parse({
@@ -795,7 +795,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         identity.spaceId,
         identity.userId,
         memoryId,
-        workspaceId,
+        projectFolderId,
         command,
       );
       return reply.code(202).send(proposal);
@@ -808,19 +808,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
-    const workspaceId = optionalString(query(request).workspace_id);
+    const projectFolderId = optionalString(query(request).project_folder_id);
     try {
       const protocol = await loadProtocol();
       const command = protocol.MemoryProposalArchiveCommandSchema.parse({
         operation: "archive",
         target_memory_id: memoryId,
-        workspace_id: workspaceId,
+        project_folder_id: projectFolderId,
       });
       const proposal = await memoryServices(context).repository.archiveMemoryProposal(
         identity.spaceId,
         identity.userId,
         memoryId,
-        workspaceId,
+        projectFolderId,
         command,
       );
       return reply.code(202).send(proposal);
@@ -864,7 +864,7 @@ async function loadVisibleMemoryAccessLogs(
     offset: number;
     memoryId?: string | null;
     accessType?: string | null;
-    workspaceId?: string | null;
+    projectFolderId?: string | null;
     projectId?: string | null;
   },
 ): Promise<{
@@ -923,7 +923,7 @@ async function loadVisibleMemoryAccessLogs(
     canReadMemory(row, {
       spaceId: input.spaceId,
       userId: input.userId,
-      workspaceId: input.workspaceId ?? null,
+      projectFolderId: input.projectFolderId ?? null,
       oversightLevel,
     }),
   );

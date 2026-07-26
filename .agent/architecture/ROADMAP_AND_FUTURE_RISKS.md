@@ -173,7 +173,7 @@ OpenCode-first Router preference and does not route the managed API path through
 - Keep policy tests focused on fail-closed behavior and audit durability.
 
 **Prerequisites**
-- `proposal.apply`, runtime gates, workspace read/write gates, artifact persistence gates, and credential gates stay centralized through the policy module.
+- `proposal.apply`, runtime gates, Project Folder read/write gates, artifact persistence gates, and credential gates stay centralized through the policy module.
 
 **Risk watch**
 - Policy can become scattered if new surfaces authorize directly.
@@ -284,7 +284,7 @@ OpenCode-first Router preference and does not route the managed API path through
 ### 9. Learning Loop and Self-Evolution
 
 **Next work**
-- Run managed dogfood flows against real workspaces before automating more of the loop.
+- Run managed dogfood flows against real Project Folders before automating more of the loop.
 - Validate RunReflection and proposal payload quality through human review.
 - Define allowed self-evolution surfaces and evaluation gates before enabling capability lifecycle persistence.
 - Phased implementation for planning/routing/verification and the evolution
@@ -372,7 +372,7 @@ tool-call message preservation in conversation windows, tracked under P6/P7
 | Broad ingestion privacy | Connectors can import sensitive data at scale | Keep Sources/Evidence candidate-only and proposal-gated |
 | Automation scope creep | Background runs can become hidden mutation paths | Require ownership, preflight, policy, and proposal boundaries |
 | Self-evolution scope creep | Agents can gain deployment or permission authority | Keep disabled until lifecycle/evaluation/rollback are real |
-| Code patch partial apply | File rollback failures can leave workspaces inconsistent | Pre-apply snapshots are captured before each accepted code_patch; user-facing `/rollback` restores from snapshot. Keep snapshot expiry and pruning auditable. |
+| Code patch partial apply | File rollback failures can leave Project Folders inconsistent | Pre-apply snapshots are captured before each accepted code_patch; user-facing `/rollback` restores from snapshot. Keep snapshot expiry and pruning auditable. |
 | Disabled surfaces exposed in UI | Users can rely on features that are not active | Keep `planned: true` modules non-interactive |
 | Actor identity backfill | Historical nullable user/agent fields remain across tables | Use `actor_ref` on new surfaces; avoid bulk migration until needed |
-| Workspace sessions / API keys | Operator-only surfaces can become accidental product APIs | Keep feature-gated until ownership and UX are designed |
+| API key persistence UI | Operator-only surfaces can become accidental product APIs | Keep feature-gated until ownership and UX are designed (Files & Code's interactive-session stub was fully removed rather than gated — see NON_GOALS_AND_DISABLED_SURFACES.md) |

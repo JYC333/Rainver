@@ -1,6 +1,7 @@
 import type {
   RouteCandidate,
   RouteDecision,
+  RouteExecutionShape,
   RouteHints,
   RouteRejection,
   RouteRequest,
@@ -16,12 +17,14 @@ const SANDBOX_RANK: Record<SandboxLevel, number> = {
   none: 0,
   dry_run: 1,
   ephemeral: 2,
-  worktree: 3,
-  one_shot_docker: 4,
+  read_only: 3,
+  worktree: 4,
+  one_shot_docker: 5,
 };
 
 export const EMPTY_ROUTE_HINTS: RouteHints = {
   preferred_adapter_types: [],
+  execution_shape: null,
   preferred_runtime_profile_id: null,
   required_capabilities: [],
   required_tools: [],
@@ -71,6 +74,7 @@ export function mergeRouteHints(sources: Array<{ source: string; value: unknown 
     const value = record(source.value);
     result.sources.push(source.source);
     result.preferred_adapter_types = unique([...result.preferred_adapter_types, ...stringArray(value.preferred_adapter_types ?? value.preferred_adapters ?? value.recommended_runtime_adapters)]);
+    result.execution_shape = executionShape(value.execution_shape) ?? result.execution_shape;
     result.required_capabilities = unique([...result.required_capabilities, ...stringArray(value.required_capabilities)]);
     result.required_tools = unique([...result.required_tools, ...stringArray(value.required_tools)]);
     result.preferred_runtime_profile_id = stringValue(value.preferred_runtime_profile_id) ?? result.preferred_runtime_profile_id;
@@ -90,11 +94,25 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   if (!candidate.enabled) reasons.push("candidate_disabled");
   if (!candidate.credential_available) reasons.push("credential_unavailable");
   const localCli = isLocalCliRuntimeAdapter(candidate.adapter_type);
+  const shape = hints.execution_shape;
   if (candidate.conformance_status === "failed" && localCli) {
     reasons.push("runtime_conformance_failed");
   }
   if (localCli && request.risk_level !== "low" && candidate.conformance_status !== "passed") {
     reasons.push("runtime_conformance_required");
+  }
+  if (
+    candidate.adapter_type === "opencode" &&
+    (shape === "agentic_files" || shape === "code_execution") &&
+    candidate.conformance_status !== "passed"
+  ) {
+    reasons.push("runtime_conformance_required_for_execution_shape");
+  }
+  if (
+    candidate.adapter_type === "model_api" &&
+    (shape === "agentic_files" || shape === "code_execution")
+  ) {
+    reasons.push("execution_shape_incompatible");
   }
   if (request.excluded_runtime_profile_ids?.includes(candidate.runtime_profile_id)) {
     reasons.push("runtime_profile_excluded_for_retry");
@@ -165,7 +183,24 @@ function scoreCandidate(request: RouteRequest, hints: RouteHints, candidate: Rou
   const latency = candidate.estimated_latency_ms === null ? 0 : Math.max(-10, 5 - (candidate.estimated_latency_ms / 1000));
   const latencyBudget = hints.latency_budget_ms !== null && candidate.estimated_latency_ms !== null && candidate.estimated_latency_ms <= hints.latency_budget_ms ? 4 : 0;
   const costBudget = hints.cost_budget_usd !== null && candidate.estimated_cost_usd !== null && candidate.estimated_cost_usd <= hints.cost_budget_usd ? 4 : 0;
-  return { preference, profile_preference: profilePreference, default_profile: defaultProfile, verification_pass_rate: passRate, cost, latency, latency_budget: latencyBudget, cost_budget: costBudget };
+  const shapeDefault = executionShapeScore(hints.execution_shape, candidate);
+  return { preference, profile_preference: profilePreference, execution_shape_default: shapeDefault, default_profile: defaultProfile, verification_pass_rate: passRate, cost, latency, latency_budget: latencyBudget, cost_budget: costBudget };
+}
+
+function executionShapeScore(
+  shape: RouteExecutionShape | null,
+  candidate: RouteCandidate,
+): number {
+  if (
+    (shape === "conversational" || shape === "structured_generation") &&
+    candidate.adapter_type === "model_api"
+  ) return 30;
+  if (
+    (shape === "agentic_files" || shape === "code_execution") &&
+    candidate.adapter_type === "opencode" &&
+    candidate.conformance_status === "passed"
+  ) return 30;
+  return 0;
 }
 
 function trustRequiredForRisk(risk: RouteRiskLevel): RouteTrustLevel {
@@ -195,6 +230,14 @@ function stringArray(value: unknown): string[] {
 function unique(values: string[]): string[] { return [...new Set(values)]; }
 function stringValue(value: unknown): string | null { return typeof value === "string" && value.trim() ? value.trim() : null; }
 function finiteNumber(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
-function sandboxValue(value: unknown): SandboxLevel | null { return value === "none" || value === "dry_run" || value === "ephemeral" || value === "worktree" || value === "one_shot_docker" ? value : null; }
+function sandboxValue(value: unknown): SandboxLevel | null { return value === "none" || value === "dry_run" || value === "ephemeral" || value === "read_only" || value === "worktree" || value === "one_shot_docker" ? value : null; }
 function executionMode(value: unknown): "live" | "dry_run" | null { return value === "live" || value === "dry_run" ? value : null; }
 function trustValue(value: unknown): RouteTrustLevel | null { return value === "low" || value === "medium" || value === "high" ? value : null; }
+function executionShape(value: unknown): RouteExecutionShape | null {
+  return value === "conversational" ||
+    value === "structured_generation" ||
+    value === "agentic_files" ||
+    value === "code_execution"
+    ? value
+    : null;
+}

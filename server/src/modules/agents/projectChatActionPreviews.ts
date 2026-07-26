@@ -2,6 +2,7 @@ import type { Queryable } from "../routeUtils/common";
 
 export interface ProjectChatActionPreview {
   action_id: string;
+  tool_call_id?: string | null;
   status: "proposed" | "auto_applied" | "completed" | "failed";
   proposal_id?: string | null;
   proposal_type?: string | null;
@@ -53,6 +54,7 @@ export async function loadProjectChatActionPreviews(
   );
   const proposals: ProjectChatActionPreview[] = proposalRows.rows.map((row) => ({
     action_id: typeof row.payload_json?.action_id === "string" ? row.payload_json.action_id : row.proposal_type,
+    tool_call_id: row.action_idempotency_key,
     status: row.status === "pending" ? "proposed" : row.status === "accepted" ? "auto_applied" : "failed",
     proposal_id: row.id,
     proposal_type: row.proposal_type,
@@ -69,6 +71,7 @@ export async function loadProjectChatActionPreviews(
     const failed = row.status === "failed" || metadata.ok === false;
     return [{
       action_id: actionId,
+      tool_call_id: callId,
       status: failed ? "failed" : "completed",
       title: actionId,
       summary: failed && typeof metadata.error_code === "string" ? metadata.error_code : null,

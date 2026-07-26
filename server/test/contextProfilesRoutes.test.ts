@@ -31,7 +31,7 @@ function config() {
 interface ProfileRow {
   id: string;
   space_id: string;
-  scope_type: "space" | "project" | "workspace" | "agent" | "user";
+  scope_type: "space" | "project" | "project_folder" | "agent" | "user";
   scope_id: string | null;
   status: "active" | "archived";
   version: number;
@@ -53,9 +53,9 @@ class ContextProfileDb {
     const norm = sql.replace(/\s+/g, " ").trim();
     this.calls.push(norm);
 
-    if (/FROM workspaces/.test(norm)) {
-      const [workspaceId, spaceId] = params;
-      const found = workspaceId === "workspace-1" && spaceId === "space-1";
+    if (/FROM project_folders/.test(norm)) {
+      const [projectFolderId, spaceId] = params;
+      const found = projectFolderId === "workspace-1" && spaceId === "space-1";
       return { rows: (found ? [{ id: "workspace-1" }] : []) as Row[], rowCount: found ? 1 : 0 };
     }
 
@@ -124,7 +124,7 @@ describe("context profile routes", () => {
 
     const put = await app.inject({
       method: "PUT",
-      url: "/api/v1/context/workspaces/workspace-1/routing",
+      url: "/api/v1/context/project-folders/workspace-1/routing",
       headers: { "content-type": "application/json" },
       payload: JSON.stringify({
         context_pack_json: {
@@ -149,10 +149,10 @@ describe("context profile routes", () => {
 
     expect(put.statusCode).toBe(200);
     expect(put.json()).toMatchObject({
-      workspace_id: "workspace-1",
+      project_folder_id: "workspace-1",
       profiles: [
         {
-          scope_type: "workspace",
+          scope_type: "project_folder",
           scope_id: "workspace-1",
           context_pack_json: { title: "Workspace pack" },
         },
@@ -163,7 +163,7 @@ describe("context profile routes", () => {
 
     const list = await app.inject({
       method: "GET",
-      url: "/api/v1/context/profiles?scope_type=workspace&scope_id=workspace-1",
+      url: "/api/v1/context/profiles?scope_type=project_folder&scope_id=workspace-1",
     });
     expect(list.statusCode).toBe(200);
     expect(list.json().items).toHaveLength(1);
@@ -177,11 +177,11 @@ describe("context profile routes", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/context/workspaces/workspace-1/routing",
+      url: "/api/v1/context/project-folders/workspace-1/routing",
     });
 
     expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ detail: "workspace not found" });
+    expect(res.json()).toEqual({ detail: "project_folder not found" });
   });
 
   it("rejects non-object context profile JSON with 422", async () => {
@@ -211,7 +211,7 @@ describe("context profile routes", () => {
 
     const res = await app.inject({
       method: "PUT",
-      url: "/api/v1/context/workspaces/workspace-1/routing",
+      url: "/api/v1/context/project-folders/workspace-1/routing",
       headers: { "content-type": "application/json" },
       payload: JSON.stringify({
         context_pack_json: {},

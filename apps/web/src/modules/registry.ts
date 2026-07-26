@@ -1,7 +1,7 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
 
 export type NavSection = 'capture' | 'knowledge' | 'agents' | 'dev'
-export type AppGroup   = 'daily' | 'work' | 'knowledge' | 'agents' | 'workspace' | 'system'
+export type AppGroup   = 'daily' | 'work' | 'knowledge' | 'agents' | 'system'
 export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
 
 /**
@@ -252,7 +252,7 @@ export const MODULE_REGISTRY: Module[] = [
   {
     id: 'projects', label: 'Projects', path: '/projects',
     section: 'agents', group: 'work', icon: 'folder-kanban', accent: true,
-    description: 'Goal and knowledge context. Organize objectives, artifacts, proposals, memory, and linked workspaces.',
+    description: 'Goal and knowledge context. Organize objectives, artifacts, proposals, memory, and Project Folders.',
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
@@ -420,9 +420,9 @@ export const MODULE_REGISTRY: Module[] = [
     component: lazy(() => import('./job_queue/JobQueuePage')),
   },
   {
-    id: 'agent_groups', label: 'Rooms', path: '/agent-groups',
+    id: 'rooms', label: 'Rooms', path: '/rooms',
     section: 'agents', group: 'agents', icon: 'messages-square',
-    description: 'Coordinate agent-to-agent group runs with manager oversight, timeline audit, and proposal review links.',
+    description: 'Hold project-bound, multi-party conversations and dispatch auditable agent work.',
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
@@ -449,51 +449,15 @@ export const MODULE_REGISTRY: Module[] = [
     component: lazy(() => import('./prompts/PromptLibraryPage')),
   },
 
-  // ── Workspace ─────────────────────────────────────────────────────────────
+  // ── Context ops ───────────────────────────────────────────────────────────
   {
-    id: 'workspaces', label: 'Workspaces', path: '/workspaces',
-    section: 'agents', group: 'workspace', icon: 'folder', accent: true,
-    description: 'Browse files, diffs, runs, artifacts, and workspace status.',
+    id: 'context_configuration', label: 'Context Configuration', path: '/context-configuration',
+    section: 'agents', group: 'knowledge', icon: 'route',
+    description: 'Configure Project Folder context packs, routing manifests, skill overlays, observations, and review queues.',
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
-    component: lazy(() => import('./workspaces/WorkspacesPage')),
-  },
-  {
-    id: 'context_workspace', label: 'Context Workspace', path: '/context-workspace',
-    section: 'agents', group: 'workspace', icon: 'route',
-    description: 'Configure workspace context packs, routing manifests, skill overlays, observations, and review queues.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./context_workspace/ContextWorkspacePage')),
-  },
-  {
-    id: 'workspace_console', label: 'Console', path: '/workspace-console',
-    section: 'agents', group: 'workspace', icon: 'terminal',
-    description: 'Browse project files, inspect git changes, and run agent sessions.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./workspace_console/WorkspaceConsolePage')),
-  },
-  {
-    id: 'workspace_settings', label: 'Workspace Settings', path: '/workspaces/:id',
-    section: 'agents', group: 'workspace', icon: 'folder',
-    description: 'Per-workspace settings including snapshot configuration.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: false, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./workspaces/WorkspaceSettingsPage')),
-  },
-  {
-    id: 'workspace_snapshot_settings', label: 'Snapshot Settings', path: '/workspace-snapshot-settings',
-    section: 'agents', group: 'workspace', icon: 'history',
-    description: 'Configure code-patch rollback snapshot retention per workspace.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: false, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./workspace_snapshot_settings/WorkspaceSnapshotSettingsPage')),
+    component: lazy(() => import('./context_configuration/ContextConfigurationPage')),
   },
   {
     id: 'retrieval_settings', label: 'Retrieval Settings', path: '/retrieval-settings',

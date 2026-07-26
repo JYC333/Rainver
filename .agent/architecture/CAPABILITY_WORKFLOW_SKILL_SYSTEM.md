@@ -8,7 +8,7 @@ It describes the framework, not a fully active capability executor.
 ## Position
 
 Agent-space owns capability lifecycle, memory, context, policy, proposals,
-activity, artifacts, audit, workspace governance, and sandbox governance.
+activity, artifacts, audit, Project Folder governance, and sandbox governance.
 Claude Code, Codex, Cursor, OpenCode, Gemini CLI, `model_api`, and future
 runtimes are adapters. They are not the source of truth for agent-space
 capabilities.
@@ -69,7 +69,7 @@ installed.
 ### SkillLocalOverlay
 
 `skill_local_overlays` stores local configuration for an imported
-`SkillPackage`. It is scoped by `space`, `user`, `project`, `workspace`, or
+`SkillPackage`. It is scoped by `space`, `user`, `project`, `project_folder`, or
 `agent`, and is intentionally separate from `skill_packages.normalized_json`.
 
 The overlay may store alias/display name, endpoint defaults, credential/profile
@@ -153,7 +153,7 @@ to learn another profile concept. For example, a project can save a
 
 Saved presets are scoped by `space_id` and `project_id`. They store reusable
 workflow defaults such as source mode and output artifact types. They do not
-bind an Agent, runtime profile, workspace, or one-off research question, and
+bind an Agent, runtime profile, Project Folder, or one-off research question, and
 they do not execute research by themselves.
 
 ### RuntimeSkillBinding
@@ -245,7 +245,7 @@ plugin boundary:
   review/convert proposal actions, and imported package details including
   requested permissions, package root/hash/source, instructions, diagnostics,
   and package file risk inventory.
-- The Context Workspace page consumes the Skill Library Index as a lighter
+- The Context Configuration page consumes the Skill Library Index as a lighter
   directory view. It can show active local overlays but does not collapse Open
   Skill, Capability, runtime skill, or official optional module boundaries.
 - Project Research materializes `research_report.v1` into its domain Reader.

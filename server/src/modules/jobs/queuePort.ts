@@ -17,6 +17,12 @@ export interface JobQueuePort {
     error: string,
     workerId: string | null,
   ): Promise<JobStatus | null>;
+  deferJob?(
+    jobId: string,
+    error: string,
+    workerId: string | null,
+    scheduledAt: Date,
+  ): Promise<boolean>;
   cancelJob(jobId: string, workerId: string | null): Promise<boolean>;
   touchHeartbeat(jobId: string, workerId: string | null): Promise<boolean>;
   appendJobEvent(input: {

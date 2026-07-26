@@ -21,7 +21,7 @@ export interface ProposalRow {
   space_id: string;
   created_by_user_id: string | null;
   owner_user_id: string | null;
-  workspace_id: string | null;
+  project_folder_id: string | null;
   created_by_run_id: string | null;
   proposal_type: string;
   status: string;
@@ -182,7 +182,7 @@ function proposalSelectSql(): string {
                  p.space_id,
                  p.created_by_user_id,
                  p.owner_user_id,
-                 p.workspace_id,
+                 p.project_folder_id,
                  p.created_by_run_id,
                  p.proposal_type,
                  p.status,
@@ -227,7 +227,7 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     id: row.id,
     space_id: row.space_id,
     user_id: row.created_by_user_id ?? "",
-    workspace_id: row.workspace_id,
+    project_folder_id: row.project_folder_id,
     source_session_id: stringValue(payload.source_session_id),
     source_task_id: stringValue(payload.source_task_id),
     source_run_id: sourceRunId(payload),

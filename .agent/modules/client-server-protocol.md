@@ -79,6 +79,17 @@ Accept: text/event-stream
 
 `tail=false` replays available events and closes instead of polling.
 
+Assistant Chat is a two-step use of this existing transport:
+
+1. `POST /api/v1/agents/{agentId}/chat` returns HTTP 202 with
+   `chat_turn_accepted.v1`, including the queued `run_id` and an API-rooted
+   `event_stream_url`.
+2. The client subscribes to that URL. `chat_completed` is the only Chat
+   terminal event. Its metadata contains durable identifiers, not assistant
+   content; the client reads the persisted session message after receipt.
+
+There is no Chat-specific streaming endpoint and no polling execution path.
+
 ## Planned: Real-time Event Layer
 
 **Transport:** WebSocket at `ws://host/api/v1/ws?space_id=...`

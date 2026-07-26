@@ -51,7 +51,7 @@ function fakePool(
           id: params[0],
           space_id: params[1],
           created_by_user_id: params[14],
-          workspace_id: params[12],
+          project_folder_id: params[12],
           created_by_run_id: params[2],
           proposal_type: params[3],
           status: params[4],
@@ -124,7 +124,7 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     space_id: "space-1",
     subject_user_id: null,
     owner_user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     scope_type: "user",
     namespace: "user.default",
     memory_type: "fact",
@@ -308,7 +308,7 @@ describe("Memory maintenance routes", () => {
       title: "Workspace memory",
       owner_user_id: "user-2",
       visibility: "space_shared",
-      workspace_id: "workspace-1",
+      project_folder_id: "workspace-1",
     });
     const query = vi.fn(async (sql: string) => {
       const normalized = sql.replace(/\s+/g, " ").trim();
@@ -342,7 +342,7 @@ describe("Memory maintenance routes", () => {
     });
     const withWorkspace = await app.inject({
       method: "GET",
-      url: "/api/v1/memory/access-logs?limit=20&workspace_id=workspace-1",
+      url: "/api/v1/memory/access-logs?limit=20&project_folder_id=workspace-1",
     });
 
     expect(withoutWorkspace.statusCode).toBe(200);

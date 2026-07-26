@@ -48,7 +48,7 @@ export interface InsertProposalRowInput {
   status?: string;
   createdByRunId?: string | null;
   createdByAgentId?: string | null;
-  workspaceId?: string | null;
+  projectFolderId?: string | null;
   projectId?: string | null;
   createdAt?: string;
   requiredApproverRole?: string | null;
@@ -63,7 +63,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
        id, space_id, created_by_run_id, proposal_type, status, risk_level,
        urgency, preview, title, summary, payload_json, review_deadline,
        expires_at, created_at, updated_at, reviewed_at, reviewed_by,
-       workspace_id, rationale, created_by_agent_id, created_by_user_id, owner_user_id,
+       project_folder_id, rationale, created_by_agent_id, created_by_user_id, owner_user_id,
        required_approver_role, visibility, project_id, access_level, action_idempotency_key
      ) VALUES (
        $1, $2, $3, $4, $5, $6,
@@ -72,7 +72,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
        $13, $14, $18, $15, $15,
        $19, $16, $17, $20, $21
      )
-     RETURNING id, space_id, created_by_user_id, workspace_id,
+     RETURNING id, space_id, created_by_user_id, project_folder_id,
                created_by_run_id, proposal_type, status, risk_level, urgency,
                preview, title, payload_json, rationale, visibility,
                review_deadline, expires_at, created_at, reviewed_at,
@@ -92,7 +92,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
       input.summary ?? null,
       JSON.stringify(input.payload ?? {}),
       now,
-      input.workspaceId ?? null,
+      input.projectFolderId ?? null,
       input.rationale,
       input.createdByUserId,
       input.visibility,
@@ -139,7 +139,7 @@ export interface ChildProposalDraft {
   payload: Record<string, unknown>;
   rationale: string;
   visibility?: string;
-  workspaceId?: string | null;
+  projectFolderId?: string | null;
   projectId?: string | null;
   riskLevel?: string;
 }
@@ -160,7 +160,7 @@ export async function insertChildProposalRow(
     createdByUserId: context.proposal.created_by_user_id ?? context.userId,
     visibility: draft.visibility ?? "private",
     riskLevel: draft.riskLevel ?? "medium",
-    workspaceId: draft.workspaceId ?? null,
+    projectFolderId: draft.projectFolderId ?? null,
     projectId: draft.projectId ?? null,
   });
   return row.id;

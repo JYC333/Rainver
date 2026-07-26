@@ -75,7 +75,7 @@ const PERSISTENCE_ACTIONS = new Set([
   "memory.create",
   "memory.update",
   "memory.archive",
-  "workspace.write_patch",
+  "project_folder.write_patch",
   "proposal.create",
   "proposal.apply",
   "policy.change",
@@ -311,7 +311,7 @@ const ruleAgentStatus: Rule = (ctx) => {
   return null;
 };
 
-const PROTECTED_MEMORY_SCOPES = new Set(["user", "workspace", "space", "system"]);
+const PROTECTED_MEMORY_SCOPES = new Set(["user", "project_folder", "space", "system"]);
 
 const ruleMemoryScope: Rule = (ctx) => {
   const action = str(ctx.action);
@@ -431,9 +431,9 @@ const ruleToolPermission: Rule = (ctx) => {
   return null;
 };
 
-const ruleWorkspaceWritePatch: Rule = (ctx) => {
+const ruleProjectFolderWritePatch: Rule = (ctx) => {
   const action = str(ctx.action);
-  if (action !== "workspace.write_patch") return null;
+  if (action !== "project_folder.write_patch") return null;
   if (
     ctx.proposal_id &&
     ctx.proposal_type === "code_patch" &&
@@ -441,11 +441,11 @@ const ruleWorkspaceWritePatch: Rule = (ctx) => {
   ) {
     return makeDecision({
       decision: "allow",
-      message: "workspace.write_patch via accepted code_patch proposal",
+      message: "project_folder.write_patch via accepted code_patch proposal",
       risk_level: "high",
-      reason_code: "workspace_write_patch_via_proposal",
-      policy_rule_id: "workspace_write_patch_via_proposal",
-      audit_code: "workspace_write_via_proposal",
+      reason_code: "project_folder_write_patch_via_proposal",
+      policy_rule_id: "project_folder_write_patch_via_proposal",
+      audit_code: "project_folder_write_via_proposal",
     });
   }
   return null;
@@ -768,18 +768,49 @@ const ruleRetrievalToolCall: Rule = (ctx) => {
   });
 };
 
+const REQUESTABLE_SYSTEM_ACTIONS = new Set([
+  "source.channel.propose_activation",
+  "project.source.propose_bind",
+  "source.backfill.propose_start",
+]);
+
+const ruleManagedSystemActionGrant: Rule = (ctx) => {
+  if (ctx.surface !== "managed_run_system_action_gateway") return null;
+  const actionId = str(ctx.action_id);
+  if (!REQUESTABLE_SYSTEM_ACTIONS.has(actionId)) return null;
+  if (ctx.has_action_approval_grant === true) {
+    return makeDecision({
+      decision: "allow",
+      message: `Managed system action ${pyRepr(actionId)} is authorized by a bounded Run grant.`,
+      risk_level: "medium",
+      reason_code: "managed_system_action_granted",
+      policy_rule_id: "managed_system_action_granted",
+      audit_code: "managed_system_action_granted",
+    });
+  }
+  return makeDecision({
+    decision: "deny",
+    message: `Managed system action ${pyRepr(actionId)} requires owner authorization for this Run.`,
+    risk_level: "medium",
+    reason_code: "managed_system_action_grant_required",
+    policy_rule_id: "managed_system_action_grant_required",
+    audit_code: "managed_system_action_grant_required",
+  });
+};
+
 const BUILTIN_RULES: readonly Rule[] = [
   ruleSpaceBoundary,
   ruleAgentStatus,
   ruleMemoryScope,
   ruleUseCredential,
   ruleToolPermission,
-  ruleWorkspaceWritePatch,
+  ruleProjectFolderWritePatch,
   ruleAutomation,
   ruleRuntimeExecuteRiskLevel,
   ruleRunSpawnChild,
   ruleRuntimeSkillRenderEnabled,
   ruleRetrievalToolCall,
+  ruleManagedSystemActionGrant,
 ];
 
 // ---------------------------------------------------------------------------

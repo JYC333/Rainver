@@ -6,6 +6,7 @@ import type {
   CustomSourceCredentialDTO,
   ProjectResearchInitialIntakeInput,
   ProjectResearchQuestionRefinement,
+  InquiryThread,
   MaterializedResearchStrategy,
   ResearchProviderKey,
   ResearchQueryAttempt,
@@ -32,11 +33,13 @@ import { errMsg } from '../../lib/utils'
 
 interface ResearchSetupDialogProps {
   projectId?: string
+  workflowId?: string | null
   open: boolean
   draft: ResearchSetupDraft
   busyAction: string | null
   modelProviders: ModelProviderOut[]
   canAct: boolean
+  questionThreads?: InquiryThread[]
   onOpenChange: (open: boolean) => void
   onSave: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
   onRefineQuestion: (input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }) => Promise<ProjectResearchQuestionRefinement>
@@ -162,11 +165,13 @@ export function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
 
 export function ResearchSetupDialog({
   projectId = 'project-1',
+  workflowId,
   open,
   draft: initialDraft,
   busyAction,
   modelProviders,
   canAct,
+  questionThreads = [],
   onOpenChange,
   onSave,
   onRefineQuestion,
@@ -343,7 +348,10 @@ export function ResearchSetupDialog({
    */
   function autoPersistDraft(next: ResearchSetupDraft) {
     if (!canAct) return
-    void projectResearchApi.saveInitialIntakeDraft(projectId, serializeResearchSetupDraft(next))
+    void projectResearchApi.saveInitialIntakeDraft(projectId, {
+      ...serializeResearchSetupDraft(next),
+      ...(workflowId ? { workflow_id: workflowId } : {}),
+    })
       .then(() => toast.success('Setup progress saved to the project'))
       .catch((error) => toast.error(`Setup progress could not be saved: ${errMsg(error)}`))
   }
@@ -351,6 +359,7 @@ export function ResearchSetupDialog({
   function adoptQuestion(question: string) {
     const next = {
       ...draft,
+      thread_id: '',
       research_question: question,
       question_refine_skipped: true,
       research_context_version_id: '',
@@ -459,8 +468,41 @@ export function ResearchSetupDialog({
                   <h3 className="text-sm font-semibold">1. Refine the research question</h3>
                   <p className="mt-1 text-xs text-muted-foreground">Assess answerability and FINER quality before spending the intake budget. Starting requires a passing question: reassess with your answers or adopt a suggested rewrite.</p>
                 </div>
+                <label className="space-y-1 text-xs">
+                  <span className="text-muted-foreground">Inquiry Thread</span>
+                  <Select
+                    ariaLabel="Inquiry Thread"
+                    value={draft.thread_id ?? ''}
+                    options={[
+                      { value: '', label: 'Create a Question Thread from this research question' },
+                      ...questionThreads
+                        .filter(thread => thread.kind === 'question' && thread.lifecycle_status === 'active')
+                        .map(thread => ({ value: thread.id, label: thread.statement })),
+                    ]}
+                    onChange={value => {
+                      const selected = questionThreads.find(thread => thread.id === value)
+                      setDraft(current => ({
+                        ...current,
+                        thread_id: value,
+                        ...(selected ? {
+                          research_question: selected.statement,
+                          question_refine_skipped: true,
+                          research_context_version_id: '',
+                          query_strategy_id: '',
+                        } : {}),
+                      }))
+                      if (selected) {
+                        setRefinement(null)
+                        setRefinementHistory([])
+                        setClarifyingAnswers({})
+                        setEngineResult(null)
+                        setMaterializedResult(null)
+                      }
+                    }}
+                  />
+                </label>
                 <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(10rem,1fr)_minmax(12rem,1fr)]">
-                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Candidate question</span><Input value={draft.research_question} onChange={event => { setDraft(current => ({ ...current, research_question: event.target.value, question_refine_skipped: true, research_context_version_id: '', query_strategy_id: '' })); setRefinement(null); setRefinementHistory([]); setClarifyingAnswers({}); setEngineResult(null); setMaterializedResult(null) }} /></label>
+                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Candidate question</span><Input value={draft.research_question} onChange={event => { setDraft(current => ({ ...current, thread_id: '', research_question: event.target.value, question_refine_skipped: true, research_context_version_id: '', query_strategy_id: '' })); setRefinement(null); setRefinementHistory([]); setClarifyingAnswers({}); setEngineResult(null); setMaterializedResult(null) }} /></label>
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Report depth</span><Select options={[{ value: 'quick', label: 'Quick brief' }, { value: 'full', label: 'Full report' }]} value={draft.report_depth} onChange={value => setDraft(current => ({ ...current, report_depth: value as ResearchSetupDraft['report_depth'] }))} ariaLabel="Report depth" /></label>
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Assessment provider</span><Select options={[{ value: '', label: selectableProviders.length ? 'Select provider' : 'No structured-output provider available' }, ...selectableProviders.map(provider => ({ value: provider.id, label: `${provider.name}${provider.is_default ? ' (default)' : ''}` }))]} value={draft.execution.model_provider_id} onChange={value => setDraft(current => ({ ...current, execution: { model_provider_id: value, model_name: selectableProviders.find(provider => provider.id === value)?.default_model ?? '' } }))} ariaLabel="Assessment provider" /></label>
                 </div>

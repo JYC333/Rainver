@@ -1,5 +1,6 @@
 import {
   JobHandlerRegistry,
+  JobDeferredError,
   type JobEnvelopeForHandler,
   type JobHandlerResult,
 } from "./handlerRegistry";
@@ -13,6 +14,7 @@ import {
 export type JobProcessResult =
   | { status: "idle" }
   | { status: "completed"; job_id: string }
+  | { status: "deferred"; job_id: string }
   | { status: "failed"; job_id: string; error: string };
 
 const HANDLER_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -82,6 +84,26 @@ export class JobWorker {
       return { status: "completed", job_id: job.id };
     } catch (error) {
       const message = errorMessage(error);
+      if (error instanceof JobDeferredError && this.queue.deferJob) {
+        const scheduledAt = new Date(
+          Date.now() + Math.max(100, error.retryAfterMs),
+        );
+        const deferred = await this.queue.deferJob(
+          job.id,
+          message,
+          this.workerId,
+          scheduledAt,
+        );
+        if (deferred) {
+          await this.safeAppendEvent(
+            job.id,
+            "status_change",
+            `Job deferred until ${scheduledAt.toISOString()}`,
+            { retry_after_ms: error.retryAfterMs },
+          );
+          return { status: "deferred", job_id: job.id };
+        }
+      }
       const status = await this.queue.failJob(job.id, message, this.workerId);
       await this.safeAppendEvent(job.id, "error", `Job failed: ${message}`);
       if (status === "failed") await this.alertExhausted(job, message);

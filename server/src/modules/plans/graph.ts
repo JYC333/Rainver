@@ -14,7 +14,7 @@ export const PLAN_GRAPH_LIMITS = {
   maxDepth: 3,
 } as const;
 
-export type PlanNodeKind = "leaf" | "integration" | "approval_checkpoint" | "exploratory";
+export type PlanNodeKind = "leaf" | "integration" | "approval_checkpoint" | "exploratory" | "action";
 export type PlanApprovalMode = "auto_approved" | "proposal_required";
 
 export interface PlanNodeRecord {
@@ -31,6 +31,10 @@ export interface PlanNodeRecord {
   verificationRecipeRefs: string[];
   approvalRequired: boolean;
   approvalProposalType: string | null;
+  /** Deterministic-handler dispatch key for `kind: "action"` nodes (`metadata_json.action_key`); null otherwise. */
+  actionKey: string | null;
+  /** Sub-classification for `kind: "approval_checkpoint"` nodes (`metadata_json.checkpoint_kind`), e.g. "screening_review", "idea_review". */
+  checkpointKind: string | null;
   contractJson: Record<string, unknown>;
   metadataJson: Record<string, unknown>;
 }
@@ -99,6 +103,12 @@ export async function materializePlanGraph(input: unknown): Promise<Materialized
       throw new PlanGraphError(
         `Plan leaf '${node.key}' has no capability, prompt asset, or agent binding`,
         "leaf_not_executable",
+      );
+    }
+    if (node.kind === "action" && !node.actionKey) {
+      throw new PlanGraphError(
+        `Plan node '${node.key}' of kind 'action' has no action_key`,
+        "action_not_executable",
       );
     }
   }
@@ -187,6 +197,8 @@ export function planNodeContentHash(node: PlanNodeRecord): string {
     verification_recipe_refs: node.verificationRecipeRefs,
     approval_required: node.approvalRequired,
     approval_proposal_type: node.approvalProposalType,
+    action_key: node.actionKey,
+    checkpoint_kind: node.checkpointKind,
     contract_json: node.contractJson,
     metadata_json: node.metadataJson,
   });
@@ -215,6 +227,8 @@ function toPlanNode(node: WorkflowNode): PlanNodeRecord {
     verificationRecipeRefs: [...node.verification_recipe_refs],
     approvalRequired: node.approval_checkpoint.required,
     approvalProposalType: node.approval_checkpoint.proposal_type ?? null,
+    actionKey: stringValue(metadataJson.action_key),
+    checkpointKind: stringValue(metadataJson.checkpoint_kind),
     contractJson,
     metadataJson,
   };
@@ -260,7 +274,7 @@ function hasPermissionBypass(node: PlanNodeRecord): boolean {
 }
 
 function isNodeKind(value: string | null): value is PlanNodeKind {
-  return value === "leaf" || value === "integration" || value === "approval_checkpoint" || value === "exploratory";
+  return value === "leaf" || value === "integration" || value === "approval_checkpoint" || value === "exploratory" || value === "action";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -305,7 +319,7 @@ function aggregatePlanCost(graph: MaterializedPlanGraph, inheritedSources: RunBu
   return Math.max(localTotal, globalCost);
 }
 
-function budgetSourcesFromNode(node: PlanNodeRecord): RunBudgetSource[] {
+export function budgetSourcesFromNode(node: PlanNodeRecord): RunBudgetSource[] {
   return Array.isArray(node.contractJson.budget_sources)
     ? node.contractJson.budget_sources.filter((value): value is RunBudgetSource => {
         const source = record(record(value).source);

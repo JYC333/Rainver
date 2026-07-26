@@ -1,180 +1,146 @@
-# Hardening Plan — Blind-Spot Remediation, Priority-Ordered
+# Hardening Remaining-Work Plan
 
-Date: 2026-07-11
-Status: P0 complete; P1/P2 scheduled as described below
-Source: repo-wide blind-spot pass (2026-07-11) — engineering inventory +
-ops/security sweep + prior execution/evolution audits.
-Relationship: companion to
-[orchestration-and-self-evolution-plan.md](orchestration-and-self-evolution-plan.md)
-(the "main plan"). This document owns the remediation ordering; items marked
-FOLD-IN are implemented inside main-plan tracks and only tracked here.
+Date: 2026-07-24
+Status: active small backlog and trigger register
 
-Verified baseline facts this plan reacts to: ~300k LOC across server/web/
-protocol, 177 tables, 534 routes, 41 frontend modules; zero CI / lint /
-coverage / E2E; egress control is proxy-env only; deployer container mounts
-docker.sock + repo rw; master key ships inside backup archives on the same
-disk; no metrics/alerting, static /health; append-only tables have no
-pruning; frontend uses a hand-written 7.5k-line API contract copy; no cost
-caps. Commits are owner-squashed by design (not a process gap).
+## Purpose
 
----
+Track cross-cutting hardening that is neither owned by the active Project
+cutover nor by the orchestration/evolution backlog. Completed P0 history is
+removed; implementation truth lives in current architecture and code.
 
-## P0 — Do BEFORE starting main-plan implementation (~1 week total)
+## Immediate prerequisite
 
-These either protect all subsequent work or close doors that must not stay
-open while code churn increases.
+### Toolchain pinning and compatibility
 
-**P0-1. Minimal CI.** (~0.5–1 day)
-GitHub Actions (or equivalent): on push/PR to master run protocol build,
-`tsc` for server+web, `vitest run` for server (testcontainers Postgres) and
-web. No lint/coverage yet — just make "master is green" a mechanism instead
-of a habit. This is the single highest-leverage item: the main plan will
-generate months of large diffs and currently nothing guards them.
+Complete 2026-07-24. Complete before the broad Project schema/protocol/frontend rename:
 
-**P0-2. Deployer authorization audit + invariants.** (~1 day)
-The deployer container holds docker.sock + repo rw = host-equivalent power.
-Verify the actual trigger chain in code (who/what can invoke a deploy; is it
-really host-deployer-only + proposal-gated as documented). Write the result
-into `BOUNDARIES.md` as explicit invariants: (a) enumerated deployer
-triggers, (b) nothing on the evolution/code_patch/capability path may reach
-deployer input without human approval, (c) **the instance must never be
-directly exposed to the public internet** (no TLS/rate-limit/CSRF-token
-hardening exists — L2 below records the trigger to revisit). Add a test if
-the trigger chain is testable.
+- pinned the supported Node version through `engines` (`>=24 <25` in all
+  three `package.json`) and root `.nvmrc` (`24.18.0`), matching the
+  `node:24.18.0-slim` base image in `server/Dockerfile` and
+  `apps/web/Dockerfile` and CI's `node-version-file: .nvmrc`;
+  `server/package.json` engines requirement was originally set to the
+  then-current `node:22.22.2-slim` pin and later moved to 24.18.0 LTS in the
+  same change, including a rebuild/retest of the native `node-pty` addon;
+- aligned React and `@types/react` major versions by upgrading `react` and
+  `react-dom` in `apps/web` from `^18.3.1` to `^19.2.8` (the previously
+  installed `@types/react`/`@types/react-dom` were already `^19.x`, so the
+  runtime was the outlier, not the types); fixed three pre-existing
+  test-only async races (`finance-page.test.tsx`,
+  `InquiryWorkspacePage.test.tsx`) that React 19's scheduling exposed;
+- standardized on npm as the documented package-manager/lockfile policy
+  (matching the `package-lock.json` files, `npm ci` in all Dockerfiles, and
+  CI) and corrected the `packageManager` field in all three `package.json`
+  from a stale, never-actually-used `pnpm@10.32.1` declaration to the
+  `npm@11.16.0` bundled with the pinned Node image; added
+  `engine-strict=true` via `.npmrc` in each package so
+  a Node-version mismatch fails the install instead of only warning;
+- confirmed the supported TypeScript version policy is already consistent:
+  `^7.0.0` (7.0.2 installed) across `server`, `apps/web`, and
+  `packages/protocol`;
+- CI now enforces the pinned Node version through `actions/setup-node`
+  reading `.nvmrc` directly (`node-version-file: .nvmrc`) instead of a
+  second hardcoded value that could drift from it.
 
-**P0-3. Backup integrity fixes.** (~1 day)
-(a) `BACKUP_DATABASE_URL` unset currently skips the DB dump silently
-(warning in manifest only) — make it fail loud. (b) Separate the credential
-master key from the data archive: exclude `secrets/` from the default
-bundle, back it up via a separate, explicitly-handled path, and document a
-manual encrypted offsite copy procedure for both. (c) Note in ops docs that
-current backups protect against deletion, not host loss, until offsite
-exists.
+This was small risk reduction, not a product feature.
 
-**P0-4. Minimal failure alerting.** (~1–2 days)
-(a) `/health` checks DB connectivity instead of returning static ok.
-(b) Wire job exhaustion (`max_attempts` reached), automation fire failure,
-and scheduler task exceptions into the existing notifications module
-(currently user-facing only, never connected to failures). A system meant to
-run unattended overnight must be able to say "I am broken".
+## Routed to active plans
 
-**P0-D. Direction decisions (no code, ~1 hour of owner honesty).**
-(a) **Primary product identity**: personal memory OS vs agent orchestration
-platform vs self-evolving system — pick the one the next two quarters serve;
-the other two become supporting casts. (b) **Dogfooding checkpoint**: a
-falsifiable criterion (e.g. 30 consecutive days of real daily use, ≥1
-friction-driven fix per week) reviewed monthly, so platform building cannot
-indefinitely self-justify. (c) **CLI-first vs managed-API-first** stance,
-including an explicit look at vendor CLI ToS for programmatic driving —
-decides which path is primary and which is fallback when a vendor breaks or
-forbids automation.
+These items are not duplicated here:
 
-**Decision (accepted 2026-07-11):** the primary product is a server-authoritative
-Agent Workbench for individuals, households, and small teams, carrying substantial daily
-research, writing, project, automation, knowledge, and code work. Memory/context are core
-substrate; orchestration is an execution capability; self-evolution is supporting cast.
-Dogfooding uses the falsifiable 30-day checkpoint in ADR 0010. Runtime posture keeps CLI
-subscriptions and managed APIs as dual primary resources. OpenCode joins Claude Code and
-Codex as the third optional CLI runtime; it is not a universal runtime and receives no global
-Router preference. Claude Pro/Max stays on native Claude Code while OpenCode's provider
-documentation records that Anthropic prohibits routing that subscription through OpenCode.
-See ADR 0010 for the vendor terms checkpoint and full consequences.
+- Project/Folder/Profile/Area cleanup is complete; usage-triggered follow-ups
+  live in the
+  [Project / Inquiry defer register](../tasks/project-inquiry-defer-register.md);
+- completed structured runtime I/O, runtime convergence, and governed CLI
+  tools are documented in
+  [Runs and Outputs](../architecture/RUNS_AND_OUTPUTS.md);
+- completed UUID-selector and product-acceptance implementation is documented
+  in [Product Acceptance](../architecture/PRODUCT_ACCEPTANCE.md);
+- backoff, egress, scheduler catch-up, and unattended failure alerting →
+  [unattended-execution-hardening-plan.md](unattended-execution-hardening-plan.md);
+- orchestration/evolution work →
+  [orchestration-and-self-evolution-plan.md](orchestration-and-self-evolution-plan.md).
 
----
+## Scheduled but not blocking
 
-## P1 — FOLD-IN: implemented inside main-plan tracks
+### Retention and pruning design
 
-Tracked here, built there. Requires edits already reflected in the main plan
-or to be made when the track starts.
+Append-only Run/Event/Evolution/usage data and Artifact storage need explicit
+retention semantics. Trigger when the database reaches a few GB, backups exceed
+15 minutes, or real Run logs make growth materially visible.
 
-**P1-1. Egress control — elevate within C3.** The open exfiltration chain
-(untrusted ingested content → agent context → CLI with unrestricted network)
-is a governance-model gap, not a nice-to-have sandbox feature: the policy
-system guards durable writes but not outbound reads/comms. Until real
-enforcement (network namespace / proxy-enforced) lands in C3: document the
-gap in `SECURITY_AND_ACCESS_BOUNDARIES.md`, and prefer `http_proxy` network
-profiles for runs whose context includes low-trust sources. C3 acceptance
-must include: high-risk runs get deny-by-default egress.
+The design must preserve audit obligations, Proposal/Artifact provenance, and
+per-type policy; it cannot be a generic age-based delete job.
 
-**P1-2. Budget/cost caps → A1 + A3.** Contract snapshot carries budget
-(A1); enforcement across attempts (A3). Quick win allowed earlier: a daily
-token-spend threshold notification via P0-4's alerting (usage data already
-exists; only the alert is missing).
+### Frontend contract generation
 
-**P1-3. Approval value-density metrics → D1.** Add reviewer-behavior
-signals (per-proposal-type approve rate, median review latency) to the D1
-emitter set. If a proposal type is ~always approved instantly, it is not a
-control — automate it or redesign it. This instruments the rubber-stamping
-failure mode the whole governance story depends on avoiding.
+Before the Project clean cutover starts broad protocol/frontend edits, run a
+small feasibility gate:
 
-**P1-4. Scheduler catch-up semantics → B3.** Missed schedules silently
-collapse/skip and failed fires still advance `next_run_at`. When automations
-move to workflow targets (B3), add an explicit per-automation missed-run
-policy (`skip` | `fire_once` | `backfill_n`) and surface fire failures via
-P0-4 alerting. Until then the current behavior is documented, not fixed.
+- inventory whether the affected Project/Folder/Runtime DTOs all have protocol
+  schemas;
+- prove one representative generated/shared type path;
+- estimate the uncovered client-only surface.
 
----
+If the affected surface is ready, complete generation/sharing before the broad
+rename so the cutover does not hand-edit two authorities. If it is not ready,
+record the exact coverage gap and proceed with matching protocol + frontend
+edits and drift tests. Do not turn the feasibility gate into a speculative
+whole-client rewrite.
 
-## P2 — Scheduled, not blocking (slot alongside main-plan phases)
+After the cutover, full client generation remains triggered by a second real
+contract-drift bug or demonstrated maintenance cost.
 
-**P2-1. Retention & pruning design.** Append-only tables (run_events,
-run_steps, evolution_signals, token_usage_events, activity, …) and artifact
-storage grow unbounded; backups compound the cost daily. Needs a real
-design (audit semantics, per-table policy, artifact GC) — schedule as its
-own slice after A-track lands (RunAttempt changes evidence shape; design
-retention after, not before). Watch trigger: DB > a few GB or backup > 15
-min.
+**Gate run 2026-07-24 — decision: not ready, proceed with matching manual
+edits.**
 
-**P2-2. Frontend contract generation.** Replace the hand-maintained
-`types/api.ts` (5.2k lines) + `client.ts` (2.3k lines) with types generated
-from `packages/protocol` zod schemas. Structural fix for permanent drift
-risk; natural slot = start of D4 (frontend consolidation), or earlier if
-contract drift causes a second real bug. Until then: no new hand-written
-type additions without a matching protocol schema.
+- `packages/protocol/src/schemas.ts` has only a minimal `WorkspaceRefSchema`
+  (`{id, name}` pointer). There is no protocol schema for the full Workspace,
+  `working_dirs`, `project_workspaces`, Project Profile, or any other DTO the
+  clean-cutover plan renames.
+- The representative shared-type path is proven and works: 22
+  `apps/web/src` files already import real contracts from
+  `@agent-space/protocol` (e.g. `GraphPage.tsx`, `UsagePage.tsx`,
+  `PublicationsPage.tsx`), and `packages/protocol` typechecks/builds/tests
+  clean standalone. This path is hand-maintained (no codegen tool is wired
+  into the repo), not generated, but it is real and functioning.
+- The uncovered client-only surface is large: `apps/web/src/types/api.ts`
+  alone hand-declares 85+ Workspace/Project/Folder/Runtime/Profile
+  interfaces and type aliases (`Workspace`, `WorkspaceCreateBody`,
+  `ProjectProfileDescriptor`, `AgentRuntimeProfileOut`,
+  `ProjectWorkspaceLinkOut`, etc.) with no protocol counterpart.
+- No frontend/protocol contract-drift test exists yet anywhere in the repo.
+- Building a generation pipeline for this surface from scratch is new
+  tooling, not a small gate — out of scope here. The Project model clean
+  cutover must hand-edit `packages/protocol` and `apps/web/src/types/api.ts`
+  in the same change per renamed entity, and add drift coverage (a test that
+  fails if a protocol DTO and its `apps/web` counterpart diverge) for the
+  entities it touches, rather than assuming generation will do it.
 
-**P2-3. Toolchain de-risking.** Pin node via `engines` + `.nvmrc`; fix
-react 18 / @types/react 19 mismatch; either adopt a real pnpm workspace
-(one lockfile) or remove the `packageManager` claim; write down a TS-version
-policy (currently `^7.0.0` native-preview — decide whether to ride the
-preview or pin). Half a day, do it right after P0-1 so CI locks it in.
+### Operations runbook consolidation
 
-**P2-4. Ops runbook consolidation.** One page: what runs where, how to
-tell it's healthy (post P0-4), how to restore (verify-restore exists),
-what to do on host loss (post P0-3). Mostly assembling existing pieces.
+After unattended hardening, consolidate one operator page covering:
 
----
+- service placement and health;
+- backup/restore and host-loss recovery;
+- runtime-tool and credential recovery;
+- retry/alert/scheduler diagnosis;
+- safe stop and escalation boundaries.
 
-## P3 — Watch items: record trigger, do nothing now
+## Watch items
 
-| Item | Trigger to act |
+| Item | Trigger |
 |---|---|
-| E2E/browser tests (41-module PWA + Tauri, zero today) | Second real user, OR a frontend regression that loses/corrupts data |
-| TLS, rate limiting, CSRF tokens | Any step toward public/internet exposure (currently forbidden by P0-2 invariant) |
-| Multi-user/space-sharing regression pass | A second member actually joins a space |
-| Offline queue (docs claim it; frontend has none) | Real mobile/offline usage need; until then fix the doc claim (main-plan Phase 0) |
-| Large-file splits (knowledge/sources repos ~2.5k lines; web api.ts/client.ts) | Next substantive edit touching those files (per CLAUDE.md split rule) |
-| Master-key rotation | Any suspected key exposure, or before any multi-instance future |
-| commercialization posture | Explicitly settled (personal-first, no enterprise prebuild) — revisit only on a real external-user decision |
+| Broader browser E2E suite | Second real user, or a frontend regression that loses/corrupts data |
+| TLS/rate limiting/CSRF hardening | Any move toward public internet exposure, currently forbidden |
+| Multi-user sharing regression expansion | Second member joins a real shared Space |
+| Offline queue | Real mobile/offline usage; until then docs must not claim unsupported behavior |
+| Large-file/module splits | Next substantive edit to the affected oversized file |
+| Master-key rotation | Suspected exposure or a future multi-instance requirement |
+| Commercialization posture | A real external-user/product decision |
 
----
+## Completion/retirement
 
-## Recommendation on ordering vs the main plan
-
-**Do NOT finish this whole document before starting the main plan.** Run:
-
-1. **P0 first — one focused week** (P0-1..4 + the P0-D decisions). These
-   are cheap, they protect everything after, and two of them (CI, deployer
-   invariants) get *more* expensive the longer the main plan runs without
-   them.
-2. **Then start the main plan** (Phase 0 → A1+B1+C1+D1). P1 items ride
-   inside its tracks — they are cheaper there than as standalone work.
-3. **P2 slots opportunistically** (P2-3 immediately after CI; P2-1 after
-   A-track; P2-2 at D4). **P3 waits for triggers.**
-
-Rationale: most hardening items are either force-multipliers for the main
-plan (CI, alerting) or already coupled to its tracks (egress→C3,
-budget→A1/A3, scheduler→B3, metrics→D1). Deferring the main plan by 1–2
-months to "finish hardening" would mean doing P1 items twice and losing the
-forcing function that the main plan's phases provide. The only
-non-negotiable sequencing is: **no main-plan implementation commits before
-P0-1 (CI) exists.**
+Remove an item when its behavior is implemented and recorded in current-state
+architecture. Retire this file when no scheduled or watch-triggered hardening
+remains.

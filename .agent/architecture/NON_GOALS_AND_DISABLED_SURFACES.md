@@ -21,7 +21,7 @@
 | Public sharing | Not implemented |
 | Public SaaS / multi-tenant | Not in scope |
 | API key persistence UI | Feature-gated (501 in production) |
-| Workspace console persisted sessions | Feature-gated (501 in production) |
+| Files & Code interactive session execution | Removed — never-implemented runtime-status/session create/detail/run/stop stub; Files & Code stays read-only (tree, file, git status, git diff) |
 | Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` design |
 | Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` contract |
 | File mutation without approved proposal + PathPolicy | Blocked by code patch apply |

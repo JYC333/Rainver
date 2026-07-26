@@ -1,69 +1,68 @@
 # Current Focus
 
-The system is ready for personal + household/small-team dogfooding as an Agent Workbench.
-The next work should validate real substantial work loops: capture/trigger → context → agent
-execution → artifact/proposal/task → human or shared-space handoff → continued work. Fix only
-concrete friction discovered during use.
+CLI conversation and Room delivery is complete: Project Chat and the hardcoded
+default-Assistant chat entry are gone, replaced by `/rooms` — see
+[modules/rooms.md](../modules/rooms.md), [modules/agents.md](../modules/agents.md),
+and ADRs 0002/0004/0007/0008 for the delivered state. The current work is
+controlled acceptance execution before unattended hardening and dogfooding.
 
-## Dogfooding Focus
+## Active delivery sequence
 
-The accepted product/runtime/dogfooding direction is ADR 0010. The rolling checkpoint is:
-30 consecutive real-use days, at least two human members active across the period, three
-substantial outcomes and one shared-space workflow per week, and at least one friction-driven
-fix per week, reviewed monthly.
+### 1 — Controlled product acceptance
 
-Runtime target: implement the planned OpenCode adapter as the third CLI runtime after C1.
-Keep Claude Code, Codex CLI, OpenCode, and managed API adapters as independent peer paths;
-ADR 0010 defines no OpenCode-first Router preference.
+Follow the durable [product acceptance procedure](../architecture/PRODUCT_ACCEPTANCE.md):
 
-The server is now the only app backend. Current ownership and deferred surfaces
-live in [../architecture/SERVER_OWNERSHIP.md](../architecture/SERVER_OWNERSHIP.md).
+- rerun the deterministic gate at the acceptance commit;
+- execute the ten-section local manual script and record product-visible
+  evidence, covering the Room and CLI conversation surface;
+- run one controlled real Managed API, Source, and OpenCode smoke with
+  dedicated data and short-lived credentials;
+- fix any observed correctness or recovery defect before proceeding.
 
-New product work targets the server. No-prod posture: rollback is
-fix-forward / `git revert`.
+### 2 — Unattended hardening
 
-**Current focus:** dogfood the backend and run a post-cutover audit against
-current code facts. Keep route/module docs, frontend contracts, and deferred
-fail-closed surfaces aligned with the TypeScript server. Migrations are explicit
-ops commands, not automatic service startup behavior.
+After controlled acceptance passes, trigger
+[../plans/unattended-execution-hardening-plan.md](../plans/unattended-execution-hardening-plan.md)
+for backoff/jitter, managed-domain retry ownership, egress, scheduler catch-up,
+and unattended alert/recovery behavior.
 
-Do not reopen a broad migration refactor or create competing temporary reports
-for inventory/gap analysis. Durable facts belong in `.agent/architecture/` and
-module docs; one-off findings under `.agent/reports/` should be deleted after
-consolidation.
+The 30-day Agent Workbench dogfooding checkpoint in ADR 0010 begins only after
+the unattended completion gate passes.
 
-## Priorities
+## Working rules
 
-- Use the system with real research, writing, project, automation, and code work that produces
-  durable outcomes for personal and shared spaces.
-- Exercise private-versus-shared context and real household/small-team handoffs from the start.
-- Collect real friction from the product loop and fix concrete blockers as discovered.
-- Keep `server/src/gateway/routeRegistry.ts`, `server/src/modules/`, and
-  `.agent/architecture/MODULES.md` synchronized.
-- Frontend/backend type contract alignment (memory proposals, workspace fields, space type).
-- Home command center improvements should consume server aggregate read models
-  (`/api/v1/me/*`, `/api/v1/home/summary`) instead of fanning out across every
-  domain API.
-- Keep explicit deferred/fail-closed surfaces visible in source docs so they are
-  not misread as cutover failures.
-- Source cleanup: remove or update stale Python/control-plane/backend-migration
-  references when found, without big-bang rewrites.
-- Artifact archive/delete API.
-- Activity archive/delete.
-- Workspace stale recovery UI.
+- Code and schema remain current-state truth while the plans describe target
+  state.
+- Update the relevant architecture document in the same change that lands a
+  behavior.
+- Do not introduce compatibility aliases or dual authorities.
+- There is no historical data to preserve. Schema changes are edited to their
+  final shape in `server/src/db/schema/` and folded into the canonical
+  `server/migrations/0001_baseline.sql`; do not add incremental migration files
+  or compatibility shims for superseded shapes.
+- Internal UUIDs remain valid storage/transport identifiers; users never type
+  them in normal product flows.
+- Runtime/Provider tests use deterministic fakes in canonical suites. Real
+  credentials belong only in explicit integration smoke.
+- Database-backed behavior uses the shared real-PostgreSQL fixture.
+- Implementation functions and tests use domain names, never `phase1`,
+  `phase2`, `phaseX`, or similar migration-stage names.
+- Do not store runtime data, user folders, sandboxes, secrets, databases, or
+  logs in the source repository.
 
-## Non-Goals (Today)
+## Explicitly deferred
 
-- Reintroducing singular `/tasks/{id}/run` routes or product Task = Job shortcuts
-- Synthetic runtime fallbacks in production execution paths
-- Broad automated intake/connectors before Intake/Evidence provenance and proposal boundaries are stable
-- Self-evolution before evaluation gates and deployment job persistence exist
+Usage-triggered Project/Inquiry defers live in the
+[Project / Inquiry defer register](project-inquiry-defer-register.md).
+Orchestration/evolution defers live in
+[../plans/orchestration-and-self-evolution-plan.md](../plans/orchestration-and-self-evolution-plan.md).
+General hardening/watch items live in
+[../plans/hardening-blind-spot-remediation-plan.md](../plans/hardening-blind-spot-remediation-plan.md).
 
-## Quick Links
+Do not pull a deferred item into the active sequence without its recorded
+trigger or a newly observed correctness/security requirement.
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../BOUNDARIES.md](../BOUNDARIES.md)
-- [../COMMANDS.md](../COMMANDS.md)
-- [../architecture/FRONTEND_INFORMATION_ARCHITECTURE.md](../architecture/FRONTEND_INFORMATION_ARCHITECTURE.md)
-- [../architecture/NON_GOALS_AND_DISABLED_SURFACES.md](../architecture/NON_GOALS_AND_DISABLED_SURFACES.md)
-- [../architecture/ROADMAP_AND_FUTURE_RISKS.md](../architecture/ROADMAP_AND_FUTURE_RISKS.md)
+A3.1 (runtime sessions and checkpoint/resume) is delivered. CLI conversation
+and Room turns resume a vendor runtime session per the measured behavior of
+each runtime; see the "Runtime session" section of ADR 0007 and
+[modules/rooms.md](../modules/rooms.md).

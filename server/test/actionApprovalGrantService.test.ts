@@ -6,7 +6,7 @@ describe("ActionApprovalGrantService", () => {
   it("rejects never-grantable actions before inserting", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [{ one: 1 }], rowCount: 1 });
     const service = new ActionApprovalGrantService({ query } as Queryable);
-    await expect(service.create({ spaceId: "space-1", userId: "owner-1" }, {
+    await expect(service.create({ databaseUrl: "" }, { spaceId: "space-1", userId: "owner-1" }, {
       agent_id: "agent-1", action_id: "policy.action_grant.create",
     })).rejects.toMatchObject({ statusCode: 422 });
     expect(query).toHaveBeenCalledTimes(1);

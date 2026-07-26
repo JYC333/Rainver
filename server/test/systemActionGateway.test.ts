@@ -40,4 +40,32 @@ describe("SystemActionGateway", () => {
     expect(onFailed).toHaveBeenCalledWith(expect.objectContaining({id:"retrieval.search"}),expect.objectContaining({code:"system_action_policy_denied"}),context);
     expect(onFailed.mock.calls[0]?.[1]).toMatchObject({policy_decision_record_id:"decision-denied"});
   });
+
+  it("distinguishes an approval pause from a policy denial", async () => {
+    const execute = vi.fn();
+    const gateway = new SystemActionGateway(
+      new Map([["retrieval.search" as SystemActionId, execute]]),
+      async () => ({
+        allowed: false,
+        reason: "Review required",
+        policy_decision_record_id: "decision-review",
+        details: { status: "require_approval", error_code: "policy_requires_approval" },
+      }),
+    );
+
+    await expect(gateway.dispatch("retrieval.search", {}, context)).rejects.toMatchObject({
+      code: "system_action_approval_required",
+      policy_decision_record_id: "decision-review",
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("requires the canonical tool-call id for side-effecting actions", async () => {
+    const gateway = new SystemActionGateway(new Map(), async () => ({ allowed: true }));
+    await expect(gateway.dispatch(
+      "source.channel.propose_activation",
+      { provider_key: "rss", name: "Feed", query: {}, endpoint_url: "https://example.test/feed" },
+      context,
+    )).rejects.toMatchObject({ code: "system_action_idempotency_required" });
+  });
 });

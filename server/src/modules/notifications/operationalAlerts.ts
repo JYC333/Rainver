@@ -11,6 +11,8 @@ export interface OperationalAlertInput {
   dedupeKey: string;
   spaceId: string;
   userId?: string | null;
+  projectId?: string | null;
+  sourceRunId?: string | null;
   payload?: Record<string, unknown>;
 }
 
@@ -35,17 +37,19 @@ export class OperationalAlertService implements OperationalAlertPort {
     });
     await this.db.query(
       `INSERT INTO activity_records (
-         id, space_id, user_id, activity_type, title, content, payload_json,
+         id, space_id, user_id, project_id, source_run_id, activity_type, title, content, payload_json,
          occurred_at, created_at, status, updated_at, source_kind, source_trust,
          visibility, owner_user_id, aggregate_key
        ) VALUES (
-         $1, $2, $3, 'operational_alert', $4, $5, $6::jsonb,
-         $7::timestamptz, $7::timestamptz, 'raw', $7::timestamptz,
-         'system_event', 'internal_system', $8, $3, $9
+         $1, $2, $3, $4, $5, 'operational_alert', $6, $7, $8::jsonb,
+         $9::timestamptz, $9::timestamptz, 'raw', $9::timestamptz,
+         'system_event', 'internal_system', $10, $3, $11
        )
        ON CONFLICT (space_id, aggregate_key) WHERE aggregate_key IS NOT NULL
        DO UPDATE SET user_id = EXCLUDED.user_id,
                      owner_user_id = EXCLUDED.owner_user_id,
+                     project_id = EXCLUDED.project_id,
+                     source_run_id = EXCLUDED.source_run_id,
                      visibility = EXCLUDED.visibility,
                      title = EXCLUDED.title,
                      content = EXCLUDED.content,
@@ -59,6 +63,8 @@ export class OperationalAlertService implements OperationalAlertPort {
         randomUUID(),
         input.spaceId,
         input.userId ?? null,
+        input.projectId ?? null,
+        input.sourceRunId ?? null,
         input.title.slice(0, 512),
         redactEvidenceText(input.message),
         JSON.stringify(payload),

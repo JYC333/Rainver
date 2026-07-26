@@ -30,12 +30,12 @@ artifact's production context remains unchanged.
   - `GET /api/v1/artifacts/{artifact_id}`
   - `GET /api/v1/artifacts/{artifact_id}/export`
 - Artifact reads are scoped by space identity and artifact visibility.
-- workspace-scoped `space_shared` artifacts require `artifacts.workspace_id`. Non-owner
-  list/read/export access must provide matching workspace context and pass the
-  Project-inherited workspace ACL: personal-space workspaces are readable inside
-  the personal space; shared-space workspaces are readable through linked
+- Project-Folder-scoped `space_shared` artifacts require `artifacts.project_folder_id`. Non-owner
+  list/read/export access must provide matching Project Folder context and pass the
+  Project-inherited Project Folder ACL: personal-space Project Folders are readable inside
+  the personal space; shared-space Project Folders are readable through linked
   Projects where the user is the project owner or an active project member.
-  Workspaces with no readable linked Project fail closed for non-owner reads.
+  Project Folders with no readable linked Project fail closed for non-owner reads.
 - Export returns inline artifact content when present, or a file download from
   managed artifact storage when `storage_path` is present.
 - Artifact Detail exposes identity, scope, permissions, producing Run, storage

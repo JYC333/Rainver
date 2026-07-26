@@ -3,7 +3,7 @@
  *
  * Owns the cumulative budget/dedup loop and compact context preamble rendering.
  *
- * Per-source candidate reads (memory/knowledge/source/activity/workspace/project)
+ * Per-source candidate reads (memory/knowledge/source/activity/project_folder/project)
  * are produced by the native `ChatContextCandidateCollector`, already excerpted,
  * scored, and token-counted in priority order. This module applies only the
  * cumulative `max_items` / `max_tokens` / dedup selection and builds the audit
@@ -348,9 +348,18 @@ export function renderContextPreamble(
   return lines.join("\n");
 }
 
-/** Compose the runtime prompt: preamble + blank line + message, or just the message. */
-export function composeChatPrompt(preamble: string, message: string): string {
-  return preamble ? `${preamble}\n\n${message}` : message;
+/**
+ * Compose the fallback runtime prompt with the conversation first so vendor
+ * prompt caches can reuse the longest stable prefix. Retrieved context changes
+ * per turn and therefore belongs in the dynamic tail.
+ */
+export function composeChatPrompt(
+  conversation: string,
+  contextPreamble: string,
+): string {
+  return contextPreamble
+    ? `${conversation}\n\n${contextPreamble}`
+    : conversation;
 }
 
 function positiveInt(value: number | null | undefined, fallback: number): number {

@@ -17,12 +17,12 @@ Define the structural layout pattern for the product UI. The layout should be mo
 │  Panel     │  Panel                         │  Panel             │
 │            │                                │                    │
 │  Spaces    │  Main content:                 │  Assistant / chat  │
-│  Workspaces│  - Knowledge page              │  Context preview   │
-│  Nav tree  │  - Card review                 │  Memory summary    │
-│  File tree │  - File viewer                 │  Proposal summary  │
-│  Activity  │  - Diff viewer                 │  Metadata / actions│
-│  filters   │  - Proposal detail             │                    │
-│            │  - Agent run detail            │                    │
+│  Project   │  - Knowledge page              │  Context preview   │
+│  Folders   │  - Card review                 │  Memory summary    │
+│  Nav tree  │  - File viewer                 │  Proposal summary  │
+│  File tree │  - Diff viewer                 │  Metadata / actions│
+│  Activity  │  - Proposal detail             │                    │
+│  filters   │  - Agent run detail            │                    │
 │            │  - Activity detail             │                    │
 ├────────────┴────────────────────────────────┴────────────────────┤
 │  Bottom Panel: logs | validation output | runtime status         │
@@ -40,15 +40,15 @@ Define the structural layout pattern for the product UI. The layout should be mo
 | `MemoryCard` | Extends EntityCard for Memory items |
 | `ProposalCard` | Extends EntityCard for Proposals, with approve/reject |
 | `ServerStatusCard` | Runtime health indicator |
-| `WorkspaceFileTree` | File tree for workspace console |
+| `ProjectFolderFileTree` | File tree for Files & Code |
 | `DiffViewer` | Unified/split diff (git patch or inline) |
 | `ReviewCard` | Spaced repetition card with Again/Hard/Good/Easy |
 
 ## Panel Responsibilities
 
 **Left panel:** navigation, context selection, filtering
-- Space and workspace switcher (if not in shell)
-- File tree (workspace console)
+- Space and Project Folder switcher (if not in shell)
+- File tree (Files & Code)
 - Activity type / status filters
 - Memory scope / type filters
 

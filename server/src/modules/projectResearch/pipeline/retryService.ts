@@ -1,8 +1,8 @@
 import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common";
 import { HttpError } from "../../routeUtils/common";
 import { assertProjectWriter } from "../../projects/access";
-import type { ResearchOperationState, ResearchStage, ResearchTransitionResult } from "../stateMachine";
-import { researchStage, researchState } from "../stateMachine";
+import type { ResearchOperationState, ResearchStage, ResearchMutationResult } from "../operationProjection";
+import { researchStage, researchState } from "../operationProjection";
 
 export interface RetryOperationRow {
   id: string;
@@ -40,8 +40,8 @@ export interface ProjectResearchRetryPorts<TRead, TSetup> {
   enqueueReconcile(spaceId: string, userId: string, operationId: string, reason: string): Promise<void>;
   failOperation(operation: RetryOperationRow, message: string): Promise<void>;
   readOperation(identity: SpaceUserIdentity, projectId: string, operationId: string): Promise<TRead>;
-  queueSynthesis(input: QueueSynthesisInput): Promise<ResearchTransitionResult>;
-  queueComparison(input: QueueComparisonInput): Promise<ResearchTransitionResult>;
+  queueSynthesis(input: QueueSynthesisInput): Promise<ResearchMutationResult>;
+  queueComparison(input: QueueComparisonInput): Promise<ResearchMutationResult>;
   retryBackfill(spaceId: string, planId: string): Promise<void>;
 }
 

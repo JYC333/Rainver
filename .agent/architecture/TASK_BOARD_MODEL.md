@@ -4,7 +4,7 @@ This document describes the **agent-native task board** domain layer. It is back
 
 ## Core separation
 
-- **Board** — A space- or workspace-level work surface. Groups columns and tasks for planning and visibility.
+- **Board** — A space- or Project-Folder-level work surface. Groups columns and tasks for planning and visibility.
 - **Task** — The **product-level work item**. Humans and agents share this vocabulary. Tasks carry acceptance criteria, priority, assignment, and lifecycle status **independent of the job queue**.
 - **Task role** — `source` identifies a user/Agent-owned product goal and may
   own one Agent-generated Plan; `subtask` is an ordinary product child Task.
@@ -27,7 +27,7 @@ This document describes the **agent-native task board** domain layer. It is back
 - A task links to many **runs** via `task_runs` (roles such as `primary`, `retry`, `review`).
 - A TaskRun creates its Run with an immutable `runs.contract_snapshot_json`
   carrying the Task's acceptance criteria, definition of done, required
-  outputs, project/workspace binding, risk, budget caps, and route hints. The
+  outputs, project/Project Folder binding, risk, budget caps, and route hints. The
   snapshot is the execution input; later Task edits do not rewrite prior Runs.
 - A task links to **artifacts** and **proposals** through junction tables with roles (for example `output`, `evidence`, `main_change`). `task_artifacts.run_id` records the task-run context for a selected artifact when known; `artifacts.run_id` remains the artifact's producing run.
 - Dependencies between tasks use `task_dependencies` (`blocks`, `requires`, `related`, etc.).
@@ -51,7 +51,7 @@ immutable execution instances have different lifecycles.
 
 ## Agent–human collaboration
 
-Boards and tasks are scoped by **space** (and optionally **workspace**). Assignments may reference both users and agents. The API enforces space boundaries so cross-space references are rejected.
+Boards and tasks are scoped by **space** (and optionally **Project Folder**). Assignments may reference both users and agents. The API enforces space boundaries so cross-space references are rejected.
 
 ## Task ↔ Run linkage
 

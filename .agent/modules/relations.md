@@ -10,7 +10,7 @@ Relations is the reusable relationship data foundation for Agent Space. It owns
 people and organization records, identity handles, affiliation edges, and
 provenance links that can be used by normal life, team, and research workflows.
 
-Academic research is a Project preset layered on these core modules. It is not a
+Academic research is a Project Profile layered on these core modules. It is not a
 separate plugin, not a second Project hierarchy, and not a top-level product
 route. Academic-specific paper metadata lives in the `academic` module and
 connects to the same `space_objects` / `object_relations` graph used by the rest
@@ -63,12 +63,12 @@ Relations does not own:
 - Memory writes. Relationship facts that should become memory must still go
   through proposal-gated memory workflows.
 - CRM pipeline semantics, sales workflows, or contact task automation.
-- Plugin install/enablement. Academic research is exposed through Project
-  presets, not through an official plugin.
+- Plugin install/enablement. Academic research is exposed through a Project
+  Profile, not through an official plugin.
 
 ## Project And Academic Workflow
 
-The `academic_research` Project preset reuses:
+The `academic_research` Project Profile reuses:
 
 - Project Sources for source monitoring and item collection;
 - Project Corpus for the project-specific set of collected papers, evidence,
@@ -78,7 +78,7 @@ The `academic_research` Project preset reuses:
 - Graph with `lens_id=academic_citation_v1` for the project citation/relation
   view.
 
-The preset may tune UI defaults and labels for academic work, but the durable
+The Profile may tune creation defaults and labels for academic work, but the durable
 data model remains the normal Project + Sources + Relations + Graph model.
 
 ## API Shape
@@ -134,7 +134,7 @@ service is sufficient.
 - `server/src/modules/academic/`
 - `server/src/db/schema/relations.ts`
 - `server/src/db/schema/academic.ts`
-- `server/src/modules/projectPresets/`
+- `server/src/modules/projectProfiles/`
 - `server/src/modules/graph/`
 - `.agent/architecture/PROJECTS.md`
 - `.agent/modules/graph-view.md`

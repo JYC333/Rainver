@@ -87,7 +87,7 @@ function memoryRow(over: Record<string, unknown>): Record<string, unknown> {
     space_id: "space-1",
     subject_user_id: "user-1",
     owner_user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     scope_type: "user",
     namespace: null,
     memory_type: "fact",
@@ -179,7 +179,7 @@ describe("ChatContextCandidateCollector", () => {
       token_count: Math.floor("memory content".length / 4),
     });
     // allowed_sources echoes the full recognised set, sorted.
-    expect(result.allowed_sources).toContain("workspace");
+    expect(result.allowed_sources).toContain("project_folder");
     expect(result.allowed_sources).toEqual([...result.allowed_sources].sort());
   });
 

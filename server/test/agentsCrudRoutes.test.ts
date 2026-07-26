@@ -385,6 +385,28 @@ describe("agents CRUD routes", () => {
     ]);
   });
 
+  it("rejects user credentials on shared Agent runtime profiles", async () => {
+    const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    app = buildServer(config(), { logger: false });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/agent-1/runtime-profiles",
+      payload: {
+        name: "Unsafe shared login",
+        adapter_type: "claude_code",
+        credential_profile_id: "credential-user-1",
+      },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({
+      detail: expect.stringContaining("selected per user and conversation"),
+    });
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it("does not touch the agent digest when config changes (digests stay peer-level)", async () => {
     let newVersionId = "";
     const dirtyUpdates: Array<{ sql: string; params: readonly unknown[] }> = [];
@@ -472,7 +494,7 @@ describe("agents CRUD routes", () => {
               id: params[0],
               space_id: params[1],
               user_id: params[2],
-              workspace_id: params[3],
+              project_folder_id: params[3],
               agent_id: params[4],
               job_type: params[5],
               status: "pending",

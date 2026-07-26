@@ -43,11 +43,30 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "live",
     prompt: "Say hello",
     instruction: "Be concise.",
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "model_api",
     model_provider_id: "provider-1",
+    permission_snapshot_json: {
+      tool_grants: [
+        "retrieval.search",
+        "retrieval.brief",
+        "memory.retrieval.search",
+        "memory.retrieval.brief",
+        "project.summary.search",
+        "project.summary.brief",
+        "source.retrieval.search",
+        "source.retrieval.brief",
+        "agent.delegate",
+        "agent.wait_for_results",
+      ].map((action_id) => ({
+        action_id,
+        capability_id: null,
+        approval_behavior: "none",
+        side_effecting: action_id === "agent.delegate",
+      })),
+    },
     required_sandbox_level: "none",
     trigger_origin: "manual",
     started_at: null,
@@ -101,7 +120,7 @@ function fakeProviderStore(): ProviderCommandStore {
 
 describe("executeManagedApiNoToolAdapter", () => {
   it("builds an explicit no-tool runtime-host request and maps success", async () => {
-    const calls: unknown[] = [];
+    const calls: Array<Parameters<RuntimeHostExecutor>[1]> = [];
     const executor: RuntimeHostExecutor = async (_config, request) => {
       calls.push(request);
       return {
@@ -129,7 +148,7 @@ describe("executeManagedApiNoToolAdapter", () => {
       { executeRuntimeHost: executor },
     );
 
-    expect(calls).toEqual([
+    expect(calls).toMatchObject([
       {
         run_id: "run-1",
         space_id: "space-1",
@@ -145,7 +164,7 @@ describe("executeManagedApiNoToolAdapter", () => {
         run_group_id: null,
         agent_id: "agent-1",
         project_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         trigger_origin: "manual",
         capability_id: null,
         context_snapshot_id: null,
@@ -154,6 +173,12 @@ describe("executeManagedApiNoToolAdapter", () => {
         tool_bindings: [],
       },
     ]);
+    expect(calls[0]?.run_input).toMatchObject({
+      schema_version: "run_input.v1",
+      run_id: "run-1",
+      task_goal: "Say hello",
+      execution: { shape: "conversational" },
+    });
     expect(result).toMatchObject({
       adapter_type: "model_api",
       adapter_kind: "managed_api",
@@ -250,12 +275,15 @@ describe("executeManagedApiNoToolAdapter", () => {
 
     expect(calls).toEqual([
       expect.objectContaining({
-        system_prompt: "Be concise.\n\nRelevant memory.",
+        system_prompt: "",
         prompt: "Say hello",
         messages: [
           { role: "user", content: "Earlier question" },
           { role: "assistant", content: "Earlier answer" },
-          { role: "user", content: "Continue" },
+          {
+            role: "user",
+            content: "Continue\n\n[Retrieved context for this turn]\nBe concise.\n\nRelevant memory.",
+          },
         ],
       }),
     ]);
@@ -951,6 +979,104 @@ describe("executeManagedApiNoToolAdapter", () => {
     });
   });
 
+  it("returns an audited requestable denial for an unapproved grantable action", async () => {
+    const pool = mockDomainRetrievalToolPool({});
+    __setProviderCommandStoreForTests(fakeProviderStore());
+    const calls: unknown[] = [];
+    const executor: RuntimeHostExecutor = async (_config, request) => {
+      calls.push(request);
+      if (calls.length === 1) {
+        return runtimeHostSuccess({
+          output_text: "",
+          output_json: {
+            adapter_type: "ts_agent_host",
+            tool_calls: [{
+              id: "bind-call-1",
+              name: "project.source.propose_bind",
+              arguments_json: JSON.stringify({ source_channel_id: "channel-1" }),
+            }],
+          },
+        });
+      }
+      return runtimeHostSuccess({ output_text: "I need owner authorization." });
+    };
+
+    const grants = ["authorization.request", "project.source.propose_bind"].map(
+      (action_id) => ({
+        action_id,
+        capability_id: null,
+        approval_behavior: "none" as const,
+        side_effecting: true,
+      }),
+    );
+    await executeManagedApiNoToolAdapter(
+      config(),
+      {
+        run: run({
+          instructed_by_user_id: "user-1",
+          project_id: "project-1",
+          permission_snapshot_json: { tool_grants: grants },
+        }),
+      },
+      { executeRuntimeHost: executor },
+    );
+
+    expect(toolPayloadFromRequest(calls[1], "project.source.propose_bind")).toMatchObject({
+      ok: false,
+      tool: "project.source.propose_bind",
+      error_code: "system_action_policy_denied",
+      policy_decision_record_id: "policy-1",
+    });
+    expect(pool.auditWrites).toHaveLength(1);
+    expect(pool.auditWrites[0]?.[4]).toBe("project.source.bind");
+    expect(pool.auditWrites[0]?.[7]).toBe("deny");
+    expect(pool.auditWrites[0]?.[14]).toBe("managed_system_action_grant_required");
+  });
+
+  it("rejects a model-emitted action outside the immutable Run grants", async () => {
+    const pool = mockDomainRetrievalToolPool({ retrieval_tool_mode: "manual_tool_only" });
+    __setProviderCommandStoreForTests(fakeProviderStore());
+    const calls: unknown[] = [];
+    const executor: RuntimeHostExecutor = async (_config, request) => {
+      calls.push(request);
+      if (calls.length === 1) {
+        return runtimeHostSuccess({
+          output_text: "",
+          output_json: {
+            adapter_type: "ts_agent_host",
+            tool_calls: [{
+              id: "ungranted-call-1",
+              name: "project.source.propose_bind",
+              arguments_json: JSON.stringify({ source_channel_id: "channel-1" }),
+            }],
+          },
+        });
+      }
+      return runtimeHostSuccess({ output_text: "Action unavailable." });
+    };
+
+    await executeManagedApiNoToolAdapter(
+      config(),
+      {
+        run: run({
+          instructed_by_user_id: "user-1",
+          runtime_config_json: {
+            retrieval_tool_mode: "manual_tool_only",
+            retrieval_tools: { domains: ["memory"] },
+          },
+        }),
+      },
+      { executeRuntimeHost: executor },
+    );
+
+    expect(toolPayloadFromRequest(calls[1], "project.source.propose_bind")).toMatchObject({
+      ok: false,
+      tool: "project.source.propose_bind",
+      error_code: "system_action_not_granted",
+    });
+    expect(pool.auditWrites).toHaveLength(0);
+  });
+
   it("returns a domain-not-enabled tool result when Memory is not opted in", async () => {
     const pool = mockDomainRetrievalToolPool({ retrieval_tool_mode: "manual_tool_only" });
     __setProviderCommandStoreForTests(fakeProviderStore());
@@ -1536,6 +1662,9 @@ class DomainRetrievalToolFakePool implements Queryable {
       (this.auditWrites as unknown[][]).push([...params]);
       return rows([{ id: `policy-${this.auditWrites.length}` }] as Row[]);
     }
+    if (sql.includes("FROM action_approval_grants")) {
+      return rows([]);
+    }
     if (sql.includes("FROM retrieval_aliases ra")) {
       return rows(this.exactAliasRows(params) as Row[]);
     }
@@ -1606,7 +1735,7 @@ class DomainRetrievalToolFakePool implements Queryable {
         visibility: "private",
         owner_user_id: "user-1",
         scope_type: "personal",
-        workspace_id: null,
+        project_folder_id: null,
         access_level: "full",
         project_id: null,
         title: "Coffee preferences",

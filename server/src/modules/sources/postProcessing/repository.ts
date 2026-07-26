@@ -1548,7 +1548,7 @@ export class PgSourcePostProcessingRepository {
          storage_ref, storage_path, mime_type, exportable, export_formats_json,
          canonical_format, preview, relevant_period_start, relevant_period_end,
          created_at, updated_at, metadata_json, visibility, owner_user_id,
-         access_level, trust_level, project_id, workspace_id
+         access_level, trust_level, project_id, project_folder_id
        ) VALUES (
          $1, $2::varchar, $3::varchar, NULL, $4, $5, $6,
          NULL, NULL, 'text/markdown; charset=utf-8', true, $7::jsonb,

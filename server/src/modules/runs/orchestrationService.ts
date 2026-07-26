@@ -1,8 +1,10 @@
 import type {
   RunAdapterResultEnvelope,
   RunExecuteRequest,
+  RunInputEnvelope,
   RunJobResult,
   RunMaterializationItemSummary,
+  RuntimeSemanticEvent,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
@@ -23,6 +25,7 @@ import type {
   RunStepInput,
   RunStepRecord,
   RunTerminalUpdate,
+  ConversationRuntimeTerminalSync,
 } from "./repository";
 import {
   EPHEMERAL_CLEANUP_KIND,
@@ -30,7 +33,11 @@ import {
   removeEphemeralDir,
   workingDirScopeForLevel,
 } from "./ephemeralSandbox";
-import type { RunWorkspaceManagerPort } from "../workspaces";
+import {
+  prepareConversationRuntimeState,
+  removeConversationRuntimeState,
+} from "./conversationRuntimeState";
+import type { RunSandboxManagerPort } from "../projectFolders";
 import {
   getRuntimeAdapterSpec,
   isVendorCliAdapter,
@@ -51,9 +58,11 @@ import {
   managedExecutionPolicyFromContract,
 } from "../policy/managedExecutionPolicy";
 import {
-  adapterErrorJson,
   adapterFailureEnvelope,
   adapterTimeoutEnvelope,
+  canonicalRunOutput,
+  semanticFailureErrorJson,
+  semanticRunFailure,
   errorMessage,
   inputWithPreparedRuntime,
   isHardTerminalRunStatus,
@@ -72,6 +81,19 @@ import type {
   VerificationEnginePort,
   VerificationResultRecord,
 } from "./verification";
+import { assembleRunInputEnvelope } from "./runInputEnvelope";
+import { publishChatTextDelta } from "../streaming/conversationDeltaBus";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+import {
+  RunExchangeManager,
+  type RunExchangeHandle,
+  type RunExchangePort,
+} from "./runExchange";
+import {
+  recordUsageObservation,
+} from "../usage/service";
+import type { UsageObservation } from "../usage/types";
+import { PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -85,6 +107,18 @@ export interface RunExecutionRepositoryPort {
     started_at: string;
     required_sandbox_level?: string | null;
   }): Promise<RunRecord | null>;
+  checkRunExecutionAuthorization?(run: Pick<
+    RunRecord,
+    | "space_id"
+    | "instructed_by_user_id"
+    | "project_id"
+    | "project_folder_id"
+    | "run_group_id"
+  >): Promise<{
+    allowed: boolean;
+    error_code?: string;
+    error_message?: string;
+  }>;
   checkRunDispatchContract(run: Pick<RunRecord, "space_id" | "id" | "root_run_id" | "contract_snapshot_json">): Promise<{
     allowed: boolean;
     error_code?: string;
@@ -96,20 +130,21 @@ export interface RunExecutionRepositoryPort {
     required_sandbox_level: string;
   }): Promise<void>;
   markRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null>;
+  markRunTerminalWithConversationSession(
+    input: RunTerminalUpdate,
+    conversation: ConversationRuntimeTerminalSync,
+  ): Promise<RunRecord | null>;
+  publishRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null>;
+  publishRunTerminalWithConversationSession(
+    input: RunTerminalUpdate,
+    conversation: ConversationRuntimeTerminalSync,
+  ): Promise<RunRecord | null>;
   markRunCancelling?(input: {
     run_id: string;
     space_id: string;
     requested_at: string;
     reason?: string | null;
     requested_by_user_id?: string | null;
-  }): Promise<RunRecord | null>;
-  markRunDegraded?(input: {
-    run_id: string;
-    space_id: string;
-    completed_at: string;
-    error_code: string;
-    error_message: string;
-    diagnostics?: unknown;
   }): Promise<RunRecord | null>;
   appendRunEvent(input: RunEventInput): Promise<unknown>;
   createRunStep(input: RunStepInput): Promise<RunStepRecord>;
@@ -142,6 +177,15 @@ export interface RunExecutionRepositoryPort {
     output_json: unknown;
     paused_at: string;
   }): Promise<RunRecord | null>;
+  markRunWaitingForDependencyWithConversationSession?(
+    input: {
+      run_id: string;
+      space_id: string;
+      output_json: unknown;
+      paused_at: string;
+    },
+    conversation: ConversationRuntimeTerminalSync,
+  ): Promise<RunRecord | null>;
 }
 
 export interface RunExecutionAdapterDeps {
@@ -149,7 +193,7 @@ export interface RunExecutionAdapterDeps {
   vendorCli?: VendorCliAdapterDeps;
   materializer?: RunMaterializationService;
   contextPreparer?: RunContextPrepareClient;
-  workspaceManager?: RunWorkspaceManagerPort;
+  workspaceManager?: RunSandboxManagerPort;
   codePatchCollector?: RunCodePatchCollectorPort;
   verificationEngine?: VerificationEnginePort;
   policyEnforcer?: RunPolicyEnforcer;
@@ -163,6 +207,21 @@ export interface RunExecutionAdapterDeps {
    */
   processRegistry?: CliProcessRegistry;
   routeResolver?: RunRouteResolverPort;
+  runExchange?: RunExchangePort;
+  usageRecorder?: (observation: UsageObservation) => Promise<void>;
+  conversationRuntimeSessions?: {
+    record(input: {
+      binding_id: string;
+      runtime_state_key: string;
+      runtime_session_id: string;
+      context_fingerprint: string;
+      message_cursor_id?: string | null;
+    }): Promise<boolean>;
+    invalidate(input: {
+      binding_id: string;
+      runtime_state_key: string;
+    }): Promise<boolean>;
+  };
 }
 
 export interface RunRouteResolverPort {
@@ -172,6 +231,7 @@ export interface RunRouteResolverPort {
 export interface RunDelegationLifecycleProjectorPort {
   markDelegatedRunRunning(run: RunRecord): Promise<void>;
   markDelegatedRunTerminal(run: RunRecord): Promise<void>;
+  reconcileWaitingRun?(run: RunRecord): Promise<void>;
 }
 
 export type RunPolicyEnforcer = (
@@ -193,10 +253,12 @@ export interface RunCodePatchCollectorPort {
     run: RunRecord;
     worktreePath: string | null;
     baseCommitSha: string | null;
+    proposalStatus?: "pending" | "staged";
   }): Promise<{ item: RunMaterializationItemSummary; errors: string[] } | null>;
 }
 
 export interface RunExecutionInput extends RunExecuteRequest {
+  run_input?: RunInputEnvelope;
   prompt?: string | null;
   system_prompt?: string | null;
   model?: string | null;
@@ -206,6 +268,8 @@ export interface RunExecutionInput extends RunExecuteRequest {
   adapter_config?: Record<string, unknown>;
   risk_level?: string | null;
   timeout_ms?: number | null;
+  runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
+  text_delta_sink?: (delta: string) => void;
 }
 
 type RuntimeAdapterExecutor = (
@@ -221,12 +285,18 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
       config,
       {
         run,
+        run_input: input.run_input ?? assembleRunInputEnvelope(run, {
+          prompt: input.prompt,
+          contextSnapshotId: run.context_snapshot_id,
+          riskLevel: input.risk_level,
+        }),
         model: input.model ?? null,
         system_prompt: input.system_prompt ?? run.system_prompt ?? null,
         prompt: input.prompt ?? null,
         context_text: input.context_text ?? null,
         context_snapshot_id: run.context_snapshot_id,
         max_tokens: input.max_tokens ?? null,
+        text_delta_sink: input.text_delta_sink,
       },
       deps.managedApi,
     ),
@@ -235,6 +305,11 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
       config,
       {
         run,
+        run_input: input.run_input ?? assembleRunInputEnvelope(run, {
+          prompt: input.prompt,
+          contextSnapshotId: run.context_snapshot_id,
+          riskLevel: input.risk_level,
+        }),
         prompt: input.prompt ?? null,
         model: input.model ?? null,
         sandbox_cwd: input.sandbox_cwd ?? null,
@@ -243,6 +318,8 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
         risk_level: input.risk_level ?? null,
         trigger_origin: run.trigger_origin,
         process_registry: deps.processRegistry,
+        runtime_event_sink: input.runtime_event_sink,
+        text_delta_sink: input.text_delta_sink,
       },
       deps.vendorCli,
     ),
@@ -267,16 +344,19 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
 interface PreparedRuntimeContext {
   prompt: string | null;
   sandbox_cwd: string | null;
+  context_cwd: string | null;
   context_text: string | null;
   adapter_config: Record<string, unknown>;
   risk_level: string | null;
   cleanup: {
     cleanup_kind: string;
     sandbox_cwd: string | null;
-    workspace_root: string | null;
+    project_folder_root: string | null;
   } | null;
   sandbox_kind: string | null;
   base_commit_sha: string | null;
+  run_input: RunInputEnvelope;
+  exchange: RunExchangeHandle | null;
 }
 
 interface ResolvedRuntimePolicy {
@@ -289,6 +369,10 @@ interface ResolvedRuntimePolicy {
 export class RunOrchestrationService {
   private readonly delegationProjector: RunDelegationLifecycleProjectorPort | null;
   private readonly routeResolver: RunRouteResolverPort | null;
+  private readonly runExchange: RunExchangePort;
+  private readonly usageRecorder: ((observation: UsageObservation) => Promise<void>) | null;
+  private readonly conversationRuntimeSessions:
+    NonNullable<RunExecutionAdapterDeps["conversationRuntimeSessions"]> | null;
 
   constructor(
     private readonly config: ServerConfig,
@@ -296,10 +380,26 @@ export class RunOrchestrationService {
     private readonly adapters: RunExecutionAdapterDeps = {},
   ) {
     this.delegationProjector =
-      adapters.delegationProjector ?? AgentGroupRunLifecycleProjector.fromConfig(config);
+      adapters.delegationProjector
+      ?? (repository instanceof PgRunRepository
+        ? AgentGroupRunLifecycleProjector.fromConfig(config)
+        : null);
     this.routeResolver = adapters.routeResolver
       ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? new PgRouteDecisionRepository(getDbPool(config.databaseUrl))
+        ? new PgRouteDecisionRepository(
+            getDbPool(config.databaseUrl),
+            undefined,
+            new CliCredentialBroker(config),
+          )
+        : null);
+    this.runExchange = adapters.runExchange ?? new RunExchangeManager(config.sandboxRoot);
+    this.usageRecorder = adapters.usageRecorder
+      ?? (repository instanceof PgRunRepository && config.databaseUrl
+        ? (observation) => recordUsageObservation(config, observation)
+        : null);
+    this.conversationRuntimeSessions = adapters.conversationRuntimeSessions
+      ?? (repository instanceof PgRunRepository && config.databaseUrl
+        ? new PgConversationRuntimeSessionRepository(getDbPool(config.databaseUrl))
         : null);
   }
 
@@ -323,6 +423,7 @@ export class RunOrchestrationService {
       };
     }
     if (isTerminalRunStatus(run.status)) {
+      await this.markDelegatedRunTerminal(run);
       return {
         run_id: run.id,
         status: run.status,
@@ -357,29 +458,121 @@ export class RunOrchestrationService {
       };
     }
 
+    let executionLockHeld = true;
     let step: RunStepRecord | null = null;
     let preparedRuntime: PreparedRuntimeContext | null = null;
+    const releaseExecutionAuthority = async (): Promise<void> => {
+      await this.cleanupRuntimeContext(preparedRuntime, run);
+      if (!executionLockHeld) return;
+      await this.repository.releaseExecutionLock(run.id);
+      executionLockHeld = false;
+    };
     try {
-      const routedRun = this.routeResolver ? await this.routeResolver.routeRun(run) : run;
-      const dispatchContract = await this.repository.checkRunDispatchContract(routedRun);
-      if (!dispatchContract.allowed) {
-        const rejected = await this.repository.markRunTerminal({
+      const currentAuthorization =
+        await this.repository.checkRunExecutionAuthorization?.(run)
+        ?? { allowed: true };
+      if (!currentAuthorization.allowed) {
+        const rejected = await this.publishRunTerminalWithConversationRuntime({
           run_id: run.id,
           space_id: run.space_id,
           status: "failed",
           output_text: "",
-          output_json: {},
+          output_json: canonicalRunOutput({
+            success: false,
+            outputText: "",
+            outputJson: {
+              error_code:
+                currentAuthorization.error_code
+                ?? "run_execution_authorization_revoked",
+            },
+          }),
+          error_json: {
+            error_code:
+              currentAuthorization.error_code
+              ?? "run_execution_authorization_revoked",
+            error_text:
+              currentAuthorization.error_message
+              ?? "Run execution authorization is no longer active.",
+          },
+          exit_code: 1,
+          completed_at: startedAt,
+        }, run, null, false);
+        await releaseExecutionAuthority();
+        return {
+          run_id: run.id,
+          status: protocolRunStatus(rejected?.status ?? "failed"),
+          skipped: true,
+          skip_reason: "execution_authorization_revoked",
+          error_code:
+            currentAuthorization.error_code
+            ?? "run_execution_authorization_revoked",
+          error:
+            currentAuthorization.error_message
+            ?? "Run execution authorization is no longer active.",
+        };
+      }
+      const routedRun = this.routeResolver ? await this.routeResolver.routeRun(run) : run;
+      const dispatchContract = await this.repository.checkRunDispatchContract(routedRun);
+      if (!dispatchContract.allowed) {
+        await this.cleanupRuntimeContext(preparedRuntime, run);
+        let rejected = await this.publishRunTerminalWithConversationRuntime({
+          run_id: run.id,
+          space_id: run.space_id,
+          status: "failed",
+          output_text: "",
+          output_json: canonicalRunOutput({
+            success: false,
+            outputText: "",
+            outputJson: { error_code: dispatchContract.error_code ?? "run_contract_dispatch_denied" },
+          }),
           error_json: {
             error_code: dispatchContract.error_code ?? "run_contract_dispatch_denied",
             error_text: dispatchContract.error_message ?? "Run contract rejected dispatch.",
           },
           exit_code: 1,
           completed_at: startedAt,
-        });
-        await this.finalizeTerminalRunBestEffort(rejected ?? { ...run, status: "failed", ended_at: startedAt });
+        }, run, null, false);
+        if (!rejected) {
+          const current = await this.repository.getRun(run.space_id, run.id);
+          if (current?.status === "cancelling") {
+            rejected = await this.publishRunTerminalWithConversationRuntime({
+              run_id: run.id,
+              space_id: run.space_id,
+              status: "cancelled",
+              output_text: "",
+              output_json: canonicalRunOutput({
+                success: false,
+                outputText: "",
+                outputJson: { error_code: "run_cancelled" },
+              }),
+              error_json: {
+                error_code: "run_cancelled",
+                error_text: "Run cancellation won the terminal publication race.",
+              },
+              exit_code: 1,
+              completed_at: startedAt,
+            }, run, null, false);
+          }
+        }
+        if (rejected) executionLockHeld = false;
+        const finalization = await this.finalizeTerminalRunBestEffort(
+          rejected ?? { ...run, status: "failed", ended_at: startedAt },
+        );
+        const current = this.adapters.materializer
+          ? await this.repository.getRun(run.space_id, run.id)
+          : rejected;
+        if (finalization?.status === "failed") {
+          return {
+            run_id: run.id,
+            status: protocolRunStatus(current?.status ?? "failed"),
+            error_code: "finalization_failed",
+            error:
+              finalization.error_message ?? "Run finalization failed.",
+          };
+        }
         return {
           run_id: run.id,
-          status: protocolRunStatus(rejected?.status ?? "failed"),
+          status: protocolRunStatus(current?.status ?? rejected?.status ?? "failed"),
           error_code: dispatchContract.error_code ?? "run_contract_dispatch_denied",
           error: dispatchContract.error_message ?? "Run contract rejected dispatch.",
         };
@@ -430,6 +623,10 @@ export class RunOrchestrationService {
         ...input,
         adapter_config: resolved.adapter_config,
         risk_level: resolved.risk_level,
+        runtime_event_sink: (event) => this.appendRuntimeSemanticEvent(effectiveRun, event),
+        ...(isChatTurnRun(effectiveRun)
+          ? { text_delta_sink: (delta: string) => publishChatTextDelta(effectiveRun.id, delta) }
+          : {}),
       };
 
       // run_steps.actor_id is a non-null Actor FK; worker ids carry transport
@@ -447,7 +644,7 @@ export class RunOrchestrationService {
         step_type: "adapter_started",
         status: "running",
         title: "Runtime adapter execution",
-        workspace_id: effectiveRun.workspace_id,
+        project_folder_id: effectiveRun.project_folder_id,
         session_id: effectiveRun.session_id,
         started_at: startedAt,
         metadata_json: {
@@ -464,7 +661,7 @@ export class RunOrchestrationService {
         step_id: step?.id ?? null,
         actor_id: actorId,
         summary: "Runtime adapter started.",
-        workspace_id: effectiveRun.workspace_id,
+        project_folder_id: effectiveRun.project_folder_id,
         metadata_json: {
           adapter_type: effectiveRun.adapter_type,
           command_source: input.command_source,
@@ -473,19 +670,81 @@ export class RunOrchestrationService {
       });
 
       preparedRuntime = await this.prepareRuntimeContext(effectiveRun, effectiveInput);
-      const adapterResult = await this.invokeAdapter(
+      let adapterResult = await this.invokeAdapter(
         effectiveRun,
         inputWithPreparedRuntime(effectiveInput, preparedRuntime),
       );
+      if (preparedRuntime.exchange) {
+        const exchange = await this.runExchange.collect(
+          preparedRuntime.exchange,
+          preparedRuntime.run_input.output_contract.required_outputs,
+        );
+        const exchangeFailure = adapterResult.success && exchange.errors.length > 0;
+        adapterResult = {
+          ...adapterResult,
+          success: adapterResult.success && !exchangeFailure,
+          error_code: exchangeFailure
+            ? "run_exchange_output_validation_failed"
+            : adapterResult.error_code,
+          error_message: exchangeFailure
+            ? exchange.errors.join("; ")
+            : adapterResult.error_message,
+          output_json: {
+            ...recordValue(adapterResult.output_json),
+            ...(exchange.reported_status === "rejected" ? { status: "rejected" } : {}),
+            output_manifest: exchange.manifest,
+          },
+          exchange_artifact_paths: exchange.artifact_paths,
+          runtime_events: [
+            ...runtimeSemanticEvents(adapterResult),
+            {
+              schema_version: "runtime_event.v1",
+              type: "output_validation_completed",
+              occurred_at: adapterResult.completed_at ?? new Date().toISOString(),
+              call_id: null,
+              summary: exchange.errors.length > 0
+                ? "Run Exchange output validation failed."
+                : "Run Exchange output validation completed.",
+              metadata_json: {
+                output_count: exchange.manifest.length,
+                invalid_count: exchange.manifest.filter((item) =>
+                  item.status === "missing" || item.status === "invalid" || item.status === "oversized"
+                ).length,
+              },
+            } satisfies RuntimeSemanticEvent,
+          ],
+        };
+      }
+      await this.appendRuntimeSemanticEvents(effectiveRun, adapterResult);
+      const executionIdentity = input.job_id ?? step?.id ?? effectiveRun.id;
       const completedAt = adapterResult.completed_at ?? new Date().toISOString();
       const waitingForDependency = waitingForDependencyFromAdapter(adapterResult);
       if (waitingForDependency) {
-        const waitingRun = await this.repository.markRunWaitingForDependency({
+        const waitingInput = {
           run_id: running.id,
           space_id: running.space_id,
-          output_json: outputJsonWithMaterialization(adapterResult.output_json, [], []),
+          output_json: outputJsonWithMaterialization(
+            outputJsonWithRuntimeUsage(adapterResult),
+            [],
+            [],
+          ),
           paused_at: completedAt,
-        });
+        };
+        const conversation = conversationRuntimeTerminalSync(
+          effectiveRun,
+          adapterResult,
+          true,
+        );
+        const retainedConversation = conversation?.keep_session
+          ? conversation
+          : null;
+        const waitingRun = retainedConversation
+          && this.repository.markRunWaitingForDependencyWithConversationSession
+          ? await this.repository.markRunWaitingForDependencyWithConversationSession(
+              waitingInput,
+              retainedConversation,
+            )
+          : await this.repository.markRunWaitingForDependency(waitingInput);
         if (!waitingRun) {
           const current = await this.repository.getRun(running.space_id, running.id);
           const currentStatus = protocolRunStatus(current?.status ?? "cancelled");
@@ -506,12 +765,22 @@ export class RunOrchestrationService {
             step_id: step?.id ?? null,
             summary: "Adapter paused after the run was cancelled; wait state not applied.",
             error_code: "run_cancelled",
-            workspace_id: running.workspace_id,
+            project_folder_id: running.project_folder_id,
             metadata_json: {
               adapter_type: adapterResult.adapter_type,
               adapter_kind: adapterResult.adapter_kind,
             },
           });
+          await this.recordLocalCliUsageBestEffort(
+            effectiveRun,
+            adapterResult,
+            executionIdentity,
+          );
+          await this.syncConversationRuntimeSessionBestEffort(
+            effectiveRun,
+            adapterResult,
+            false,
+          );
           return {
             run_id: running.id,
             status: currentStatus,
@@ -534,13 +803,30 @@ export class RunOrchestrationService {
           status: "warning",
           step_id: step?.id ?? null,
           summary: "Runtime adapter paused while waiting for room agent results.",
-          workspace_id: running.workspace_id,
+          project_folder_id: running.project_folder_id,
           metadata_json: {
             adapter_type: adapterResult.adapter_type,
             adapter_kind: adapterResult.adapter_kind,
             waiting_for_results: waitingForDependency,
           },
         });
+        await this.recordLocalCliUsageBestEffort(
+          effectiveRun,
+          adapterResult,
+          executionIdentity,
+        );
+        if (
+          !retainedConversation
+          || !this.repository.markRunWaitingForDependencyWithConversationSession
+        ) {
+          await this.syncConversationRuntimeSessionBestEffort(
+            effectiveRun,
+            adapterResult,
+            Boolean(retainedConversation),
+          );
+        }
+        await releaseExecutionAuthority();
+        await this.delegationProjector?.reconcileWaitingRun?.(waitingRun);
         return {
           run_id: waitingRun.id,
           status: "waiting_for_dependency",
@@ -548,43 +834,84 @@ export class RunOrchestrationService {
         };
       }
       const adapterTerminalStatus = terminalStatusFromAdapter(adapterResult);
-      const materialization = this.adapters.materializer
-        ? await this.adapters.materializer.materializeAdapterResult({
-            run: running,
-            adapterResult,
-            sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
-          })
-        : { items: [], errors: [] };
-      const codePatch = adapterResult.success
-        ? await this.collectCodePatch(effectiveRun, preparedRuntime)
-        : null;
-      if (codePatch) {
-        materialization.items.push(codePatch.item);
-        materialization.errors.push(...codePatch.errors);
+      const currentAfterAdapter = await this.repository.getRun(running.space_id, running.id);
+      if (currentAfterAdapter?.status === "waiting_for_review") {
+        return {
+          run_id: running.id,
+          status: "waiting_for_review",
+          error_code: "cli_tool_approval_required",
+        };
       }
       let verificationResults: VerificationResultRecord[] = [];
-      if (this.adapters.verificationEngine) {
+      let semanticFailure = semanticRunFailure(adapterResult, []);
+      let validationStarted = false;
+      const materialization = { items: [], errors: [] } as {
+        items: RunMaterializationItemSummary[];
+        errors: string[];
+      };
+      if (this.adapters.verificationEngine && adapterResult.success && !semanticFailure) {
         await this.appendRunEventBestEffort({
           run_id: running.id,
           space_id: running.space_id,
           event_type: "validation_started",
           status: "running",
-          workspace_id: running.workspace_id,
+          project_folder_id: running.project_folder_id,
           metadata_json: { verifier_version: "verification_engine.v1" },
         });
+        validationStarted = true;
         verificationResults = await this.adapters.verificationEngine.verify({
           run: effectiveRun,
           sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
           base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
           output_json: adapterResult.output_json,
-          materialization_items: materialization.items,
-        });
+          materialization_items: [],
+        }, "pre_materialization");
+        semanticFailure = semanticRunFailure(adapterResult, verificationResults);
+      }
+      if (adapterResult.success && !semanticFailure) {
+        if (this.adapters.materializer) {
+          const persisted = await this.adapters.materializer.materializeAdapterResult({
+            run: running,
+            adapterResult,
+            sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
+            exchange_output_cwd: preparedRuntime?.exchange?.output_dir ?? null,
+          }, {
+            proposal_status: "staged",
+          });
+          materialization.items.push(...persisted.items);
+          materialization.errors.push(...persisted.errors);
+        }
+        const codePatch = await this.collectCodePatch(
+          effectiveRun,
+          preparedRuntime,
+          "staged",
+        );
+        if (codePatch) {
+          materialization.items.push(codePatch.item);
+          materialization.errors.push(...codePatch.errors);
+        }
+        if (this.adapters.verificationEngine) {
+          const postMaterialization = await this.adapters.verificationEngine.verify({
+            run: effectiveRun,
+            sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
+            base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
+            output_json: adapterResult.output_json,
+            materialization_items: materialization.items,
+          }, "post_materialization");
+          verificationResults.push(...postMaterialization);
+          semanticFailure = semanticRunFailure(
+            adapterResult,
+            postMaterialization,
+          );
+        }
+      }
+      if (validationStarted) {
         await this.appendRunEventBestEffort({
           run_id: running.id,
           space_id: running.space_id,
           event_type: "validation_completed",
           status: verificationStatus(verificationResults),
-          workspace_id: running.workspace_id,
+          project_folder_id: running.project_folder_id,
           metadata_json: {
             verifier_version: "verification_engine.v1",
             result_count: verificationResults.length,
@@ -592,62 +919,32 @@ export class RunOrchestrationService {
           },
         });
       }
-      const terminalStatus = adapterResult.success && materialization.errors.length > 0
-        ? "degraded"
-        : adapterTerminalStatus;
-
-      const terminalRun = await this.repository.markRunTerminal({
-        run_id: running.id,
-        space_id: running.space_id,
-        status: terminalStatus,
-        output_text: adapterResult.output_text,
-        output_json: outputJsonWithVerification(
-          adapterResult.output_json,
-          materialization.items,
-          materialization.errors,
-          verificationResults,
-        ),
-        error_json: adapterErrorJson(adapterResult),
-        exit_code: adapterResult.exit_code,
-        completed_at: completedAt,
-      });
-      if (!terminalRun) {
-        // The run reached a terminal state while the adapter was executing —
-        // a concurrent cancel owns the terminal write. Do not overwrite it.
-        const current = await this.repository.getRun(running.space_id, running.id);
-        const currentStatus = protocolRunStatus(current?.status ?? "cancelled");
-        if (step) await this.updateRunStepStatusBestEffort({
-          step_id: step.id,
-          run_id: running.id,
-          space_id: running.space_id,
-          status: "cancelled",
-          ended_at: completedAt,
-          error_type: "run_cancelled",
-          error_message: "Adapter finished after the run was cancelled; result not applied.",
-        });
-        await this.appendRunEventBestEffort({
-          run_id: running.id,
-          space_id: running.space_id,
-          event_type: "adapter_completed",
-          status: "cancelled",
-          step_id: step?.id ?? null,
-          summary: "Adapter finished after the run was cancelled; result not applied.",
-          error_code: "run_cancelled",
-          workspace_id: running.workspace_id,
-          metadata_json: {
-            adapter_type: adapterResult.adapter_type,
-            adapter_kind: adapterResult.adapter_kind,
-            exit_code: adapterResult.exit_code,
-          },
-        });
-        return {
-          run_id: running.id,
-          status: currentStatus,
-          skipped: true,
-          skip_reason: "run_already_terminal",
+      const usageRecorded = await this.recordLocalCliUsageBestEffort(
+        effectiveRun,
+        adapterResult,
+        executionIdentity,
+      );
+      const configuredMaxCost = recordValue(
+        effectiveRun.contract_snapshot_json,
+      ).max_cost;
+      if (
+        !usageRecorded
+        && typeof configuredMaxCost === "number"
+        && Number.isFinite(configuredMaxCost)
+        && configuredMaxCost >= 0
+      ) {
+        semanticFailure = {
+          error_code: "usage_recording_failed",
+          error_message:
+            "CLI usage could not be recorded, so automatic retry is held to preserve the Run cost cap.",
         };
       }
-      let finalTerminalRun = terminalRun;
+      const terminalStatus = semanticFailure
+        ? "failed"
+        : adapterResult.success && materialization.errors.length > 0
+          ? "degraded"
+          : adapterTerminalStatus;
+
       await this.appendMaterializationEvents(running, materialization.items);
       if (step) await this.updateRunStepStatusBestEffort({
         step_id: step.id,
@@ -670,44 +967,142 @@ export class RunOrchestrationService {
           : "Runtime adapter failed.",
         error_code: adapterResult.error_code ?? null,
         error_message: adapterResult.error_message ?? null,
-        workspace_id: running.workspace_id,
+        project_folder_id: running.project_folder_id,
         metadata_json: {
           adapter_type: adapterResult.adapter_type,
           adapter_kind: adapterResult.adapter_kind,
           exit_code: adapterResult.exit_code,
         },
       });
-      let returnedStatus = terminalStatus;
-      if (this.adapters.materializer && isTerminalRunStatus(terminalStatus)) {
-        const finalization = await this.adapters.materializer.finalizeRun({
-          ...running,
-          status: terminalStatus,
+      await this.cleanupRuntimeContext(preparedRuntime, run);
+      let terminalRun = await this.publishRunTerminalWithConversationRuntime({
+        run_id: running.id,
+        space_id: running.space_id,
+        status: terminalStatus,
+        output_text: adapterResult.output_text,
+        output_json: canonicalRunOutput({
+          success: adapterResult.success && !semanticFailure,
+          outputText: adapterResult.output_text,
+          outputJson: outputJsonWithVerification(
+            outputJsonWithRuntimeUsage(adapterResult),
+            materialization.items,
+            materialization.errors,
+            verificationResults,
+          ),
+        }),
+        error_json: semanticFailureErrorJson(adapterResult, semanticFailure),
+        exit_code: adapterResult.exit_code,
+        completed_at: completedAt,
+      }, effectiveRun, adapterResult, terminalStatus === "succeeded");
+      if (!terminalRun) {
+        // Cancellation can linearize before publication by moving the Run to
+        // `cancelling`. The execution owner then publishes the cancellation;
+        // public cancellation never removes an active execution lock.
+        const current = await this.repository.getRun(running.space_id, running.id);
+        if (current?.status === "cancelling") {
+          terminalRun = await this.publishRunTerminalWithConversationRuntime({
+            run_id: running.id,
+            space_id: running.space_id,
+            status: "cancelled",
+            output_text: "",
+            output_json: canonicalRunOutput({
+              success: false,
+              outputText: "",
+              outputJson: { error_code: "run_cancelled" },
+            }),
+            error_json: {
+              error_code: "run_cancelled",
+              error_text: "Run cancellation won the terminal publication race.",
+            },
+            exit_code: 1,
+            completed_at: completedAt,
+          }, effectiveRun, null, false);
+        }
+        if (terminalRun) {
+          executionLockHeld = false;
+          return {
+            run_id: running.id,
+            status: "cancelled",
+            error_code: "run_cancelled",
+          };
+        }
+        // A hard terminal state published elsewhere owns the result.
+        const currentStatus = protocolRunStatus(current?.status ?? "cancelled");
+        if (step) await this.updateRunStepStatusBestEffort({
+          step_id: step.id,
+          run_id: running.id,
+          space_id: running.space_id,
+          status: "cancelled",
           ended_at: completedAt,
+          error_type: "run_cancelled",
+          error_message: "Adapter finished after the run was cancelled; result not applied.",
         });
+        await this.appendRunEventBestEffort({
+          run_id: running.id,
+          space_id: running.space_id,
+          event_type: "adapter_completed",
+          status: "cancelled",
+          step_id: step?.id ?? null,
+          summary: "Adapter finished after the run was cancelled; result not applied.",
+          error_code: "run_cancelled",
+          project_folder_id: running.project_folder_id,
+          metadata_json: {
+            adapter_type: adapterResult.adapter_type,
+            adapter_kind: adapterResult.adapter_kind,
+            exit_code: adapterResult.exit_code,
+          },
+        });
+        return {
+          run_id: running.id,
+          status: currentStatus,
+          skipped: true,
+          skip_reason: "run_already_terminal",
+        };
+      }
+      executionLockHeld = false;
+      let finalTerminalRun = terminalRun;
+      let returnedStatus: RunJobResult["status"] = terminalStatus;
+      let finalizationFailure: RunMaterializationItemSummary | null = null;
+      if (this.adapters.materializer && isTerminalRunStatus(terminalStatus)) {
+        const finalization = await this.adapters.materializer.finalizeRun(
+          finalTerminalRun,
+        );
         if (finalization.status !== "succeeded") {
+          finalizationFailure = finalization;
           await this.appendFinalizationEvent(running, finalization);
-          if (adapterResult.success && terminalStatus === "succeeded") {
-            const degraded = await this.markRunDegradedBestEffort({
-              run_id: running.id,
-              space_id: running.space_id,
-              completed_at: completedAt,
-              error_code: finalization.error_code ?? "finalization_failed",
-              error_message: finalization.error_message ?? "Run finalization failed.",
-            });
-            if (degraded) {
-              returnedStatus = "degraded";
-              finalTerminalRun = degraded;
-            }
-          }
         }
       }
-      await this.markDelegatedRunTerminalBestEffort(finalTerminalRun);
-
+      const currentAfterFinalization = this.adapters.materializer
+        ? await this.repository.getRun(running.space_id, running.id)
+        : finalTerminalRun;
+      if (finalizationFailure) {
+        return {
+          run_id: running.id,
+          status: protocolRunStatus(
+            currentAfterFinalization?.status ?? returnedStatus,
+          ),
+          error_code: "finalization_failed",
+          error_text:
+            finalizationFailure.error_message ?? "Run finalization failed.",
+        };
+      }
+      if (
+        currentAfterFinalization
+        && !isTerminalRunStatus(currentAfterFinalization.status)
+      ) {
+        returnedStatus = protocolRunStatus(currentAfterFinalization.status);
+      } else {
+        await this.markDelegatedRunTerminal(
+          currentAfterFinalization && isTerminalRunStatus(currentAfterFinalization.status)
+            ? currentAfterFinalization
+            : finalTerminalRun,
+        );
+      }
       return {
         run_id: running.id,
         status: returnedStatus,
-        error_code: adapterResult.error_code ?? null,
-        error_text: adapterResult.error_message ?? null,
+        error_code: semanticFailure?.error_code ?? adapterResult.error_code ?? null,
+        error_text: semanticFailure?.error_message ?? adapterResult.error_message ?? null,
       };
     } catch (error) {
       const completedAt = new Date().toISOString();
@@ -728,21 +1123,6 @@ export class RunOrchestrationService {
       }
       const errorCode =
         error instanceof RunPreparationError ? error.code : "run_orchestration_failed";
-      const failedRun = await this.repository.markRunTerminal({
-        run_id: run.id,
-        space_id: run.space_id,
-        status: "failed",
-        output_text: "",
-        output_json: {},
-        error_json: {
-          error_code: errorCode,
-          error_text: message,
-        },
-        exit_code: 1,
-        completed_at: completedAt,
-      });
-      await this.finalizeTerminalRunBestEffort(failedRun ?? { ...run, status: "failed", ended_at: completedAt });
-      if (failedRun) await this.markDelegatedRunTerminalBestEffort(failedRun);
       if (step) {
         await this.updateRunStepStatusBestEffort({
           step_id: step.id,
@@ -763,18 +1143,75 @@ export class RunOrchestrationService {
         summary: "Run orchestration failed before or during adapter execution.",
         error_code: errorCode,
         error_message: message,
-        workspace_id: run.workspace_id,
+        project_folder_id: run.project_folder_id,
         metadata_json: { orchestration_failure: true },
       });
+      await this.cleanupRuntimeContext(preparedRuntime, run);
+      let failedRun = await this.publishRunTerminalWithConversationRuntime({
+        run_id: run.id,
+        space_id: run.space_id,
+        status: "failed",
+        output_text: "",
+        output_json: canonicalRunOutput({
+          success: false,
+          outputText: "",
+          outputJson: { error_code: errorCode },
+        }),
+        error_json: {
+          error_code: errorCode,
+          error_text: message,
+        },
+        exit_code: 1,
+        completed_at: completedAt,
+      }, run, null, false);
+      if (!failedRun) {
+        const current = await this.repository.getRun(run.space_id, run.id);
+        if (current?.status === "cancelling") {
+          failedRun = await this.publishRunTerminalWithConversationRuntime({
+            run_id: run.id,
+            space_id: run.space_id,
+            status: "cancelled",
+            output_text: "",
+            output_json: canonicalRunOutput({
+              success: false,
+              outputText: "",
+              outputJson: { error_code: "run_cancelled" },
+            }),
+            error_json: {
+              error_code: "run_cancelled",
+              error_text: "Run cancellation won the terminal publication race.",
+            },
+            exit_code: 1,
+            completed_at: completedAt,
+          }, run, null, false);
+        }
+      }
+      if (failedRun) executionLockHeld = false;
+      const finalization = await this.finalizeTerminalRunBestEffort(
+        failedRun ?? { ...run, status: "failed", ended_at: completedAt },
+      );
+      const current = this.adapters.materializer
+        ? await this.repository.getRun(run.space_id, run.id)
+        : failedRun;
+      if (finalization?.status === "failed") {
+        return {
+          run_id: run.id,
+          status: protocolRunStatus(current?.status ?? "failed"),
+          error_code: "finalization_failed",
+          error: finalization.error_message ?? "Run finalization failed.",
+        };
+      }
+      if (current && isTerminalRunStatus(current.status)) {
+        await this.markDelegatedRunTerminal(current);
+      }
       return {
         run_id: run.id,
-        status: "failed",
+        status: protocolRunStatus(current?.status ?? "failed"),
         error_code: errorCode,
         error: message,
       };
     } finally {
-      await this.cleanupRuntimeContext(preparedRuntime, run);
-      await this.repository.releaseExecutionLock(run.id);
+      await releaseExecutionAuthority();
     }
   }
 
@@ -857,12 +1294,16 @@ export class RunOrchestrationService {
       };
     }
 
-    const updated = await this.repository.markRunTerminal({
+    const updated = await this.markRunTerminalWithConversationRuntime({
       run_id: run.id,
       space_id: run.space_id,
       status: "cancelled",
       output_text: "",
-      output_json: {},
+      output_json: canonicalRunOutput({
+        success: false,
+        outputText: "",
+        outputJson: { error_code: "run_cancelled" },
+      }),
       error_json: {
         error_code: "run_cancelled",
         error_text: input.reason ?? "Run cancelled.",
@@ -873,7 +1314,7 @@ export class RunOrchestrationService {
       },
       exit_code: 1,
       completed_at: new Date().toISOString(),
-    });
+    }, run, null, false);
     if (!updated) {
       const current = await this.repository.getRun(input.space_id, run.id);
       return {
@@ -883,21 +1324,38 @@ export class RunOrchestrationService {
         skip_reason: "run_already_terminal",
       };
     }
-    await this.finalizeTerminalRunBestEffort(updated ?? { ...run, status: "cancelled", ended_at: new Date().toISOString() });
-    await this.markDelegatedRunTerminalBestEffort(updated);
+    const finalization = await this.finalizeTerminalRunBestEffort(
+      updated ?? { ...run, status: "cancelled", ended_at: new Date().toISOString() },
+    );
+    if (finalization?.status === "failed") {
+      return {
+        run_id: run.id,
+        status: "cancelled",
+        error_code: "finalization_failed",
+        error: finalization.error_message ?? "Run finalization failed.",
+      };
+    }
+    await this.markDelegatedRunTerminal(updated);
     // Cancellation evidence lives on the run row (error_json carries requester
     // + process_terminated); no run_event is appended (event_type has a closed
     // CHECK constraint with no cancel type).
     return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
   }
 
-  private async finalizeTerminalRunBestEffort(run: RunRecord): Promise<void> {
-    if (!this.adapters.materializer) return;
+  private async finalizeTerminalRunBestEffort(
+    run: RunRecord,
+  ): Promise<RunMaterializationItemSummary | null> {
+    if (!this.adapters.materializer) return null;
     try {
-      await this.adapters.materializer.finalizeRun(run);
-    } catch {
-      // Terminal status is authoritative. Finalization is idempotent and can
-      // be retried through the explicit finalize endpoint or a later worker.
+      return await this.adapters.materializer.finalizeRun(run);
+    } catch (error) {
+      return {
+        kind: "activity",
+        status: "failed",
+        error_code: "finalization_failed",
+        error_message:
+          error instanceof Error ? error.message : "Run finalization failed.",
+      };
     }
   }
 
@@ -926,7 +1384,7 @@ export class RunOrchestrationService {
       adapterType: run.adapter_type,
       configuredLevel: run.required_sandbox_level,
       riskLevel,
-      workspaceId: run.workspace_id,
+      projectFolderId: run.project_folder_id,
     });
     if (requiredSandboxLevel === "one_shot_docker" && isVendorCliAdapter(run.adapter_type)) {
       const spec = getRuntimeAdapterSpec(run.adapter_type);
@@ -1112,15 +1570,68 @@ export class RunOrchestrationService {
     const prepared: PreparedRuntimeContext = {
       prompt: input.prompt ?? run.prompt ?? null,
       sandbox_cwd: input.sandbox_cwd ?? null,
+      context_cwd: input.sandbox_cwd ?? null,
       context_text: input.context_text ?? null,
       adapter_config: { ...(input.adapter_config ?? {}) },
       risk_level: input.risk_level ?? null,
       cleanup: null,
       sandbox_kind: null,
       base_commit_sha: null,
+      run_input: input.run_input ?? assembleRunInputEnvelope(run, {
+        prompt: input.prompt,
+        contextSnapshotId: run.context_snapshot_id,
+        riskLevel: input.risk_level,
+      }),
+      exchange: null,
     };
 
     try {
+      let conversationPromptOverride: string | null = null;
+      if (isResumableCliConversation(run)) {
+        const runtime = recordValue(recordValue(run.model_override_json).conversation_runtime);
+        if (runtime.schema_version !== "conversation_runtime.v1") {
+          throw new RunPreparationError(
+            "runtime_session_invalid",
+            "CLI conversation is missing its runtime-session snapshot.",
+          );
+        }
+        const stateKey = stringConfigValue(runtime.runtime_state_key);
+        const bindingId = stringConfigValue(runtime.binding_id);
+        const contextFingerprint = stringConfigValue(runtime.context_fingerprint);
+        const replayPrompt = stringConfigValue(runtime.replay_prompt);
+        if (!stateKey || !bindingId || !contextFingerprint || !replayPrompt) {
+          throw new RunPreparationError(
+            "runtime_session_invalid",
+            "CLI conversation has an invalid runtime-session snapshot.",
+          );
+        }
+        const externalSessionId = stringConfigValue(runtime.runtime_session_id);
+        const state = await prepareConversationRuntimeState({
+          agent_space_home: this.config.agentSpaceHome,
+          sandbox_root: this.config.sandboxRoot,
+          state_key: stateKey,
+          resume_requested: Boolean(externalSessionId),
+        });
+        if (
+          isLightweightCliConversation(run)
+          || workingDirScopeForLevel(run.required_sandbox_level) === "ephemeral"
+        ) {
+          prepared.sandbox_cwd = state.cwd;
+          prepared.context_cwd = state.cwd;
+          prepared.sandbox_kind = "conversation_session";
+        }
+        prepared.adapter_config.conversation_runtime = {
+          binding_id: bindingId,
+          runtime_state_key: stateKey,
+          runtime_session_id: state.resume ? externalSessionId : null,
+          context_fingerprint: contextFingerprint,
+        };
+        if (!state.resume) {
+          prepared.prompt = replayPrompt;
+          conversationPromptOverride = replayPrompt;
+        }
+      }
+
       if (isVendorCliAdapter(run.adapter_type) && !prepared.sandbox_cwd) {
         const scope = workingDirScopeForLevel(run.required_sandbox_level);
         if (scope === "ephemeral") {
@@ -1134,7 +1645,7 @@ export class RunOrchestrationService {
           prepared.cleanup = {
             cleanup_kind: EPHEMERAL_CLEANUP_KIND,
             sandbox_cwd: prepared.sandbox_cwd,
-            workspace_root: null,
+            project_folder_root: null,
           };
           prepared.sandbox_kind = "ephemeral";
           await this.appendRunEventBestEffort({
@@ -1142,13 +1653,13 @@ export class RunOrchestrationService {
             space_id: run.space_id,
             event_type: "sandbox_created",
             status: "succeeded",
-            workspace_id: run.workspace_id,
+            project_folder_id: run.project_folder_id,
             metadata_json: {
               required_sandbox_level: run.required_sandbox_level,
               sandbox_kind: "ephemeral",
             },
           });
-        } else if (scope === "worktree") {
+        } else if (scope === "read_only" || scope === "worktree") {
           const manager = this.adapters.workspaceManager;
           if (!manager) {
             throw new RunPreparationError(
@@ -1158,10 +1669,11 @@ export class RunOrchestrationService {
           }
           const workspaceResult = await manager.prepareRunWorkspace(run);
           prepared.sandbox_cwd = workspaceResult.sandbox_cwd;
+          prepared.context_cwd = workspaceResult.context_cwd;
           prepared.cleanup = {
             cleanup_kind: workspaceResult.cleanup_kind,
-            sandbox_cwd: prepared.sandbox_cwd,
-            workspace_root: workspaceResult.workspace_root,
+            sandbox_cwd: workspaceResult.context_cwd ?? prepared.sandbox_cwd,
+            project_folder_root: workspaceResult.project_folder_root,
           };
           prepared.sandbox_kind = workspaceResult.sandbox_kind;
           prepared.base_commit_sha = workspaceResult.base_commit_sha;
@@ -1171,29 +1683,58 @@ export class RunOrchestrationService {
               space_id: run.space_id,
               event_type: "sandbox_created",
               status: "succeeded",
-              workspace_id: run.workspace_id,
+              project_folder_id: run.project_folder_id,
               metadata_json: {
                 required_sandbox_level: run.required_sandbox_level,
                 sandbox_kind: workspaceResult.sandbox_kind,
                 base_commit_sha: workspaceResult.base_commit_sha,
-                workspace_is_dirty: workspaceResult.workspace_is_dirty,
+                project_folder_is_dirty: workspaceResult.project_folder_is_dirty,
               },
             });
           }
         }
       }
 
+      if (isLightweightCliConversation(run)) {
+        const runtime = recordValue(prepared.adapter_config.conversation_runtime);
+        const resumed = Boolean(stringConfigValue(runtime.runtime_session_id));
+        prepared.prompt = [
+          ...(resumed ? [] : [run.system_prompt]),
+          prepared.context_text,
+          prepared.prompt,
+        ].filter((part): part is string => Boolean(part?.trim())).join("\n\n");
+        prepared.context_text = null;
+        prepared.adapter_config.context_file_already_rendered = true;
+        prepared.run_input = {
+          ...prepared.run_input,
+          tool_grants: [],
+        };
+        this.applySupervisorRetryContext(run, prepared);
+        return prepared;
+      }
+
+      if (prepared.sandbox_kind === "read_only_project") {
+        prepared.adapter_config.read_only_workspace = {
+          workspace_cwd: prepared.sandbox_cwd,
+          context_cwd: prepared.context_cwd,
+        };
+      }
       const contextPreparer = this.adapters.contextPreparer;
       if (!contextPreparer) {
+        this.applySupervisorRetryContext(run, prepared);
+        await this.prepareRunExchange(run, prepared);
         return prepared;
       }
       const contextResult = await contextPreparer.prepare({
         runId: run.id,
         spaceId: run.space_id,
         adapterType: run.adapter_type,
-        sandboxCwd: prepared.sandbox_cwd,
+        sandboxCwd: prepared.context_cwd,
         targetFormat: targetFormatForAdapter(run.adapter_type),
-        workspacePath: prepared.cleanup?.workspace_root ?? null,
+        workspacePath: prepared.cleanup?.project_folder_root ?? null,
+        ...(conversationPromptOverride !== null
+          ? { promptOverride: conversationPromptOverride }
+          : {}),
       });
       prepared.prompt = contextResult.runtime_prompt ?? prepared.prompt;
       prepared.context_text = contextResult.runtime_context_text ?? prepared.context_text;
@@ -1202,6 +1743,13 @@ export class RunOrchestrationService {
         prepared.adapter_config.context_file_already_rendered = true;
         prepared.adapter_config.context_target_format = contextResult.target_format ?? null;
       }
+      prepared.run_input = assembleRunInputEnvelope(run, {
+        prompt: prepared.prompt,
+        contextSnapshotId: contextResult.context_snapshot_id,
+        riskLevel: prepared.risk_level,
+      });
+      this.applySupervisorRetryContext(run, prepared);
+      await this.prepareRunExchange(run, prepared);
       return prepared;
     } catch (error) {
       await this.cleanupRuntimeContext(prepared, run);
@@ -1209,10 +1757,54 @@ export class RunOrchestrationService {
     }
   }
 
+  private applySupervisorRetryContext(
+    run: RunRecord,
+    prepared: PreparedRuntimeContext,
+  ): void {
+    const error = recordValue(run.error_json);
+    if (error.error_code !== "supervisor_retry_scheduled") return;
+    const reasonCode = stringConfigValue(error.reason_code);
+    const attemptNumber =
+      typeof error.attempt_number === "number"
+      && Number.isInteger(error.attempt_number)
+      && error.attempt_number > 0
+        ? error.attempt_number
+        : null;
+    if (!reasonCode || attemptNumber === null) return;
+    const retryContext = [
+      "[Supervisor retry]",
+      `This is physical attempt ${attemptNumber}.`,
+      `The previous attempt did not complete acceptably (${reasonCode}).`,
+      "Re-attempt the original task and correct that failure; do not merely repeat the prior response.",
+    ].join("\n");
+    prepared.prompt = [prepared.prompt, retryContext]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join("\n\n");
+    prepared.run_input = {
+      ...prepared.run_input,
+      task_goal: prepared.prompt,
+      inputs: {
+        ...prepared.run_input.inputs,
+        direct: {
+          ...recordValue(prepared.run_input.inputs.direct),
+          prompt: prepared.prompt,
+          supervisor_retry: {
+            reason_code: reasonCode,
+            attempt_number: attemptNumber,
+          },
+        },
+      },
+    };
+  }
+
   private async cleanupRuntimeContext(
     prepared: PreparedRuntimeContext | null,
     run: RunRecord,
   ): Promise<void> {
+    if (prepared?.exchange) {
+      await this.runExchange.cleanup(prepared.exchange).catch(() => {});
+      prepared.exchange = null;
+    }
     if (!prepared?.cleanup) return;
     // server-owned ephemeral dir: remove directly.
     if (prepared.cleanup.cleanup_kind === EPHEMERAL_CLEANUP_KIND) {
@@ -1231,7 +1823,7 @@ export class RunOrchestrationService {
         spaceId: run.space_id,
         cleanupKind: prepared.cleanup.cleanup_kind,
         sandboxCwd: prepared.cleanup.sandbox_cwd,
-        workspaceRoot: prepared.cleanup.workspace_root,
+        workspaceRoot: prepared.cleanup.project_folder_root,
       });
     } catch {
       return;
@@ -1239,9 +1831,30 @@ export class RunOrchestrationService {
     prepared.cleanup = null;
   }
 
+  private async prepareRunExchange(
+    run: RunRecord,
+    prepared: PreparedRuntimeContext,
+  ): Promise<void> {
+    if (!isVendorCliAdapter(run.adapter_type) || !prepared.sandbox_cwd) return;
+    prepared.exchange = await this.runExchange.prepare(
+      run.space_id,
+      run.id,
+      prepared.run_input,
+    );
+    prepared.adapter_config.run_exchange_input_dir = prepared.exchange.input_dir;
+    prepared.adapter_config.run_exchange_output_dir = prepared.exchange.output_dir;
+    prepared.prompt = [
+      prepared.prompt,
+      "Run Exchange: read the runtime-neutral input manifest at " +
+        "$AGENT_SPACE_EXCHANGE_INPUT. Write declared file outputs only beneath " +
+        "$AGENT_SPACE_EXCHANGE_OUTPUT. Do not modify the input manifest.",
+    ].filter((part): part is string => Boolean(part)).join("\n\n");
+  }
+
   private async collectCodePatch(
     run: RunRecord,
     prepared: PreparedRuntimeContext | null,
+    proposalStatus: "pending" | "staged" = "pending",
   ): Promise<{ item: RunMaterializationItemSummary; errors: string[] } | null> {
     if (
       prepared?.sandbox_kind !== "worktree" ||
@@ -1254,6 +1867,7 @@ export class RunOrchestrationService {
       run,
       worktreePath: prepared.sandbox_cwd,
       baseCommitSha: prepared.base_commit_sha,
+      proposalStatus,
     });
   }
 
@@ -1320,7 +1934,7 @@ export class RunOrchestrationService {
           event_type: "artifact_ingested",
           status: materializationEventStatus(item),
           artifact_id: item.artifact_id ?? null,
-          workspace_id: run.workspace_id,
+          project_folder_id: run.project_folder_id,
           error_code: item.error_code ?? null,
           error_message: item.error_message ?? null,
           metadata_json: {
@@ -1335,7 +1949,7 @@ export class RunOrchestrationService {
           event_type: "patch_collected",
           status: materializationEventStatus(item),
           proposal_id: item.proposal_id ?? null,
-          workspace_id: run.workspace_id,
+          project_folder_id: run.project_folder_id,
           error_code: item.error_code ?? null,
           error_message: item.error_message ?? null,
           metadata_json: {
@@ -1350,7 +1964,7 @@ export class RunOrchestrationService {
             event_type: "proposal_created",
             status: materializationEventStatus(item),
             proposal_id: item.proposal_id,
-            workspace_id: run.workspace_id,
+            project_folder_id: run.project_folder_id,
             error_code: item.error_code ?? null,
             error_message: item.error_message ?? null,
             metadata_json: {
@@ -1367,7 +1981,7 @@ export class RunOrchestrationService {
           event_type: "proposal_created",
           status: materializationEventStatus(item),
           proposal_id: item.proposal_id ?? null,
-          workspace_id: run.workspace_id,
+          project_folder_id: run.project_folder_id,
           error_code: item.error_code ?? null,
           error_message: item.error_message ?? null,
           metadata_json: {
@@ -1384,7 +1998,7 @@ export class RunOrchestrationService {
           space_id: run.space_id,
           event_type: "delegation_requested",
           status: materializationEventStatus(item),
-          workspace_id: run.workspace_id,
+          project_folder_id: run.project_folder_id,
           error_code: item.error_code ?? null,
           error_message: item.error_message ?? null,
           summary: "Runtime delegation materialization failed",
@@ -1400,7 +2014,7 @@ export class RunOrchestrationService {
           space_id: run.space_id,
           event_type: "artifact_ingested",
           status: materializationEventStatus(item),
-          workspace_id: run.workspace_id,
+          project_folder_id: run.project_folder_id,
           error_code: item.error_code ?? null,
           error_message: item.error_message ?? null,
           summary: "Output activity materialization failed",
@@ -1456,6 +2070,244 @@ export class RunOrchestrationService {
     }
   }
 
+  private async appendRuntimeSemanticEvents(
+    run: RunRecord,
+    adapterResult: RunAdapterResultEnvelope,
+  ): Promise<void> {
+    for (const event of runtimeSemanticEvents(adapterResult)) {
+      await this.appendRuntimeSemanticEvent(run, event);
+    }
+  }
+
+  private async recordLocalCliUsage(
+    run: RunRecord,
+    adapterResult: RunAdapterResultEnvelope,
+    executionIdentity: string,
+  ): Promise<void> {
+    if (
+      !this.usageRecorder
+      || adapterResult.adapter_kind !== "local_cli"
+      || !adapterResult.usage
+    ) {
+      return;
+    }
+    const metadata = recordValue(adapterResult.metadata_json);
+    if (
+      stringConfigValue(metadata.runtime_provider_id)
+      || !stringConfigValue(metadata.credential_profile_id)
+    ) {
+      // Provider-backed CLI runs are metered at the provider proxy. Recording
+      // the CLI envelope as well would double count the same generation.
+      return;
+    }
+    const observations = adapterResult.model_usage?.length
+      ? adapterResult.model_usage
+      : adapterResult.usage
+        ? [{
+            model: stringConfigValue(metadata.runtime_provider_model),
+            usage: adapterResult.usage,
+          }]
+        : [];
+    for (const [index, observation] of observations.entries()) {
+      const usage = observation.usage;
+      const details: Record<string, number> = {};
+      if (usage.input_tokens !== undefined) details.input = usage.input_tokens;
+      if (usage.output_tokens !== undefined) details.output = usage.output_tokens;
+      if (usage.total_tokens !== undefined) details.total = usage.total_tokens;
+      if (usage.cache_creation_input_tokens !== undefined) {
+        details.input_cache_creation = usage.cache_creation_input_tokens;
+      }
+      if (usage.cache_read_input_tokens !== undefined) {
+        details.input_cache_read = usage.cache_read_input_tokens;
+      }
+      if (usage.reasoning_tokens !== undefined) {
+        details.output_reasoning = usage.reasoning_tokens;
+      }
+      await this.usageRecorder({
+        space_id: run.space_id,
+        event_type: "llm.generation",
+        source_type: "local_run",
+        source_resource_type: "run",
+        source_resource_id: run.id,
+        execution_channel: "local_cli",
+        adapter_type: adapterResult.adapter_type,
+        runtime_tool_version: stringConfigValue(metadata.runtime_tool_version),
+        vendor: cliVendor(adapterResult.adapter_type),
+        model: observation.model,
+        run_id: run.id,
+        root_run_id: run.root_run_id ?? null,
+        parent_run_id: run.parent_run_id ?? null,
+        run_group_id: run.run_group_id ?? null,
+        session_id: run.session_id,
+        external_session_id: stringConfigValue(metadata.external_session_id),
+        agent_id: run.agent_id,
+        project_id: run.project_id,
+        project_folder_id: run.project_folder_id,
+        trigger_origin: run.trigger_origin,
+        occurred_at: adapterResult.completed_at ?? new Date().toISOString(),
+        usage_details: details,
+        usage_accuracy: "provider_reported",
+        dedupe_confidence: "high",
+        idempotency_key: `local-cli:${executionIdentity}:${index}`,
+        dimensions: {
+          runtime_profile_id: run.runtime_profile_id ?? null,
+        },
+      });
+    }
+  }
+
+  private async recordLocalCliUsageBestEffort(
+    run: RunRecord,
+    adapterResult: RunAdapterResultEnvelope,
+    executionIdentity: string,
+  ): Promise<boolean> {
+    try {
+      await this.recordLocalCliUsage(run, adapterResult, executionIdentity);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async markRunTerminalWithConversationRuntime(
+    input: RunTerminalUpdate,
+    run: RunRecord,
+    adapterResult: RunAdapterResultEnvelope | null,
+    keepSession: boolean,
+  ): Promise<RunRecord | null> {
+    const conversation = conversationRuntimeTerminalSync(
+      run,
+      adapterResult,
+      keepSession,
+    );
+    if (!conversation) return this.repository.markRunTerminal(input);
+    const terminal = await this.repository.markRunTerminalWithConversationSession(
+      input,
+      conversation,
+    );
+    if (!conversation.keep_session) {
+      try {
+        await removeConversationRuntimeState({
+          agent_space_home: this.config.agentSpaceHome,
+          sandbox_root: this.config.sandboxRoot,
+          state_key: conversation.runtime_state_key,
+        });
+      } catch {
+        // PostgreSQL state is already authoritative and atomically detached.
+        // The retention sweep removes an interrupted filesystem orphan.
+      }
+    }
+    return terminal;
+  }
+
+  private async publishRunTerminalWithConversationRuntime(
+    input: RunTerminalUpdate,
+    run: RunRecord,
+    adapterResult: RunAdapterResultEnvelope | null,
+    keepSession: boolean,
+  ): Promise<RunRecord | null> {
+    const conversation = conversationRuntimeTerminalSync(
+      run,
+      adapterResult,
+      keepSession,
+    );
+    if (!conversation) return this.repository.publishRunTerminal(input);
+    const terminal =
+      await this.repository.publishRunTerminalWithConversationSession(
+        input,
+        conversation,
+      );
+    if (!conversation.keep_session) {
+      try {
+        await removeConversationRuntimeState({
+          agent_space_home: this.config.agentSpaceHome,
+          sandbox_root: this.config.sandboxRoot,
+          state_key: conversation.runtime_state_key,
+        });
+      } catch {
+        // PostgreSQL state is already authoritative and atomically detached.
+      }
+    }
+    return terminal;
+  }
+
+  private async syncConversationRuntimeSessionBestEffort(
+    run: RunRecord,
+    adapterResult: RunAdapterResultEnvelope,
+    keepSession: boolean,
+  ): Promise<void> {
+    if (!this.conversationRuntimeSessions) return;
+    const runtime = recordValue(recordValue(run.model_override_json).conversation_runtime);
+    if (runtime.schema_version !== "conversation_runtime.v1") return;
+    const bindingId = stringConfigValue(runtime.binding_id);
+    const stateKey = stringConfigValue(runtime.runtime_state_key);
+    const contextFingerprint = stringConfigValue(runtime.context_fingerprint);
+    if (!bindingId || !stateKey || !contextFingerprint) return;
+    try {
+      const externalSessionId = stringConfigValue(
+        recordValue(adapterResult.metadata_json).external_session_id,
+      );
+      if (keepSession && externalSessionId) {
+        await this.conversationRuntimeSessions.record({
+          binding_id: bindingId,
+          runtime_state_key: stateKey,
+          runtime_session_id: externalSessionId,
+          context_fingerprint: contextFingerprint,
+          message_cursor_id: stringConfigValue(runtime.message_cursor_id),
+        });
+        return;
+      }
+      await this.invalidateConversationRuntimeSessionBestEffort(run);
+    } catch {
+      return;
+    }
+  }
+
+  private async invalidateConversationRuntimeSessionBestEffort(
+    run: RunRecord,
+  ): Promise<void> {
+    if (!this.conversationRuntimeSessions) return;
+    const runtime = recordValue(recordValue(run.model_override_json).conversation_runtime);
+    if (runtime.schema_version !== "conversation_runtime.v1") return;
+    const bindingId = stringConfigValue(runtime.binding_id);
+    const stateKey = stringConfigValue(runtime.runtime_state_key);
+    if (!bindingId || !stateKey) return;
+    try {
+      const invalidated = await this.conversationRuntimeSessions.invalidate({
+        binding_id: bindingId,
+        runtime_state_key: stateKey,
+      });
+      if (invalidated) {
+        await removeConversationRuntimeState({
+          agent_space_home: this.config.agentSpaceHome,
+          sandbox_root: this.config.sandboxRoot,
+          state_key: stateKey,
+        });
+      }
+    } catch {
+      return;
+    }
+  }
+
+  private async appendRuntimeSemanticEvent(
+    run: RunRecord,
+    event: RuntimeSemanticEvent,
+  ): Promise<void> {
+    await this.appendRunEventBestEffort({
+      run_id: run.id,
+      space_id: run.space_id,
+      event_type: event.type,
+      status: semanticEventStatus(event),
+      summary: event.summary ?? null,
+      project_folder_id: run.project_folder_id,
+      metadata_json: {
+        schema_version: event.schema_version,
+        call_id: event.call_id ?? null,
+        ...recordValue(event.metadata_json),
+      },
+    });
+  }
+
   private async markDelegatedRunRunningBestEffort(run: RunRecord): Promise<void> {
     try {
       await this.delegationProjector?.markDelegatedRunRunning(run);
@@ -1464,27 +2316,63 @@ export class RunOrchestrationService {
     }
   }
 
-  private async markDelegatedRunTerminalBestEffort(run: RunRecord): Promise<void> {
-    try {
-      await this.delegationProjector?.markDelegatedRunTerminal(run);
-    } catch {
-      return;
-    }
+  private async markDelegatedRunTerminal(run: RunRecord): Promise<void> {
+    if (!run.run_group_id) return;
+    await this.delegationProjector?.markDelegatedRunTerminal(run);
   }
 
-  private async markRunDegradedBestEffort(input: {
-    run_id: string;
-    space_id: string;
-    completed_at: string;
-    error_code: string;
-    error_message: string;
-  }): Promise<RunRecord | null> {
-    try {
-      return await this.repository.markRunDegraded?.(input) ?? null;
-    } catch {
-      return null;
-    }
+  async reconcileTerminalDelegation(run: RunRecord): Promise<void> {
+    if (!isTerminalRunStatus(run.status)) return;
+    await this.markDelegatedRunTerminal(run);
   }
+
+}
+
+function conversationRuntimeTerminalSync(
+  run: RunRecord,
+  adapterResult: RunAdapterResultEnvelope | null,
+  keepSession: boolean,
+): ConversationRuntimeTerminalSync | null {
+  const runtime = recordValue(recordValue(run.model_override_json).conversation_runtime);
+  if (runtime.schema_version !== "conversation_runtime.v1") return null;
+  const bindingId = stringConfigValue(runtime.binding_id);
+  const stateKey = stringConfigValue(runtime.runtime_state_key);
+  if (!bindingId || !stateKey) return null;
+  const contextFingerprint = stringConfigValue(runtime.context_fingerprint);
+  const externalSessionId = adapterResult
+    ? stringConfigValue(recordValue(adapterResult.metadata_json).external_session_id)
+    : null;
+  const canKeep = keepSession && Boolean(contextFingerprint && externalSessionId);
+  return {
+    binding_id: bindingId,
+    runtime_state_key: stateKey,
+    keep_session: canKeep,
+    runtime_session_id: canKeep ? externalSessionId : null,
+    context_fingerprint: canKeep ? contextFingerprint : null,
+    message_cursor_id: canKeep
+      ? stringConfigValue(runtime.message_cursor_id)
+      : null,
+  };
+}
+
+function isLightweightCliConversation(run: RunRecord): boolean {
+  return (
+    isVendorCliAdapter(run.adapter_type) &&
+    recordValue(run.model_override_json).execution_mode === "conversation_lightweight.v1"
+  );
+}
+
+function isResumableCliConversation(run: RunRecord): boolean {
+  if (!isVendorCliAdapter(run.adapter_type)) return false;
+  const executionMode = recordValue(run.model_override_json).execution_mode;
+  return (
+    executionMode === "conversation_lightweight.v1"
+    || executionMode === "room_conversation.v1"
+  );
+}
+
+function isChatTurnRun(run: RunRecord): boolean {
+  return recordValue(recordValue(run.model_override_json).chat_turn).schema_version === "chat_turn.v1";
 }
 
 function outputJsonWithVerification(
@@ -1508,6 +2396,21 @@ function outputJsonWithVerification(
   return output;
 }
 
+function outputJsonWithRuntimeUsage(
+  adapterResult: RunAdapterResultEnvelope,
+): Record<string, unknown> {
+  const output = recordValue(adapterResult.output_json);
+  if (adapterResult.adapter_kind !== "local_cli" || !adapterResult.usage) return output;
+  const metadata = recordValue(adapterResult.metadata_json);
+  output.runtime_usage = {
+    adapter_type: adapterResult.adapter_type,
+    external_session_id: stringConfigValue(metadata.external_session_id),
+    usage: adapterResult.usage,
+    model_usage: adapterResult.model_usage ?? [],
+  };
+  return output;
+}
+
 function verificationStatus(
   results: VerificationResultRecord[],
 ): "succeeded" | "failed" | "warning" | "skipped" {
@@ -1517,10 +2420,37 @@ function verificationStatus(
   return "succeeded";
 }
 
+function runtimeSemanticEvents(
+  result: RunAdapterResultEnvelope,
+): RuntimeSemanticEvent[] {
+  const events = (result as { runtime_events?: unknown }).runtime_events;
+  return Array.isArray(events)
+    ? events.filter((event): event is RuntimeSemanticEvent =>
+        Boolean(event) &&
+        typeof event === "object" &&
+        (event as { schema_version?: unknown }).schema_version === "runtime_event.v1")
+    : [];
+}
+
+function semanticEventStatus(
+  event: RuntimeSemanticEvent,
+): "pending" | "succeeded" | "failed" | "warning" {
+  if (event.type === "approval_requested" || event.type === "tool_call_started") return "pending";
+  if (event.type === "error" || event.type === "tool_call_failed") return "failed";
+  if (event.type === "warning") return "warning";
+  return "succeeded";
+}
+
 function stringConfigValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function positiveNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function cliVendor(adapterType: string): string {
+  if (adapterType === "claude_code") return "anthropic";
+  if (adapterType === "codex_cli") return "openai";
+  return adapterType;
 }

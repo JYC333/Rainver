@@ -65,7 +65,10 @@ export interface VerificationInput {
 }
 
 export interface VerificationEnginePort {
-  verify(input: VerificationInput): Promise<VerificationResultRecord[]>;
+  verify(
+    input: VerificationInput,
+    phase?: "all" | "pre_materialization" | "post_materialization",
+  ): Promise<VerificationResultRecord[]>;
 }
 
 export interface VerificationSummary {

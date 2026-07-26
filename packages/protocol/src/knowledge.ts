@@ -154,7 +154,7 @@ export const ClaimSummaryOutSchema = z
     title: z.string(),
     excerpt: z.string().nullish(),
     primary_project_id: IdSchema.nullish(),
-    workspace_id: IdSchema.nullish(),
+    project_folder_id: IdSchema.nullish(),
     updated_at: ISODateTimeSchema,
     ...SecretResponseGuards,
   })
@@ -230,7 +230,7 @@ const PacketSystemFieldsSchema = z.object({
   created_by_run_id: IdSchema.optional(),
   proposal_type: z.string().optional(),
   project_id: IdSchema.nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
 });
 
 const ClaimSourcePacketSchema = z

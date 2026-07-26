@@ -6,9 +6,10 @@ import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPost
 import { migrate } from "../src/db/migrator";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
-import { transition } from "../src/modules/projectResearch/stateMachine";
+import { advanceOperation } from "../src/modules/projectResearch/operationProjection";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -213,12 +214,12 @@ describe("Project archive lifecycle (real Postgres)", () => {
     expect(stillStopped.rows[0]).toEqual({ automation: "paused", workflow: "paused", operation: "cancelled" });
   });
 
-  it("serializes archive with a research transition without deadlock", async () => {
+  it("serializes archive with a research advanceOperation without deadlock", async () => {
     if (!available || !pool) return;
     const identity = { spaceId: SPACE, userId: OWNER };
     const results = await Promise.allSettled([
       new PgProjectRepository(pool).archive(identity, PROJECT),
-      transition(pool, SPACE, (await pool.query<{ id: string }>(
+      advanceOperation(pool, SPACE, (await pool.query<{ id: string }>(
         `SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2`,
         [SPACE, PROJECT],
       )).rows[0]!.id, {
@@ -320,6 +321,11 @@ describe("Project archive lifecycle (real Postgres)", () => {
       [SPACE, PROJECT],
     );
     const question = "Does archive preserve queued incremental work?";
+    const thread = await new InquiryThreadService(pool).createThread(
+      { spaceId: SPACE, userId: OWNER },
+      PROJECT,
+      { kind: "question", statement: question },
+    );
     await pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
     await pool.query(
       `UPDATE project_research_workflows
@@ -328,6 +334,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
       [SPACE, PROJECT, workflow.rows[0]!.id, JSON.stringify({
         research_question: question,
         research_question_version: 1,
+        thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
         monitoring: { active: true },
         monitoring_active: true,
         report_depth: "quick",
@@ -376,6 +383,11 @@ describe("Project archive lifecycle (real Postgres)", () => {
       [SPACE, PROJECT],
     );
     const question = "Can pending incremental work be consumed without loss?";
+    const thread = await new InquiryThreadService(pool).createThread(
+      { spaceId: SPACE, userId: OWNER },
+      PROJECT,
+      { kind: "question", statement: question },
+    );
     await pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
     await pool.query(
       `UPDATE project_research_workflows SET state_json=$4::jsonb
@@ -383,6 +395,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
       [SPACE, PROJECT, workflow.rows[0]!.id, JSON.stringify({
         research_question: question,
         research_question_version: 1,
+        thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
         monitoring: { active: true },
         monitoring_active: true,
         report_depth: "quick",

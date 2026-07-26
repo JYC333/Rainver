@@ -9,7 +9,7 @@ A **Space** is a collaboration boundary, not a shared mind. Members of a househo
 - **Space-shared memory** — visibility `space_shared`; readable by any member of the same space unless `sensitivity_level` blocks it.
 - **User-owned memory** — `owner_user_id` identifies the human who controls the row for ACL; distinct from who the memory is *about*.
 - **Subject-user memory** — `subject_user_id` means who or what the memory is *about* (often another user or the self); must not be conflated with `owner_user_id`.
-- **Workspace / project memory** — scope is represented by `workspace_id` / `project_id` and checked independently from visibility.
+- **Project Folder / project memory** — scope is represented by `project_folder_id` / `project_id` and checked independently from visibility.
 - **Selected-user memory** — visibility `selected_users`; readers require an active row in `content_access_grants` (or ownership). Its grant level is authoritative for the named reader.
 - **Space-shared disclosure upgrades** — `space_shared` rows are readable to eligible members at their base level, and optional active grants can raise a named member from `summary` to `full`; grants never narrow the base level.
 - **Restricted / highly restricted** — sensitivity remains separate from visibility. `highly_restricted` requires `private` visibility and is owner-only, except for an active Space owner/admin when that Space was created with immutable `oversight_mode=full`. `none`, `summary`, and `content` oversight modes, and all explicit grants, remain denied.
@@ -20,9 +20,9 @@ A **Space** is a collaboration boundary, not a shared mind. Members of a househo
 
 | Field | Role |
 |-------|------|
-| `owner_user_id` | Human who controls the memory and receives owner ACL (may be null for system, workspace, space-level, agent, capability, public-template, or policy-controlled rows). |
+| `owner_user_id` | Human who controls the memory and receives owner ACL (may be null for system, Project Folder, space-level, agent, capability, public-template, or policy-controlled rows). |
 | `subject_user_id` | Who or what the memory is about. Never inferred from `owner_user_id`. |
-| `scope_type` | Public placement category (`system`, `space`, `user`, `workspace`, `agent`, etc.). Specific object placement uses the dedicated owner/workspace/project/agent columns rather than a generic `scope_id`. |
+| `scope_type` | Public placement category (`system`, `space`, `user`, `project_folder`, `agent`, etc.). Specific object placement uses the dedicated owner/project_folder/project/agent columns rather than a generic `scope_id`. |
 | `memory_type` | Public memory category used by APIs, digests, and UI grouping. |
 | `memory_layer` | Layer in the memory hierarchy (`semantic` or `episodic` in the current baseline). |
 | `visibility` | Who may read (`private`, `space_shared`, `selected_users`). |
@@ -41,7 +41,7 @@ Canonical explicit reads (GET /memory/{id}, search hits) also append `MemoryRead
 
 Space oversight is read-only and is resolved inside that same predicate. It may
 therefore contribute an eligible member's otherwise-private memory to that
-owner/admin's own run context, subject to workspace/project and sensitivity
+owner/admin's own run context, subject to Project Folder/project and sensitivity
 gates. It never puts `highly_restricted` memory into shared context blends,
 digests, public summaries, or maintenance outputs.
 
@@ -70,5 +70,5 @@ change after the proposal is accepted.
 
 ## Non-goals
 
-Provider credentials, workspace filesystem posture, and system administration
+Provider credentials, Project Folder filesystem posture, and system administration
 are not content visibility grants.

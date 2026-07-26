@@ -68,7 +68,7 @@ function proposalRow(params: readonly unknown[]) {
     id: params[0],
     space_id: params[1],
     created_by_user_id: params[14],
-    workspace_id: params[12],
+    project_folder_id: params[12],
     created_by_run_id: params[2],
     proposal_type: params[3],
     status: params[4],

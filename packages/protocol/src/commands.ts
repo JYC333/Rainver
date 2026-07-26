@@ -70,7 +70,7 @@ export const CreateCapturePayloadSchema = z.object({
   title: z.string().nullish(),
   content: z.string().nullish(),
   source_url: z.string().nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   occurred_at: ISODateTimeSchema.nullish(),
 });
@@ -121,7 +121,7 @@ export const StartRunPayloadSchema = z.object({
   agent_id: IdSchema,
   instruction: z.string().nullish(),
   prompt: z.string().nullish(),
-  workspace_id: IdSchema.nullish(),
+  project_folder_id: IdSchema.nullish(),
   session_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   context_artifact_ids: z.array(IdSchema).max(8).default([]),

@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common";
 import { PgRunRepository } from "../runs/repository";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { writeNote } from "../knowledge/noteRevisionService";
-import type { NoteOp } from "../knowledge/noteDocument";
 import { resolveNotebookNote } from "./notebookNotes";
+import type { ResearchOperationState } from "./operationProjection";
+import { InquirySignalService } from "../inquiry/signalService";
 import {
   PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
   resolveProjectResearchMonitorComparePrompt,
@@ -129,8 +129,12 @@ export class ProjectResearchMonitorComparisonService {
   /**
    * Writes the full set of comparisons accumulated across every batch of a
    * comparison stage. Called exactly once, when the last batch's run
-   * completes — the state machine (comparison_pending_source_item_ids
+   * completes — the operation projection (comparison_pending_source_item_ids
    * reaching empty) is what guarantees "exactly once", not this method.
+   *
+   * Every comparison becomes an Evidence Signal on the workflow's pinned
+   * Inquiry Thread scope. Supports is routine and auto-attaches; contradiction
+   * and new direction are material and enter Candidate consolidation.
    */
   async persistComparisons(input: {
     spaceId: string;
@@ -138,8 +142,11 @@ export class ProjectResearchMonitorComparisonService {
     workflowId: string;
     operationId: string;
     runId: string;
+    researchQuestion: string;
+    threadScope: ResearchOperationState["thread_scope"];
+    instructedByUserId: string | null;
     comparisons: MonitorComparison[];
-  }): Promise<{ comparisons: MonitorComparison[]; notebookVersion: number | null }> {
+  }): Promise<{ comparisons: MonitorComparison[]; signalIds: string[] }> {
     const comparisons = input.comparisons;
     return withQueryableTransaction(this.db, async (db) => {
       const now = new Date().toISOString();
@@ -177,28 +184,38 @@ export class ProjectResearchMonitorComparisonService {
         [input.spaceId, input.projectId, input.workflowId, input.operationId,
           counts.supports, counts.contradicts, counts.new_direction, JSON.stringify(comparisons)],
       );
-      const disruptive = comparisons.filter((item) => item.stance !== "supports");
-      if (disruptive.length === 0) return { comparisons, notebookVersion: null };
-      const understandingNote = await resolveNotebookNote(db, input.spaceId, input.projectId, "understanding");
-      if (!understandingNote) return { comparisons, notebookVersion: null };
-      const additions = disruptive.map((item) =>
-        `- **${item.stance === "contradicts" ? "Contradiction" : "New direction"}** (${item.source_item_id}): ${item.detail}`,
-      ).join("\n");
-      // Direct co-edit (revised D2): monitoring appends a labeled block to the
-      // understanding note; existing blocks stay untouched and the write is
-      // recorded as a revision the user can roll back.
-      const ops: NoteOp[] = [{ op: "append", markdown: `## Monitoring update — ${now.slice(0, 10)}\n\n${additions}` }];
-      const run = await db.query(`SELECT 1 FROM runs WHERE id=$1 AND space_id=$2`, [input.runId, input.spaceId]);
-      const written = await writeNote(db, {
-        spaceId: input.spaceId,
-        noteId: understandingNote.id,
-        content: { kind: "ops", ops },
-        source: "ai_monitoring",
-        runId: run.rows[0] ? input.runId : null,
-        refs: disruptive.map((item) => item.source_item_id),
-        diff: { ops, run_id: input.runId },
-      });
-      return { comparisons, notebookVersion: written.outcome === "written" ? written.note.version : null };
+      const userId = input.instructedByUserId ?? (await startedByUserId(db, input.spaceId, input.workflowId));
+      if (!userId) throw new Error("Monitoring comparison has no attributable user for Evidence Signal creation");
+      const identity: SpaceUserIdentity = { spaceId: input.spaceId, userId };
+      if (input.threadScope.length === 0) {
+        throw new Error("Monitoring comparison has no pinned Inquiry Thread scope");
+      }
+      const corpusItemIds = await corpusItemIdsBySourceItemId(db, input.spaceId, input.projectId, comparisons.map((item) => item.source_item_id));
+      const signalService = new InquirySignalService(db);
+      const signalIds: string[] = [];
+      for (const comparison of comparisons) {
+        const corpusItemId = corpusItemIds.get(comparison.source_item_id);
+        if (!corpusItemId) continue;
+        for (const thread of input.threadScope) {
+          const signal = await signalService.createSignal(identity, input.projectId, thread.thread_id, {
+            corpus_item_id: corpusItemId,
+            classification: comparison.stance === "supports"
+              ? "supports"
+              : comparison.stance === "contradicts" ? "contradicts" : "raises_gap",
+            source_provenance: {
+              comparison_run_id: input.runId,
+              source: "ai_monitoring",
+              thread_version: thread.version,
+              research_question: input.researchQuestion,
+              stance: comparison.stance,
+              detail: comparison.detail,
+              affected_sections: comparison.affected_sections,
+            },
+          });
+          signalIds.push(signal.id as string);
+        }
+      }
+      return { comparisons, signalIds };
     });
   }
 
@@ -285,4 +302,30 @@ function stanceCounts(values: MonitorComparison[]) {
     contradicts: values.filter((item) => item.stance === "contradicts").length,
     new_direction: values.filter((item) => item.stance === "new_direction").length,
   };
+}
+
+async function startedByUserId(db: Queryable, spaceId: string, workflowId: string): Promise<string | null> {
+  const row = await db.query<{ started_by_user_id: string | null }>(
+    `SELECT started_by_user_id FROM project_research_workflows WHERE id=$1 AND space_id=$2`,
+    [workflowId, spaceId],
+  );
+  return row.rows[0]?.started_by_user_id ?? null;
+}
+
+async function corpusItemIdsBySourceItemId(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  sourceItemIds: string[],
+): Promise<Map<string, string>> {
+  if (sourceItemIds.length === 0) return new Map();
+  const rows = await db.query<{ source_item_id: string; corpus_item_id: string }>(
+    `SELECT DISTINCT ON (pcis.source_item_id) pcis.source_item_id, pci.id AS corpus_item_id
+       FROM project_corpus_items pci
+       JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
+      WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[]) AND pci.status='active'
+      ORDER BY pcis.source_item_id, pci.updated_at DESC`,
+    [spaceId, projectId, sourceItemIds],
+  );
+  return new Map(rows.rows.map((row) => [row.source_item_id, row.corpus_item_id]));
 }

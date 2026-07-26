@@ -64,7 +64,7 @@ function makeStore(targets: Record<string, InvocationTarget>): ProviderCommandSt
         access_level: "full" as const,
         source_resource_type: null,
         source_resource_id: null,
-        workspace_id: null,
+        project_folder_id: null,
         project_id: null,
         grant_snapshots: [],
       };

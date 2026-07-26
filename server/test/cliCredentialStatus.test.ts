@@ -60,13 +60,34 @@ describe("CLI credential login-state detection", () => {
         network_profile_id: null,
         manageable: true,
       },
+      {
+        id: "profile-other-user",
+        owner_user_id: "user-2",
+        runtime: "codex_cli",
+        name: "other-user",
+        source_path: loggedInPath,
+        target_path: "/home/agent/.codex",
+        readonly: false,
+        notes: "",
+        grant_id: "grant-other-user",
+        grant_enabled: true,
+        is_default: true,
+        network_profile_id: null,
+        manageable: false,
+      },
     ];
     const query = vi.fn(async (sql: string, params: readonly unknown[] = []) => {
       if (sql.includes("FROM cli_credential_space_grants") && sql.includes("JOIN cli_credential_profiles")) {
         const profileId = params[2];
+        const requestedOwner = profileId ? params[3] : params[1];
+        const visibleRows = requestedOwner
+          ? rows.filter(row => row.owner_user_id === requestedOwner)
+          : rows;
         return {
-          rows: profileId ? rows.filter(row => row.id === profileId) : rows,
-          rowCount: profileId ? rows.filter(row => row.id === profileId).length : rows.length,
+          rows: profileId ? visibleRows.filter(row => row.id === profileId) : visibleRows,
+          rowCount: profileId
+            ? visibleRows.filter(row => row.id === profileId).length
+            : visibleRows.length,
         };
       }
       return { rows: [], rowCount: 0 };
@@ -88,6 +109,7 @@ describe("CLI credential login-state detection", () => {
     expect(available.find(row => row.id === "profile-logged-in")).toMatchObject({
       logged_in: true,
     });
+    expect(available.find(row => row.id === "profile-other-user")).toBeUndefined();
 
     const status = await broker.status("space-1", "user-1");
     expect(status.find(row => row.runtime === "codex_cli")).toMatchObject({
@@ -101,5 +123,72 @@ describe("CLI credential login-state detection", () => {
     await expect(
       broker.resolveProfile("codex_cli", "profile-logged-in", true, "space-1", "user-1"),
     ).resolves.toMatchObject({ id: "profile-logged-in" });
+    await expect(
+      broker.resolveProfile("codex_cli", "profile-other-user", true, "space-1", "user-1"),
+    ).resolves.toBeNull();
+    await expect(
+      broker.sendLoginInput(
+        "codex_cli",
+        "secret",
+        "space-1",
+        "user-1",
+        "profile-other-user",
+      ),
+    ).resolves.toBe(false);
+    expect(query.mock.calls.some(([sql]) =>
+      String(sql).includes("g.owner_user_id = $2")
+      && String(sql).includes("p.owner_user_id = $2")
+    )).toBe(true);
+  });
+
+  it("enumerates every logged-in user profile for background quota refresh", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "aspace-cli-refresh-targets-"));
+    const profileOne = join(tempDir, "profile-one");
+    const profileTwo = join(tempDir, "profile-two");
+    const loggedOut = join(tempDir, "logged-out");
+    for (const path of [profileOne, profileTwo, loggedOut]) {
+      await mkdir(path, { recursive: true });
+    }
+    await writeFile(join(profileOne, "auth.json"), "{\"token\":\"one\"}\n");
+    await writeFile(join(profileTwo, "auth.json"), "{\"token\":\"two\"}\n");
+
+    const query = vi.fn(async () => ({
+      rows: [
+        {
+          profile_id: "profile-1",
+          space_id: "space-1",
+          owner_user_id: "user-1",
+          source_path: profileOne,
+        },
+        {
+          profile_id: "profile-2",
+          space_id: "space-2",
+          owner_user_id: "user-2",
+          source_path: profileTwo,
+        },
+        {
+          profile_id: "profile-3",
+          space_id: "space-3",
+          owner_user_id: "user-3",
+          source_path: loggedOut,
+        },
+      ],
+      rowCount: 3,
+    }));
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    const broker = new CliCredentialBroker(
+      loadConfig({
+        AGENT_SPACE_HOME: tempDir,
+        SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      }),
+    );
+
+    await expect(broker.listQuotaRefreshTargets("codex_cli")).resolves.toEqual([
+      { profile_id: "profile-1", space_id: "space-1", owner_user_id: "user-1" },
+      { profile_id: "profile-2", space_id: "space-2", owner_user_id: "user-2" },
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("DISTINCT ON (p.id)"), [
+      "codex_cli",
+    ]);
   });
 });

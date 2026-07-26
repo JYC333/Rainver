@@ -55,7 +55,6 @@ export const RAIL_ITEMS: RailItem[] = [
   { id: 'projects',   label: 'Projects',   to: '/projects',    icon: FolderKanban, scope: 'space' },
   { id: 'agents',     label: 'Agents',     to: '/agents',      icon: Bot,         scope: 'space' },
   { id: 'evolution',  label: 'Evolution',  to: '/evolution',   icon: GitBranch,   scope: 'home' },
-  { id: 'workspaces', label: 'Workspaces', to: '/workspaces',  icon: Folder,      scope: 'space' },
   { id: 'instance-settings', label: 'Instance Settings', to: '/instance-settings', icon: ServerCog, scope: 'home', footer: true, requiresInstanceAdmin: true, activePaths: ['/runtime-tools'] },
   { id: 'space-settings', label: 'Space Settings', to: '/space-settings', icon: Building2, scope: 'space', footer: true, requiresSpaceAdmin: true, activePaths: ['/network-profiles', '/plugins', '/retrieval-settings', '/prompts'] },
   { id: 'settings',   label: 'Settings',   to: '/settings',    icon: Settings,    scope: 'home',  footer: true },
@@ -67,7 +66,7 @@ export const MOBILE_TAB_ITEMS = RAIL_ITEMS.filter(i => i.mobile)
  * A scene's second-level navigation.
  *
  * - "filter" scenes drive a single query param the page already honours (no faked views).
- * - "route" scenes link to real sibling routes that belong to the same workspace area.
+ * - "route" scenes link to real sibling routes that belong to the same product area.
  */
 export interface FilterSceneItem { label: string; value: string }
 export interface RouteSceneItem {
@@ -144,7 +143,7 @@ export const SCENES: Scene[] = [
     ],
   },
   // Knowledge intentionally has NO scene: cross-section navigation is the lightweight
-  // breadcrumb switcher in each page header (KnowledgeSectionHeader), and each workspace
+  // breadcrumb switcher in each page header (KnowledgeSectionHeader), and each destination
   // owns its own layout (e.g. the Notes collection tree). A persistent section sidebar/tab
   // strip here would collide with that — see .agent/modules/knowledge-base.md.
   {
@@ -163,10 +162,10 @@ export const SCENES: Scene[] = [
     id: 'agents',
     title: 'Agents',
     icon: Bot,
-    segments: ['agents', 'agent-groups', 'sessions', 'runs', 'automations', 'capabilities'],
+    segments: ['agents', 'rooms', 'sessions', 'runs', 'automations', 'capabilities'],
     items: [
       { label: 'My agents',  to: '/agents' },
-      { label: 'Rooms',      to: '/agent-groups' },
+      { label: 'Rooms',      to: '/rooms' },
       { label: 'Chat history', to: '/sessions' },
       { label: 'Templates',  to: '/agents/templates' },
       { label: 'Runs',       to: '/runs' },
@@ -177,13 +176,11 @@ export const SCENES: Scene[] = [
   },
   {
     kind: 'route',
-    id: 'workspaces',
-    title: 'Workspaces',
+    id: 'artifacts',
+    title: 'Artifacts',
     icon: Folder,
-    segments: ['workspaces', 'workspace-console', 'artifacts'],
+    segments: ['artifacts'],
     items: [
-      { label: 'Workspaces', to: '/workspaces' },
-      { label: 'Console',    to: '/workspace-console' },
       { label: 'Artifacts',  to: '/artifacts' },
     ],
   },

@@ -68,6 +68,7 @@ export async function enqueueSessionCondense(
     space_id: string;
     user_id: string;
     session_id: string;
+    source_run_id: string;
     agent_id?: string | null;
     agent_version_id?: string | null;
   },
@@ -85,6 +86,7 @@ export async function enqueueSessionCondense(
       space_id: input.space_id,
       user_id: input.user_id,
       session_id: input.session_id,
+      source_run_id: input.source_run_id,
       agent_version_id: input.agent_version_id ?? null,
     },
   });

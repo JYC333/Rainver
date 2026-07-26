@@ -27,6 +27,7 @@ const CHANNEL = "88888888-8888-4888-8888-888888888888";
 const WORKFLOW = "66666666-6666-4666-8666-666666666666";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 const PLAN = "aaaaaaaa-1111-4111-8111-111111111111";
+const AGENT = "99999999-9999-4999-8999-999999999999";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -122,12 +123,11 @@ beforeEach(async () => {
       `idem-${PLAN}`, now,
     ],
   );
-  const agentId = randomUUID();
   const versionId = randomUUID();
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
-    [agentId, SPACE, OWNER, now],
+    [AGENT, SPACE, OWNER, now],
   );
   await pool.query(
     `INSERT INTO agent_versions (
@@ -138,8 +138,9 @@ beforeEach(async () => {
      ) VALUES ($1, $2, $3, 'v1', 'Test agent.',
                '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
                '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
-    [versionId, agentId, SPACE, now],
+    [versionId, AGENT, SPACE, now],
   );
+  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, versionId]);
   // The synthesis run the operation points at is still executing — reconcile
   // must report on it, not clobber the operation back to screening.
   await pool.query(
@@ -148,7 +149,7 @@ beforeEach(async () => {
        adapter_type, instructed_by_user_id, owner_user_id, project_id,
        contract_snapshot_json, created_at, updated_at, started_at
      ) VALUES ($1,$2,$3,$4,'agent','system','running','live','model_api',$5,$5,$6,'{}'::jsonb,$7,$7,$7)`,
-    ["run-already-queued", SPACE, agentId, versionId, OWNER, PROJECT, now],
+    ["run-already-queued", SPACE, AGENT, versionId, OWNER, PROJECT, now],
   );
 });
 
@@ -158,6 +159,7 @@ async function seedOperationInSynthesis(): Promise<void> {
     schema_version: "project_research_operation.v1",
     run_kind: "baseline",
     workflow_id: WORKFLOW,
+    agent_id: AGENT,
     source_backfill_plan_ids: [PLAN],
     source_backfill_plan_id: PLAN,
     current_stage: "synthesis",

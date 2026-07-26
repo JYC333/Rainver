@@ -260,7 +260,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
       extraction_method: "manual_test",
       confidence: 0.7,
       status: "candidate",
-      metadata: { source: "phase_6_test" },
+      metadata: { source: "proposal_apply_test" },
     });
     const evidencePage = await repo.listEvidence(IDENTITY, {
       status: null,

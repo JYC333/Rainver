@@ -41,11 +41,21 @@ const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = 
   },
   credentials_missing: { layer: "policy", reason: "credentials_missing" },
   adapter_runtime_error: { layer: "runtime", reason: "adapter_runtime_error" },
+  semantic_rejection: { layer: "task_spec", reason: "semantic_rejection" },
   runtime_removed: { layer: "runtime", reason: "runtime_removed" },
   orphaned: { layer: "orchestration", reason: "orphaned" },
   duplicate_execution: { layer: "orchestration", reason: "duplicate_execution" },
   run_cancelled: { layer: "orchestration", reason: "run_cancelled" },
   validation_failed: { layer: "validation", reason: "validation_failed" },
+  verification_failed: { layer: "validation", reason: "verification_failed" },
+  usage_recording_failed: {
+    layer: "orchestration",
+    reason: "usage_recording_failed",
+  },
+  run_exchange_output_validation_failed: {
+    layer: "validation",
+    reason: "run_exchange_output_validation_failed",
+  },
   validation_command_failed: {
     layer: "validation",
     reason: "validation_command_failed",
@@ -116,6 +126,28 @@ export class PostRunFinalizationService {
     }
 
     const attemptNumber = await this.currentAttemptNumber(run);
+    return this.repository.withRunFinalizationLock(
+      spaceId,
+      runId,
+      attemptNumber,
+      RUN_FINALIZER_VERSION,
+      (repository) => new PostRunFinalizationService(
+        repository,
+        this.evolutionSolidifier,
+        this.evolutionSignalEmitter,
+        this.runEstimatedCostReader,
+        this.executionGraphReconciler,
+        this.supervisor,
+      ).finalizeLocked(run, attemptNumber),
+    );
+  }
+
+  private async finalizeLocked(
+    run: RunRecord,
+    attemptNumber: number,
+  ): Promise<RunFinalizationRecord> {
+    const spaceId = run.space_id;
+    const runId = run.id;
     const existing = await this.repository.getRunFinalizationByVersion(
       spaceId,
       runId,
@@ -145,6 +177,11 @@ export class PostRunFinalizationService {
       }
       const currentRun = await this.repository.getRun(spaceId, runId);
       await this.reconcileExecutionGraphBestEffort(currentRun ?? run);
+      await this.repository.markRunFinalizationGateCommitted(
+        spaceId,
+        existing.id,
+        new Date().toISOString(),
+      );
       return existing;
     }
 
@@ -206,6 +243,11 @@ export class PostRunFinalizationService {
     await this.superviseBestEffort(run, evaluation);
     const currentRun = await this.repository.getRun(spaceId, runId);
     await this.reconcileExecutionGraphBestEffort(currentRun ?? run);
+    await this.repository.markRunFinalizationGateCommitted(
+      spaceId,
+      finalization.id,
+      new Date().toISOString(),
+    );
     return finalization;
   }
 
@@ -214,13 +256,10 @@ export class PostRunFinalizationService {
     evaluation: Pick<RunEvaluationRecord, "failure_reason_code" | "outcome_status">,
   ): Promise<void> {
     if (!this.supervisor) return;
-    try {
-      await this.supervisor.supervise({ run, evaluation });
-    } catch {
-      // Supervisor recovery is idempotent and retried by explicit finalization
-      // or the worker. A finalized evaluation must remain durable if enqueue
-      // or policy bookkeeping is temporarily unavailable.
-    }
+    // The evaluation is durable and repeated finalization is idempotent, but a
+    // missing Supervisor decision is not optional: callers must retry until
+    // the retry/review transition is committed.
+    await this.supervisor.supervise({ run, evaluation });
   }
 
   private async reconcileExecutionGraphBestEffort(run: RunRecord): Promise<void> {

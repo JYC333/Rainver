@@ -1,4 +1,20 @@
 // API response shapes shared with the server HTTP contracts.
+export type {
+  InquiryAttentionState,
+  InquiryCandidate,
+  InquiryCandidateDecision,
+  InquiryCandidateStatus,
+  InquiryEvidenceSignal,
+  InquiryIteration,
+  InquiryLifecycleStatus,
+  InquiryNextFocusKind,
+  InquiryReviewPacket,
+  InquiryThread,
+  InquiryThreadKind,
+} from '@agent-space/protocol'
+import type {
+  InquiryThread,
+} from '@agent-space/protocol'
 
 export type SpaceType      = 'personal' | 'household' | 'team'
 
@@ -17,13 +33,13 @@ export interface ResearchChecklistItem { id: string; text: string; status: 'open
 export interface ResearchPaperCard { id: string; source_item_id: string; object_id: string | null; why_md: string; how_md: string; what_md: string; edited_by_user: boolean; stance: 'supports' | 'contradicts' | 'new_direction' | null; comparison_detail: string | null }
 /**
  * A project's "notebook" is ordinary Notes filed under its auto-created
- * Knowledge Notes folder (see notebookNotes.ts / workspaceService.ts on the
+ * Knowledge Notes folder (see notebookNotes.ts / areaService.ts on the
  * server) — free-form, not a fixed set of sections. `notes` here is the
- * light listing shape used for the workspace overview and AI prompt
+ * light listing shape used for the Area overview and AI prompt
  * grounding; the Notebook tab fetches full `Note` objects via `notesApi`
  * for editing.
  */
-export interface ResearchWorkspace {
+export interface ResearchArea {
   notes_collection_id: string
   notes: Array<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>
   checklist: ResearchChecklistItem[]
@@ -81,7 +97,7 @@ export interface SpaceInvitationOut {
 }
 
 export type MemoryType       = 'preference' | 'semantic' | 'episodic' | 'procedural' | 'project'
-export type MemoryScope      = 'user' | 'workspace' | 'capability' | 'agent' | 'system' | 'space'
+export type MemoryScope      = 'user' | 'project_folder' | 'capability' | 'agent' | 'system' | 'space'
 export type MemoryStatus     = 'active' | 'archived' | 'proposed' | 'rejected' | 'superseded'
 export type ContentVisibility = 'private' | 'space_shared' | 'selected_users'
 export type ContentAccessLevel = 'full' | 'summary'
@@ -98,7 +114,7 @@ export interface ContentAccessPolicy {
   owner_user_id: string | null
   visibility: ContentVisibility
   access_level: ContentAccessLevel
-  workspace_id: string | null
+  project_folder_id: string | null
   project_id: string | null
   grants: ContentAccessGrantOut[]
 }
@@ -424,7 +440,7 @@ export interface RetrievalBriefResponse {
   artifact_error?: string
 }
 // ── Ask Space (Slice A) ─────────────────────────────────────────────────
-export type AskSpaceDomain = 'knowledge' | 'memory' | 'project' | 'source'
+export type AskSpaceDomain = 'knowledge' | 'memory' | 'project' | 'source' | 'inquiry'
 export interface AskSpaceRequest {
   query: string
   domains?: AskSpaceDomain[]
@@ -714,7 +730,7 @@ export type ActivitySourceType =
   | 'file_import'
   | 'web_capture'
   | 'run_event'
-  | 'workspace_event'
+  | 'project_folder_event'
   | 'system_event'
   | 'external_source'
   | 'source'
@@ -730,10 +746,27 @@ export type RunLifecycleStatus =
   | 'waiting_for_review'
   | 'waiting_for_dependency'
 
+export interface AuthorizationRequest {
+  id: string
+  space_id: string
+  run_id: string
+  agent_id: string
+  instructed_by_user_id: string
+  policy_decision_record_id: string
+  action_id: string
+  policy_action: string
+  project_id: string | null
+  resource_kind: string | null
+  resource_id: string | null
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  resulting_action_grant_id: string | null
+  decided_by_user_id: string | null
+  requested_at: string
+  decided_at: string | null
+}
+
 export type MessageRole      = 'user' | 'assistant' | 'system' | 'tool'
-export type WorkspaceStatus  = 'active' | 'archived'
-export type WorkspaceType    = 'project' | 'repo' | 'knowledge_base' | 'personal' | 'team' | 'system_core'
-export type WorkspaceCreateType = Exclude<WorkspaceType, 'system_core'>
 
 export type ModelSelectionMode = 'cli_default' | 'cli_model_override' | 'agent_space_provider'
 
@@ -1054,6 +1087,8 @@ export interface SourceChannel {
 }
 
 export interface ProjectResearchInitialIntakeInput {
+  workflow_id?: string
+  thread_id?: string
   research_context_version_id?: string
   query_strategy_id?: string
   research_question: string
@@ -1819,7 +1854,7 @@ export interface Job {
   id: string
   space_id: string
   user_id: string
-  workspace_id: string | null
+  project_folder_id: string | null
   agent_id: string | null
   job_type: string
   status: JobStatus
@@ -1852,7 +1887,7 @@ export interface Memory {
   space_id: string
   subject_user_id?: string | null
   owner_user_id: string | null
-  workspace_id: string | null
+  project_folder_id: string | null
   title: string | null
   content: string | null
   type: MemoryType
@@ -1991,7 +2026,7 @@ export interface KnowledgeItemSummary {
   id: string
   space_id: string
   project_id: string | null
-  workspace_id: string | null
+  project_folder_id: string | null
   knowledge_kind: KnowledgeItemKind
   slug: string | null
   title: string
@@ -2057,7 +2092,7 @@ export interface KnowledgeCreateProposalBody {
   content_schema_version?: number
   visibility: KnowledgeVisibility
   project_id?: string | null
-  workspace_id?: string | null
+  project_folder_id?: string | null
   tags: string[]
   confidence?: number | null
   source_refs?: Record<string, unknown>[]
@@ -2225,7 +2260,7 @@ export interface NoteRevision {
 // ── Entity links (generic cross-object relation layer) ─────────────────────
 export type EntityType =
   | 'note' | 'knowledge_item' | 'source' | 'project'
-  | 'workspace' | 'activity' | 'run' | 'proposal'
+  | 'project_folder' | 'activity' | 'run' | 'proposal'
 export type EntityLinkType =
   | 'references' | 'related_to' | 'belongs_to'
   | 'captured_from' | 'source_for' | 'derived_from'
@@ -2277,7 +2312,7 @@ export interface ActivityInboxRecord {
   id: string
   space_id: string
   user_id: string | null
-  workspace_id: string | null
+  project_folder_id: string | null
   agent_id: string | null
   source_type: ActivitySourceType
   title: string | null
@@ -2320,7 +2355,7 @@ export interface Session {
   user_id: string
   title: string | null
   status: SessionStatus
-  workspace_id: string | null
+  project_folder_id: string | null
   project_id:string|null
   created_at: string
   updated_at: string
@@ -2337,8 +2372,43 @@ export interface Message {
   created_at: string
 }
 
-/** One synchronous Personal Assistant chat turn result (`ChatTurnOut`). */
+export interface ChatTurnAccepted {
+  schema_version: 'chat_turn_accepted.v1'
+  session_id: string
+  run_id: string
+  user_message_id: string
+  status: 'queued'
+  event_stream_url: string
+  backend: ConversationBackendBinding
+}
+
+export interface ConversationBackendBinding {
+  runtime_profile_id: string
+  adapter_type: string
+  credential_profile_id?: string | null
+}
+
+export interface ConversationBackendOption {
+  runtime_profile_id: string
+  name: string
+  adapter_type: string
+  model_name?: string | null
+  requires_cli_credential: boolean
+  credential_profiles: Array<{
+    id: string
+    name: string
+    is_default: boolean
+  }>
+}
+
+export interface ConversationBackendCatalog {
+  options: ConversationBackendOption[]
+  binding: ConversationBackendBinding | null
+}
+
+/** Durable completion projected from the Run's `chat_completed` event. */
 export interface ChatTurnOut {
+  schema_version: 'chat_turn_completion.v1'
   session_id: string
   run_id: string
   ok: boolean
@@ -2346,10 +2416,21 @@ export interface ChatTurnOut {
   error?: string | null
   error_code?: string | null
   action_previews?: ChatActionPreview[]
+  assistant_message?: {
+    schema_version: 'assistant_message.v1'
+    id: string
+    session_id: string
+    run_id: string
+    content: string
+    artifact_refs: string[]
+    tool_call_refs: string[]
+    created_at: string
+  } | null
 }
 
 export interface ChatActionPreview {
   action_id: string
+  tool_call_id?: string | null
   status: 'proposed' | 'auto_applied' | 'completed' | 'failed'
   proposal_id?: string | null
   proposal_type?: string | null
@@ -2365,7 +2446,7 @@ export interface Task {
   space_id: string
   task_role: 'source' | 'subtask' | string
   owner_user_id: string | null
-  workspace_id: string | null
+  project_folder_id: string | null
   board_id: string | null
   column_id: string | null
   parent_task_id: string | null
@@ -2427,7 +2508,7 @@ export interface BoardColumn {
 export interface Board {
   id: string
   space_id: string
-  workspace_id: string | null
+  project_folder_id: string | null
   name: string
   description: string | null
   board_type: string
@@ -2448,7 +2529,7 @@ export interface TaskRunCreateBody {
   run_type?: string
   trigger_origin?: string
   session_id?: string | null
-  workspace_id?: string | null
+  project_folder_id?: string | null
   prompt?: string | null
   instruction?: string | null
   context_artifact_ids?: string[]
@@ -2497,7 +2578,7 @@ export interface Run {
   runtime_profile_selection_source?: 'explicit' | 'default' | null
   active_route_decision_id?: string | null
   context_snapshot_id: string | null
-  workspace_id: string | null
+  project_folder_id: string | null
   session_id: string | null
   parent_run_id: string | null
   instructed_by_user_id?: string | null
@@ -2532,6 +2613,15 @@ export interface Run {
   required_sandbox_level?: string | null
   contract_snapshot_json?: Record<string, unknown>
   workflow_version_id?: string | null
+}
+
+export interface RunLogicalIO {
+  schema_version: 'run_io.v1'
+  run_id: string
+  input: Record<string, unknown>
+  output: Record<string, unknown> | null
+  events: Array<Record<string, unknown>>
+  artifact_refs: Array<{ id: string; artifact_type: string; title: string }>
 }
 
 export interface RunAttempt {
@@ -2627,7 +2717,7 @@ export interface PlanVersionSummary {
 export interface PlanSummary {
   id: string
   space_id: string
-  workspace_id: string | null
+  project_folder_id: string | null
   project_id: string | null
   source_task_id: string
   root_run_id: string | null
@@ -2781,6 +2871,11 @@ export interface AgentRunGroup {
   root_run_id: string | null
   manager_user_id: string
   manager_agent_id: string | null
+  room_id: string | null
+  session_id: string | null
+  trigger_message_id: string | null
+  project_id: string | null
+  project_folder_id: string | null
   title: string
   goal: string
   status: string
@@ -2789,6 +2884,95 @@ export interface AgentRunGroup {
   created_at: string
   updated_at: string
   ended_at: string | null
+}
+
+export interface Room {
+  id: string
+  space_id: string
+  project_id: string
+  project_folder_id: string | null
+  created_by_user_id: string
+  title: string
+  status: 'active' | 'archived'
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+}
+
+export interface RoomUserMember {
+  id: string
+  space_id: string
+  room_id: string
+  user_id: string
+  role: 'owner' | 'member'
+  status: 'active' | 'removed'
+  created_at: string
+  updated_at: string
+}
+
+export interface RoomAgentMember {
+  id: string
+  space_id: string
+  room_id: string
+  agent_id: string
+  role: 'manager' | 'member'
+  status: 'active' | 'removed'
+  created_at: string
+  updated_at: string
+}
+
+export interface RoomDetail {
+  room: Room
+  user_members: RoomUserMember[]
+  agent_members: RoomAgentMember[]
+}
+
+export interface RoomConversation {
+  id: string
+  space_id: string
+  room_id: string
+  project_id: string
+  user_id: null
+  project_folder_id: string | null
+  title: string | null
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface RoomMessage {
+  id: string
+  space_id: string
+  session_id: string
+  user_id: string | null
+  sender_agent_id: string | null
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+  metadata_json: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface CreateRoomRequest {
+  project_id: string
+  project_folder_id?: string | null
+  title: string
+  manager_agent_id: string
+  agent_ids: string[]
+  user_ids: string[]
+}
+
+export interface SendRoomMessageRequest {
+  content: string
+  routing_mode?: 'direct' | 'agent_coordination'
+  recipient_segments?: Array<{
+    recipient_agent_ids: string[]
+    content: string
+  }> | null
+  backends?: Array<{
+    agent_id: string
+    runtime_profile_id: string
+    credential_profile_id?: string | null
+  }>
 }
 
 export interface AgentRunGroupMember {
@@ -2977,7 +3161,7 @@ export interface Artifact {
   owner_user_id?: string | null
   content?: string | null
   project_id?: string | null
-  workspace_id?: string | null
+  project_folder_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -2987,7 +3171,7 @@ export interface Proposal {
   id: string
   space_id: string
   user_id: string
-  workspace_id: string | null
+  project_folder_id: string | null
   source_session_id: string | null
   source_task_id: string | null
   source_run_id: string | null
@@ -3772,7 +3956,6 @@ export interface AgentRuntimeProfileOut {
   name: string
   adapter_type: string
   model: AgentModelSummary | null
-  credential_profile_id: string | null
   runtime_config_json: Record<string, unknown>
   runtime_policy_json: Record<string, unknown>
   enabled: boolean
@@ -3786,7 +3969,6 @@ export interface AgentRuntimeProfileCreateBody {
   adapter_type: string
   model_provider_id?: string | null
   model_name?: string | null
-  credential_profile_id?: string | null
   runtime_config_json?: Record<string, unknown> | null
   runtime_policy_json?: Record<string, unknown> | null
   enabled?: boolean
@@ -3928,7 +4110,7 @@ export interface RunCreateBody {
   run_type?: string
   trigger_origin?: string
   session_id?: string | null
-  workspace_id?: string | null
+  project_folder_id?: string | null
   project_id?: string | null
   prompt?: string | null
   instruction?: string | null
@@ -3946,20 +4128,24 @@ export interface RunCreateBody {
   context_artifact_ids?: string[]
 }
 
-export interface Workspace {
+export type ProjectFolderKind = 'code' | 'data' | 'docs'
+export type ProjectFolderStatus = 'active' | 'archived'
+
+export interface ProjectFolder {
   id: string
-  owner_space_id: string
+  space_id: string
+  project_id: string
   created_by_user_id: string
   name: string
   slug: string | null
   description: string | null
-  workspace_type: WorkspaceType
-  kind: string
+  kind: ProjectFolderKind
+  is_primary: boolean
+  execution_enabled: boolean
   repo_url: string | null
   root_path: string | null
   default_branch: string | null
-  visibility: string
-  status: WorkspaceStatus
+  status: ProjectFolderStatus
   protected: boolean
   system_managed: boolean
   registered_from: string | null
@@ -3970,23 +4156,51 @@ export interface Workspace {
   updated_at: string
 }
 
-export interface WorkspaceCreateBody {
+export interface ProjectFolderCreateBody {
   name: string
   description?: string
-  workspace_type?: WorkspaceCreateType
-  kind?: string
+  kind?: ProjectFolderKind
+  is_primary?: boolean
   repo_url?: string | null
   root_path?: string | null
   default_branch?: string | null
   metadata_json?: Record<string, unknown> | null
 }
 
-export type WorkspaceUpdateBody = Partial<Omit<WorkspaceCreateBody, 'workspace_type'>> & {
-  status?: WorkspaceStatus
-  visibility?: string
+export type ProjectFolderUpdateBody = Partial<Omit<ProjectFolderCreateBody, 'repo_url'>> & {
+  status?: ProjectFolderStatus
+  execution_enabled?: boolean
   snapshot_retention_days?: number | null
   snapshot_max_count?: number | null
 }
+
+export interface ProjectFolderScanCandidate {
+  name: string
+  path: string
+}
+
+export interface ProjectFolderExecutionConfig {
+  id: string
+  space_id: string
+  project_folder_id: string
+  repo_type: string | null
+  tech_stack_json: Record<string, unknown>
+  important_paths_json: unknown[]
+  forbidden_paths_json: unknown[]
+  test_commands_json: unknown[]
+  build_commands_json: unknown[]
+  architecture_boundaries_json: Record<string, unknown>
+  validation_recipe_id: string | null
+  cloud_allowed: boolean
+  max_data_exposure_level: string | null
+  min_observability_level: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type ProjectFolderExecutionConfigUpdate = Partial<Omit<ProjectFolderExecutionConfig,
+  'id' | 'space_id' | 'project_folder_id' | 'created_at' | 'updated_at'
+>>
 
 export type CapabilitySourceKind = 'builtin' | 'imported_skill' | 'generated' | 'official'
 export type CapabilityStatus = 'draft' | 'proposed' | 'testing' | 'available' | 'enabled' | 'disabled' | 'archived'
@@ -4057,17 +4271,175 @@ export interface ProjectWorkflowProfile {
   updated_at: string
 }
 
-export interface ProjectPresetDescriptor {
+export interface ProjectTemplateDescriptor {
   key: string
   name: string
   description: string
   sections: string[]
   extraction_profile_key: string | null
   graph_lens_id: string | null
+  initial_primary_mode: ProjectPrimaryMode
+  starter_workflow_template_keys: string[]
 }
 
-export interface ProjectPresetSelection {
-  preset_key: string | null
+export interface ProjectOverview {
+  project: Pick<Project, 'id' | 'name' | 'primary_mode' | 'template_key' | 'status'>
+  brief: {
+    version: string
+    goal: string | null
+    scope_included: string | null
+    success_definition: string | null
+  } | null
+  mode_projection: {
+    mode: ProjectPrimaryMode
+    current_state_summary: string
+    progress_indicators: Array<{ metric: string; value: number; trend?: string }>
+    focus_set: Array<{ id: string; label: string; href: string }>
+    next_actions: Array<{ id: string; label: string; href: string; kind: string }>
+  }
+  available_modes: ProjectPrimaryMode[]
+  attention: Array<{
+    id: string
+    title: string
+    summary: string | null
+    href: string
+    source_type?: string
+    source_id?: string
+    reason?: string
+    action_descriptors?: Array<{ label: string; href: string }>
+  }>
+  template?: {
+    key: string
+    name: string
+    description: string
+    starter_workflow_template_keys: string[]
+  } | null
+  setup_checklist?: Array<{
+    id: string
+    label: string
+    status: 'ready' | 'missing'
+    required: boolean
+    href: string
+    detail: string
+  }>
+  area_summaries: Array<{ mode: ProjectPrimaryMode; summary: { count: number; status: string } }>
+}
+
+// ---------------------------------------------------------------------------
+// Inquiry Domain. See .agent/architecture/PROJECTS.md.
+// ---------------------------------------------------------------------------
+
+export interface InquiryQuestionState {
+  current_answer_summary: string | null
+  answer_state: 'open' | 'partial' | 'answered' | 'unanswerable'
+  known_gaps: string | null
+  answerability: string | null
+  resolution_criteria: string | null
+}
+
+export interface InquiryHypothesisState {
+  proposed_claim: string | null
+  predictions: string | null
+  falsification_criteria: string | null
+  evaluation_state: 'untested' | 'supported' | 'challenged' | 'contradicted' | 'inconclusive'
+  confidence: number | null
+  confidence_method: string | null
+}
+
+export interface InquiryThreadRelation {
+  id: string
+  from_thread_id: string
+  to_thread_id: string
+  relation_kind: string
+  created_at: string
+}
+
+export interface InquiryThreadNoteLink {
+  id: string
+  note_object_id: string
+  link_kind: 'primary_working_note' | 'linked_note'
+  created_at: string
+}
+
+export interface InquiryThreadDetail extends InquiryThread {
+  question_state: InquiryQuestionState | null
+  hypothesis_state: InquiryHypothesisState | null
+  relations: InquiryThreadRelation[]
+  note_links: InquiryThreadNoteLink[]
+  decision_cases?: Array<{ id: string; title: string; status: string }>
+  in_personal_focus: boolean
+}
+
+export type ExperimentExecutorType = 'manual' | 'managed_code_comparison'
+export type ExperimentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface ExperimentVersion {
+  id: string
+  definition_id: string
+  version: number
+  executor_type: ExperimentExecutorType
+  config: Record<string, unknown>
+  planned_summary: string | null
+  status: 'draft' | 'approved' | 'archived'
+  created_at: string
+  updated_at: string
+}
+
+export interface ExperimentDefinition {
+  id: string
+  project_id: string
+  name: string
+  objective: string | null
+  primary_hypothesis_thread_id: string | null
+  status: 'draft' | 'active' | 'paused' | 'completed' | 'archived'
+  baseline_run_id: string | null
+  best_run_id: string | null
+  created_at: string
+  updated_at: string
+  versions?: ExperimentVersion[]
+}
+
+export interface ExperimentRun {
+  id: string
+  version_id: string
+  run_id: string | null
+  is_baseline: boolean
+  hypothesis: string | null
+  patch_summary: string | null
+  commit_ref: string | null
+  status: ExperimentRunStatus
+  config_snapshot: Record<string, unknown>
+  artifact_ids: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface ExperimentObservation {
+  id: string
+  run_id: string
+  metric_name: string
+  value_number: number | null
+  value_text: string | null
+  value_json: unknown
+  is_primary: boolean
+  source: 'manual' | 'parsed' | 'agent'
+  created_at: string
+}
+
+export interface ExperimentInterpretation {
+  id: string
+  project_id: string
+  definition_id: string
+  run_ids: string[]
+  verdict: 'supports' | 'contradicts' | 'inconclusive'
+  conclusion: string | null
+  negative_results: string | null
+  limitations: string | null
+  repro_lock: Record<string, unknown>
+  status: 'draft' | 'reviewed' | 'converted'
+  resulting_signal_id: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface ProjectResearchProfile {
@@ -4355,7 +4727,7 @@ export interface WorkflowRunDraftRequest {
   runtime_profile_id?: string | null
   prompt?: string | null
   instruction?: string | null
-  workspace_id?: string | null
+  project_folder_id?: string | null
   session_id?: string | null
   adapter_type?: string | null
   model_provider_id?: string | null
@@ -4439,7 +4811,7 @@ export interface SkillPackage {
   package_files?: SkillPackageFile[]
 }
 
-export type SkillLocalOverlayScope = 'space' | 'project' | 'workspace' | 'agent' | 'user'
+export type SkillLocalOverlayScope = 'space' | 'project' | 'project_folder' | 'agent' | 'user'
 export type SkillLocalOverlayStatus = 'active' | 'archived'
 
 export interface SkillLocalOverlayConfig {
@@ -4502,7 +4874,7 @@ export type SkillConvertToCapabilityResponse = Proposal
 
 export interface ContextPackage {
   user_memory: Memory[]
-  workspace_memory: Memory[]
+  project_folder_memory: Memory[]
   capability_memory: Memory[]
   agent_memory: Memory[]
   system_policy: Memory[]
@@ -4511,7 +4883,7 @@ export interface ContextPackage {
   attachments: Record<string, unknown>[]
 }
 
-export type ContextProfileScope = 'space' | 'project' | 'workspace' | 'agent' | 'user'
+export type ContextProfileScope = 'space' | 'project' | 'project_folder' | 'agent' | 'user'
 export type ContextProfileStatus = 'active' | 'archived'
 
 export interface ContextRoutingRule {
@@ -4571,13 +4943,13 @@ export interface ContextRoutingUpdateRequest {
 }
 
 export interface ContextEffectiveRoutingResponse {
-  workspace_id: string
+  project_folder_id: string
   profiles: ContextProfile[]
   effective_manifest: ContextRoutingManifest
   selected_agent_doc_paths: string[]
 }
 
-export type ContextArtifactRevocationScope = 'workspace' | 'project'
+export type ContextArtifactRevocationScope = 'project_folder' | 'project'
 
 export interface ContextArtifactRevocation {
   id: string
@@ -4778,11 +5150,11 @@ export interface ApiError {
   request_id?: string
 }
 
-// ── Workspace Console ──────────────────────────────────────────────────────
+// ── Project Folder Files & Code ─────────────────────────────────────────────
 
 export interface FileNode {
   name: string
-  path: string          // relative to workspace root; "." for root
+  path: string          // relative to the Folder root; "." for root
   type: 'file' | 'dir'
   size?: number
   children?: FileNode[]
@@ -4804,62 +5176,6 @@ export interface GitStatus {
   is_repo: boolean
   branch: string | null
   files: GitChangedFile[]
-}
-
-export interface RuntimeInfo {
-  id: string
-  name: string
-  available: boolean
-  models: string[]
-}
-
-export type RuntimeEventType =
-  | 'user_turn'
-  | 'text_delta'
-  | 'file_read'
-  | 'grep'
-  | 'command_start'
-  | 'command_output'
-  | 'file_changed'
-  | 'patch_created'
-  | 'run_completed'
-  | 'run_failed'
-
-export type RuntimeEvent =
-  | { type: 'user_turn';     prompt: string }
-  | { type: 'text_delta';    content: string }
-  | { type: 'file_read';     path: string }
-  | { type: 'grep';          query: string; path?: string }
-  | { type: 'command_start'; command: string }
-  | { type: 'command_output';stdout?: string; stderr?: string }
-  | { type: 'file_changed';  path: string }
-  | { type: 'patch_created'; files: string[] }
-  | { type: 'run_completed' }
-  | { type: 'run_failed';    error: string }
-
-export type ConsoleSessionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopped'
-
-export interface ConsoleSession {
-  id: string
-  space_id: string
-  workspace_id: string | null
-  user_id: string
-  runtime: string
-  model: string | null
-  prompt: string
-  status: ConsoleSessionStatus
-  notes: string | null
-  events: RuntimeEvent[]
-  created_at: string
-  updated_at: string
-}
-
-export interface WorkspaceInfo {
-  id: string
-  name: string
-  path: string | null
-  type: string
-  description: string | null
 }
 
 // ── Home summary (`GET /api/v1/home/summary`) ──────────────────────────────
@@ -5572,6 +5888,8 @@ export interface MePendingProposalItem {
 
 export type ProjectStatus = 'active' | 'archived'
 
+export type ProjectPrimaryMode = 'inquiry' | 'decision' | 'delivery' | 'operations' | 'learning'
+
 export interface Project {
   id: string
   space_id: string
@@ -5581,6 +5899,9 @@ export interface Project {
   status: ProjectStatus
   current_focus: string | null
   settings_json: Record<string, unknown> | null
+  template_key: string
+  primary_mode: ProjectPrimaryMode
+  active_brief_version_id: string | null
   created_at: string
   updated_at: string
   archived_at: string | null
@@ -5591,6 +5912,10 @@ export interface ProjectCreate {
   description?: string | null
   current_focus?: string | null
   settings_json?: Record<string, unknown> | null
+  template_key?: string
+  goal?: string | null
+  scope_included?: string | null
+  success_definition?: string | null
 }
 
 export interface ProjectUpdate {
@@ -5601,26 +5926,12 @@ export interface ProjectUpdate {
   settings_json?: Record<string, unknown> | null
 }
 
-export interface ProjectWorkspaceLinkCreate {
-  workspace_id: string
-  role?: string
-}
-
-export interface ProjectWorkspaceLinkOut {
-  id: string
-  project_id: string
-  workspace_id: string
-  role: string
-  created_at: string
-  updated_at: string
-}
-
 export interface ProjectSummary {
   project_id: string
   activity_count: number
   artifact_count: number
   pending_proposal_count: number
-  workspace_count: number
+  project_folder_count: number
   active_run_count: number
   memory_entry_count: number
 }
@@ -5634,7 +5945,7 @@ export interface AutomationOut {
   space_id: string
   owner_user_id: string
   agent_id: string
-  workspace_id: string | null
+  project_folder_id: string | null
   project_id: string | null
   name: string
   description: string | null
@@ -5651,7 +5962,7 @@ export interface AutomationOut {
 export interface AutomationCreateBody {
   name: string
   agent_id: string
-  workspace_id?: string | null
+  project_folder_id?: string | null
   project_id?: string | null
   description?: string | null
   trigger_type?: AutomationTriggerType

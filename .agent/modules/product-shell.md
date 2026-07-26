@@ -9,7 +9,7 @@ The persistent application frame that wraps every page. The shell is always visi
 ## Owns
 - Top-level layout and navigation chrome
 - Space switcher (select between personal / household / team spaces)
-- Workspace switcher (select workspace within current space)
+- Project Folder switcher (select Project Folder within current space)
 - Global command / search palette
 - Assistant / quick-capture entry point
 - Notification and proposal inbox badge
@@ -31,7 +31,7 @@ Memory              — memory review and governance
 Knowledge           — Notes, Wiki (KnowledgeItem), Sources, Cards (in-header section switcher)
 Cards / Review      — spaced repetition queue
 Agents              — agent list, runs, capabilities
-Workspaces          — workspace console and file browser
+Project Folders     — Files & Code browser
 Proposals           — pending approvals
 Settings            — space config, user prefs, API keys, runtime
 ```
@@ -41,7 +41,7 @@ Settings            — space config, user prefs, API keys, runtime
 | Component | Purpose |
 |---|---|
 | `SpaceSwitcher` | Switch between spaces the user belongs to |
-| `WorkspaceSwitcher` | Switch workspace within current space |
+| `ProjectFolderSwitcher` | Switch Project Folder within current space |
 | `NavRail` | Primary navigation (collapsible sidebar) |
 | `CommandPalette` | Global search / action (keyboard shortcut) |
 | `AssistantEntry` | Quick capture / chat input (always accessible) |
@@ -51,7 +51,7 @@ Settings            — space config, user prefs, API keys, runtime
 
 ## Invariants
 - Every page must operate within a selected `space_id` — never assume a single global user
-- `workspace_id` is optional but must be propagated when selected
+- `project_folder_id` is optional but must be propagated when selected
 - The shell must degrade gracefully when the server is unreachable (show connection status, allow read from cache in future)
 - Navigation items that have no data must show empty state, not hide entirely
 

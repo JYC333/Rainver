@@ -188,7 +188,7 @@ export const evolutionStrategyAssets = pgTable("evolution_strategy_assets", {
 	check("ck_evolution_strategy_assets_provenance_type", sql`(provenance_type)::text = ANY (ARRAY[('built_in'::character varying)::text, ('user_authored'::character varying)::text, ('imported'::character varying)::text, ('evolved'::character varying)::text, ('distilled'::character varying)::text])`),
 	check("ck_evolution_strategy_assets_risk_level", sql`(risk_level)::text = ANY (ARRAY[('low'::character varying)::text, ('medium'::character varying)::text, ('high'::character varying)::text, ('critical'::character varying)::text])`),
 	check("ck_evolution_strategy_assets_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('disabled'::character varying)::text, ('archived'::character varying)::text])`),
-	check("ck_evolution_strategy_assets_target_type", sql`(target_type)::text = ANY (ARRAY[('agent_version'::character varying)::text, ('capability'::character varying)::text, ('runtime_skill_binding'::character varying)::text, ('memory'::character varying)::text, ('knowledge'::character varying)::text, ('workflow'::character varying)::text, ('workspace'::character varying)::text, ('system'::character varying)::text])`),
+	check("ck_evolution_strategy_assets_target_type", sql`(target_type)::text = ANY (ARRAY[('agent_version'::character varying)::text, ('capability'::character varying)::text, ('runtime_skill_binding'::character varying)::text, ('memory'::character varying)::text, ('knowledge'::character varying)::text, ('workflow'::character varying)::text, ('project_folder'::character varying)::text, ('system'::character varying)::text])`),
 ]);
 
 export const evolutionExperiences = pgTable("evolution_experiences", {
@@ -292,7 +292,7 @@ export const runReflections = pgTable("run_reflections", {
 	whatFailed: text("what_failed"),
 	reusableRulesJson: jsonb("reusable_rules_json"),
 	reusableCommandsJson: jsonb("reusable_commands_json"),
-	workspaceFactsJson: jsonb("workspace_facts_json"),
+	projectFolderFactsJson: jsonb("project_folder_facts_json"),
 	memoryCandidatesJson: jsonb("memory_candidates_json"),
 	capabilityCandidatesJson: jsonb("capability_candidates_json"),
 	policyCandidatesJson: jsonb("policy_candidates_json"),

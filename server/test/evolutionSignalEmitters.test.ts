@@ -137,7 +137,7 @@ describe("EvolutionSignalEmitter", () => {
     expect(db.calls[1]?.sql).toContain("INSERT INTO evolution_targets");
     expect(db.calls[1]?.params.slice(1, 6)).toEqual([
       "space-1",
-      "workspace",
+      "project_folder",
       "task",
       "task-1",
       "",
@@ -147,7 +147,7 @@ describe("EvolutionSignalEmitter", () => {
 
   it.each([
     [{ kind: "workflow", id: "workflow-1" }, "workflow", "workflow_asset", "workflow-1"],
-    [{ kind: "automation", id: "automation-1" }, "workspace", "automation", "automation-1"],
+    [{ kind: "automation", id: "automation-1" }, "project_folder", "automation", "automation-1"],
   ] as const)("maps %s failures to a bounded source target", async (source, targetType, refType, refId) => {
     const db = new AutoTargetDb();
     await new EvolutionSignalEmitter(db).emitRunFinalization({
@@ -211,7 +211,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     mode: "execute",
     prompt: "prompt",
     instruction: null,
-    workspace_id: null,
+    project_folder_id: null,
     session_id: null,
     project_id: null,
     adapter_type: "model_api",

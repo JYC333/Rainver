@@ -6,8 +6,8 @@
  * contents through public APIs.
  */
 
-import { mkdir, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { chmod, copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyBaseLogger, FastifyReply } from "fastify";
 import type { ServerConfig } from "../../../config";
@@ -120,6 +120,7 @@ export interface CredentialGrant {
   executor_mode: "worktree" | "docker";
   readonly: boolean;
   temp_home: string | null;
+  persistent_home?: boolean;
   host_source_path: string | null;
   target_path: string | null;
   env: Record<string, string>;
@@ -205,6 +206,10 @@ export class CliCredentialBroker {
 
   private get runtimeHomesRoot(): string {
     return join(this.config.agentSpaceHome, "cache", "runtime-homes");
+  }
+
+  private get conversationRuntimeHomesRoot(): string {
+    return join(this.config.agentSpaceHome, "cache", "conversation-runtime-homes");
   }
 
   /** Transient HOME the interactive login writes into, kept under aspace so the
@@ -444,10 +449,10 @@ export class CliCredentialBroker {
       let quota: QuotaResult | null = null;
       if (cfg.runtime === "claude_code" && profile) {
         tokens = await readClaudeTokenUsage(profile.source_path);
-        quota = await this.readQuotaCache(cfg.runtime); // last probed value; UI refreshes on demand
+        quota = await this.readQuotaCache(cfg.runtime, profile.id); // last probed value; UI refreshes on demand
       } else if (cfg.runtime === "codex_cli" && profile) {
         tokens = await readCodexTokenUsage(profile.source_path);
-        quota = await this.readQuotaCache(cfg.runtime);
+        quota = await this.readQuotaCache(cfg.runtime, profile.id);
       }
       result.push({ runtime: cfg.runtime, label: cfg.label, tokens, quota });
     }
@@ -528,7 +533,8 @@ export class CliCredentialBroker {
           );
           // HOME with .claude symlinked to the profile, so the CLI fallback
           // authenticates with managed credentials and never touches host HOME.
-          const probeHome = await this.createTempHome("usage-probe", profile);
+          const probeRunId = `usage-probe-${randomUUID()}`;
+          const probeHome = await this.createTempHome(probeRunId, profile);
           try {
             quota = await probeClaudeQuota(probeHome, new RuntimeToolRegistry(this.config));
             if (quota.available) {
@@ -567,11 +573,13 @@ export class CliCredentialBroker {
               "Claude PTY usage fallback probe failed",
             );
             throw ptyError;
+          } finally {
+            await this.cleanupRunHome(probeRunId);
           }
         }
       }
       quota.checked_at = new Date().toISOString();
-      await this.writeQuotaCache(runtime, quota);
+      if (profile) await this.writeQuotaCache(runtime, profile.id, quota);
     } else if (runtime === "codex_cli") {
       if (profile) tokens = await readCodexTokenUsage(profile.source_path);
       if (!profile) {
@@ -585,15 +593,20 @@ export class CliCredentialBroker {
           error: "Log in to Codex CLI before reading usage.",
         };
       } else {
-        const probeHome = await this.createTempHome("usage-probe-codex", profile);
-        quota = await probeCodexQuota(
-          profile.source_path,
-          probeHome,
-          new RuntimeToolRegistry(this.config),
-        );
+        const probeRunId = `usage-probe-codex-${randomUUID()}`;
+        const probeHome = await this.createTempHome(probeRunId, profile);
+        try {
+          quota = await probeCodexQuota(
+            profile.source_path,
+            probeHome,
+            new RuntimeToolRegistry(this.config),
+          );
+        } finally {
+          await this.cleanupRunHome(probeRunId);
+        }
       }
       quota.checked_at = new Date().toISOString();
-      await this.writeQuotaCache(runtime, quota);
+      if (profile) await this.writeQuotaCache(runtime, profile.id, quota);
     }
     return { runtime, label: cfg.label, tokens, quota };
   }
@@ -603,25 +616,120 @@ export class CliCredentialBroker {
     maxAgeMs: number,
     spaceId?: string | null,
     userId?: string | null,
+    profileId?: string | null,
   ): Promise<CliUsageEntry | null> {
     const cfg = cliLoginAdapterFor(runtime);
     if (!cfg) throw new Error(`Unknown runtime: ${runtime}`);
     if (runtime !== "claude_code" && runtime !== "codex_cli") return null;
 
-    const cached = await this.readQuotaCache(runtime);
+    const profile = await this.resolveProfile(runtime, profileId, true, spaceId, userId);
+    if (!profile) return null;
+    const cached = await this.readQuotaCache(runtime, profile.id);
     const checkedAt = cached?.checked_at ? Date.parse(cached.checked_at) : Number.NaN;
     if (Number.isFinite(checkedAt) && Date.now() - checkedAt < maxAgeMs) {
       return null;
     }
-    return this.refreshCliQuota(runtime, spaceId, userId);
+    return this.refreshCliQuota(runtime, spaceId, userId, profile.id);
   }
 
-  private quotaCachePath(runtime: string): string {
-    return join(this.config.agentSpaceHome, "cache", "cli-quota", `${runtime}.json`);
+  async recordLiveQuota(
+    runtime: string,
+    profileId: string,
+    live: {
+      status: string;
+      rate_limit_type: string;
+      utilization: number;
+      resets_at: number;
+      is_using_overage: boolean;
+    },
+  ): Promise<void> {
+    const existing = await this.readQuotaCache(runtime, profileId);
+    const quota: QuotaResult = existing ?? {
+      available: true,
+      session_pct: null,
+      session_resets: null,
+      week_pct: null,
+      week_resets: null,
+      checked_at: null,
+      error: null,
+    };
+    quota.available = true;
+    quota.checked_at = new Date().toISOString();
+    quota.error = live.status === "rejected"
+      ? "The CLI subscription quota rejected this request."
+      : null;
+    const percent = Math.max(0, Math.min(100, Math.round(live.utilization * 100)));
+    const resetsAt = new Date(live.resets_at * 1000).toISOString();
+    if (live.rate_limit_type.includes("seven") || live.rate_limit_type.includes("week")) {
+      quota.week_pct = percent;
+      quota.week_resets = resetsAt;
+    } else {
+      quota.session_pct = percent;
+      quota.session_resets = resetsAt;
+    }
+    await this.writeQuotaCache(runtime, profileId, quota);
   }
 
-  private get legacyClaudeQuotaCachePath(): string {
-    return join(this.config.agentSpaceHome, "cache", "quota-cache.json");
+  async listQuotaRefreshTargets(runtime: string): Promise<Array<{
+    profile_id: string;
+    space_id: string;
+    owner_user_id: string;
+  }>> {
+    const db = this.db();
+    if (!db) return [];
+    const result = await db.query<{
+      profile_id: string;
+      space_id: string;
+      owner_user_id: string;
+      source_path: string;
+    }>(
+      `SELECT DISTINCT ON (p.id)
+              p.id AS profile_id,
+              g.space_id,
+              p.owner_user_id,
+              p.source_path
+         FROM cli_credential_profiles p
+         JOIN cli_credential_space_grants g
+           ON g.profile_id = p.id
+          AND g.owner_user_id = p.owner_user_id
+        WHERE p.runtime = $1
+          AND p.owner_user_id IS NOT NULL
+          AND g.enabled = true
+        ORDER BY p.id, g.is_default DESC, g.created_at ASC`,
+      [runtime],
+    );
+    const targets = [];
+    for (const row of result.rows) {
+      const profile: CredentialProfile = {
+        id: row.profile_id,
+        owner_user_id: row.owner_user_id,
+        runtime,
+        name: "",
+        source_path: row.source_path,
+        target_path: "",
+        readonly: true,
+        notes: "",
+        network_profile_id: null,
+      };
+      if ((await sourceStats(profile)).logged_in) {
+        targets.push({
+          profile_id: row.profile_id,
+          space_id: row.space_id,
+          owner_user_id: row.owner_user_id,
+        });
+      }
+    }
+    return targets;
+  }
+
+  private quotaCachePath(runtime: string, profileId: string): string {
+    return join(
+      this.config.agentSpaceHome,
+      "cache",
+      "cli-quota",
+      cleanComponent(runtime, "runtime"),
+      `${cleanComponent(profileId, "profile_id")}.json`,
+    );
   }
 
   private get usageAutoRefreshSettingsPath(): string {
@@ -812,23 +920,25 @@ export class CliCredentialBroker {
     }
   }
 
-  private async readQuotaCache(runtime: string): Promise<QuotaResult | null> {
+  private async readQuotaCache(runtime: string, profileId: string): Promise<QuotaResult | null> {
     try {
-      return JSON.parse(await readFile(this.quotaCachePath(runtime), "utf8")) as QuotaResult;
+      return JSON.parse(
+        await readFile(this.quotaCachePath(runtime, profileId), "utf8"),
+      ) as QuotaResult;
     } catch {
-      if (runtime !== "claude_code") return null;
-      try {
-        return JSON.parse(await readFile(this.legacyClaudeQuotaCachePath, "utf8")) as QuotaResult;
-      } catch {
-        return null;
-      }
+      return null;
     }
   }
 
-  private async writeQuotaCache(runtime: string, quota: QuotaResult): Promise<void> {
+  private async writeQuotaCache(
+    runtime: string,
+    profileId: string,
+    quota: QuotaResult,
+  ): Promise<void> {
     try {
-      await mkdir(dirname(this.quotaCachePath(runtime)), { recursive: true });
-      await writeFile(this.quotaCachePath(runtime), JSON.stringify(quota), "utf8");
+      const cachePath = this.quotaCachePath(runtime, profileId);
+      await mkdir(dirname(cachePath), { recursive: true });
+      await writeFile(cachePath, JSON.stringify(quota), "utf8");
     } catch {
       // Best-effort cache; a probe is still returned to the caller.
     }
@@ -855,8 +965,18 @@ export class CliCredentialBroker {
     runtime: string,
     executorMode: "worktree" | "docker",
     profileId?: string | null,
+    options?: {
+      conversation_state_key?: string | null;
+      user_id?: string | null;
+    },
   ): Promise<CredentialGrant> {
-    const profile = await this.resolveProfile(runtime, profileId, true, spaceId);
+    const profile = await this.resolveProfile(
+      runtime,
+      profileId,
+      true,
+      spaceId,
+      options?.user_id,
+    );
     if (!profile) {
       return {
         granted: false,
@@ -865,6 +985,7 @@ export class CliCredentialBroker {
         executor_mode: executorMode,
         readonly: false,
         temp_home: null,
+        persistent_home: false,
         host_source_path: null,
         target_path: null,
         env: {},
@@ -873,6 +994,9 @@ export class CliCredentialBroker {
       };
     }
     if (executorMode === "docker") {
+      if (options?.conversation_state_key) {
+        throw new Error("Persistent CLI conversation sessions do not support one-shot Docker");
+      }
       return {
         granted: true,
         profile_id: profile.id,
@@ -880,6 +1004,7 @@ export class CliCredentialBroker {
         executor_mode: "docker",
         readonly: profile.readonly,
         temp_home: null,
+        persistent_home: false,
         // The sandbox launcher mounts this through the HOST Docker daemon.
         host_source_path: resolveHostPath(profile.source_path),
         target_path: profile.target_path,
@@ -888,7 +1013,10 @@ export class CliCredentialBroker {
         fallback_reason: null,
       };
     }
-    const tempHome = await this.createTempHome(runId, profile);
+    const persistent = Boolean(options?.conversation_state_key);
+    const tempHome = options?.conversation_state_key
+      ? await this.createConversationHome(options.conversation_state_key, profile)
+      : await this.createTempHome(runId, profile);
     return {
       granted: true,
       profile_id: profile.id,
@@ -896,6 +1024,7 @@ export class CliCredentialBroker {
       executor_mode: "worktree",
       readonly: false,
       temp_home: tempHome,
+      persistent_home: persistent,
       host_source_path: null,
       target_path: null,
       env: { HOME: tempHome },
@@ -909,6 +1038,31 @@ export class CliCredentialBroker {
       recursive: true,
       force: true,
     });
+  }
+
+  async prepareRunHome(runId: string): Promise<string> {
+    const tempHome = join(this.runtimeHomesRoot, cleanComponent(runId, "run_id"));
+    await rm(tempHome, { recursive: true, force: true });
+    await mkdir(tempHome, { recursive: true, mode: 0o700 });
+    return tempHome;
+  }
+
+  async prepareConversationHome(stateKey: string): Promise<string> {
+    await ensureRealDirectoryChain(
+      resolve(this.config.agentSpaceHome),
+      "cache/conversation-runtime-homes",
+      "conversation",
+    );
+    const tempHome = join(
+      this.conversationRuntimeHomesRoot,
+      cleanComponent(stateKey, "conversation_state_key"),
+    );
+    await ensureRealDirectoryChain(
+      this.conversationRuntimeHomesRoot,
+      cleanComponent(stateKey, "conversation_state_key"),
+      "conversation",
+    );
+    return tempHome;
   }
 
   async streamLogin(
@@ -959,11 +1113,21 @@ export class CliCredentialBroker {
     reply.raw.end();
   }
 
-  sendLoginInput(runtime: string, input: string, profileId?: string | null): boolean {
+  async sendLoginInput(
+    runtime: string,
+    input: string,
+    spaceId: string,
+    userId: string,
+    profileId?: string | null,
+  ): Promise<boolean> {
+    const profile = profileId
+      ? await this.getOwnedProfile(userId, profileId, spaceId)
+      : await this.getOwnedDefaultForRuntime(userId, runtime, spaceId);
+    if (!profile || profile.runtime !== runtime) return false;
     return sendCliLoginInput(
       runtime,
       input,
-      profileId ? `${runtime}:${profileId}` : undefined,
+      `${runtime}:${profile.id}`,
     );
   }
 
@@ -1033,6 +1197,10 @@ export class CliCredentialBroker {
          JOIN cli_credential_profiles p ON p.id = g.profile_id
         WHERE g.space_id = $1
           AND g.enabled = true
+          AND ($2::varchar IS NULL OR (
+            g.owner_user_id = $2
+            AND p.owner_user_id = $2
+          ))
         ORDER BY p.runtime ASC, g.is_default DESC, p.name ASC, p.created_at ASC`,
       [spaceId, userId ?? null],
     );
@@ -1124,6 +1292,10 @@ export class CliCredentialBroker {
           AND g.enabled = true
           AND p.runtime = $2
           AND p.id = $3
+          AND ($4::varchar IS NULL OR (
+            g.owner_user_id = $4
+            AND p.owner_user_id = $4
+          ))
         LIMIT 1`,
       [spaceId, runtime, profileId, userId ?? null],
     );
@@ -1165,24 +1337,106 @@ export class CliCredentialBroker {
   }
 
   private async createTempHome(runId: string, profile: CredentialProfile): Promise<string> {
-    const tempHome = join(this.runtimeHomesRoot, cleanComponent(runId, "run_id"));
-    await mkdir(tempHome, { recursive: true, mode: 0o700 });
-    const linkName = basename(profile.target_path || `.${profile.runtime}`);
-    const linkPath = join(tempHome, linkName);
-    try {
-      await unlink(linkPath);
-    } catch {
-      // absent is fine; a stale broken symlink throws the same way as a file.
-    }
-    await symlink(profile.source_path, linkPath);
-    const claudeJson = join(profile.source_path, ".claude.json");
-    if (await exists(claudeJson)) {
-      const claudeJsonLink = join(tempHome, ".claude.json");
-      try {
-        await unlink(claudeJsonLink);
-      } catch {}
-      await symlink(claudeJson, claudeJsonLink);
-    }
+    const tempHome = await this.prepareRunHome(runId);
+    await materializeRunCredentialHome({
+      tempHome,
+      runtime: profile.runtime,
+      sourcePath: profile.source_path,
+    });
     return tempHome;
   }
+
+  private async createConversationHome(
+    stateKey: string,
+    profile: CredentialProfile,
+  ): Promise<string> {
+    const tempHome = await this.prepareConversationHome(stateKey);
+    await materializeRunCredentialHome({
+      tempHome,
+      runtime: profile.runtime,
+      sourcePath: profile.source_path,
+    });
+    return tempHome;
+  }
+}
+
+export async function materializeRunCredentialHome(input: {
+  tempHome: string;
+  runtime: string;
+  sourcePath: string;
+}): Promise<void> {
+  const adapter = cliLoginAdapterFor(input.runtime);
+  if (!adapter?.home_subdir || !adapter.credential_file) {
+    throw new Error(`Runtime '${input.runtime}' has no credential materialization contract`);
+  }
+  const tempHome = input.tempHome;
+  const homeRoot = resolve(tempHome);
+  const targetDir = resolve(tempHome, adapter.home_subdir);
+  if (targetDir === homeRoot || !targetDir.startsWith(`${homeRoot}/`)) {
+    throw new Error(`Runtime '${input.runtime}' credential target escapes the run HOME`);
+  }
+  await ensureRealDirectoryChain(homeRoot, adapter.home_subdir, input.runtime);
+  const credentialTarget = join(targetDir, adapter.credential_file);
+  const credentialSource = join(input.sourcePath, adapter.credential_file);
+  await assertRegularCredentialFile(credentialSource, input.runtime);
+  await rm(credentialTarget, { force: true });
+  await copyFile(credentialSource, credentialTarget);
+  await chmod(credentialTarget, 0o600);
+  const claudeJson = join(input.sourcePath, ".claude.json");
+  if (await optionalRegularCredentialFile(claudeJson, input.runtime)) {
+    const claudeJsonTarget = join(tempHome, ".claude.json");
+    await rm(claudeJsonTarget, { force: true });
+    await copyFile(claudeJson, claudeJsonTarget);
+    await chmod(claudeJsonTarget, 0o600);
+  }
+}
+
+async function ensureRealDirectoryChain(
+  root: string,
+  relativePath: string,
+  runtime: string,
+): Promise<void> {
+  const rootStats = await lstat(root);
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error(`Runtime '${runtime}' credential HOME is not a real directory`);
+  }
+  let current = root;
+  for (const component of relativePath.split("/").filter(Boolean)) {
+    current = join(current, component);
+    try {
+      const stats = await lstat(current);
+      if (!stats.isDirectory() || stats.isSymbolicLink()) {
+        throw new Error(`Runtime '${runtime}' credential target contains a symlink`);
+      }
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      await mkdir(current, { mode: 0o700 });
+    }
+  }
+}
+
+async function assertRegularCredentialFile(path: string, runtime: string): Promise<void> {
+  const stats = await lstat(path);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Runtime '${runtime}' credential source is not a regular file`);
+  }
+}
+
+async function optionalRegularCredentialFile(
+  path: string,
+  runtime: string,
+): Promise<boolean> {
+  try {
+    await assertRegularCredentialFile(path, runtime);
+    return true;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && (error as NodeJS.ErrnoException).code === "ENOENT";
 }

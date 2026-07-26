@@ -5,7 +5,7 @@ import { activityRecords } from "./activity";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { workspaces } from "./workspaces";
+import { projectFolders } from "./projectFolders";
 import { artifacts } from "./artifacts";
 import { proposals } from "./proposals";
 import { projects } from "./projects";
@@ -13,11 +13,11 @@ import { projects } from "./projects";
 export const boards = pgTable("boards", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	projectId: varchar("project_id", { length: 36 }),
 	name: varchar({ length: 512 }).notNull(),
 	description: text(),
-	boardType: varchar("board_type", { length: 64 }).default('workspace').notNull(),
+	boardType: varchar("board_type", { length: 64 }).default('project_folder').notNull(),
 	status: varchar({ length: 32 }).default('active').notNull(),
 	defaultView: varchar("default_view", { length: 64 }),
 	sortOrder: integer("sort_order"),
@@ -30,7 +30,7 @@ export const boards = pgTable("boards", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_boards_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_boards_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_boards_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_boards_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.createdByAgentId],
 			foreignColumns: [agents.id],
@@ -47,9 +47,9 @@ export const boards = pgTable("boards", {
 			name: "boards_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "boards_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "boards_project_folder_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.projectId],
@@ -99,7 +99,7 @@ export const boardColumns = pgTable("board_columns", {
 export const tasks = pgTable("tasks", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	projectId: varchar("project_id", { length: 36 }),
 	boardId: varchar("board_id", { length: 36 }),
 	columnId: varchar("column_id", { length: 36 }),
@@ -151,7 +151,7 @@ export const tasks = pgTable("tasks", {
 	index("ix_tasks_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
 	index("ix_tasks_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_tasks_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_tasks_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_tasks_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	unique("uq_tasks_id_space_id").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.assignedAgentId],
@@ -229,9 +229,9 @@ export const tasks = pgTable("tasks", {
 			name: "tasks_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "tasks_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "tasks_project_folder_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.projectId],
@@ -348,7 +348,7 @@ export const taskProposals = pgTable("task_proposals", {
 export const validationRecipes = pgTable("validation_recipes", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	workspaceId: varchar("workspace_id", { length: 36 }),
+	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	name: varchar({ length: 256 }).notNull(),
 	taskType: varchar("task_type", { length: 64 }),
 	riskLevel: varchar("risk_level", { length: 32 }).default('low').notNull(),
@@ -364,16 +364,16 @@ export const validationRecipes = pgTable("validation_recipes", {
 	index("ix_validation_recipes_enabled").using("btree", table.enabled.asc().nullsLast()),
 	index("ix_validation_recipes_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_validation_recipes_task_type").using("btree", table.taskType.asc().nullsLast()),
-	index("ix_validation_recipes_workspace_id").using("btree", table.workspaceId.asc().nullsLast()),
+	index("ix_validation_recipes_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
 			name: "validation_recipes_space_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.workspaceId, table.spaceId],
-			foreignColumns: [workspaces.id, workspaces.spaceId],
-			name: "validation_recipes_workspace_id_fkey"
+			columns: [table.projectFolderId, table.spaceId],
+			foreignColumns: [projectFolders.id, projectFolders.spaceId],
+			name: "validation_recipes_project_folder_id_fkey"
 		}),
 	check("ck_validation_recipes_risk_level", sql`(risk_level)::text = ANY (ARRAY[('low'::character varying)::text, ('medium'::character varying)::text, ('high'::character varying)::text])`),
 ]);

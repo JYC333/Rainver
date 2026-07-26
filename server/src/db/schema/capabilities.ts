@@ -218,7 +218,7 @@ export const skillLocalOverlays = pgTable("skill_local_overlays", {
 		}),
 	check("ck_skill_local_overlays_overlay_object", sql`jsonb_typeof(overlay_json) = 'object'::text`),
 	check("ck_skill_local_overlays_scope_id", sql`(((scope_type)::text = 'space'::text) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'space'::text) AND (scope_id IS NOT NULL))`),
-	check("ck_skill_local_overlays_scope_type", sql`(scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('workspace'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])`),
+	check("ck_skill_local_overlays_scope_type", sql`(scope_type)::text = ANY (ARRAY[('space'::character varying)::text, ('project'::character varying)::text, ('project_folder'::character varying)::text, ('agent'::character varying)::text, ('user'::character varying)::text])`),
 	check("ck_skill_local_overlays_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
 

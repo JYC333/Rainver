@@ -14,18 +14,19 @@ import { enqueueAgentRunJob } from "./agentRunHandler";
 import { RunMaterializationService } from "./materializationService";
 import { sharedCliProcessRegistry } from "./processRegistry";
 import { ContextPrepareService } from "../context";
-import { PgCodePatchCollector, PgWorkspaceManager } from "../workspaces";
-import { EvolutionRepository } from "../evolution/repository";
-import { EvolutionSolidifier } from "../evolution/solidifier";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
-import { PgUsageRepository } from "../usage/repository";
+import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
 import { PgVerificationEngine } from "./verification";
-import { PlanExecutionService } from "../plans/executionService";
-import { WorkflowExecutionService } from "../automations/workflowExecutionService";
-import { PgRunSupervisor } from "./supervisor";
+import {
+  canonicalRunOutput,
+  isHardTerminalRunStatus,
+} from "./orchestrationResults";
+import {
+  CliAgentToolTransport,
+  cliRunToolIdentities,
+} from "./cliToolTransport";
+import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope";
 import {
   NonTerminalRunError,
-  PostRunFinalizationService,
   RunNotFoundError,
 } from "./finalizationService";
 import {
@@ -143,7 +144,7 @@ function commandServices(context: ModuleContext): RunsCommandServices {
     orchestration: new RunOrchestrationService(context.config, repository, {
       materializer,
       contextPreparer,
-      workspaceManager: PgWorkspaceManager.fromConfig(context.config),
+      workspaceManager: PgRunSandboxManager.fromConfig(context.config),
       codePatchCollector: PgCodePatchCollector.fromConfig(context.config),
       verificationEngine: PgVerificationEngine.fromConfig(context.config),
       processRegistry: sharedCliProcessRegistry,
@@ -152,6 +153,95 @@ function commandServices(context: ModuleContext): RunsCommandServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  app.post("/internal/runs/:runId/mcp", async (request, reply) => {
+    const runId = params(request).runId ?? "";
+    const authorization = request.headers.authorization ?? "";
+    const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+    const identity = token ? cliRunToolIdentities.resolve(token, runId) : null;
+    if (!identity) return reply.code(401).send({ detail: "Invalid or expired Run tool identity" });
+    const repository = PgRunRepository.fromConfig(context.config);
+    const run = await repository.getRun(identity.space_id, runId);
+    if (!run || run.space_id !== identity.space_id || run.status !== "running") {
+      return reply.code(403).send({ detail: "Run tool identity is no longer active" });
+    }
+    const body = jsonBody(request);
+    const id = body.id ?? null;
+    const method = stringValue(body.method);
+    const transport = new CliAgentToolTransport(context.config);
+    try {
+      if (method === "initialize") {
+        return reply.send({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: "agent-space-run-tools", version: "1" },
+          },
+        });
+      }
+      if (method === "notifications/initialized") return reply.code(202).send();
+      if (method === "tools/list") {
+        const tools = await transport.list(run);
+        return reply.send({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            tools: tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.input_schema ?? { type: "object" },
+            })),
+          },
+        });
+      }
+      if (method === "tools/call") {
+        if (id === null || (typeof id !== "string" && typeof id !== "number")) {
+          throw new Error("tools/call requires a stable JSON-RPC id");
+        }
+        const callParams = recordValue(body.params);
+        const name = stringValue(callParams.name);
+        if (!name) throw new Error("tools/call requires params.name");
+        const result = await transport.call(run, {
+          id: String(id),
+          name,
+          arguments: recordValue(callParams.arguments),
+        });
+        if (recordValue(result).error_code === "system_action_approval_required") {
+          await repository.markRunWaitingForReview({
+            run_id: run.id,
+            space_id: run.space_id,
+            approval_code: "cli_tool_approval_required",
+            message: `CLI tool '${name}' requires approval.`,
+            paused_at: new Date().toISOString(),
+          });
+        }
+        return reply.send({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: JSON.stringify(result) }],
+            isError: recordValue(result).ok === false,
+          },
+        });
+      }
+      return reply.send({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32601, message: `Unsupported MCP method '${method ?? ""}'` },
+      });
+    } catch (error) {
+      return reply.send({
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code: -32000,
+          message: error instanceof Error ? error.message : "Run tool transport failed",
+        },
+      });
+    }
+  });
+
   app.post("/api/v1/runs/:runId/execute", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -241,7 +331,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         status: q.status ?? null,
         mode: q.mode ?? null,
         agent_id: q.agent_id ?? null,
-        workspace_id: q.workspace_id ?? null,
+        project_folder_id: q.project_folder_id ?? null,
         project_id: q.project_id ?? null,
         workflow_version_id: q.workflow_version_id ?? null,
         capability_id: q.capability_id ?? null,
@@ -261,6 +351,35 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
     return reply.send(runStatusToOut(result.run));
+  });
+
+  app.get("/api/v1/runs/:runId/io", async (request, reply) => {
+    const result = await visibleRun(context, request, reply);
+    if (!result) return reply;
+    const { repository, run } = result;
+    const [events, artifacts] = await Promise.all([
+      repository.listRunEvents(run.space_id, run.id),
+      PgArtifactRepository.fromConfig(context.config).listVisible(
+        run.space_id,
+        result.identity.userId,
+        { runId: run.id, limit: 200, offset: 0 },
+      ),
+    ]);
+    const output = recordValue(run.output_json);
+    return reply.send({
+      schema_version: "run_io.v1",
+      run_id: run.id,
+      input: logicalRunInput(assembleRunInputEnvelope(run)),
+      output: output.schema_version === "run_output.v1" ? output : null,
+      events: events
+        .filter((event) => LOGICAL_RUNTIME_EVENT_TYPES.has(event.event_type))
+        .map(runEventToOut),
+      artifact_refs: artifacts.items.map((artifact) => ({
+        id: artifact.id,
+        artifact_type: artifact.artifact_type,
+        title: artifact.title,
+      })),
+    });
   });
 
   app.get("/api/v1/runs/:runId/activities", async (request, reply) => {
@@ -368,23 +487,32 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const runId = params(request).runId ?? "";
     const repository = PgRunRepository.fromConfig(context.config);
     try {
-      const db = dbPool(context.config);
-      const finalization = await new PostRunFinalizationService(
-        repository,
-        new EvolutionSolidifier(new EvolutionRepository(db)),
-        new EvolutionSignalEmitter(db),
-        new PgUsageRepository(db),
-        {
-          reconcileForRun: async (spaceId: string, childRunId: string, userId: string) => {
-            await new PlanExecutionService(db).reconcileForRun(spaceId, childRunId, userId);
-            await new WorkflowExecutionService().reconcileForRun(db, spaceId, childRunId, userId);
-          },
-        },
-        new PgRunSupervisor(db, new EvolutionSignalEmitter(db)),
-      ).finalize(
-        runId,
+      const run = await repository.getVisibleRun(
         identity.spaceId,
+        identity.userId,
+        runId,
       );
+      if (!run) throw new RunNotFoundError(runId);
+      if (!isHardTerminalRunStatus(run.status)) {
+        throw new NonTerminalRunError(
+          `Run '${runId}' is not terminal (status='${run.status}').`,
+        );
+      }
+      const result = await RunMaterializationService.fromConfig(
+        context.config,
+      ).finalizeRun(run);
+      if (result.status !== "succeeded") {
+        throw new Error(
+          result.error_message ?? "Run finalization reconciliation failed.",
+        );
+      }
+      const finalization = await repository.getLatestRunFinalization(
+        identity.spaceId,
+        runId,
+      );
+      if (!finalization) {
+        throw new Error("Run finalization completed without a persisted record.");
+      }
       return reply.send(runFinalizationToOut(finalization));
     } catch (error) {
       if (error instanceof RunNotFoundError) {
@@ -488,7 +616,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         .send({ detail: `Run is not waiting for review (current status: ${run.status})` });
     }
     const grantedAt = new Date().toISOString();
-    const supervisorReview = recordValue(run.error_json).supervisor_review === true;
+    const runError = recordValue(run.error_json);
+    if (typeof runError.authorization_request_id === "string") {
+      return reply.code(409).send({
+        detail: "Authorization-request Runs reconcile automatically after the request is decided.",
+        authorization_request_id: runError.authorization_request_id,
+      });
+    }
+    const supervisorReview = runError.supervisor_review === true;
     const updated = supervisorReview
       ? await repository.resumeRunAfterSupervisorReview({
           run_id: runId,
@@ -510,7 +645,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       space_id: identity.spaceId,
       user_id: identity.userId,
       agent_id: run.agent_id,
-      workspace_id: run.workspace_id,
+      project_folder_id: run.project_folder_id,
     });
     return reply.code(202).send({
       id: updated.id,
@@ -540,7 +675,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       run_id: runId,
       space_id: identity.spaceId,
       status: "cancelled",
-      output_json: {},
+      output_json: canonicalRunOutput({
+        success: false,
+        outputText: "",
+        outputJson: { error_code: "run_abandoned" },
+      }),
       error_json: {
         error_code: "run_abandoned",
         error_text: stringValue(body.reason) ?? "Run abandoned after supervisor review.",
@@ -578,6 +717,20 @@ function stopResponse(
     changed,
   };
 }
+
+const LOGICAL_RUNTIME_EVENT_TYPES = new Set([
+  "assistant_message_completed",
+  "tool_call_started",
+  "tool_call_completed",
+  "tool_call_failed",
+  "approval_requested",
+  "approval_resolved",
+  "artifact_produced",
+  "output_validation_completed",
+  "warning",
+  "error",
+  "state_transition",
+]);
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;

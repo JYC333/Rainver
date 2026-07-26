@@ -51,7 +51,7 @@ describe("Run contract snapshots", () => {
       {
         source: { kind: "task", id: "task-1" },
         project_id: "project-1",
-        workspace_id: "workspace-1",
+        project_folder_id: "workspace-1",
         acceptance_criteria_json: acceptance,
         definition_of_done: "Tests pass",
         required_outputs_json: { artifact_types: ["report.v1"] },
@@ -87,13 +87,13 @@ describe("Run contract snapshots", () => {
       workflowVersionId: "workflow-version-1",
       config: { max_duration_seconds: 120, max_runs: 4, max_attempts: 2 },
       projectId: "project-1",
-      workspaceId: "workspace-1",
+      projectFolderId: "workspace-1",
     });
 
     expect(contract).toMatchObject({
       source: { kind: "workflow", id: "workflow-version-1" },
       project_id: "project-1",
-      workspace_id: "workspace-1",
+      project_folder_id: "workspace-1",
       required_outputs_json: {
         artifact_types: ["research_report.archive.v1"],
       },
@@ -103,6 +103,9 @@ describe("Run contract snapshots", () => {
     });
     expect(contract.route_hints_json).toEqual({
       recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
+      execution_shape: "structured_generation",
+      required_capabilities: [],
+      required_tools: [],
     });
   });
 
@@ -116,7 +119,7 @@ describe("Run contract snapshots", () => {
       mode: "live",
       prompt: "prompt",
       instruction: null,
-      workspace_id: null,
+      project_folder_id: null,
       session_id: null,
       project_id: "project-1",
       contract_snapshot_json: {

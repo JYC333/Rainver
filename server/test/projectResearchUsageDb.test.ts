@@ -160,7 +160,7 @@ beforeEach(async () => {
       access_level: "full",
       source_resource_type: "run",
       source_resource_id: RUN,
-      workspace_id: null,
+      project_folder_id: null,
       project_id: PROJECT,
       grant_snapshots: [],
     },

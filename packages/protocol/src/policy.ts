@@ -87,6 +87,19 @@ export type PolicyActionDefinition = z.infer<
  * a decision input), but carried so audits and docs share the same labels.
  */
 export const POLICY_ACTION_REGISTRY = [
+  {
+    action: "authorization.request.create",
+    resource_type: "authorization_request",
+    default_risk_level: "medium",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point: "server/src/modules/policy/authorizationRequestService.ts",
+    description: "Create a bounded request from a requestable denied policy decision.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
   // ---- WIRED_DIRECT ----
   {
     action: "runtime.execute",
@@ -160,16 +173,16 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "best_effort",
   },
   {
-    action: "workspace.write_patch",
-    resource_type: "workspace",
+    action: "project_folder.write_patch",
+    resource_type: "project_folder",
     default_risk_level: "high",
     default_decision: "require_approval",
     audit_required: true,
     approval_capability: "approve_code_patch",
     default_required_approver_role: "owner",
     current_enforcement_point:
-      "server/src/modules/workspaces/codePatch.ts",
-    description: "Apply a code patch to workspace files.",
+      "server/src/modules/projectFolders/codePatch.ts",
+    description: "Apply a code patch to Project Folder files.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "fail_closed",
   },
@@ -196,7 +209,7 @@ export const POLICY_ACTION_REGISTRY = [
     approval_capability: null,
     default_required_approver_role: null,
     current_enforcement_point:
-      "server/src/modules/memory/proposalRepository.ts, server/src/modules/runs/materializationService.ts, server/src/modules/workspaces/codePatch.ts",
+      "server/src/modules/memory/proposalRepository.ts, server/src/modules/runs/materializationService.ts, server/src/modules/projectFolders/codePatch.ts",
     description:
       "Create a proposal for a pending durable change. Covers user-created memory proposals (memory_create, memory_update, etc.) and system-created code_patch proposals from CLI runs.",
     lifecycle_status: "wired_direct",
@@ -654,22 +667,22 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "best_effort",
   },
   {
-    action: "workspace.read",
-    resource_type: "workspace",
+    action: "project_folder.read",
+    resource_type: "project_folder",
     default_risk_level: "low",
     default_decision: "allow",
     audit_required: false,
     approval_capability: null,
     default_required_approver_role: null,
     current_enforcement_point:
-      "server/src/modules/workspaces/routes.ts",
-    description: "Read files or metadata from a workspace.",
+      "server/src/modules/projectFolders/repository.ts",
+    description: "Read files or metadata from a Project Folder.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },
   {
-    action: "workspace.apply_patch",
-    resource_type: "workspace",
+    action: "project_folder.apply_patch",
+    resource_type: "project_folder",
     default_risk_level: "high",
     default_decision: "require_approval",
     audit_required: true,
@@ -677,7 +690,7 @@ export const POLICY_ACTION_REGISTRY = [
     default_required_approver_role: "owner",
     current_enforcement_point: "not_implemented",
     description:
-      "Apply a patch to workspace files via a mechanism other than workspace.write_patch (e.g. a direct apply path bypassing the proposal).",
+      "Apply a patch to Project Folder files via a mechanism other than project_folder.write_patch (e.g. a direct apply path bypassing the proposal).",
     lifecycle_status: "reserved",
     record_failure_mode: "best_effort",
   },
@@ -915,7 +928,7 @@ export const POLICY_ACTION_REGISTRY = [
     default_required_approver_role: null,
     current_enforcement_point: "server/src/modules/sources/routes.ts",
     description:
-      "Link evidence to space, workspace, project, user, agent, run, proposal, artifact, memory, knowledge, or task targets.",
+      "Link evidence to space, project_folder, project, user, agent, run, proposal, artifact, memory, knowledge, or task targets.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },

@@ -26,7 +26,7 @@ Proposals are the product review and application boundary for durable mutations.
 - Registered server apply types include `memory_create`, `memory_update`,
   `memory_archive`, `policy_change`, `code_patch`, Knowledge proposal types,
   Claim Candidate Packet, retrieval review packet types, task proposal types,
-  workspace proposal types, and capability proposal types contributed through
+  Project Folder proposal types, and capability proposal types contributed through
   the server `ProposalApplierRegistry`, plus the Custom Source proposal types
   registered by the Sources module. Unregistered proposal types fail closed on accept
   until their owning domain registers a server applier. `egress_review` approval
@@ -37,7 +37,7 @@ Proposals are the product review and application boundary for durable mutations.
   `ActionApprovalGrant` is atomically consumed; the proposal and an
   `action_grant` approval row are still durable. Never-grantable actions always
   require fresh explicit review.
-- `POST /api/v1/proposals/:proposalId/rollback` restores workspace files to their
+- `POST /api/v1/proposals/:proposalId/rollback` restores Project Folder files to their
   pre-apply state from a `code_patch_snapshots` record captured at accept time.
   Rollback is only available while the snapshot is within its retention window and
   has not already been used. The rollback route is space-scoped (requires the same
@@ -107,7 +107,7 @@ Proposals are the product review and application boundary for durable mutations.
   named handler version while superseding the previous active version.
 - `code_patch` proposals are accepted via the server applier; pre-apply file
   snapshots are captured automatically and pruned by retention policy (default
-  7 days / 20 max per workspace, configurable per-workspace and per-space).
+  7 days / 20 max per Project Folder, configurable per-Project-Folder and per-space).
 - Evolution bundles are a review grouping with exclusive ownership of their
   pending members. Their member decisions run through `ProposalApplyService`
   in the same database transaction as the member state transition; ordinary

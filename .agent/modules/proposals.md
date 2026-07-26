@@ -14,7 +14,7 @@ Approval workflow. Durable memory and code changes must go through a Proposal be
 
 ```
 Proposal:
-  id, space_id, workspace_id
+  id, space_id, project_folder_id
   proposal_type (memory_create|memory_update|memory_archive|memory_maintenance_packet|object_kind_create|object_kind_update|object_kind_deprecate|object_kind_archive|policy_change|code_patch|egress_review|follow_up_task|custom_source_policy_delta|custom_source_credentialed_source|custom_source_repair_activation|source_recipe_activation)
   title, summary, rationale, payload_json
   risk_level (low|medium|high|critical)
@@ -36,7 +36,7 @@ ProposalApproval:
   metadata_json, created_at, revoked_at
 
 CodePatchSnapshot:
-  id, proposal_id, space_id, workspace_id
+  id, proposal_id, space_id, project_folder_id
   files_json  — array of {path, existed, content} captured before apply
   status (available|rolled_back|pruned)
   created_at, expires_at
@@ -120,7 +120,7 @@ proposal mutations fail-closed instead of silently no-oping.
   a scoped, expiring, use-limited ActionApprovalGrant. Both modes retain the
   Proposal and approval audit record.
 - `code_patch` rollback requires a non-expired `available` snapshot; once used, status becomes `rolled_back` and cannot be reused
-- Snapshot retention (days + max count) is configurable per-workspace and per-space; builtin defaults are 7 days / 20 snapshots
+- Snapshot retention (days + max count) is configurable per-Project-Folder and per-space; builtin defaults are 7 days / 20 snapshots
 
 ## Related Files
 - `server/migrations/`

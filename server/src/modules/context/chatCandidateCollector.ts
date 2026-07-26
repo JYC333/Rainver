@@ -40,7 +40,7 @@ const ALL_SOURCES: readonly string[] = [
   "project_public_summary",
   "task",
   "project",
-  "workspace",
+  "project_folder",
   "run",
   "proposal",
   "artifact",
@@ -100,7 +100,7 @@ export class ChatContextCandidateCollector {
     // so only the DB-backed space-scoped selectors run. `project_public_summary`
     // is the sanitized space-public discovery layer (not concrete project
     // memory). Ordinary chat may use it for cross-project inspiration;
-    // Project Chat restricts it to the requested Project and suppresses the
+    // Project-scoped conversation restricts it to the requested Project and suppresses the
     // other space-wide selectors above.
     if (!request.project_id&&allowed.has("memory")) {
       const rows = await this.repo.selectMemories(

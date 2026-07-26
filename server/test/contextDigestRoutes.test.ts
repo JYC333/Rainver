@@ -95,7 +95,7 @@ describe("context digest refresh route", () => {
       method: "POST",
       url: "/api/v1/context/digests/refresh",
       payload: {
-        scope_type: "workspace",
+        scope_type: "project_folder",
         scope_id: "ws-1",
         digest_type: "policy_bundle",
       },

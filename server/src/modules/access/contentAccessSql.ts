@@ -1,4 +1,4 @@
-import { workspaceProjectReadAccessSql } from "../workspaces/access";
+import { projectFolderReadAccessSql } from "../projectFolders/access";
 import type { ContentResourceDefinition } from "./contentAccessRegistry";
 import { contentResourceDefinition } from "./contentAccessRegistry";
 import {
@@ -228,18 +228,22 @@ function contentScopeSql(
     const projectExpr = `${alias}.${definition.projectColumn}`;
     conditions.push(`(${projectExpr} IS NULL OR ${projectReadAccessSql(`${alias}.space_id`, projectExpr, userExpr)})`);
   }
-  if (definition.workspaceColumn) {
-    const workspaceExpr = `${alias}.${definition.workspaceColumn}`;
-    conditions.push(`(${workspaceExpr} IS NULL OR ${workspaceProjectReadAccessSql({
+  if (definition.projectFolderColumn) {
+    const projectFolderExpr = `${alias}.${definition.projectFolderColumn}`;
+    conditions.push(`(${projectFolderExpr} IS NULL OR ${projectFolderReadAccessSql({
       spaceExpr: `${alias}.space_id`,
-      workspaceExpr,
+      projectFolderExpr,
       userExpr,
     })})`);
   }
   return conditions.length > 0 ? `(${conditions.join(" AND ")})` : "true";
 }
 
-function projectReadAccessSql(spaceExpr: string, projectExpr: string, userExpr: string): string {
+export function projectReadAccessSql(
+  spaceExpr: string,
+  projectExpr: string,
+  userExpr: string,
+): string {
   return `EXISTS (
     SELECT 1
       FROM projects content_project

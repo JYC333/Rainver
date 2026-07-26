@@ -160,7 +160,6 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
 	modelProviderId: varchar("model_provider_id", { length: 36 }),
 	modelName: varchar("model_name", { length: 256 }),
-	credentialProfileId: varchar("credential_profile_id", { length: 36 }),
 	runtimeConfigJson: jsonb("runtime_config_json").default({}).notNull(),
 	runtimePolicyJson: jsonb("runtime_policy_json").default({}).notNull(),
 	enabled: boolean().default(true).notNull(),
@@ -169,30 +168,25 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_agent_runtime_profiles_agent_id").using("btree", table.agentId.asc().nullsLast()),
-	index("ix_agent_runtime_profiles_credential_profile_id").using("btree", table.credentialProfileId.asc().nullsLast()),
 	index("ix_agent_runtime_profiles_model_provider_id").using("btree", table.modelProviderId.asc().nullsLast()),
 	index("ix_agent_runtime_profiles_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	uniqueIndex("uq_agent_runtime_profiles_default_per_agent").using("btree", table.agentId.asc().nullsLast()).where(sql`(is_default = true)`),
 	foreignKey({
-			columns: [table.agentId],
-			foreignColumns: [agents.id],
-			name: "agent_runtime_profiles_agent_id_fkey"
+			columns: [table.agentId, table.spaceId],
+			foreignColumns: [agents.id, agents.spaceId],
+			name: "agent_runtime_profiles_agent_scope_fkey"
 		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.credentialProfileId],
-			foreignColumns: [cliCredentialProfiles.id],
-			name: "agent_runtime_profiles_credential_profile_id_fkey"
-		}),
 	foreignKey({
 			columns: [table.modelProviderId],
 			foreignColumns: [modelProviders.id],
 			name: "agent_runtime_profiles_model_provider_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "agent_runtime_profiles_space_id_fkey"
-		}).onDelete("cascade"),
+		columns: [table.spaceId],
+		foreignColumns: [spaces.id],
+		name: "agent_runtime_profiles_space_id_fkey"
+	}).onDelete("cascade"),
+	unique("uq_agent_runtime_profiles_id_space_agent").on(table.id, table.spaceId, table.agentId),
 	unique("uq_agent_runtime_profiles_agent_name").on(table.agentId, table.name),
 ]);
 
@@ -211,10 +205,11 @@ export const cliCredentialProfiles = pgTable("cli_credential_profiles", {
 	index("ix_cli_credential_profiles_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
 	index("ix_cli_credential_profiles_runtime").using("btree", table.runtime.asc().nullsLast()),
 	foreignKey({
-			columns: [table.ownerUserId],
-			foreignColumns: [users.id],
-			name: "cli_credential_profiles_owner_user_id_fkey"
-		}).onDelete("cascade"),
+		columns: [table.ownerUserId],
+		foreignColumns: [users.id],
+		name: "cli_credential_profiles_owner_user_id_fkey"
+	}).onDelete("cascade"),
+	unique("uq_cli_credential_profiles_id_owner").on(table.id, table.ownerUserId),
 	unique("uq_cli_credential_profiles_owner_runtime_name").on(table.name, table.ownerUserId, table.runtime),
 ]);
 

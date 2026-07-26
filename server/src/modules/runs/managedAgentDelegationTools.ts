@@ -387,6 +387,7 @@ export function agentDelegatePolicyInput(call: CanonicalToolCall, binding: Agent
     reason: params.reason ?? "agent_delegate_tool",
     budget_json: params.budget,
     context_policy_json: params.context,
+    tool_call_id: call.id,
   };
   return { params, identity, input };
 }
@@ -823,9 +824,9 @@ function isHardTerminalRunStatus(status: string): boolean {
 }
 
 function terminalRunResultSummary(run: RunRecord): string {
-  const output = recordValue(run.output_json);
-  const text = stringValue(output.output_text)
-    ?? stringValue(output.summary)
+  const envelope = recordValue(run.output_json);
+  const output = recordValue(envelope.result);
+  const text = stringValue(envelope.summary)
     ?? stringValue(output.result_summary);
   if (text) return truncateResultSummary(text);
 

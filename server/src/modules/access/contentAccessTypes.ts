@@ -23,7 +23,7 @@ export interface ContentAccessResource {
   owner_user_id: string | null;
   visibility: string;
   access_level: string;
-  workspace_id?: string | null;
+  project_folder_id?: string | null;
   project_id?: string | null;
 }
 

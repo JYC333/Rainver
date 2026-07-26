@@ -58,7 +58,7 @@ describe("skill local overlays", () => {
           display_name: "Team Public Skill",
           endpoint_defaults: { base_url: "https://skill.internal" },
           credential_ref: "credential_profile:skill-runtime",
-          default_scope: "workspace",
+          default_scope: "project_folder",
           runtime_preference: "codex_cli",
         },
       }),

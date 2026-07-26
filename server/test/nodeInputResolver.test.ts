@@ -6,7 +6,17 @@ describe("node input resolver", () => {
     const db = {
       async query<Row>(sql: string) {
         if (sql.includes("FROM artifacts")) return { rows: [{ id: "artifact-1" }] as Row[], rowCount: 1 };
-        return { rows: [{ node_id: "node-1", run_id: "run-1", output_json: { output_text: "done", result: { value: 42 } } }] as Row[], rowCount: 1 };
+        return { rows: [{
+          node_id: "node-1",
+          run_id: "run-1",
+          output_json: {
+            schema_version: "run_output.v1",
+            status: "succeeded",
+            summary: "done",
+            result: { result: { value: 42 } },
+            output_manifest: [],
+          },
+        }] as Row[], rowCount: 1 };
       },
     };
     const result = await resolveNodeInputs(db, {

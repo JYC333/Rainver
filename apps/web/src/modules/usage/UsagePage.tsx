@@ -95,6 +95,7 @@ const CHANNEL_OPTIONS: SelectOption[] = [
   { value: 'all', label: 'Any platform' },
   { value: 'managed_api', label: 'Managed API' },
   { value: 'provider_proxy', label: 'Provider proxy' },
+  { value: 'local_cli', label: 'CLI run' },
   { value: 'local_cli_transcript', label: 'CLI transcript' },
   { value: 'manual_import', label: 'Manual import' },
   { value: 'cross_instance_import', label: 'Cross-instance import' },

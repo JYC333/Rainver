@@ -6,7 +6,7 @@ function taskRow(overrides: Partial<TaskRow> = {}): TaskRow {
   return {
     id: "task-1",
     space_id: "space-1",
-    workspace_id: "workspace-1",
+    project_folder_id: "workspace-1",
     project_id: null,
     board_id: null,
     column_id: null,
@@ -65,7 +65,7 @@ describe("Task run context artifacts", () => {
               visibility: "private",
               owner_user_id: "user-1",
               project_id: null,
-              workspace_id: null,
+              project_folder_id: null,
               created_at: "2026-06-26T00:00:00.000Z",
             },
           ],

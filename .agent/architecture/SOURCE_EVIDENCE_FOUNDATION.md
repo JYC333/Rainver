@@ -28,7 +28,7 @@ There is no Area concept in this foundation.
 - `SourceChannelItemLink` records every channel that matched a deduplicated
   `SourceItem`; the item and snapshot retain connection provenance.
 - `SourceItem` is raw candidate material. Every item belongs to exactly one
-  `Space`. It does not require a workspace or project, and general space source capture
+  `Space`. It does not require a Project Folder or project, and general space source capture
   is valid. Manually saved URL items may attach to or change a
   `SourceConnection`; scanned items keep their original connection as source
   provenance.
@@ -52,7 +52,7 @@ There is no Area concept in this foundation.
   documents. They may create candidate evidence or Memory/Knowledge proposals,
   but they do not directly write durable Memory or Knowledge.
 - `EvidenceLink` links one evidence item to multiple targets such as space,
-  workspace, project, user, agent, run, proposal, artifact, memory, knowledge,
+  Project Folder, project, user, agent, run, proposal, artifact, memory, knowledge,
   or task. Service-layer validation requires each non-space target to exist in
   the same space. `target_type="space"` may omit `target_id`; it is normalized
   to the current `space_id`.

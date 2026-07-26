@@ -74,7 +74,7 @@ async function inTx<T>(fn: (repo: PgMemoryApplyRepository) => Promise<T>): Promi
 
 async function seedProposal(p: ApplyProposal): Promise<void> {
   await pool!.query(
-    `INSERT INTO proposals (id, space_id, proposal_type, status, payload_json, created_by_user_id, created_by_run_id, workspace_id, project_id, title)
+    `INSERT INTO proposals (id, space_id, proposal_type, status, payload_json, created_by_user_id, created_by_run_id, project_folder_id, project_id, title)
      VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9)`,
     [
       p.id,
@@ -83,7 +83,7 @@ async function seedProposal(p: ApplyProposal): Promise<void> {
       JSON.stringify(p.payload_json),
       p.created_by_user_id,
       p.created_by_run_id ?? null,
-      p.workspace_id,
+      p.project_folder_id,
       p.project_id,
       p.title,
     ],
@@ -96,7 +96,7 @@ function proposal(over: Partial<ApplyProposal> & { payload_json: Record<string, 
     space_id: over.space_id ?? SPACE,
     proposal_type: over.proposal_type ?? "memory_create",
     title: over.title ?? "Remember",
-    workspace_id: over.workspace_id ?? null,
+    project_folder_id: over.project_folder_id ?? null,
     project_id: over.project_id ?? null,
     created_by_user_id: over.created_by_user_id ?? USER,
     created_by_run_id: over.created_by_run_id ?? null,
@@ -347,15 +347,15 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     if (!available || !repo || !pool) return;
     await insertActiveMemory({
       id: "mem-ws",
-      scope_type: "workspace",
-      workspace_id: "ws-old",
+      scope_type: "project_folder",
+      project_folder_id: "ws-old",
       content: "old workspace content",
     });
 
     const out = await repo.applyUpdate(
       proposal({
         proposal_type: "memory_update",
-        workspace_id: null,
+        project_folder_id: null,
         payload_json: {
           target_memory_id: "mem-ws",
           target_scope: "agent",
@@ -370,8 +370,8 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(out.memory.scope_type).toBe("agent");
     expect(out.memory.agent_id).toBe("agent-1");
     expect(out.affectedDigestTargets).toEqual([
-      { scopeType: "workspace", workspaceId: "ws-old", agentId: null },
-      { scopeType: "agent", workspaceId: "ws-old", agentId: "agent-1" },
+      { scopeType: "project_folder", projectFolderId: "ws-old", agentId: null },
+      { scopeType: "agent", projectFolderId: "ws-old", agentId: "agent-1" },
     ]);
   });
 
@@ -489,15 +489,15 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     if (!available || !pool) return;
     const wsScope = proposal({
       id: "p-ws",
-      payload_json: { target_scope: "workspace", proposed_content: "x", provenance_entries: [userConf] },
-      workspace_id: "ws-1",
+      payload_json: { target_scope: "project_folder", proposed_content: "x", provenance_entries: [userConf] },
+      project_folder_id: "ws-1",
     });
     await seedProposal(wsScope);
     const result = await inTx((r) => r.applyOnly(wsScope, USER));
-    expect(result.scopeType).toBe("workspace");
-    expect(result.workspaceId).toBe("ws-1");
+    expect(result.scopeType).toBe("project_folder");
+    expect(result.projectFolderId).toBe("ws-1");
     expect(result.affectedDigestTargets).toEqual([
-      { scopeType: "workspace", workspaceId: "ws-1", agentId: null },
+      { scopeType: "project_folder", projectFolderId: "ws-1", agentId: null },
     ]);
     const count = (await pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c;
     expect(count).toBe(1);

@@ -37,6 +37,16 @@ export interface RetrievalToolPolicyInput {
   egressPolicyDenied?: boolean;
 }
 
+export class RetrievalToolPolicyDeniedError extends Error {
+  constructor(
+    message: string,
+    readonly policy_decision_record_id: string | null,
+  ) {
+    super(message);
+    this.name = "RetrievalToolPolicyDeniedError";
+  }
+}
+
 export async function enforceRetrievalToolCallPolicy(
   input: RetrievalToolPolicyInput,
 ): Promise<{ policy_decision_record_id: string | null }> {
@@ -83,7 +93,10 @@ export async function enforceRetrievalToolCallPolicy(
     },
   );
   if (result.status !== "allow") {
-    throw new Error(result.message ?? "Retrieval tool policy denied the call.");
+    throw new RetrievalToolPolicyDeniedError(
+      result.message ?? "Retrieval tool policy denied the call.",
+      result.policy_decision_record_id ?? null,
+    );
   }
   return { policy_decision_record_id: result.policy_decision_record_id ?? null };
 }

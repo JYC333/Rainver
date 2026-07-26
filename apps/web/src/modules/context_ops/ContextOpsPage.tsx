@@ -32,6 +32,7 @@ import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
+import { TechnicalIdField } from '../../components/TechnicalIdField'
 
 const WINDOWS = [7, 14, 30, 60, 90]
 
@@ -799,18 +800,8 @@ export default function ContextOpsPage() {
                 />
               </div>
               <div className="mb-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_90px]">
-                <input
-                  value={explainTargetA}
-                  onChange={event => setExplainTargetA(event.target.value)}
-                  placeholder="target A id"
-                  className="h-9 rounded-md border border-border bg-input px-3 text-sm font-mono"
-                />
-                <input
-                  value={explainTargetB}
-                  onChange={event => setExplainTargetB(event.target.value)}
-                  placeholder="target B id"
-                  className="h-9 rounded-md border border-border bg-input px-3 text-sm font-mono"
-                />
+                <TechnicalIdField label="Target A ID" value={explainTargetA} onChange={setExplainTargetA} />
+                <TechnicalIdField label="Target B ID" value={explainTargetB} onChange={setExplainTargetB} />
                 <input
                   type="number"
                   min={1}

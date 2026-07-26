@@ -53,7 +53,7 @@ const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
   ["Inbox", "inbox", 0, true],
   // Protected (is_system=true) like Inbox/Archive: every project's
   // auto-created notes folder nests under this one by system_role lookup
-  // (see workspaceService.ts's resolveProjectsParentFolderId), so it must
+  // (see areaService.ts's resolveProjectsParentFolderId), so it must
   // not be renameable-away-from or movable the way Areas/Resources are.
   ["Projects", "projects_root", 100, true],
   ["Areas", "normal", 200, false],

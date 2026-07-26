@@ -559,7 +559,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
   }, 10_000);
 });
 
-describe("Phase 9 automatic repair_status transitions", () => {
+describe("automatic Custom Source repair status transitions", () => {
   async function resetForNextRun(connId: string): Promise<void> {
     await pool!.query(
       `UPDATE scheduler_tasks SET next_run_at = $2 WHERE task_type = 'source_channel_scan' AND task_key = $1`,

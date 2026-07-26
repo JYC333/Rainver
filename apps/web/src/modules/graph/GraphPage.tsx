@@ -300,12 +300,15 @@ export default function GraphPage() {
 
         <div className="mt-3 grid gap-2 md:grid-cols-[9rem_minmax(12rem,1fr)_7rem_7rem_auto]">
           <Select value={mode} onChange={(value) => setMode(value as ServerGraphMode)} options={MODE_OPTIONS} />
-          <Input
-            value={mode === 'search' ? search : rootId}
-            onChange={(event) => mode === 'search' ? setSearch(event.target.value) : setRootId(event.target.value)}
-            placeholder={mode === 'search' ? 'Search graph text' : mode === 'global' ? 'Root not used' : 'Object id or cluster:<kind>'}
-            disabled={mode === 'global'}
-          />
+          {mode === 'search' ? <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search graph text" /> : mode === 'global' ? <Input value="Whole visible graph" disabled /> : <Select
+            value={rootId}
+            onChange={setRootId}
+            options={[
+              { value: '', label: 'Select a visible object…' },
+              ...(projection?.nodes ?? []).map(node => ({ value: node.id, label: `${node.label || node.kind} · ${node.kind}` })),
+              ...Array.from(new Set((projection?.nodes ?? []).map(node => node.kind))).map(kind => ({ value: `cluster:${kind}`, label: `All ${kind}` })),
+            ]}
+          />}
           <Select value={depth} onChange={setDepth} options={DEPTH_OPTIONS} disabled={mode !== 'local'} />
           <Input value={limit} onChange={(event) => setLimit(event.target.value)} inputMode="numeric" aria-label="Graph node limit" />
           <Button onClick={applyQuery}>

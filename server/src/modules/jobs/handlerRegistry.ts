@@ -13,6 +13,16 @@ export interface JobEnvelopeForHandler {
 
 export type JobHandler = (job: JobEnvelopeForHandler) => Promise<JobHandlerResult>;
 
+export class JobDeferredError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+    this.name = "JobDeferredError";
+  }
+}
+
 export class DuplicateJobHandlerError extends Error {
   constructor(readonly jobType: string) {
     super(`a handler is already registered for job type ${JSON.stringify(jobType)}`);

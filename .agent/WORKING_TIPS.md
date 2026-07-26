@@ -5,30 +5,33 @@ These are facts the codebase doesn't make obvious at a glance.
 
 ---
 
-## Workspaces
+## Project Folders
 
-**Creating a workspace auto-creates a folder on disk — but only if the Docker volume is writable.**
+**Creating a managed Project Folder auto-creates a folder on disk — but only if the Docker volume is writable.**
 
-`POST /api/v1/workspaces` now calls `Path.mkdir()` on `workspace_root/<id>/`
-when no explicit `path` is supplied. This only works if the container can write
-to the workspaces mount. In the `ops/compose/docker-compose.<mode>.yml`
-files the workspaces mount must not be `:ro` (read-only), which would silently
+`POST /api/v1/projects/{projectId}/folders` with neither `repo_url` nor
+`root_path` (the "create managed Folder" flow) calls `mkdir()` under
+`WORKSPACE_ROOT/<spaceId>/` via `createManagedDir()`. This only works if the
+container can write to that mount. In the `ops/compose/docker-compose.<mode>.yml`
+files this mount must not be `:ro` (read-only), which would silently
 block mkdir. PathPolicy still enforces read-only access at the API layer
 for the file browser — the `:ro` Docker flag was redundant.
 
-If an explicit `path` is passed, the directory is assumed to already exist
-on the host. Stale paths silently return 404 from the file tree API.
+`repo_url` clones into a managed directory; `root_path` (the "connect
+existing" flow) must come from `scanCandidates()` — arbitrary host paths are
+never accepted directly.
 
-**Workspace path resolution (workspace-console routes under `workspaces`):**
+**Project Folder path resolution** (`projectFolderAbsoluteRoot()` in
+`server/src/modules/projectFolders/repository.ts`):
 ```
-ws.path is absolute → use as-is
-ws.path is relative → workspace_root / ws.path
-ws.path is None     → workspace_root / ws.id   (pre-normalized rows only)
+folder.root_path is absolute → use as-is
+folder.root_path is relative → WORKSPACE_ROOT / folder.root_path
+folder.root_path is None     → WORKSPACE_ROOT / folder.id
 ```
-For execution (worktree sandbox), `validate_workspace_root_for_execution()` additionally
-enforces that the resolved root is under `settings.workspace_root` unless
-`ws.allow_external_root=True`. Absolute paths outside the managed root fail unless
-this flag is set.
+For execution (worktree sandbox), `PgRunSandboxManager.validateFolderRoot()`
+additionally enforces that the resolved root is under `WORKSPACE_ROOT` unless
+`folder.allow_external_root=true`. Absolute paths outside the managed root
+fail unless this flag is set.
 
 ---
 
@@ -49,19 +52,19 @@ and an optional `dropUp` flag.
 
 Agents may not write these directly; they must go through a `code_patch`
 Proposal. Read access is allowed. The forbidden write suffixes are declared in
-`FORBIDDEN_WRITE_SUFFIXES` in `server/src/modules/workspaces/pathPolicy.ts`.
+`FORBIDDEN_WRITE_SUFFIXES` in `server/src/modules/projectFolders/pathPolicy.ts`.
 
 ---
 
-## Workspace Console — Runtime Execution
+## Files & Code — No Interactive Session Execution
 
-**Console session execution is not active.**
+**There is no interactive agent-session execution over a Project Folder.**
 
-Current workspace-console routes live inside the registered `workspaces` module.
-Tree, file, git status, git diff, runtime status, and session list reads exist;
-session create/detail/run/stop routes return the explicit feature-not-implemented
-response. Do not describe workspace-console sessions as a current local CLI
-execution path.
+Files & Code routes live inside the registered `projectFolders` module and
+are read-only: tree, file, git status, and git diff. The former Workspace
+Console's runtime-status/session create/detail/run/stop surface was a
+never-implemented stub and has been removed entirely — do not describe it as
+a current or planned local CLI execution path.
 
 **RuntimeAdapterSpec owns local CLI command semantics.**
 

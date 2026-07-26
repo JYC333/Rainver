@@ -13,7 +13,7 @@ describe("Capability proposal applier", () => {
       space_id: "space-1",
       proposal_type: "capability_install",
       title: "Tampered capability install",
-      workspace_id: null,
+      project_folder_id: null,
       project_id: null,
       created_by_user_id: "user-1",
       created_by_run_id: null,

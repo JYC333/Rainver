@@ -34,7 +34,7 @@ These cost almost nothing now and keep commercial paths open later:
 | Vendor CLI files are compiled artefacts | No vendor file format becomes a lock-in dependency |
 | Capabilities are modular (YAML manifests) | Capability marketplace is possible later |
 | Proposal/approval gate exists | Compliance-heavy deployments can enforce human approval on all agent writes |
-| `space_id + user_id + workspace_id` pattern | RBAC extensions can be layered on top without model changes |
+| `space_id + user_id + project_folder_id` pattern | RBAC extensions can be layered on top without model changes |
 
 ## What We Have NOT Built (Deliberate Deferral)
 
@@ -75,7 +75,7 @@ Build in this order:
 3. Knowledge Base (structured knowledge)
 4. Flashcards / spaced repetition
 5. Assistant chat (with memory context)
-6. Workspace file browser
+6. Files & Code (Project Folder file browser)
 7. Agent run logs / diff review
 8. Simple family/team space support (invite, roles)
 

@@ -44,7 +44,7 @@ CREATE TABLE public.context_snapshot_items (
             'source'::character varying, 'activity_record'::character varying,
             'project_public_summary'::character varying,
             'task'::character varying, 'idea'::character varying,
-            'project'::character varying, 'workspace'::character varying,
+            'project'::character varying, 'project_folder'::character varying,
             'run'::character varying, 'proposal'::character varying,
             'artifact'::character varying, 'manual_context'::character varying
         ])::text[]))

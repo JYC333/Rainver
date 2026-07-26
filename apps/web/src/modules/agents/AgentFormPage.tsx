@@ -3,11 +3,10 @@ import { useParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { ChevronDown, ChevronRight, FileCode2, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentTemplatesApi, agentsApi, credentialsApi, providersApi, runtimeToolsApi, type ModelProviderOut } from '../../api/client'
+import { agentTemplatesApi, agentsApi, providersApi, runtimeToolsApi, type ModelProviderOut } from '../../api/client'
 import type {
   AgentTemplateOut,
   AgentTemplateVersionOut,
-  CliCredentialAvailableProfileOut,
   CreateAgentFromTemplateBody,
   SpaceRuntimeToolPolicyOut,
 } from '../../types/api'
@@ -51,44 +50,6 @@ function Toggle({ checked, onChange, label, note }: { checked: boolean; onChange
       <span>{label}{note && <span className="text-xs text-muted-foreground ml-2">{note}</span>}</span>
       <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
     </label>
-  )
-}
-
-function CliProfileSelector({
-  runtime,
-  profiles,
-  value,
-  onChange,
-}: {
-  runtime: string
-  profiles: CliCredentialAvailableProfileOut[]
-  value: string
-  onChange: (value: string) => void
-}) {
-  const runtimeProfiles = profiles.filter(profile => profile.runtime === runtime)
-  if (runtimeProfiles.length === 0) {
-    return (
-      <p className="text-xs text-amber-600">
-        No granted login profile is available for this runtime in the active space.
-      </p>
-    )
-  }
-  return (
-    <div className="space-y-1.5">
-      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">CLI profile</label>
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-      >
-        <option value="">Active-space default</option>
-        {runtimeProfiles.map(profile => (
-          <option key={profile.id} value={profile.id}>
-            {profile.name}{profile.is_default ? ' (default)' : ''}{profile.manageable ? ' · mine' : ''}
-          </option>
-        ))}
-      </select>
-    </div>
   )
 }
 
@@ -170,9 +131,7 @@ export default function AgentFormPage() {
   const [modelSelection, setModelSelection] = useState<{ provider_id: string; model: string } | null>(null)
   const [defaultProvider, setDefaultProvider] = useState<ModelProviderOut | null>(null)
   const [runtime, setRuntime] = useState<string>('model_api')
-  const [cliProfiles, setCliProfiles] = useState<CliCredentialAvailableProfileOut[]>([])
   const [runtimePolicies, setRuntimePolicies] = useState<SpaceRuntimeToolPolicyOut[]>([])
-  const [credentialProfileId, setCredentialProfileId] = useState<string>('')
   const [runtimeToolVersion, setRuntimeToolVersion] = useState<string>('')
   const [scheduleMode, setScheduleMode] = useState<'manual' | 'daily' | 'cron'>('manual')
   const [dailyHour, setDailyHour] = useState('08')
@@ -191,12 +150,10 @@ export default function AgentFormPage() {
 
   useEffect(() => {
     Promise.all([
-      credentialsApi.available().catch(() => [] as CliCredentialAvailableProfileOut[]),
       runtimeToolsApi.spacePolicies().catch(() => [] as SpaceRuntimeToolPolicyOut[]),
       providersApi.list().catch(() => [] as ModelProviderOut[]),
     ])
-      .then(([profiles, policies, providers]) => {
-        setCliProfiles(profiles.filter(c => c.logged_in))
+      .then(([policies, providers]) => {
         setRuntimePolicies(policies)
         const provider = providers.find(p => p.is_default && p.enabled) ?? null
         setDefaultProvider(provider)
@@ -205,7 +162,6 @@ export default function AgentFormPage() {
         }
       })
       .catch(() => {
-        setCliProfiles([])
         setRuntimePolicies([])
         setDefaultProvider(null)
       })
@@ -260,13 +216,7 @@ export default function AgentFormPage() {
       )
       .map(policy => policy.runtime),
   )
-  const cliRuntimes = Array.from(
-    new Map(
-      cliProfiles
-        .filter(profile => enabledRuntimeSet.has(profile.runtime))
-        .map(profile => [profile.runtime, profile]),
-    ).values(),
-  )
+  const cliRuntimes = runtimePolicies.filter(policy => enabledRuntimeSet.has(policy.runtime))
   const runtimeOptions = useMemo(() => {
     const options = [
       { value: 'model_api', label: 'API — call a model provider (no tools)' },
@@ -328,7 +278,6 @@ export default function AgentFormPage() {
     try {
       const runtimeConfig = {
         adapter_type: runtime,
-        ...(isCli && credentialProfileId ? { credential_profile_id: credentialProfileId } : {}),
         ...(isCli && runtimeToolVersion ? { runtime_tool_version: runtimeToolVersion } : {}),
       }
       const runtimeConfigWithTools = mergeRetrievalToolDomains(runtimeConfig, retrievalToolDomains)
@@ -367,9 +316,7 @@ export default function AgentFormPage() {
 
   function handleRuntimeChange(next: string) {
     setRuntime(next)
-    const defaultProfile = cliProfiles.find(p => p.runtime === next && p.is_default) ?? cliProfiles.find(p => p.runtime === next)
     const policy = runtimePolicies.find(p => p.runtime === next)
-    setCredentialProfileId(defaultProfile?.id ?? '')
     setRuntimeToolVersion(policy?.default_version ?? '')
   }
 
@@ -444,20 +391,12 @@ export default function AgentFormPage() {
             </p>
           </div>
           {isCli && (
-            <>
-              <CliProfileSelector
-                runtime={runtime}
-                profiles={cliProfiles}
-                value={credentialProfileId}
-                onChange={setCredentialProfileId}
-              />
-              <RuntimeVersionSelector
-                runtime={runtime}
-                policies={runtimePolicies}
-                value={runtimeToolVersion}
-                onChange={setRuntimeToolVersion}
-              />
-            </>
+            <RuntimeVersionSelector
+              runtime={runtime}
+              policies={runtimePolicies}
+              value={runtimeToolVersion}
+              onChange={setRuntimeToolVersion}
+            />
           )}
           {showProviderSelector && (
             <ProviderSelector

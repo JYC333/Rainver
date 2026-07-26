@@ -280,7 +280,7 @@ describe('FinancePage', () => {
     render(<Page />)
     await screen.findByText('Household (USD)')
 
-    expect(api.getBalances).toHaveBeenLastCalledWith('book-1', 'all')
+    await waitFor(() => expect(api.getBalances).toHaveBeenLastCalledWith('book-1', 'all'))
     fireEvent.click(screen.getByRole('button', { name: 'Mine' }))
     await waitFor(() => expect(api.getBalances).toHaveBeenLastCalledWith('book-1', 'personal'))
     fireEvent.click(screen.getByRole('button', { name: 'Shared' }))
@@ -293,7 +293,7 @@ describe('FinancePage', () => {
     render(<Page />)
     await screen.findByText('Household (USD)')
 
-    expect(screen.getByText('personal 🔒')).toBeInTheDocument()
+    expect(await screen.findByText('personal 🔒')).toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Food'))
     await screen.findByText('Ledger — Expenses:Food')

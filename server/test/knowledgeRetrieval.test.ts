@@ -354,7 +354,7 @@ class ProjectionFakeDb implements Queryable {
     [ITEM_A, {
       id: ITEM_A,
       space_id: SPACE_A,
-      workspace_id: null,
+      project_folder_id: null,
       owner_user_id: USER_A,
       created_by_user_id: USER_A,
       visibility: "space_shared",
@@ -370,7 +370,7 @@ class ProjectionFakeDb implements Queryable {
     [ITEM_B, {
       id: ITEM_B,
       space_id: SPACE_A,
-      workspace_id: null,
+      project_folder_id: null,
       owner_user_id: USER_A,
       created_by_user_id: USER_A,
       visibility: "space_shared",
@@ -392,7 +392,7 @@ class ProjectionFakeDb implements Queryable {
       this.forbiddenWrites.push(norm);
       throw new Error("forbidden canonical write");
     }
-    if (norm.startsWith("SELECT ki.object_id AS id, so.workspace_id")) {
+    if (norm.startsWith("SELECT ki.object_id AS id, so.project_folder_id")) {
       const objectId = params[1] as string;
       const row = this.canonicalItems.get(objectId);
       return result((row ? [row] : []) as Row[]);

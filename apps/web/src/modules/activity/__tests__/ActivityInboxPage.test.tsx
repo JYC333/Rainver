@@ -33,7 +33,7 @@ function activityRecord(overrides: Partial<ActivityInboxRecord> = {}): ActivityI
     id: 'activity-1',
     space_id: 'space-1',
     user_id: 'user-1',
-    workspace_id: null,
+    project_folder_id: null,
     agent_id: null,
     source_type: 'user_capture',
     title: 'Captured note',

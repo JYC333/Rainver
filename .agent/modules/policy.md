@@ -31,6 +31,9 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 - Active enforcement service (`server/src/modules/policy/service.ts`) — service-authenticated internal policy ports.
 - Domain-specific persisted-policy enforcement (`server/src/modules/policy/*`).
 - Durable policy decision tracing/audit (`server/src/modules/policy/auditWriter.ts`).
+- Bounded post-denial authorization requests
+  (`authorization_requests` and
+  `server/src/modules/policy/authorizationRequestService.ts`).
 
 ## Does Not Own
 
@@ -38,6 +41,10 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 - Proposal creation UI or workflow (proposals module).
 - Agent runtime policy (stored on `AgentRuntimeProfile.runtime_policy_json` and
   snapshotted onto runs, then read by runners).
+
+Policy does not own proposal mutations. Authorization-request approval uses
+the same policy-audited ActionApprovalGrant creation authority as the public
+grant route.
 
 ## Key Models
 
@@ -97,11 +104,11 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `runtime.use_credential` | credential | high | require_approval | provider credential store + run orchestration |
 | `context.inject_memory` | memory | low | allow | context/runs modules |
 | `context.render_for_runtime` | context | low | allow | runs module |
-| `workspace.write_patch` | workspace | high | require_approval | workspaces/proposal appliers |
+| `project_folder.write_patch` | project_folder | high | require_approval | projectFolders/proposal appliers |
 | `artifact.persist` | artifact | low | allow (audit_required) | run materialization |
 | `proposal.create` | proposal | low | allow | proposals + target modules via `enforce()` |
 | `proposal.apply` | proposal | medium | require_approval | proposal apply service via `enforceProposalApply()` |
-| `workspace.read` | workspace | low | allow | workspaces routes via `enforce()` |
+| `project_folder.read` | project_folder | low | allow | projectFolders repository via `enforce()` |
 | `runtime_skill.render` | runtime_skill_binding | medium | require_approval | context module via `enforce()` |
 | `agent.config_update` | agent | high | allow (audit_required) | agents routes/repository before config proposal creation |
 | `source.connection.manage` | source_connection | medium | allow (audit_required) | sources routes via `enforce()` |
@@ -180,7 +187,7 @@ Not wired to business code. The registry is **not** full RBAC/ABAC.
 | Action | Resource | Risk | Default Decision |
 |---|---|---|---|
 | `context.use_personal_grant` | personal_memory_grant | high | require_approval |
-| `workspace.apply_patch` | workspace | high | require_approval |
+| `project_folder.apply_patch` | project_folder | high | require_approval |
 | `artifact.export` | artifact | high | require_approval |
 | `proposal.approve` | proposal | medium | require_approval |
 | `memory.read_private` | memory | high | require_approval |
@@ -307,7 +314,7 @@ preflight.
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` via `enforce()` | Before filesystem/row persistence; fail-closed audit |
 | `proposal.create` | `server/src/modules/proposals/` and target modules via `enforce()` | Code patch collection uses `force_record=True` |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Before accepted proposal side effects |
-| `workspace.write_patch` | `server/src/modules/workspaces/` and proposal appliers via `enforce()` | Before any workspace file writes |
+| `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers via `enforce()` | Before any Project Folder file writes |
 | `policy.change` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Protected by the `proposal.apply` gate for `policy_change` proposals |
 | `runtime_skill.render` | `server/src/modules/context/prepareService.ts` via `enforce()` | Before enabled runtime-skill content is rendered into a context snapshot |
 | `retrieval.search` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge search execution |
@@ -353,7 +360,7 @@ return DENY with `audit_code="unknown_policy_action"`. `BUILTIN_RULES` evaluated
 3. `rule_memory_scope` — `require_approval` for `memory.create/update/archive` to protected scopes
 4. `rule_use_credential` — same-space manual/api/delegation ALLOW; cross-space DENY (CRITICAL); automation REQUIRE_APPROVAL
 5. `rule_tool_permission` — deny `runtime.execute` if tool/adapter not in agent allowlist
-6. `rule_workspace_write_patch` — `require_approval` without proposal_id; `allow` with valid proposal
+6. `rule_project_folder_write_patch` — `require_approval` without proposal_id; `allow` with valid proposal
 7. `rule_automation` — allow automation.create/update/fire for admin/owner; deny lower roles
 8. `rule_runtime_execute_risk_level` — reflect context risk level on `runtime.execute`
 9. `rule_runtime_skill_render_enabled` — allow only runtime-skill render calls with an enabled binding proof

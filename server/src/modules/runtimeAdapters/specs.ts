@@ -14,6 +14,7 @@ export type ImplementationStatus = "implemented" | "planned" | "disabled";
 export type ContextFileType = "CLAUDE.md" | "AGENTS.md" | "prompt.md" | "custom";
 export type CredentialMode = "none" | "cli_profile" | "cli_profile_or_model_provider" | "model_provider_api_key";
 export type CredentialReleaseChannel = "server_runtime_host";
+type RuntimeConfigValue = string | number | boolean | Record<string, string>;
 
 export interface RuntimeAdapterSpec {
   adapter_type: RuntimeAdapterType;
@@ -27,10 +28,10 @@ export interface RuntimeAdapterSpec {
   subagent_disable_config?: {
     relative_path: string;
     deny_path: string[];
-    denied_value: string | Record<string, string>;
+    denied_value: RuntimeConfigValue;
     required_values?: Array<{
       path: string[];
-      value: string | Record<string, string>;
+      value: RuntimeConfigValue;
       value_mode?: "array_contains" | "exact";
     }>;
   };
@@ -48,8 +49,10 @@ export interface RuntimeAdapterSpec {
   };
   invocation?: {
     headless_command_template: string[];
+    resume_command_template?: string[];
     interactive_command_template?: string[];
-    argument_rendering_strategy: "argv_template" | "stdin";
+    argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
+    protocol?: "codex_app_server" | "acp";
   };
   context: {
     context_file_type: ContextFileType;
@@ -65,7 +68,7 @@ export interface RuntimeAdapterSpec {
   };
   sandbox: {
     requires_file_access: boolean;
-    minimum_sandbox_level: "none" | "dry_run" | "ephemeral" | "worktree" | "one_shot_docker";
+    minimum_sandbox_level: "none" | "dry_run" | "ephemeral" | "read_only" | "worktree" | "one_shot_docker";
     supports_worktree: boolean;
     supports_one_shot_docker: boolean;
     requires_workspace_for_execution: boolean;
@@ -106,8 +109,10 @@ export interface LocalCliRuntimeAdapterSpec extends RuntimeAdapterSpec {
   };
   invocation: {
     headless_command_template: string[];
+    resume_command_template?: string[];
     interactive_command_template?: string[];
-    argument_rendering_strategy: "argv_template" | "stdin";
+    argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
+    protocol?: "codex_app_server" | "acp";
   };
   credentials: RuntimeAdapterSpec["credentials"] & {
     credential_mode: "cli_profile" | "cli_profile_or_model_provider";
@@ -277,7 +282,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     delegation_controllability: "runtime_config",
     structured_output: "unknown",
-    checkpoint_resume: "unknown",
+    // Measured 2026-07-26: `--resume <session-id>` restored conversation state
+    // in a separate process. Session ids are UUIDs, exposed in the
+    // stream-json output.
+    checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
     observability_level: "opaque",
     side_effect_level: "workspace",
@@ -285,7 +293,26 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     baseline_trust_level: "low",
     executable: { command: "claude", allow_path_override: true },
     invocation: {
-      headless_command_template: ["{executable}", "--print", "{prompt}"],
+      headless_command_template: [
+        "{executable}",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+        "{prompt}",
+      ],
+      resume_command_template: [
+        "{executable}",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+        "--resume",
+        "{resume_session_id}",
+        "{prompt}",
+      ],
       interactive_command_template: ["{executable}"],
       argument_rendering_strategy: "argv_template",
     },
@@ -313,7 +340,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       permission_bypass_policy_key: "allow_permission_bypass",
     },
     usage: {
-      usage_accuracy: "unknown",
+      usage_accuracy: "precise",
       supports_usage_probe: false,
       usage_probe_kind: "cached_claude_quota",
       usage_parser_type: "generic",
@@ -336,7 +363,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     subagent_disable_mechanism: "unknown",
     delegation_controllability: "unknown",
     structured_output: "unknown",
-    checkpoint_resume: "unknown",
+    // Codex app-server resumes an opaque thread id through `thread/resume`.
+    // The server keeps the corresponding `.codex` state in the conversation's
+    // isolated HOME and subtracts restored cumulative usage from the next turn.
+    checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
     observability_level: "opaque",
     side_effect_level: "workspace",
@@ -346,15 +376,11 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     invocation: {
       headless_command_template: [
         "{executable}",
-        "--ask-for-approval",
-        "never",
-        "exec",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
-        "{prompt}",
+        "app-server",
+        "--stdio",
       ],
-      argument_rendering_strategy: "argv_template",
+      argument_rendering_strategy: "ndjson_rpc",
+      protocol: "codex_app_server",
     },
     context: {
       context_file_type: "AGENTS.md",
@@ -375,7 +401,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     permissions: { supports_permission_bypass: false },
     usage: {
-      usage_accuracy: "unknown",
+      usage_accuracy: "precise",
       supports_usage_probe: false,
       usage_parser_type: "generic",
     },
@@ -408,6 +434,9 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       deny_path: ["agent", "agent-space-locked", "permission", "task"],
       denied_value: { "*": "deny" },
       required_values: [
+        { path: ["default_agent"], value: "agent-space-locked", value_mode: "exact" },
+        { path: ["subagent_depth"], value: 0, value_mode: "exact" },
+        { path: ["agent", "agent-space-locked", "mode"], value: "primary", value_mode: "exact" },
         { path: ["agent", "agent-space-locked", "permission", "edit"], value: { "*": "allow" } },
         { path: ["agent", "agent-space-locked", "permission", "bash"], value: { "*": "allow" } },
         { path: ["agent", "agent-space-locked", "permission", "webfetch"], value: "deny", value_mode: "exact" },
@@ -417,16 +446,12 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     invocation: {
       headless_command_template: [
         "{executable}",
-        "run",
-        "--format",
-        "json",
-        "--agent",
-        "agent-space-locked",
-        "--dir",
+        "acp",
+        "--cwd",
         "{sandbox_cwd}",
-        "{prompt}",
       ],
-      argument_rendering_strategy: "argv_template",
+      argument_rendering_strategy: "ndjson_rpc",
+      protocol: "acp",
     },
     context: {
       context_file_type: "AGENTS.md",
@@ -448,7 +473,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     permissions: { supports_permission_bypass: false },
     usage: {
-      usage_accuracy: "unknown",
+      usage_accuracy: "precise",
       supports_usage_probe: false,
       usage_parser_type: "generic",
     },

@@ -54,7 +54,7 @@ function proposalOut(over: Record<string, unknown> = {}) {
     id: "proposal-1",
     space_id: "space-1",
     user_id: "user-1",
-    workspace_id: null,
+    project_folder_id: null,
     source_session_id: null,
     source_task_id: null,
     source_run_id: null,
@@ -118,7 +118,7 @@ describe("memory read routes", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/memory?type=fact&status=active&limit=10&offset=5&workspace_id=ws-1",
+      url: "/api/v1/memory?type=fact&status=active&limit=10&offset=5&project_folder_id=ws-1",
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
@@ -316,13 +316,13 @@ describe("memory read routes", () => {
           _spaceId: string,
           _userId: string,
           memoryId: string,
-          workspaceId: string | null,
+          projectFolderId: string | null,
           command: { content?: string | null },
         ) {
           return proposalOut({
             id: "proposal-update",
             proposal_type: "memory_update",
-            workspace_id: workspaceId,
+            project_folder_id: projectFolderId,
             proposed_content: command.content,
             resulting_memory_id: memoryId,
           });
@@ -331,12 +331,12 @@ describe("memory read routes", () => {
           _spaceId: string,
           _userId: string,
           memoryId: string,
-          workspaceId: string | null,
+          projectFolderId: string | null,
         ) {
           return proposalOut({
             id: "proposal-archive",
             proposal_type: "memory_archive",
-            workspace_id: workspaceId,
+            project_folder_id: projectFolderId,
             resulting_memory_id: memoryId,
           });
         },
@@ -346,19 +346,19 @@ describe("memory read routes", () => {
 
     const patch = await app.inject({
       method: "PATCH",
-      url: "/api/v1/memory/memory-1?workspace_id=ws-1",
+      url: "/api/v1/memory/memory-1?project_folder_id=ws-1",
       payload: { content: "new content" },
     });
     const del = await app.inject({
       method: "DELETE",
-      url: "/api/v1/memory/memory-1?workspace_id=ws-1",
+      url: "/api/v1/memory/memory-1?project_folder_id=ws-1",
     });
 
     expect(patch.statusCode).toBe(202);
     expect(patch.json()).toMatchObject({
       id: "proposal-update",
       proposal_type: "memory_update",
-      workspace_id: "ws-1",
+      project_folder_id: "ws-1",
       proposed_content: "new content",
       resulting_memory_id: "memory-1",
     });
@@ -366,7 +366,7 @@ describe("memory read routes", () => {
     expect(del.json()).toMatchObject({
       id: "proposal-archive",
       proposal_type: "memory_archive",
-      workspace_id: "ws-1",
+      project_folder_id: "ws-1",
       resulting_memory_id: "memory-1",
     });
   });

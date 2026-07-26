@@ -3,9 +3,10 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { AlertTriangle, ArrowLeft, BookOpen, FileText, Link2, Network, Play, Plus, RefreshCw, Rss, Search, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectPresetsApi, projectsApi, sourcesApi } from '../../api/client'
+import { projectsApi, sourcesApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type { Project, ProjectSourceBinding, ProjectSourceItem, SourceBackfillPlan, SourceChannel, SourceHealth } from '../../types/api'
+import { ACADEMIC_TEMPLATE_KEY, templateKeyFromProject } from './templateUtils'
 import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -27,16 +28,9 @@ function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '-'
 }
 
-const ACADEMIC_PRESET_KEY = 'academic_research'
-
-function presetKeyFromProject(project: Project): string | null {
-  const value = project.settings_json?.preset
-  return typeof value === 'string' ? value : null
-}
-
-function projectGraphHref(projectId: string, presetKey: string | null): string {
+function projectGraphHref(projectId: string, templateKey: string | null): string {
   const params = new URLSearchParams({ project_id: projectId })
-  if (presetKey === ACADEMIC_PRESET_KEY) params.set('lens_id', 'academic_citation_v1')
+  if (templateKey === ACADEMIC_TEMPLATE_KEY) params.set('lens_id', 'academic_citation_v1')
   return `/graph?${params}`
 }
 
@@ -167,7 +161,7 @@ export default function ProjectSourcesPage() {
   const { projectId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [project, setProject] = useState<Project | null>(null)
-  const [projectPresetKey, setProjectPresetKey] = useState<string | null>(null)
+  const [projectTemplateKey, setProjectTemplateKey] = useState<string | null>(null)
   const [channels, setChannels] = useState<SourceChannel[]>([])
   const [bindings, setBindings] = useState<ProjectSourceBinding[]>([])
   const [backfillPlans,setBackfillPlans]=useState<SourceBackfillPlan[]>([])
@@ -195,9 +189,8 @@ export default function ProjectSourcesPage() {
     if (!projectId) return
     setLoading(true)
     try {
-      const [projectRow, projectPresetSelection, channelRows, bindingRows, healthRows, itemPage] = await Promise.all([
+      const [projectRow, channelRows, bindingRows, healthRows, itemPage] = await Promise.all([
         projectsApi.get(projectId),
-        projectPresetsApi.getProjectPreset(projectId).catch(() => ({ preset_key: null })),
         sourcesApi.channels(),
         projectsApi.sourceBindings(projectId),
         projectsApi.sourceHealth(projectId),
@@ -211,7 +204,7 @@ export default function ProjectSourcesPage() {
         }),
       ])
       setProject(projectRow)
-      setProjectPresetKey(projectPresetSelection.preset_key ?? presetKeyFromProject(projectRow))
+      setProjectTemplateKey(templateKeyFromProject(projectRow))
       setChannels(channelRows)
       setBindings(bindingRows)
       const plans=(await Promise.all([...new Set(bindingRows.map(binding=>binding.source_channel_id))].map(channelId=>sourcesApi.channelBackfillPlans(channelId).catch(()=>[] as SourceBackfillPlan[])))).flat()
@@ -341,7 +334,7 @@ export default function ProjectSourcesPage() {
   }
 
   const attentionCount = health.filter(row => row.status === 'attention' || row.status === 'failing').length
-  const isAcademicProject = projectPresetKey === ACADEMIC_PRESET_KEY
+  const isAcademicProject = projectTemplateKey === ACADEMIC_TEMPLATE_KEY
 
   return (
     <div className="p-6 space-y-6">
@@ -356,7 +349,7 @@ export default function ProjectSourcesPage() {
       {isAcademicProject && (
         <div className="flex flex-wrap items-center gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
           <BookOpen className="size-3.5 shrink-0" />
-          <span>Paper triage and reading status moved to the <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research`}>Research Workspace → Reading List</Link>. This page manages collection only.</span>
+          <span>Paper triage and reading status moved to the <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research`}>Research Area → Reading List</Link>. This page manages collection only.</span>
         </div>
       )}
 
@@ -390,7 +383,7 @@ export default function ProjectSourcesPage() {
         <div className="flex flex-wrap items-center gap-2">
           {isAcademicProject && projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research`}><BookOpen className="size-4" />Review reading list</Link></Button>}
           <Button variant="outline" className="gap-1.5 shrink-0" asChild disabled={!projectId}>
-            <Link to={projectGraphHref(projectId, projectPresetKey)}>
+            <Link to={projectGraphHref(projectId, projectTemplateKey)}>
               <Network className="size-4" />
               Open graph
             </Link>

@@ -104,4 +104,15 @@ describe("compose server config", () => {
       expect(serverServiceBlock(mode)).not.toContain("deployer.sock");
     }
   });
+
+  it("permits rootless namespace creation without granting server capabilities", () => {
+    for (const mode of ["dev", "test", "prod"] as const) {
+      const block = serverServiceBlock(mode);
+      expect(block).toContain("seccomp=unconfined");
+      expect(block).not.toContain("privileged:");
+      expect(block).not.toContain("cap_add:");
+    }
+    expect(readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8"))
+      .toContain("bubblewrap");
+  });
 });

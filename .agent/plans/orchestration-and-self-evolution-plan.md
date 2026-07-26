@@ -1,11 +1,10 @@
 # Orchestration + Self-Evolution — Remaining Work Plan
 
-Date: 2026-07-13
-Status: active follow-up backlog
+Date: 2026-07-24
+Status: active follow-up backlog; H1/H2 are Gate 0 for the Project cutover
 
-This document is intentionally limited to work that is not complete. The
-completed Phase 0/A/B/C/D implementation slice, its historical audit, commit
-list, and settled architecture decisions are no longer repeated here.
+This document is intentionally limited to work that is not complete. Completed
+implementation history is not repeated here.
 
 Implementation truth remains the code. Current-state architecture belongs in
 the documents under .agent/architecture/; accepted cross-cutting decisions
@@ -31,33 +30,74 @@ reconciled.
 
 ### H1 — Plan-node budget admission and source validation
 
-- [ ] Make PgPlanRepository.scheduleReadyNodes perform the same budget-source
-  admission used by the Task API before creating a child Run or inserting its
-  task_runs link.
-- [ ] Keep source validation, advisory-lock admission, Run creation,
-  task_runs insertion, and queue enqueue in the same transaction.
-- [ ] Validate node-level contract_json.budget_sources during Plan creation
-  and revision; do not validate only top-level PlanVersion sources.
-- [ ] Ensure exhausted Task, Automation, Workflow, or Plan sources cannot
-  leave behind a queued Run or a task_runs row.
-- [ ] Add shared-PostgreSQL coverage for exhausted node budgets, inherited
+Closed 2026-07-24.
+
+- [x] Make PgPlanRepository.scheduleReadyNodes perform the same budget-source
+  admission used by the Task API before creating a child Run or its
+  `plan_node_runs` link. (Already correct: `assertBudgetSourcesAvailable` ran
+  immediately before `createQueuedRun`/`plan_node_runs` insert.)
+- [x] Keep source validation, advisory-lock admission, Run creation,
+  `plan_node_runs` insertion, and queue enqueue in the same transaction.
+  (Already correct: all inside `scheduleReadyNodes`'s caller transaction.)
+- [x] Validate node-level contract_json.budget_sources during Plan creation
+  and revision; do not validate only top-level PlanVersion sources. Fixed:
+  `createPlanFromAgent` now validates `graph.nodes.flatMap(budgetSourcesFromNode)`
+  alongside the top-level sources, and a new `plan_nodes.budget_sources_json`
+  column persists each node's declared sources (previously computed for
+  approval-cost estimation but never persisted or enforced at scheduling
+  time — `scheduleReadyNodes` was reading a different, never-populated
+  `metadata_json.budget_sources` field).
+- [x] Ensure exhausted Task, Automation, Workflow, or Plan sources cannot
+  leave behind a queued Run or a `plan_node_runs` row. Verified: admission
+  runs inside the execute/reconcile transaction, so a rejection rolls back
+  the coordinator Run and any prior node scheduling from the same pass.
+- [x] Add shared-PostgreSQL coverage for exhausted node budgets, inherited
   budgets, concurrent manual-vs-Plan admission, and rollback after rejection.
+  `server/test/planGraphExecutionDb.test.ts` now covers node-local flat caps,
+  node-level nonexistent-source rejection at Plan creation, an Automation
+  source exhausted by a prior manual Run with full transactional rollback,
+  Plan-level source inheritance into child snapshots, consumption accounting
+  by logical root Run, and concurrent manual-vs-Plan admission with exactly
+  one winner.
+
+Plan child consumption is counted from immutable Run snapshots and combined
+with the source domain's native links (`task_runs`/`automation_runs`), then
+deduplicated by logical root Run. This is required so a Plan can consume an
+inherited allowance without creating a false source-domain ownership link.
 
 Primary implementation areas:
-server/src/modules/plans/repository.ts and
+server/src/modules/plans/repository.ts,
+server/src/modules/plans/graph.ts, and
 server/src/modules/runs/budgetEnforcement.ts.
 
 ### H2 — Strict Workflow budget-source ownership
 
-- [ ] Make Workflow source validation require an approved version of an active
-  Workflow asset.
-- [ ] Enforce parent-asset ownership, space visibility, and version-scope
-  consistency for caller-supplied Workflow Version IDs.
-- [ ] Cover cross-space, stale/archived-asset, mismatched-scope, and
+Closed 2026-07-24.
+
+- [x] Make Workflow source validation require an approved version of an active
+  Workflow asset. Already correct in `budgetSourceExists`'s `workflow`
+  branch (`a.status = 'active'`, `v.status = 'approved'`).
+- [x] Enforce parent-asset ownership, space visibility, and version-scope
+  consistency for caller-supplied Workflow Version IDs. Already correct:
+  the same query enforces `a.space_id = $2`/`v.space_id = $2` (or the
+  system-scope branch), active owner-scope existence (project/agent/user),
+  valid version `scope_type`/`scope_id`, the user-owned Asset restriction,
+  and explicit `allow_user_override` for user-scoped Versions under other
+  Asset ownership types.
+- [x] Cover cross-space, stale/archived-asset, mismatched-scope, and
   system-visible Workflow cases with real-PostgreSQL tests.
+  Stale/archived-asset, mismatched-scope, and system-visible cases were
+  already covered in `server/test/automationsProjectDb.test.ts`; added the
+  missing cross-space case — a space-scoped, approved, active Workflow
+  Version genuinely owned by another space is rejected for the caller's
+  space and accepted for its own — plus a malformed space-scoped Version
+  under a user-owned Asset is rejected until its scope matches that owner.
 
 Primary implementation area:
 server/src/modules/runs/budgetEnforcement.ts.
+
+H1 and H2 were prerequisites for the Project model clean cutover. Both and the
+cutover are now complete.
 
 ## 1. Execution follow-ups
 
@@ -72,15 +112,31 @@ server/src/modules/runs/budgetEnforcement.ts.
 Constraint: deterministic Verification Engine results remain the completion
 authority; model or human judgment must be an explicit verifier result.
 
+Scheduling rule: this remains open but does not block the Project clean
+cutover or controlled acceptance unless an acceptance Workflow declares one
+of these verifier types as required completion evidence. It must be completed
+before such a Workflow is enabled.
+
 ### A3.1 — Runtime sessions and checkpoint/resume
 
-- [ ] Persist runtime session references with ownership and provenance.
-- [ ] Define checkpoint creation, resume, fork, and invalidation semantics
+DELIVERED. The trigger came through CLI-backed conversation needing to avoid
+replaying full history against subscription capacity on every turn, not
+through a long/expensive workflow needing recovery. See the "Runtime session"
+section of ADR 0007 and [../modules/rooms.md](../modules/rooms.md) for the
+delivered session-key, credential-home, and invalidation model.
+
+- [x] Persist runtime session references with ownership and provenance.
+- [x] Define checkpoint creation, resume, fork, and invalidation semantics
   across process restart.
-- [ ] Define how checkpoint/resume interacts with RunAttempt retry, route
+- [x] Define how checkpoint/resume interacts with RunAttempt retry, route
   reroute, cancellation, orphan recovery, and credentials.
-- [ ] Add runtime-boundary and real workflow tests; do not infer resume
+- [x] Add runtime-boundary and real workflow tests; do not infer resume
   success from an adapter-local session ID alone.
+
+Resume is a capacity optimization, never a correctness requirement.
+Agent-space retains full replay capability, and a backend switch or
+invalidated session degrades to replay
+(ADR 0004).
 
 ## 2. Workflow and automation lifecycle
 
@@ -93,6 +149,10 @@ authority; model or human judgment must be an explicit verifier result.
   the migration.
 - [ ] Add a guard that prevents new unregistered hardcoded business fires.
 - [ ] Update ROADMAP_AND_FUTURE_RISKS.md when the decision is made.
+
+Missed-run/catch-up policy and unattended failure recovery are owned by
+[unattended-execution-hardening-plan.md](unattended-execution-hardening-plan.md).
+This item owns only target registration/authority cleanup.
 
 ### B4.1 — Complete Save Run as Workflow lifecycle
 
@@ -119,6 +179,10 @@ gates remain in force.
 - [ ] Feed the results into routing trust decisions without weakening the
   current fail-closed behavior.
 
+Minimum structured event/output conformance and execution-shape routing are
+implemented. This item retains the broader trust/profiling wave after
+controlled smoke.
+
 ### C3.2 — Reviewed egress-enabled execution profile
 
 - [ ] If required, design and separately review an egress-enabled Docker
@@ -127,6 +191,11 @@ gates remain in force.
 - [ ] Add policy and runtime tests before exposing the profile to any route.
 
 Constraint: networked provider-proxy execution remains disabled by default.
+
+This work is now sequenced and accepted through
+[unattended-execution-hardening-plan.md](unattended-execution-hardening-plan.md);
+keep this heading only as the orchestration backlog cross-reference and do not
+implement a competing profile design here.
 
 ## 4. Evolution-loop follow-ups
 
@@ -145,7 +214,7 @@ Constraint: networked provider-proxy execution remains disabled by default.
   source Run, and before/after provenance.
 - [ ] Convert meaningful edit patterns into evolution evidence/signals without
   treating every edit as an automatic promotion or memory write.
-- [ ] Add workspace, artifact, privacy, and cross-space isolation tests.
+- [ ] Add Project Folder, Artifact, privacy, and cross-space isolation tests.
 
 ### D2.1 — Automatic candidate-run launch
 
@@ -183,19 +252,29 @@ chain.
 - PARKED — Workflow canvas UI: structured Plan/Workflow views remain sufficient for
   the current scope.
 - PARKED — AgentRunGroup extensions into a task graph: keep AgentRunGroup as a
-  collaboration surface.
+  collaboration surface. The delivered Room layer (`../modules/rooms.md`) does
+  not violate this: AgentRunGroup keeps its "one collaboration task" semantics
+  and becomes a task opened inside a Room. Room is a persistent conversation
+  container, not a DAG.
 
-The companion hardening backlog remains in
-hardening-blind-spot-remediation-plan.md; this document does not duplicate
-its P1/P2 operational work.
+The cross-cutting hardening backlog remains in
+[hardening-blind-spot-remediation-plan.md](hardening-blind-spot-remediation-plan.md);
+this document does not duplicate its work.
 
 ## Recommended delivery order
 
-1. H1 and H2 — close current correctness and isolation gaps.
-2. A2.1, A3.1, and C3.1 — deepen execution correctness and runtime trust.
-3. B3.1 and B4.1 — complete the Workflow lifecycle.
-4. D1.1, D1.2, and D2.1 — complete the automatic evolution loop.
-5. N8.1 — extend auto-approval only after the budget model is explicit.
+1. H1 and H2 — close current correctness and isolation gaps before the Project
+   model cutover.
+2. Execute the Project model and Runtime I/O plans, then product acceptance.
+   Acceptance runs against the delivered Room/CLI-conversation surface, not a
+   replaced one.
+3. Complete the minimum C3.1 checks required by the Runtime I/O plan, then run
+   controlled real integration smoke.
+4. Trigger unattended hardening, including C3.2, only after smoke evidence.
+5. A2.1/B3.1/B4.1 enter when their recorded prerequisites occur. A3.1 is
+   delivered.
+6. D1.1/D1.2/D2.1 remain after the core workbench loop is accepted.
+7. N8.1 remains last; auto-approval cannot outrun explicit budget semantics.
 
 ## Plan completion and retirement criteria
 
@@ -207,7 +286,7 @@ This plan can be retired or deleted only when:
   PostgreSQL workflow coverage as appropriate;
 - current-state architecture documents no longer depend on this plan for
   implementation truth;
-- the companion plan and ROADMAP_AND_FUTURE_RISKS.md no longer contain
+- related plans and ROADMAP_AND_FUTURE_RISKS.md no longer contain
   broken or ambiguous references to this file.
 
 Until then, this file should remain a small remaining-work backlog rather than

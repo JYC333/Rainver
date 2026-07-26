@@ -5,6 +5,7 @@ import type {
 } from '../../types/api'
 
 export interface ResearchSetupDraft {
+  thread_id?: string
   research_question: string
   research_context_version_id?: string
   query_strategy_id?: string
@@ -43,6 +44,10 @@ export function researchSetupDraftFromWorkflow(
   const initialIntake = objectValue(state.initial_intake)
   const execution = objectValue(state.execution)
   return {
+    thread_id: (() => {
+      const scope = Array.isArray(state.thread_scope) ? state.thread_scope[0] : null
+      return stringValue(objectValue(scope).thread_id) ?? stringValue(state.thread_id) ?? ''
+    })(),
     research_question: stringValue(state.research_question) ?? researchQuestion,
     research_context_version_id: stringValue(state.research_context_version_id) ?? '',
     query_strategy_id: stringValue(state.query_strategy_id) ?? '',
@@ -120,6 +125,7 @@ export function clearResearchSetupSession(projectId: string): void {
 
 export function serializeResearchSetupDraft(draft: ResearchSetupDraft): ProjectResearchInitialIntakeInput {
   return {
+    ...(draft.thread_id ? { thread_id: draft.thread_id } : {}),
     ...(draft.research_context_version_id ? { research_context_version_id: draft.research_context_version_id } : {}),
     ...(draft.query_strategy_id ? { query_strategy_id: draft.query_strategy_id } : {}),
     research_question: draft.research_question.trim(),

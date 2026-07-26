@@ -105,12 +105,12 @@ list for the current space/user. Query params:
 - `offset`: non-negative integer, default `0`, max `1000`
 - `memory_id`: optional exact memory filter
 - `access_type`: optional exact access-type filter
-- `workspace_id`: optional workspace context required for readable
-  workspace-scoped `space_shared` memories owned by another user
+- `project_folder_id`: optional Project Folder context required for readable
+  Project Folder-scoped `space_shared` memories owned by another user
 - `project_id`: optional exact project filter
 
 The route joins each log to `memory_entries`, applies `canReadMemory` with the
-optional workspace context, applies the project gate via `accessibleProjectIds`,
+optional Project Folder context, applies the project gate via `accessibleProjectIds`,
 then slices the currently visible list by `offset`/`limit`. The response returns
 `items`, `limit`, `offset`, `returned`, and `has_more`. It returns only audit
 metadata: log id, memory id/title/scope/visibility/project id, user/agent/run
@@ -130,7 +130,7 @@ The Memory page exposes:
   generating a Claim Candidate Packet from the persisted report artifact, and
   previewing the first 8 findings before opening the full report artifact
 - an Access Log Inspector for recent currently readable Memory access logs,
-  filterable by `access_type`, workspace context, and the active page-level
+  filterable by `access_type`, Project Folder context, and the active page-level
   `project_id`, with offset-based previous/next controls
 
 The web API client also exposes durable job create/get/run helpers. There is no

@@ -20,7 +20,6 @@ import {
   type RuntimeAdapterType,
 } from "../runtimeAdapters/specs";
 import {
-  AGENT_DEFAULT_ASSISTANT_SYSTEM_PROMPT_KEY,
   AGENT_SYSTEM_EVOLVER_SYSTEM_PROMPT_KEY,
   resolveAgentSystemPrompt,
 } from "./promptRegistry";
@@ -91,7 +90,6 @@ export interface AgentRuntimeProfileRecord {
   provider_name?: string | null;
   provider_type?: string | null;
   model_name: string | null;
-  credential_profile_id: string | null;
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
   enabled: boolean;
@@ -178,7 +176,6 @@ export interface AgentRuntimeProfileOut {
     provider_type: string | null;
     model: string | null;
   } | null;
-  credential_profile_id: string | null;
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
   enabled: boolean;
@@ -201,7 +198,7 @@ const AGENT_COLUMNS = `
 
 const RUNTIME_PROFILE_COLUMNS = `
   arp.id, arp.space_id, arp.agent_id, arp.name, arp.adapter_type,
-  arp.model_provider_id, arp.model_name, arp.credential_profile_id,
+  arp.model_provider_id, arp.model_name,
   arp.runtime_config_json, arp.runtime_policy_json, arp.enabled, arp.is_default,
   arp.created_at, arp.updated_at,
   mp.name AS provider_name, mp.provider_type AS provider_type
@@ -368,15 +365,19 @@ export class PgAgentChatRepository {
 
   async getAgentForChat(
     spaceId: string,
+    userId: string,
     agentId: string,
   ): Promise<AgentChatRecord | null> {
     const result: QueryResult<AgentChatRecord> = await this.db.query<AgentChatRecord>(
       `SELECT a.id, a.space_id, a.name, a.current_version_id, COALESCE(av.tool_permissions_json,'{}'::jsonb) AS tool_permissions_json
          FROM agents a
          LEFT JOIN agent_versions av ON av.id=a.current_version_id AND av.agent_id=a.id AND av.space_id=a.space_id
-        WHERE a.space_id = $1 AND a.id = $2
+        WHERE a.space_id = $1
+          AND a.id = $2
+          AND a.status = 'active'
+          AND ${contentReadSql("agent", "a", "$3")}
         LIMIT 1`,
-      [spaceId, agentId],
+      [spaceId, agentId, userId],
     );
     return result.rows[0] ?? null;
   }
@@ -494,7 +495,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: string;
       modelProviderId?: string | null;
       modelName?: string | null;
-      credentialProfileId?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
@@ -525,7 +525,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType?: string;
       modelProviderId?: string | null;
       modelName?: string | null;
-      credentialProfileId?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
@@ -543,9 +542,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName: Object.hasOwn(patch, "modelName")
         ? patch.modelName ?? null
         : existing.model_name,
-      credentialProfileId: Object.hasOwn(patch, "credentialProfileId")
-        ? patch.credentialProfileId ?? null
-        : existing.credential_profile_id,
       runtimeConfigJson: patch.runtimeConfigJson
         ? { ...recordValue(existing.runtime_config_json), ...patch.runtimeConfigJson }
         : recordValue(existing.runtime_config_json),
@@ -566,12 +562,11 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
                 adapter_type = $5,
                 model_provider_id = $6,
                 model_name = $7,
-                credential_profile_id = $8,
-                runtime_config_json = $9::jsonb,
-                runtime_policy_json = $10::jsonb,
-                enabled = $11,
-                is_default = $12,
-                updated_at = $13
+                runtime_config_json = $8::jsonb,
+                runtime_policy_json = $9::jsonb,
+                enabled = $10,
+                is_default = $11,
+                updated_at = $12
           WHERE space_id = $1 AND agent_id = $2 AND id = $3
           RETURNING id`,
         [
@@ -582,7 +577,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           normalized.adapterType,
           normalized.modelProviderId,
           normalized.modelName,
-          normalized.credentialProfileId,
           JSON.stringify(normalized.runtimeConfigJson),
           JSON.stringify(normalized.runtimePolicyJson),
           normalized.enabled,
@@ -973,58 +967,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
 
-  async ensureDefaultAssistant(spaceId: string, userId: string): Promise<AgentOut> {
-    const existing = await this.getDefaultAssistant(spaceId);
-    if (existing) return existing;
-    const resolvedPrompt = await resolveAgentSystemPrompt(this.pool, {
-      spaceId,
-      userId,
-      assetKey: AGENT_DEFAULT_ASSISTANT_SYSTEM_PROMPT_KEY,
-    });
-    if (!resolvedPrompt) throw new HttpError(500, "Default assistant prompt is not resolvable");
-    return withTransaction(this.pool, async (client) => {
-      const current = await client.query<AgentRecord>(
-        `SELECT ${AGENT_COLUMNS}
-           FROM agents a
-           LEFT JOIN agent_versions av ON av.id = a.current_version_id
-${DEFAULT_RUNTIME_PROFILE_JOIN}
-           LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
-          WHERE a.space_id = $1
-            AND a.agent_kind = 'system_assistant'
-            AND a.status = 'active'
-          ORDER BY a.created_at ASC
-          LIMIT 1`,
-        [spaceId],
-      );
-      if (current.rows[0]) return agentOut(current.rows[0]);
-      return this.createAgentWithVersion(client, {
-        spaceId,
-        ownerUserId: null,
-        name: "Personal Assistant",
-        description: "System-managed contextual chat assistant for this space.",
-        visibility: "space_shared",
-        roleInstruction: null,
-        status: "active",
-        agentKind: "system_assistant",
-        systemPrompt: resolvedPrompt.system,
-        promptProvenanceJson: promptProvenanceOf(resolvedPrompt.resolveResult),
-        modelProviderId: null,
-        modelName: null,
-        modelConfigJson: DEFAULT_MODEL_CONFIG,
-        runtimeConfigJson: DEFAULT_RUNTIME_CONFIG,
-        contextPolicyJson: {},
-        memoryPolicyJson: DEFAULT_MEMORY_POLICY,
-        capabilitiesJson: [],
-        toolPermissionsJson: {allowed_tools:["source.connection.propose_create","project.source.propose_bind","source.backfill.propose_start","task.plan.propose"]},
-        runtimePolicyJson: buildRuntimePolicy("model_api", null),
-        toolPolicyJson: {},
-        outputPolicyJson: {},
-        scheduleConfigJson: {},
-        outputSchemaJson: {},
-      });
-    });
-  }
-
   async getSystemEvolver(spaceId: string): Promise<AgentOut | null> {
     const result = await this.pool.query<AgentRecord>(
       `SELECT ${AGENT_COLUMNS}
@@ -1334,7 +1276,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: normalizeAdapterType(input.runtimePolicyJson.default_adapter_type),
       modelProviderId: input.modelProviderId,
       modelName: input.modelName,
-      credentialProfileId: stringValue(input.runtimeConfigJson.credential_profile_id),
       runtimeConfigJson: input.runtimeConfigJson,
       runtimePolicyJson: input.runtimePolicyJson,
       enabled: true,
@@ -1393,29 +1334,30 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: string;
       modelProviderId: string | null;
       modelName: string | null;
-      credentialProfileId: string | null;
       runtimeConfigJson: Record<string, unknown>;
       runtimePolicyJson: Record<string, unknown>;
       enabled: boolean;
       isDefault: boolean;
     },
   ): Promise<AgentRuntimeProfileRecord> {
+    if (Object.hasOwn(input.runtimeConfigJson, "credential_profile_id")) {
+      throw new HttpError(
+        422,
+        "CLI credentials are selected per user and conversation, not on Agent runtime profiles",
+      );
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
-    const runtimeConfigJson = normalizedRuntimeConfig(
-      input.runtimeConfigJson,
-      input.adapterType,
-      input.credentialProfileId,
-    );
+    const runtimeConfigJson = normalizedRuntimeConfig(input.runtimeConfigJson, input.adapterType);
     await db.query(
       `INSERT INTO agent_runtime_profiles (
          id, space_id, agent_id, name, adapter_type, model_provider_id,
-         model_name, credential_profile_id, runtime_config_json,
+         model_name, runtime_config_json,
          runtime_policy_json, enabled, is_default, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
-         $7, $8, $9::jsonb,
-         $10::jsonb, $11, $12, $13, $13
+         $7, $8::jsonb,
+         $9::jsonb, $10, $11, $12, $12
        )`,
       [
         id,
@@ -1425,7 +1367,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.adapterType,
         input.modelProviderId,
         input.modelName,
-        input.credentialProfileId,
         JSON.stringify(runtimeConfigJson),
         JSON.stringify(input.runtimePolicyJson),
         input.enabled,
@@ -1445,7 +1386,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: string;
       modelProviderId?: string | null;
       modelName?: string | null;
-      credentialProfileId?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
@@ -1456,7 +1396,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     adapterType: string;
     modelProviderId: string | null;
     modelName: string | null;
-    credentialProfileId: string | null;
     runtimeConfigJson: Record<string, unknown>;
     runtimePolicyJson: Record<string, unknown>;
     enabled: boolean;
@@ -1467,26 +1406,18 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const adapterType = normalizeAdapterType(input.adapterType);
     const modelProviderId = input.modelProviderId ?? null;
     const modelName = input.modelName ?? null;
-    const credentialProfileId = input.credentialProfileId ?? null;
-    await this.validateRuntimeProfileSelection(
-      spaceId,
-      adapterType,
-      modelProviderId,
-      modelName,
-      credentialProfileId,
-    );
+    await this.validateRuntimeProfileSelection(spaceId, adapterType, modelProviderId, modelName);
     const runtimeConfigJson = await this.resolveRuntimeConfig(
       this.pool,
       spaceId,
       adapterType,
-      normalizedRuntimeConfig(input.runtimeConfigJson ?? {}, adapterType, credentialProfileId),
+      normalizedRuntimeConfig(input.runtimeConfigJson ?? {}, adapterType),
     );
     return {
       name,
       adapterType,
       modelProviderId,
       modelName,
-      credentialProfileId,
       runtimeConfigJson,
       runtimePolicyJson: buildRuntimePolicy(adapterType, input.runtimePolicyJson),
       enabled: input.enabled ?? true,
@@ -1499,7 +1430,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     adapterType: string,
     providerId: string | null,
     modelName: string | null,
-    credentialProfileId: string | null,
   ): Promise<void> {
     const spec = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType];
     if (!spec) throw new HttpError(400, `Unknown adapter_type ${JSON.stringify(adapterType)}`);
@@ -1541,33 +1471,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           );
         }
       }
-    }
-    if (credentialProfileId) {
-      await this.validateCredentialProfileSelection(spaceId, adapterType, credentialProfileId);
-    }
-  }
-
-  private async validateCredentialProfileSelection(
-    spaceId: string,
-    adapterType: string,
-    credentialProfileId: string,
-  ): Promise<void> {
-    if (!isCliRuntimeTool(adapterType)) {
-      throw new HttpError(400, "credential_profile_id is valid only for CLI runtimes");
-    }
-    const result = await this.pool.query<{ id: string }>(
-      `SELECT p.id
-         FROM cli_credential_space_grants g
-         JOIN cli_credential_profiles p ON p.id = g.profile_id
-        WHERE g.space_id = $1
-          AND g.enabled = true
-          AND p.id = $2
-          AND p.runtime = $3
-        LIMIT 1`,
-      [spaceId, credentialProfileId, adapterType],
-    );
-    if (!result.rows[0]) {
-      throw new HttpError(400, "CLI credential profile is not selectable for this runtime in this space");
     }
   }
 
@@ -1696,7 +1599,6 @@ function runtimeProfileOut(row: AgentRuntimeProfileRecord): AgentRuntimeProfileO
           model: row.model_name,
         }
       : null,
-    credential_profile_id: row.credential_profile_id,
     runtime_config_json: recordValue(row.runtime_config_json) ?? {},
     runtime_policy_json: recordValue(row.runtime_policy_json) ?? {},
     enabled: row.enabled,
@@ -1709,10 +1611,6 @@ function runtimeProfileOut(row: AgentRuntimeProfileRecord): AgentRuntimeProfileO
 function normalizedRuntimeConfig(
   input: Record<string, unknown>,
   adapterType: string,
-  credentialProfileId: string | null,
 ): Record<string, unknown> {
-  const config: Record<string, unknown> = { ...input, adapter_type: adapterType };
-  if (credentialProfileId) config.credential_profile_id = credentialProfileId;
-  else delete config.credential_profile_id;
-  return config;
+  return { ...input, adapter_type: adapterType };
 }

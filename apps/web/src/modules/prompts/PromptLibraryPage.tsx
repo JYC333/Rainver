@@ -768,7 +768,7 @@ export default function PromptLibraryPage() {
                   </div>
                 </div>
                 <div className="rounded-md border border-border px-3 py-2 text-sm">
-                  This bundle contains workflow run prompts. Source access, tools, workspace access, memory writes, and approval requirements remain owned by workflow and policy configuration.
+                  This bundle contains workflow run prompts. Source access, tools, Project Folder access, memory writes, and approval requirements remain owned by workflow and policy configuration.
                 </div>
               </Card>
 
