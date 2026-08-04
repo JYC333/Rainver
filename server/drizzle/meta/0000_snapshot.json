@@ -1,5 +1,5 @@
 {
-  "id": "2a832ca6-592a-4ec2-8c8c-cf9daa60362c",
+  "id": "aba04062-4dd7-42eb-aa32-2622e8f32672",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -3556,22 +3556,6 @@
           "method": "btree",
           "with": {}
         },
-        "uq_agents_system_evolver_per_space": {
-          "name": "uq_agents_system_evolver_per_space",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "(((agent_kind)::text = 'system_evolver'::text) AND ((status)::text = 'active'::text))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "uq_agents_system_source_post_processor_per_space": {
           "name": "uq_agents_system_source_post_processor_per_space",
           "columns": [
@@ -3665,7 +3649,7 @@
       "checkConstraints": {
         "ck_agents_agent_kind": {
           "name": "ck_agents_agent_kind",
-          "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_evolver'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_research'::character varying)::text])"
+          "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_research'::character varying)::text])"
         },
         "ck_agents_status": {
           "name": "ck_agents_status",
@@ -6770,6 +6754,1097 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.autonomy_candidate_evolution_signals": {
+      "name": "autonomy_candidate_evolution_signals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "signal_id": {
+          "name": "signal_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "linked_at": {
+          "name": "linked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_autonomy_candidate_evolution_signals_candidate": {
+          "name": "ix_autonomy_candidate_evolution_signals_candidate",
+          "columns": [
+            {
+              "expression": "candidate_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "autonomy_candidate_evolution_signals_candidate_space_fkey": {
+          "name": "autonomy_candidate_evolution_signals_candidate_space_fkey",
+          "tableFrom": "autonomy_candidate_evolution_signals",
+          "tableTo": "autonomy_candidates",
+          "columnsFrom": [
+            "candidate_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidate_evolution_signals_signal_id_fkey": {
+          "name": "autonomy_candidate_evolution_signals_signal_id_fkey",
+          "tableFrom": "autonomy_candidate_evolution_signals",
+          "tableTo": "evolution_signals",
+          "columnsFrom": [
+            "signal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidate_evolution_signals_space_id_fkey": {
+          "name": "autonomy_candidate_evolution_signals_space_id_fkey",
+          "tableFrom": "autonomy_candidate_evolution_signals",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_autonomy_candidate_evolution_signals": {
+          "name": "uq_autonomy_candidate_evolution_signals",
+          "nullsNotDistinct": false,
+          "columns": [
+            "candidate_id",
+            "signal_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.autonomy_candidates": {
+      "name": "autonomy_candidates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "candidate_kind": {
+          "name": "candidate_kind",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_key": {
+          "name": "candidate_key",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "durable_fact_refs_json": {
+          "name": "durable_fact_refs_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "discovery_snapshot_json": {
+          "name": "discovery_snapshot_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "ranking_score": {
+          "name": "ranking_score",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ranking_evidence_json": {
+          "name": "ranking_evidence_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "decision_reason": {
+          "name": "decision_reason",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "admission_decision_json": {
+          "name": "admission_decision_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "first_seen_tick_id": {
+          "name": "first_seen_tick_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_seen_tick_id": {
+          "name": "last_seen_tick_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "launch_tick_id": {
+          "name": "launch_tick_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discovered_at": {
+          "name": "discovered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ranked_at": {
+          "name": "ranked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "launched_at": {
+          "name": "launched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_autonomy_candidates_space_owner_status": {
+          "name": "ix_autonomy_candidates_space_owner_status",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_autonomy_candidates_project": {
+          "name": "ix_autonomy_candidates_project",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_autonomy_candidates_run": {
+          "name": "ix_autonomy_candidates_run",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "autonomy_candidates_space_id_fkey": {
+          "name": "autonomy_candidates_space_id_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_owner_user_id_fkey": {
+          "name": "autonomy_candidates_owner_user_id_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_project_id_delete_fkey": {
+          "name": "autonomy_candidates_project_id_delete_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_project_space_fkey": {
+          "name": "autonomy_candidates_project_space_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_first_tick_space_fkey": {
+          "name": "autonomy_candidates_first_tick_space_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "autonomy_ticks",
+          "columnsFrom": [
+            "first_seen_tick_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_last_tick_space_fkey": {
+          "name": "autonomy_candidates_last_tick_space_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "autonomy_ticks",
+          "columnsFrom": [
+            "last_seen_tick_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_launch_tick_space_fkey": {
+          "name": "autonomy_candidates_launch_tick_space_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "autonomy_ticks",
+          "columnsFrom": [
+            "launch_tick_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_run_id_delete_fkey": {
+          "name": "autonomy_candidates_run_id_delete_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_run_space_fkey": {
+          "name": "autonomy_candidates_run_space_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_candidates_artifact_id_fkey": {
+          "name": "autonomy_candidates_artifact_id_fkey",
+          "tableFrom": "autonomy_candidates",
+          "tableTo": "artifacts",
+          "columnsFrom": [
+            "artifact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_autonomy_candidates_logical": {
+          "name": "uq_autonomy_candidates_logical",
+          "nullsNotDistinct": false,
+          "columns": [
+            "space_id",
+            "owner_user_id",
+            "candidate_kind",
+            "candidate_key"
+          ]
+        },
+        "uq_autonomy_candidates_id_space": {
+          "name": "uq_autonomy_candidates_id_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_autonomy_candidates_status": {
+          "name": "ck_autonomy_candidates_status",
+          "value": "status IN ('discovered', 'ranked', 'observed', 'refused', 'admitted', 'launched', 'completed', 'failed', 'superseded')"
+        },
+        "ck_autonomy_candidates_fact_refs_array": {
+          "name": "ck_autonomy_candidates_fact_refs_array",
+          "value": "jsonb_typeof(durable_fact_refs_json) = 'array'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.autonomy_review_cursors": {
+      "name": "autonomy_review_cursors",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_kind": {
+          "name": "candidate_kind",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_fact_created_at": {
+          "name": "last_fact_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_fact_id": {
+          "name": "last_fact_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "autonomy_review_cursors_candidate_space_fkey": {
+          "name": "autonomy_review_cursors_candidate_space_fkey",
+          "tableFrom": "autonomy_review_cursors",
+          "tableTo": "autonomy_candidates",
+          "columnsFrom": [
+            "candidate_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_review_cursors_owner_user_id_fkey": {
+          "name": "autonomy_review_cursors_owner_user_id_fkey",
+          "tableFrom": "autonomy_review_cursors",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_review_cursors_last_fact_id_fkey": {
+          "name": "autonomy_review_cursors_last_fact_id_fkey",
+          "tableFrom": "autonomy_review_cursors",
+          "tableTo": "evolution_signals",
+          "columnsFrom": [
+            "last_fact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_review_cursors_space_id_fkey": {
+          "name": "autonomy_review_cursors_space_id_fkey",
+          "tableFrom": "autonomy_review_cursors",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_autonomy_review_cursors_owner_kind": {
+          "name": "uq_autonomy_review_cursors_owner_kind",
+          "nullsNotDistinct": false,
+          "columns": [
+            "space_id",
+            "owner_user_id",
+            "candidate_kind"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_autonomy_review_cursors_kind": {
+          "name": "ck_autonomy_review_cursors_kind",
+          "value": "candidate_kind = 'evolution_review'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.autonomy_tick_candidates": {
+      "name": "autonomy_tick_candidates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tick_id": {
+          "name": "tick_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rank": {
+          "name": "rank",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ranking_score": {
+          "name": "ranking_score",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision": {
+          "name": "decision",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision_reason": {
+          "name": "decision_reason",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_json": {
+          "name": "evidence_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_autonomy_tick_candidates_tick_rank": {
+          "name": "ix_autonomy_tick_candidates_tick_rank",
+          "columns": [
+            {
+              "expression": "tick_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "rank",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "autonomy_tick_candidates_tick_space_fkey": {
+          "name": "autonomy_tick_candidates_tick_space_fkey",
+          "tableFrom": "autonomy_tick_candidates",
+          "tableTo": "autonomy_ticks",
+          "columnsFrom": [
+            "tick_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "autonomy_tick_candidates_candidate_space_fkey": {
+          "name": "autonomy_tick_candidates_candidate_space_fkey",
+          "tableFrom": "autonomy_tick_candidates",
+          "tableTo": "autonomy_candidates",
+          "columnsFrom": [
+            "candidate_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "autonomy_tick_candidates_space_id_fkey": {
+          "name": "autonomy_tick_candidates_space_id_fkey",
+          "tableFrom": "autonomy_tick_candidates",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_autonomy_tick_candidates_tick_candidate": {
+          "name": "uq_autonomy_tick_candidates_tick_candidate",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tick_id",
+            "candidate_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_autonomy_tick_candidates_rank": {
+          "name": "ck_autonomy_tick_candidates_rank",
+          "value": "rank > 0"
+        },
+        "ck_autonomy_tick_candidates_decision": {
+          "name": "ck_autonomy_tick_candidates_decision",
+          "value": "decision IN ('observed', 'refused', 'admitted', 'launched')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.autonomy_ticks": {
+      "name": "autonomy_ticks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "automation_id": {
+          "name": "automation_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "coordinator_run_id": {
+          "name": "coordinator_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "automation_run_id": {
+          "name": "automation_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidates_seen": {
+          "name": "candidates_seen",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "candidates_ranked": {
+          "name": "candidates_ranked",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "candidates_admitted": {
+          "name": "candidates_admitted",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "candidates_launched": {
+          "name": "candidates_launched",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "config_snapshot_json": {
+          "name": "config_snapshot_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "summary_json": {
+          "name": "summary_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_autonomy_ticks_automation_created": {
+          "name": "ix_autonomy_ticks_automation_created",
+          "columns": [
+            {
+              "expression": "automation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_autonomy_ticks_space_owner_created": {
+          "name": "ix_autonomy_ticks_space_owner_created",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "autonomy_ticks_automation_space_fkey": {
+          "name": "autonomy_ticks_automation_space_fkey",
+          "tableFrom": "autonomy_ticks",
+          "tableTo": "automations",
+          "columnsFrom": [
+            "automation_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_ticks_owner_user_id_fkey": {
+          "name": "autonomy_ticks_owner_user_id_fkey",
+          "tableFrom": "autonomy_ticks",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_ticks_automation_run_id_fkey": {
+          "name": "autonomy_ticks_automation_run_id_fkey",
+          "tableFrom": "autonomy_ticks",
+          "tableTo": "automation_runs",
+          "columnsFrom": [
+            "automation_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_ticks_coordinator_run_space_fkey": {
+          "name": "autonomy_ticks_coordinator_run_space_fkey",
+          "tableFrom": "autonomy_ticks",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "coordinator_run_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autonomy_ticks_space_id_fkey": {
+          "name": "autonomy_ticks_space_id_fkey",
+          "tableFrom": "autonomy_ticks",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_autonomy_ticks_id_space": {
+          "name": "uq_autonomy_ticks_id_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_autonomy_ticks_mode": {
+          "name": "ck_autonomy_ticks_mode",
+          "value": "mode IN ('observe_only', 'launch')"
+        },
+        "ck_autonomy_ticks_status": {
+          "name": "ck_autonomy_ticks_status",
+          "value": "status IN ('running', 'succeeded', 'failed')"
+        },
+        "ck_autonomy_ticks_counts": {
+          "name": "ck_autonomy_ticks_counts",
+          "value": "candidates_seen >= 0 AND candidates_ranked >= 0 AND candidates_admitted >= 0 AND candidates_launched >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.runtime_conformance_results": {
@@ -18017,6 +19092,221 @@
         "ck_inquiry_threads_lifecycle_attention": {
           "name": "ck_inquiry_threads_lifecycle_attention",
           "value": "\n\t\t(lifecycle_status = 'active' AND attention_state IN ('focused', 'monitoring', 'backlog', 'blocked'))\n\t\tOR (lifecycle_status = 'resolved' AND attention_state = 'resolved')\n\t\tOR (lifecycle_status = 'rejected' AND attention_state = 'rejected')\n\t\tOR (lifecycle_status IN ('superseded', 'archived') AND attention_state = 'archived')\n\t"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.inquiry_thread_advice": {
+      "name": "inquiry_thread_advice",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recommended_focus_kind": {
+          "name": "recommended_focus_kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rationale": {
+          "name": "rationale",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cited_refs_json": {
+          "name": "cited_refs_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "thread_version": {
+          "name": "thread_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "trigger_kind": {
+          "name": "trigger_kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_version": {
+          "name": "model_version",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "generated_by_user_id": {
+          "name": "generated_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_inquiry_thread_advice_project_id": {
+          "name": "ix_inquiry_thread_advice_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_inquiry_thread_advice_thread": {
+          "name": "uq_inquiry_thread_advice_thread",
+          "columns": [
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inquiry_thread_advice_thread_fkey": {
+          "name": "inquiry_thread_advice_thread_fkey",
+          "tableFrom": "inquiry_thread_advice",
+          "tableTo": "inquiry_threads",
+          "columnsFrom": [
+            "thread_id",
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "inquiry_thread_advice_project_fkey": {
+          "name": "inquiry_thread_advice_project_fkey",
+          "tableFrom": "inquiry_thread_advice",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "inquiry_thread_advice_space_fkey": {
+          "name": "inquiry_thread_advice_space_fkey",
+          "tableFrom": "inquiry_thread_advice",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "inquiry_thread_advice_generated_by_fkey": {
+          "name": "inquiry_thread_advice_generated_by_fkey",
+          "tableFrom": "inquiry_thread_advice",
+          "tableTo": "users",
+          "columnsFrom": [
+            "generated_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_inquiry_thread_advice_id_space": {
+          "name": "uq_inquiry_thread_advice_id_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_inquiry_thread_advice_status": {
+          "name": "ck_inquiry_thread_advice_status",
+          "value": "status IN ('open', 'adopted', 'dismissed')"
+        },
+        "ck_inquiry_thread_advice_refs_array": {
+          "name": "ck_inquiry_thread_advice_refs_array",
+          "value": "jsonb_typeof(cited_refs_json) = 'array'"
+        },
+        "ck_inquiry_thread_advice_rationale": {
+          "name": "ck_inquiry_thread_advice_rationale",
+          "value": "char_length(rationale) BETWEEN 1 AND 4000"
+        },
+        "ck_inquiry_thread_advice_version": {
+          "name": "ck_inquiry_thread_advice_version",
+          "value": "thread_version >= 1"
         }
       },
       "isRLSEnabled": false
@@ -31661,7 +32951,7 @@
       "checkConstraints": {
         "ck_project_research_checkpoints_checkpoint_type": {
           "name": "ck_project_research_checkpoints_checkpoint_type",
-          "value": "(checkpoint_type)::text = ANY (ARRAY[('profile_approval'::character varying)::text, ('screening_gate'::character varying)::text, ('idea_review'::character varying)::text, ('integrity_gate'::character varying)::text, ('manuscript_gate'::character varying)::text, ('review_gate'::character varying)::text, ('other'::character varying)::text])"
+          "value": "(checkpoint_type)::text = ANY (ARRAY[('screening_gate'::character varying)::text, ('idea_review'::character varying)::text, ('integrity_gate'::character varying)::text, ('manuscript_gate'::character varying)::text, ('review_gate'::character varying)::text, ('other'::character varying)::text])"
         },
         "ck_project_research_checkpoints_status": {
           "name": "ck_project_research_checkpoints_status",
@@ -31946,8 +33236,187 @@
       },
       "isRLSEnabled": false
     },
-    "public.project_research_profiles": {
-      "name": "project_research_profiles",
+    "public.project_research_question_assessment_messages": {
+      "name": "project_research_question_assessment_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "turn_index": {
+          "name": "turn_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'complete'"
+        },
+        "structured_output_json": {
+          "name": "structured_output_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "uq_project_research_question_assessment_messages_turn_role": {
+          "name": "uq_project_research_question_assessment_messages_turn_role",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "turn_index",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_research_question_assessment_messages_session": {
+          "name": "ix_project_research_question_assessment_messages_session",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "turn_index",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "project_research_question_assessment_messages_session_fkey": {
+          "name": "project_research_question_assessment_messages_session_fkey",
+          "tableFrom": "project_research_question_assessment_messages",
+          "tableTo": "project_research_question_assessment_sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_research_question_assessment_messages_created_by_fkey": {
+          "name": "project_research_question_assessment_messages_created_by_fkey",
+          "tableFrom": "project_research_question_assessment_messages",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_project_research_question_assessment_messages_turn": {
+          "name": "ck_project_research_question_assessment_messages_turn",
+          "value": "turn_index >= 1"
+        },
+        "ck_project_research_question_assessment_messages_role": {
+          "name": "ck_project_research_question_assessment_messages_role",
+          "value": "role IN ('user', 'assistant')"
+        },
+        "ck_project_research_question_assessment_messages_status": {
+          "name": "ck_project_research_question_assessment_messages_status",
+          "value": "status IN ('pending', 'complete', 'failed')"
+        },
+        "ck_project_research_question_assessment_messages_content": {
+          "name": "ck_project_research_question_assessment_messages_content",
+          "value": "char_length(content) BETWEEN 1 AND 20000"
+        },
+        "ck_project_research_question_assessment_messages_structured_object": {
+          "name": "ck_project_research_question_assessment_messages_structured_object",
+          "value": "structured_output_json IS NULL OR jsonb_typeof(structured_output_json) = 'object'::text"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.project_research_question_assessment_sessions": {
+      "name": "project_research_question_assessment_sessions",
       "schema": "",
       "columns": {
         "id": {
@@ -31968,87 +33437,41 @@
           "primaryKey": false,
           "notNull": true
         },
-        "preset_key": {
-          "name": "preset_key",
-          "type": "varchar(64)",
+        "thread_id": {
+          "name": "thread_id",
+          "type": "varchar(36)",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'academic_research'"
+          "notNull": true
         },
-        "research_question": {
-          "name": "research_question",
+        "recommended_question": {
+          "name": "recommended_question",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "working_title": {
-          "name": "working_title",
-          "type": "varchar(512)",
+        "latest_refinement_json": {
+          "name": "latest_refinement_json",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
-        "domain": {
-          "name": "domain",
-          "type": "varchar(128)",
+        "assessment_baseline_json": {
+          "name": "assessment_baseline_json",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
-        "output_type": {
-          "name": "output_type",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paper_type": {
-          "name": "paper_type",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "citation_style": {
-          "name": "citation_style",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_venue": {
-          "name": "target_venue",
-          "type": "varchar(256)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "language": {
-          "name": "language",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'en'"
-        },
-        "experiment_intake_declaration": {
-          "name": "experiment_intake_declaration",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'undecided'"
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "approved_by_user_id": {
-          "name": "approved_by_user_id",
+        "research_context_version_id": {
+          "name": "research_context_version_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
         },
-        "approved_at": {
-          "name": "approved_at",
-          "type": "timestamp with time zone",
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "varchar(36)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "created_at": {
           "name": "created_at",
@@ -32064,23 +33487,29 @@
         }
       },
       "indexes": {
-        "ix_project_research_profiles_space_id": {
-          "name": "ix_project_research_profiles_space_id",
+        "uq_project_research_question_assessment_sessions_thread": {
+          "name": "uq_project_research_question_assessment_sessions_thread",
           "columns": [
             {
               "expression": "space_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
         },
-        "uq_project_research_profiles_project": {
-          "name": "uq_project_research_profiles_project",
+        "ix_project_research_question_assessment_sessions_project": {
+          "name": "ix_project_research_question_assessment_sessions_project",
           "columns": [
             {
               "expression": "space_id",
@@ -32093,18 +33522,41 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
       "foreignKeys": {
-        "project_research_profiles_project_id_fkey": {
-          "name": "project_research_profiles_project_id_fkey",
-          "tableFrom": "project_research_profiles",
+        "project_research_question_assessment_sessions_thread_fkey": {
+          "name": "project_research_question_assessment_sessions_thread_fkey",
+          "tableFrom": "project_research_question_assessment_sessions",
+          "tableTo": "inquiry_threads",
+          "columnsFrom": [
+            "thread_id",
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_research_question_assessment_sessions_project_fkey": {
+          "name": "project_research_question_assessment_sessions_project_fkey",
+          "tableFrom": "project_research_question_assessment_sessions",
           "tableTo": "projects",
           "columnsFrom": [
             "project_id",
@@ -32117,56 +33569,57 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "project_research_profiles_space_id_fkey": {
-          "name": "project_research_profiles_space_id_fkey",
-          "tableFrom": "project_research_profiles",
-          "tableTo": "spaces",
+        "project_research_question_assessment_sessions_context_fkey": {
+          "name": "project_research_question_assessment_sessions_context_fkey",
+          "tableFrom": "project_research_question_assessment_sessions",
+          "tableTo": "project_research_context_versions",
           "columnsFrom": [
+            "research_context_version_id",
+            "project_id",
             "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "project_research_question_assessment_sessions_created_by_fkey": {
+          "name": "project_research_question_assessment_sessions_created_by_fkey",
+          "tableFrom": "project_research_question_assessment_sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by_user_id"
           ],
           "columnsTo": [
             "id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
-        },
-        "project_research_profiles_approved_by_user_id_fkey": {
-          "name": "project_research_profiles_approved_by_user_id_fkey",
-          "tableFrom": "project_research_profiles",
-          "tableTo": "users",
-          "columnsFrom": [
-            "approved_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "uq_project_research_question_assessment_sessions_id_space": {
+          "name": "uq_project_research_question_assessment_sessions_id_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "space_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
-        "ck_project_research_profiles_status": {
-          "name": "ck_project_research_profiles_status",
-          "value": "(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])"
+        "ck_project_research_question_assessment_sessions_refinement_object": {
+          "name": "ck_project_research_question_assessment_sessions_refinement_object",
+          "value": "latest_refinement_json IS NULL OR jsonb_typeof(latest_refinement_json) = 'object'::text"
         },
-        "ck_project_research_profiles_output_type": {
-          "name": "ck_project_research_profiles_output_type",
-          "value": "(output_type IS NULL) OR ((output_type)::text = ANY (ARRAY[('paper'::character varying)::text, ('thesis'::character varying)::text, ('report'::character varying)::text, ('review'::character varying)::text, ('proposal'::character varying)::text, ('other'::character varying)::text]))"
-        },
-        "ck_project_research_profiles_paper_type": {
-          "name": "ck_project_research_profiles_paper_type",
-          "value": "(paper_type IS NULL) OR ((paper_type)::text = ANY (ARRAY[('empirical'::character varying)::text, ('theory'::character varying)::text, ('survey'::character varying)::text, ('review'::character varying)::text, ('position'::character varying)::text, ('case_study'::character varying)::text, ('other'::character varying)::text]))"
-        },
-        "ck_project_research_profiles_citation_style": {
-          "name": "ck_project_research_profiles_citation_style",
-          "value": "(citation_style IS NULL) OR ((citation_style)::text = ANY (ARRAY[('apa'::character varying)::text, ('mla'::character varying)::text, ('chicago'::character varying)::text, ('ieee'::character varying)::text, ('acm'::character varying)::text, ('vancouver'::character varying)::text, ('other'::character varying)::text]))"
-        },
-        "ck_project_research_profiles_experiment_intake": {
-          "name": "ck_project_research_profiles_experiment_intake",
-          "value": "(experiment_intake_declaration)::text = ANY (ARRAY[('none'::character varying)::text, ('code_experiments'::character varying)::text, ('human_study'::character varying)::text, ('both'::character varying)::text, ('undecided'::character varying)::text])"
+        "ck_project_research_question_assessment_sessions_baseline_object": {
+          "name": "ck_project_research_question_assessment_sessions_baseline_object",
+          "value": "assessment_baseline_json IS NULL OR jsonb_typeof(assessment_baseline_json) = 'object'::text"
         }
       },
       "isRLSEnabled": false
@@ -32751,6 +34204,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "primary_thread_id": {
+          "name": "primary_thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -32806,6 +34265,49 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_project_research_workflows_thread_id": {
+          "name": "ix_project_research_workflows_thread_id",
+          "columns": [
+            {
+              "expression": "primary_thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_project_research_workflows_active_thread": {
+          "name": "uq_project_research_workflows_active_thread",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "primary_thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"project_research_workflows\".\"primary_thread_id\" IS NOT NULL AND \"project_research_workflows\".\"status\" <> 'archived'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -32822,6 +34324,23 @@
             "space_id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_research_workflows_thread_fkey": {
+          "name": "project_research_workflows_thread_fkey",
+          "tableFrom": "project_research_workflows",
+          "tableTo": "inquiry_threads",
+          "columnsFrom": [
+            "primary_thread_id",
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "space_id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "project_research_workflows_space_id_fkey": {
@@ -44975,7 +46494,7 @@
         },
         "ck_runs_trigger_origin": {
           "name": "ck_runs_trigger_origin",
-          "value": "(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])"
+          "value": "(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])"
         },
         "ck_runs_trust_level": {
           "name": "ck_runs_trust_level",

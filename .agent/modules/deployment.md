@@ -30,8 +30,8 @@ deployment job persistence and proposal-gated submission are not implemented.
 | `restart_agent_space` | `deployer/scripts/restart.sh` | restart server/frontend |
 | `health_check` | `deployer/scripts/health_check.sh` | check server `/health` |
 
-No other job type, arbitrary command, caller-selected script, self-evolution action,
-code-patch action, or capability action is accepted. The three jobs accept no request
+No other job type, arbitrary command, caller-selected script, code-patch action,
+or capability action is accepted. The three jobs accept no request
 arguments, so callers cannot override `PATH`, repository/instance roots, compose mode, or
 service names through the socket protocol.
 
@@ -45,9 +45,6 @@ service names through the socket protocol.
 - No production server code instantiates or calls `DeployerSocketClient`.
 - Evolution, code-patch, capability, agent, automation, job, and scheduler paths have no
   route to deployer input.
-
-Self-evolution helper scripts remain repository artifacts, but they are not registered as
-deployer jobs and are not reachable through the product path.
 
 ## Future Product Trigger
 

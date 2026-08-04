@@ -1,0 +1,52 @@
+[
+  {
+    "target_type": "agent_run",
+    "kind": "domain_execution",
+    "user_selectable": true,
+    "spawns_runs": "one",
+    "requires_project_binding": false,
+    "credential_grant_required": true,
+    "current_enforcement_point": "server/src/modules/automations/targetHandlers.ts",
+    "description": "Launch one configured Agent Run through the normal Automation admission path."
+  },
+  {
+    "target_type": "workflow",
+    "kind": "domain_execution",
+    "user_selectable": true,
+    "spawns_runs": "many",
+    "requires_project_binding": false,
+    "credential_grant_required": true,
+    "current_enforcement_point": "server/src/modules/automations/targetHandlers.ts",
+    "description": "Launch one approved Workflow Execution and its bounded node Runs."
+  },
+  {
+    "target_type": "knowledge_retrieval_maintenance",
+    "kind": "maintenance",
+    "user_selectable": true,
+    "spawns_runs": "one",
+    "requires_project_binding": false,
+    "credential_grant_required": false,
+    "current_enforcement_point": "server/src/modules/retrieval/automationTarget.ts",
+    "description": "Run the Knowledge retrieval maintenance scan and persist its private report."
+  },
+  {
+    "target_type": "context_ops_review_cycle",
+    "kind": "maintenance",
+    "user_selectable": true,
+    "spawns_runs": "one",
+    "requires_project_binding": false,
+    "credential_grant_required": false,
+    "current_enforcement_point": "server/src/modules/contextOps/automationTarget.ts",
+    "description": "Run the aggregate Context Ops review cycle and persist review artifacts."
+  },
+  {
+    "target_type": "autonomous_tick",
+    "kind": "control_plane",
+    "user_selectable": false,
+    "spawns_runs": "many",
+    "requires_project_binding": false,
+    "credential_grant_required": true,
+    "current_enforcement_point": "server/src/modules/autonomy/automationTarget.ts",
+    "description": "Survey durable facts and fan out admitted autonomous work candidates."
+  }
+]

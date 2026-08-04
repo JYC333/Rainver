@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ServerConfig } from "../../config";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 import {
   HttpError,
@@ -15,6 +16,7 @@ import {
 import { workflowExecutionOutcomeHandlerRegistry } from "../automations/workflowExecutionOutcomeRegistry";
 import { findOrCreateResearchAutomation } from "./synthesisOnlyExecution";
 import { researchState } from "./operationProjection";
+import { isRetryableRunErrorCode } from "../runs/retryPolicy";
 
 const RESEARCH_PASS_WORKFLOW_ID = "academic_literature_review.reconcile_pass";
 const RESEARCH_PASS_ACTION_KEY = "project_research.reconcile_pass";
@@ -45,6 +47,7 @@ export type ResearchPassEvent =
       scanJobId: string;
       scannedAt: string;
       scanWindowStart: string | null;
+      scanWindowEnd: string | null;
       newItemCount: number;
     };
 
@@ -56,6 +59,7 @@ export type ResearchPassEvent =
 export async function startResearchReconcilePass(
   db: Queryable,
   identity: SpaceUserIdentity,
+  config: ServerConfig,
   operation: ResearchOperationForPass,
   reason: string,
   event: ResearchPassEvent = { kind: "reconcile" },
@@ -69,6 +73,7 @@ export async function startResearchReconcilePass(
     return startResearchReconcilePassLocked(
       tx,
       identity,
+      config,
       operation,
       reason,
       event,
@@ -79,6 +84,7 @@ export async function startResearchReconcilePass(
 async function startResearchReconcilePassLocked(
   db: Queryable,
   identity: SpaceUserIdentity,
+  config: ServerConfig,
   operation: ResearchOperationForPass,
   reason: string,
   event: ResearchPassEvent,
@@ -101,6 +107,7 @@ async function startResearchReconcilePassLocked(
     await settleSynchronousNodes(
       db,
       identity,
+      config,
       active.rows[0].id,
     );
     return active.rows[0].id;
@@ -116,7 +123,7 @@ async function startResearchReconcilePassLocked(
     state.agent_id,
   );
   const versionId = await findOrCreateResearchPassTemplateVersion(db, identity);
-  const result = await new WorkflowExecutionService().start({
+  const result = await new WorkflowExecutionService(config).start({
     db,
     identity,
     automation,
@@ -155,7 +162,7 @@ async function startResearchReconcilePassLocked(
       }
     },
   });
-  await settleSynchronousNodes(db, identity, result.workflowExecutionId);
+  await settleSynchronousNodes(db, identity, config, result.workflowExecutionId);
   return result.workflowExecutionId;
 }
 
@@ -280,7 +287,7 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
     throw new ActionNodeHandlerError("Research reconcile pass is missing operation_id");
   }
   const { ProjectResearchOrchestrator } = await import("./orchestrator.js");
-  const orchestrator = new ProjectResearchOrchestrator(context.db);
+  const orchestrator = new ProjectResearchOrchestrator(context.db, context.config);
   const event = objectValue(context.metadata.event) as Partial<ResearchPassEvent>;
   if (event.kind === "run_terminal" && optionalString(event.runId)) {
     await orchestrator.executeCompletedRunPass(
@@ -326,6 +333,7 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
         scanJobId: optionalString(event.scanJobId)!,
         scannedAt: optionalString(event.scannedAt)!,
         scanWindowStart: optionalString(event.scanWindowStart),
+        scanWindowEnd: optionalString(event.scanWindowEnd),
         newItemCount: typeof event.newItemCount === "number" ? event.newItemCount : 0,
       },
       operationId,
@@ -369,7 +377,7 @@ actionNodeHandlerRegistry.register(RESEARCH_APPLY_RUN_ACTION_KEY, async (context
     return { output: { operation_id: operationId, applied: false } };
   }
   const { ProjectResearchOrchestrator } = await import("./orchestrator.js");
-  await new ProjectResearchOrchestrator(context.db).executeCompletedRunPass(
+  await new ProjectResearchOrchestrator(context.db, context.config).executeCompletedRunPass(
     context.identity.spaceId,
     sourceRunId,
     context.executionId,
@@ -403,11 +411,36 @@ workflowExecutionOutcomeHandlerRegistry.register(
       : state.current_stage;
     state.current_stage = "failed";
     state.stage_state = "failed";
+    const failure = await latestExecutionRunFailure(db, spaceId, executionId);
+    const runError = objectValue(failure?.error_json);
+    const errorCode = optionalString(runError.error_code)
+      ?? "workflow_execution_failed";
+    const errorMessage = optionalString(runError.error_text)
+      ?? failure?.error_message
+      ?? "Research reconciliation pass failed";
+    const workflowInput = objectValue(
+      objectValue(failure?.contract_snapshot_json).workflow_input_json,
+    );
+    const researchInput = objectValue(workflowInput.project_research);
     state.error = {
-      code: "workflow_execution_failed",
-      message: "Research reconciliation pass failed",
+      code: errorCode,
+      message: errorMessage,
       at: new Date().toISOString(),
-      diagnostics: { execution_id: executionId },
+      diagnostics: {
+        execution_id: executionId,
+        ...(failure?.run_id ? { run_id: failure.run_id } : {}),
+        ...(failure?.node_key ? { node_key: failure.node_key } : {}),
+        ...(optionalString(researchInput.stage_key)
+          ? { stage: optionalString(researchInput.stage_key) }
+          : {}),
+        ...(failure?.model_provider_id
+          ? { model_provider_id: failure.model_provider_id }
+          : {}),
+        retryable: isRetryableRunErrorCode(errorCode),
+        automatic_retry_exhausted:
+          isRetryableRunErrorCode(errorCode)
+          && failure?.automatic_retry_attempted === true,
+      },
     };
     await db.query(
       `UPDATE project_operations
@@ -423,6 +456,52 @@ workflowExecutionOutcomeHandlerRegistry.register(
     );
   },
 );
+
+async function latestExecutionRunFailure(
+  db: Queryable,
+  spaceId: string,
+  executionId: string,
+): Promise<{
+  run_id: string;
+  node_key: string;
+  error_message: string | null;
+  error_json: unknown;
+  contract_snapshot_json: unknown;
+  model_provider_id: string | null;
+  automatic_retry_attempted: boolean;
+} | null> {
+  const result = await db.query<{
+    run_id: string;
+    node_key: string;
+    error_message: string | null;
+    error_json: unknown;
+    contract_snapshot_json: unknown;
+    model_provider_id: string | null;
+    automatic_retry_attempted: boolean;
+  }>(
+    `SELECT r.id AS run_id, n.node_key, r.error_message, r.error_json,
+            r.contract_snapshot_json, r.model_provider_id,
+            EXISTS (
+              SELECT 1 FROM run_supervisor_decisions decision
+               WHERE decision.space_id=r.space_id AND decision.run_id=r.id
+                 AND decision.decision IN ('retry_same_route','retry_fallback_route')
+            ) AS automatic_retry_attempted
+       FROM workflow_execution_nodes n
+       JOIN workflow_execution_node_runs link
+         ON link.space_id=n.space_id AND link.node_id=n.id
+       JOIN runs r
+         ON r.space_id=link.space_id AND r.id=link.run_id
+      WHERE n.space_id=$1 AND n.execution_id=$2
+        AND r.status IN ('failed','cancelled','orphaned')
+      ORDER BY
+        CASE WHEN link.role IN ('delegated','delegated_superseded') THEN 0 ELSE 1 END,
+        r.updated_at DESC,
+        r.id DESC
+      LIMIT 1`,
+    [spaceId, executionId],
+  );
+  return result.rows[0] ?? null;
+}
 
 async function delegatedRunForOperation(
   db: Queryable,
@@ -470,9 +549,10 @@ async function isProjectResearchStageRun(
 async function settleSynchronousNodes(
   db: Queryable,
   identity: SpaceUserIdentity,
+  config: ServerConfig,
   executionId: string,
 ): Promise<void> {
-  const service = new WorkflowExecutionService();
+  const service = new WorkflowExecutionService(config);
   // The reconcile pass has one producer plus two bounded application nodes.
   // A synchronous Action completion makes only its immediate successor ready,
   // so drain at most one graph-length worth of passes. A delegated model Run

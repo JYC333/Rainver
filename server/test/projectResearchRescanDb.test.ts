@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -34,6 +35,7 @@ let available = false;
 let threadScope: { thread_id: string; version: number; kind: string; statement: string };
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+const CONFIG = loadConfig({});
 
 beforeAll(async () => {
   try {
@@ -132,15 +134,15 @@ beforeEach(async () => {
     [CHANNEL, SPACE, CONNECTION, OWNER, now],
   );
   await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','screening','active','agent_assisted',$4::jsonb,$5,$5)`,
+    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, primary_thread_id, created_at, updated_at)
+     VALUES ($1,$2,$3,'literature_review','screening','active','agent_assisted',$4::jsonb,$5,$6,$6)`,
     [WORKFLOW, SPACE, PROJECT, JSON.stringify({
       research_question: "Does X improve Y?",
       research_question_version: thread.version,
       thread_scope: [threadScope],
       agent_id: AGENT,
       initial_intake: { max_items: 10 },
-    }), now],
+    }), threadScope.thread_id, now],
   );
 });
 
@@ -208,7 +210,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
   it("updates the saved item limit without requiring a research question or source monitor", async () => {
     if (!available || !pool) return;
 
-    await new ProjectResearchOrchestrator(pool!).updateInitialItemLimit(identity, PROJECT, {
+    await new ProjectResearchOrchestrator(pool!, CONFIG).updateInitialItemLimit(identity, PROJECT, {
       workflow_id: WORKFLOW,
       max_items: 25,
     });
@@ -250,7 +252,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       ],
     );
 
-    await new ProjectResearchOrchestrator(pool!).updateItemLimit(identity, PROJECT, OPERATION, { max_items: 25 });
+    await new ProjectResearchOrchestrator(pool!, CONFIG).updateItemLimit(identity, PROJECT, OPERATION, { max_items: 25 });
 
     const operation = await pool.query<{ progress_json: { history?: { max_items?: number } } }>(
       `SELECT progress_json FROM project_operations WHERE id=$1`,
@@ -270,7 +272,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       [PLAN],
     );
 
-    await new ProjectResearchOrchestrator(pool!).updateItemLimit(identity, PROJECT, OPERATION, { max_items: 25 });
+    await new ProjectResearchOrchestrator(pool!, CONFIG).updateItemLimit(identity, PROJECT, OPERATION, { max_items: 25 });
 
     const plan = await pool.query<{ status: string; strategy_json: { max_items?: number } }>(
       `SELECT status, strategy_json FROM source_backfill_plans WHERE id=$1`,
@@ -299,7 +301,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     await seedPlan("completed", 0);
     const checkpointId = await seedPendingScreeningCheckpoint();
 
-    await new ProjectResearchOrchestrator(pool!).rescanEmptyBackfill(identity, PROJECT, OPERATION, {});
+    await new ProjectResearchOrchestrator(pool!, CONFIG).rescanEmptyBackfill(identity, PROJECT, OPERATION, {});
 
     const operation = await pool!.query<{ status: string; progress_json: { current_stage?: string } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -325,7 +327,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     const checkpointId = await seedPendingScreeningCheckpoint();
 
     for (const decision of ["approved", "waived"] as const) {
-      await expect(new ProjectResearchOrchestrator(pool!).decideCheckpoint(
+      await expect(new ProjectResearchOrchestrator(pool!, CONFIG).decideCheckpoint(
         identity,
         PROJECT,
         WORKFLOW,
@@ -352,7 +354,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     await seedOperation("active", "backfill", [PLAN]);
     await seedPlan("approved", 3);
 
-    await new ProjectResearchOrchestrator(pool!).updateItemLimit(identity, PROJECT, OPERATION, { max_items: 30 });
+    await new ProjectResearchOrchestrator(pool!, CONFIG).updateItemLimit(identity, PROJECT, OPERATION, { max_items: 30 });
 
     const plan = await pool!.query<{ status: string; strategy_json: { max_items?: number } }>(
       `SELECT status, strategy_json FROM source_backfill_plans WHERE id=$1`,
@@ -372,7 +374,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     if (!available || !pool) return;
     await seedOperation("active", "monitor_setup", []);
 
-    await expect(new ProjectResearchOrchestrator(pool!).rescanEmptyBackfill(identity, PROJECT, OPERATION, {})).rejects.toMatchObject({
+    await expect(new ProjectResearchOrchestrator(pool!, CONFIG).rescanEmptyBackfill(identity, PROJECT, OPERATION, {})).rejects.toMatchObject({
       statusCode: 409,
     });
   });
@@ -382,7 +384,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     await seedOperation("active", "monitor_setup", []);
     await seedPlan("approved", 0);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool.query<{ progress_json: { current_stage?: string; source_backfill_plan_ids?: string[] } }>(
       `SELECT progress_json FROM project_operations WHERE id=$1`,
@@ -399,7 +401,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     await seedOperation("active", "backfill", [PLAN]);
     await seedPlan("completed", 0);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool.query<{ status: string; progress_json: { current_stage?: string; stage_state?: string } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -426,7 +428,8 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
   it("saves a channel-less draft carrying the refinement assessment", async () => {
     if (!available || !pool) return;
     await pool.query(`UPDATE project_research_workflows SET status='not_started', current_stage='initial_intake_setup' WHERE id=$1`, [WORKFLOW]);
-    const workflow = await new ProjectResearchOrchestrator(pool!).saveInitialIntakeDraft(identity, PROJECT, {
+    const workflow = await new ProjectResearchOrchestrator(pool!, CONFIG).saveInitialIntakeDraft(identity, PROJECT, {
+      thread_id: threadScope.thread_id,
       research_question: "How should agents remember?",
       source_channel_ids: [],
       history_mode: "all_available",
@@ -454,9 +457,108 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     });
   });
 
+  it("does not create a second draft when the same Inquiry already has an active initial intake", async () => {
+    if (!available || !pool) return;
+    await expect(new ProjectResearchOrchestrator(pool!, CONFIG).saveInitialIntakeDraft(identity, PROJECT, {
+      thread_id: threadScope.thread_id,
+      research_question: "Does X improve Y?",
+      source_channel_ids: [],
+      history_mode: "bounded_range",
+      from: "2026-01-01",
+      to: "2026-02-01",
+      max_items: 10,
+      monitoring_field: "submittedDate",
+      report_depth: "quick",
+      question_refine_skipped: false,
+      execution: {},
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      message: "An active research workflow cannot be edited after initial literature intake has started",
+    });
+
+    const workflows = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
+      [SPACE, PROJECT],
+    );
+    expect(workflows.rows[0]?.count).toBe(1);
+  });
+
+  it("reuses the same Thread draft when autosave omits workflow_id", async () => {
+    if (!available || !pool) return;
+    await pool.query(
+      `UPDATE project_research_workflows
+          SET status='not_started', current_stage='initial_intake_setup'
+        WHERE id=$1`,
+      [WORKFLOW],
+    );
+
+    const saved = await new ProjectResearchOrchestrator(pool!, CONFIG).saveInitialIntakeDraft(identity, PROJECT, {
+      thread_id: threadScope.thread_id,
+      research_question: "Does X improve Y?",
+      source_channel_ids: [],
+      history_mode: "bounded_range",
+      from: "2026-01-01",
+      to: "2026-02-01",
+      max_items: 20,
+      monitoring_field: "submittedDate",
+      report_depth: "quick",
+      question_refine_skipped: false,
+      execution: {},
+    });
+
+    expect(saved).toMatchObject({ id: WORKFLOW, status: "not_started" });
+    const workflows = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
+      [SPACE, PROJECT],
+    );
+    expect(workflows.rows[0]?.count).toBe(1);
+  });
+
+  it("enforces one non-archived research workflow per Inquiry Thread in the database", async () => {
+    if (!available || !pool) return;
+    const now = new Date().toISOString();
+    await expect(pool.query(
+      `INSERT INTO project_research_workflows
+        (id,space_id,project_id,workflow_type,status,mode,state_json,primary_thread_id,created_at,updated_at)
+       VALUES ($1,$2,$3,'literature_review','not_started','autonomous','{}'::jsonb,$4,$5,$5)`,
+      [randomUUID(), SPACE, PROJECT, threadScope.thread_id, now],
+    )).rejects.toMatchObject({ code: "23505" });
+  });
+
+  it("does not create a new draft after the same Inquiry intake completed", async () => {
+    if (!available || !pool) return;
+    await pool.query(
+      `UPDATE project_research_workflows SET status='completed', current_stage='completed' WHERE id=$1`,
+      [WORKFLOW],
+    );
+
+    await expect(new ProjectResearchOrchestrator(pool!, CONFIG).saveInitialIntakeDraft(identity, PROJECT, {
+      thread_id: threadScope.thread_id,
+      research_question: "Does X improve Y?",
+      source_channel_ids: [],
+      history_mode: "bounded_range",
+      from: "2026-01-01",
+      to: "2026-02-01",
+      max_items: 10,
+      monitoring_field: "submittedDate",
+      report_depth: "quick",
+      question_refine_skipped: false,
+      execution: {},
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      message: "This research workflow can no longer be edited",
+    });
+
+    const workflows = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
+      [SPACE, PROJECT],
+    );
+    expect(workflows.rows[0]?.count).toBe(1);
+  });
+
   it("refuses to start intake for a question that has not passed refinement", async () => {
     if (!available || !pool) return;
-    await expect(new ProjectResearchOrchestrator(pool!).startInitialIntake(identity, PROJECT, {
+    await expect(new ProjectResearchOrchestrator(pool!, CONFIG).startInitialIntake(identity, PROJECT, {
       research_question: "Unrefined question",
       query_strategy_id: "22222222-2222-4222-8222-222222222222",
       history_mode: "bounded_range",
@@ -474,10 +576,11 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     if (!available || !pool) return;
     await seedOperation("active", "backfill", [PLAN]);
     await seedPlan("completed", 0);
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
-    const workflow = await new ProjectResearchOrchestrator(pool!).saveInitialIntakeDraft(identity, PROJECT, {
+    const workflow = await new ProjectResearchOrchestrator(pool!, CONFIG).saveInitialIntakeDraft(identity, PROJECT, {
       workflow_id: WORKFLOW,
+      thread_id: threadScope.thread_id,
       research_question: "Adjusted research question",
       source_channel_ids: [CHANNEL],
       history_mode: "bounded_range",
@@ -513,7 +616,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       [randomUUID(), SPACE, PROJECT, WORKFLOW, OWNER, now, JSON.stringify({ operation_id: OPERATION })],
     );
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool.query<{ status: string; progress_json: { current_stage?: string; monitoring_active?: boolean } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,

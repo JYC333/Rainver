@@ -148,6 +148,21 @@ export const InquiryReviewPacketSchema = z.object({
 });
 export type InquiryReviewPacket = z.infer<typeof InquiryReviewPacketSchema>;
 
+export const InquiryDeltaPositionChangeSchema = z.object({
+  thread_id: z.string(),
+  statement: z.string(),
+  count: z.number().int().nonnegative(),
+});
+export type InquiryDeltaPositionChange = z.infer<typeof InquiryDeltaPositionChangeSchema>;
+
+export const InquiryDeltaGapChangeSchema = z.object({
+  thread_id: z.string(),
+  statement: z.string(),
+  new_gaps: z.number().int().nonnegative(),
+  filled_gaps: z.number().int().nonnegative(),
+});
+export type InquiryDeltaGapChange = z.infer<typeof InquiryDeltaGapChangeSchema>;
+
 export const InquiryDeltaBriefContentSchema = z.object({
   schema_version: z.literal("inquiry_delta_brief.v1"),
   input_and_coverage_window: z.object({
@@ -155,14 +170,43 @@ export const InquiryDeltaBriefContentSchema = z.object({
     coverage_end: z.string(),
     signal_count: z.number().int().nonnegative(),
   }),
-  reinforced_positions: z.array(z.unknown()),
-  challenged_positions: z.array(z.unknown()),
-  gap_changes: z.array(z.unknown()),
+  reinforced_positions: z.array(InquiryDeltaPositionChangeSchema),
+  challenged_positions: z.array(InquiryDeltaPositionChangeSchema),
+  gap_changes: z.array(InquiryDeltaGapChangeSchema),
   decisions_required: z.number().int().nonnegative(),
   no_change_statement: z.string().nullable(),
-  source_and_thread_refs: z.array(z.unknown()),
+  source_and_thread_refs: z.array(z.object({
+    signal_id: z.string(),
+    thread_id: z.string(),
+    corpus_item_id: z.string().nullable(),
+  })),
 });
 export type InquiryDeltaBriefContent = z.infer<typeof InquiryDeltaBriefContentSchema>;
+
+export const InquiryAdviceStatusSchema = z.enum(["open", "adopted", "dismissed"]);
+export type InquiryAdviceStatus = z.infer<typeof InquiryAdviceStatusSchema>;
+
+/**
+ * A model-generated suggestion about a Thread's next step. It is never a
+ * write: adopting it goes through the ordinary work-state command. `stale`
+ * means the Thread has moved past the revision the advice reasoned about.
+ */
+export const InquiryThreadAdviceSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  thread_id: z.string(),
+  recommended_focus_kind: InquiryNextFocusKindSchema,
+  rationale: z.string(),
+  cited_refs: z.array(z.string()),
+  thread_version: z.number().int(),
+  status: InquiryAdviceStatusSchema,
+  trigger_kind: z.string(),
+  model_version: z.string().nullable(),
+  stale: z.boolean(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type InquiryThreadAdvice = z.infer<typeof InquiryThreadAdviceSchema>;
 
 export const InquiryCreateSignalRequestSchema = z.object({
   corpus_item_id: z.string().min(1),

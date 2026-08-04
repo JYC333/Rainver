@@ -230,7 +230,6 @@ function mockEvolutionData({
     selected_strategy_key: 'repair.runtime_failure',
     run_status: 'succeeded',
     proposal_ids: [],
-    is_fallback_agent: false,
   })
 }
 

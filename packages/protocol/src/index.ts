@@ -70,6 +70,9 @@ export * from "./policy.js";
 // Registry-driven System Action contracts
 export * from "./systemActions.js";
 
+// Registry-driven native Automation target contracts
+export * from "./automationTargets.js";
+
 // Proposal review contracts
 export * from "./proposals.js";
 

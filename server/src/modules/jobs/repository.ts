@@ -261,6 +261,23 @@ export class PgJobQueueRepository {
     return Number(result.rows[0]?.count ?? 0);
   }
 
+  /**
+   * Instance-wide queue depth for the operator status surface. Deliberately
+   * not space-scoped and counts only — a backed-up worker is a property of the
+   * process, not of one Space, and no row content is exposed.
+   */
+  async countQueueDepth(): Promise<{ pending: number; running: number }> {
+    const result = await this.db.query<{ pending: string; running: string }>(
+      `SELECT count(*) FILTER (WHERE status = 'pending')::text AS pending,
+              count(*) FILTER (WHERE status IN ('claimed', 'running'))::text AS running
+         FROM jobs`,
+    );
+    return {
+      pending: Number(result.rows[0]?.pending ?? 0),
+      running: Number(result.rows[0]?.running ?? 0),
+    };
+  }
+
   async getEvents(jobId: string): Promise<JobEventRecord[]> {
     const result = await this.db.query<JobEventRecord>(
       `SELECT id, job_id, event_type, message, data, created_at

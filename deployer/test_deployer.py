@@ -65,10 +65,10 @@ class DeployerProtocolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("does not accept request args", response["error"])
                 run_script.assert_not_awaited()
 
-    async def test_rejects_self_evolution_job(self) -> None:
+    async def test_rejects_unknown_job(self) -> None:
         response, run_script = await self.request({
             "job_id": "job-3",
-            "job_type": "run_prod_deploy",
+            "job_type": "unknown_job",
             "args": {},
         })
         self.assertEqual(response["status"], "failed")

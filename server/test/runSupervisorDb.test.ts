@@ -500,6 +500,76 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("0");
   });
 
+  it("automatically retries transient managed failures before returning final failure to the owning operation", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    const runId = await seedRun({
+      trigger_origin: "system",
+      max_attempts: 2,
+      policy_context_json: {
+        managed_execution: "project_research",
+        credential_pre_authorized: true,
+        failure_policy: "fail_fast",
+      },
+    });
+    const repository = new PgRunRepository(pool);
+    const finalizer = new PostRunFinalizationService(
+      repository,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      new PgRunSupervisor(pool),
+    );
+
+    await repository.markRunRunning({
+      run_id: runId,
+      space_id: SPACE,
+      started_at: new Date().toISOString(),
+    });
+    await repository.markRunTerminal({
+      run_id: runId,
+      space_id: SPACE,
+      status: "failed",
+      error_json: {
+        error_code: "provider_network_error",
+        error_text: "Provider connection timed out",
+      },
+      completed_at: new Date().toISOString(),
+    });
+    await finalizer.finalize(runId, SPACE);
+
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
+    expect((await pool.query<{ decision: string }>(
+      `SELECT decision FROM run_supervisor_decisions
+        WHERE space_id = $1 AND run_id = $2`,
+      [SPACE, runId],
+    )).rows).toEqual([{ decision: "retry_same_route" }]);
+
+    await repository.markRunRunning({
+      run_id: runId,
+      space_id: SPACE,
+      started_at: new Date().toISOString(),
+    });
+    await repository.markRunTerminal({
+      run_id: runId,
+      space_id: SPACE,
+      status: "failed",
+      error_json: {
+        error_code: "provider_network_error",
+        error_text: "Provider connection timed out again",
+      },
+      completed_at: new Date().toISOString(),
+    });
+    await finalizer.finalize(runId, SPACE);
+
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM run_supervisor_decisions
+        WHERE space_id = $1 AND run_id = $2`,
+      [SPACE, runId],
+    )).rows[0]?.count).toBe("1");
+  });
+
   it("reroutes a retry through the persisted C2 fallback chain", async (ctx) => {
     if (!available || !pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });

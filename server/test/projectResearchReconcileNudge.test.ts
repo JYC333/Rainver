@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Queryable } from "../src/modules/routeUtils/common";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+
+const CONFIG = loadConfig({});
 
 function fakeDb() {
   const queries: Array<{ text: string; values: unknown[] | undefined }> = [];
@@ -20,7 +23,7 @@ function fakeDb() {
 describe("Project Research event hooks", () => {
   it("turns post-processing recovery start and finish into reconcile nudges", async () => {
     const { db, queries } = fakeDb();
-    const orchestrator = new ProjectResearchOrchestrator(db);
+    const orchestrator = new ProjectResearchOrchestrator(db, CONFIG);
 
     await orchestrator.onPostProcessingRecoveryStarted({ spaceId: "space-1", operationId: "operation-1" });
     await orchestrator.onPostProcessingRecoveryFinished({
@@ -39,7 +42,7 @@ describe("Project Research event hooks", () => {
 
   it("nudges the reconciler after post-processing succeeds", async () => {
     const { db, queries } = fakeDb();
-    const orchestrator = new ProjectResearchOrchestrator(db);
+    const orchestrator = new ProjectResearchOrchestrator(db, CONFIG);
 
     await orchestrator.onPostProcessingSucceeded({
       spaceId: "space-1",

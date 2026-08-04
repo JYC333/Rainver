@@ -20,6 +20,11 @@ import {
   type ResearchOperationState,
   type ResearchMutationResult,
 } from "../operationProjection";
+import {
+  filterItemsForPublicationWindow,
+  laterPublicationWatermark,
+  latestPublicationWatermarkForItems,
+} from "../monitoringWindow";
 
 interface MonitoringOperation {
   id: string;
@@ -73,7 +78,7 @@ export interface ProjectResearchMonitoringPorts {
     workflowId: string;
     sourceItemIds: string[];
     idempotencyKey: string;
-    watermarkAfter: string;
+    watermarkAfter: string | null;
   }): Promise<MonitoringOperationRow>;
   operation(spaceId: string, operationId: string): Promise<MonitoringOperationRow | null>;
   failOperation(operation: MonitoringOperationRow, message: string): Promise<void>;
@@ -100,6 +105,7 @@ export interface SourceScanCompletedInput {
   scanJobId: string;
   scannedAt: string;
   scanWindowStart: string | null;
+  scanWindowEnd: string | null;
   newItemCount: number;
 }
 
@@ -144,7 +150,7 @@ export class ProjectResearchMonitoringCoordinator {
           operationId: null,
           scanKey: `source-scan-day:${workflow.id}:${input.scannedAt.slice(0, 10)}`,
           scanWindowStart: input.scanWindowStart,
-          scanWindowEnd: input.scannedAt,
+          scanWindowEnd: input.scanWindowEnd,
           scannedAt: input.scannedAt,
           newItemCount: 0,
           relevantCount: 0,
@@ -209,7 +215,10 @@ export class ProjectResearchMonitoringCoordinator {
         current.awaiting_source_scan = false;
         current.watermark = {
           before: current.watermark.after ?? input.scanWindowStart,
-          after: input.scannedAt,
+          after: laterPublicationWatermark(
+            current.watermark.after,
+            input.scanWindowEnd,
+          ),
           overlap_hours: current.watermark.overlap_hours,
         };
         current.stage_state = "skipped";
@@ -261,13 +270,13 @@ export class ProjectResearchMonitoringCoordinator {
     const run = result.rows[0];
     if (!run || run.status !== "succeeded" || !run.project_id || run.research_reconciled_at) return;
     if (run.project_id !== scopedRun.project_id) throw new HttpError(409, "Post-processing Project changed during reconciliation");
-    const sourceItemIds = stringArray(run.input_item_ids_json);
-    if (sourceItemIds.length === 0) {
+    const processedSourceItemIds = stringArray(run.input_item_ids_json);
+    if (processedSourceItemIds.length === 0) {
       await this.markPostProcessingReconciled(spaceId, runId);
       return;
     }
     try {
-      for (const sourceItemId of sourceItemIds) {
+      for (const sourceItemId of processedSourceItemIds) {
         await syncProjectCorpusDecisionForSourceItem(this.db, { spaceId, sourceItemId, projectId: run.project_id });
       }
       const workflows = await this.db.query<{ id: string; state_json: unknown }>(
@@ -279,37 +288,55 @@ export class ProjectResearchMonitoringCoordinator {
       if (!workflow) return;
       const state = researchState(workflow.state_json);
       if (!state.channel_ids.includes(run.source_channel_id)) return;
-      if (await this.ports.hasResearchQuestionDrift(spaceId, run.project_id, workflow.state_json)) {
-        await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, sourceItemIds);
-        return;
-      }
+      const monitoring = objectValue(objectValue(workflow.state_json).monitoring);
+      const monitoringActive = monitoring.active === true || state.monitoring_active;
       const cursor = await this.db.query<{ metadata_json: unknown }>(
         `SELECT metadata_json FROM scheduler_tasks WHERE task_type='source_channel_scan' AND task_key=$1 AND space_id=$2 LIMIT 1`,
         [run.source_channel_id, spaceId],
       );
-      const watermarkAfter = optionalString(objectValue(objectValue(cursor.rows[0]?.metadata_json).cursor).last_published_at)
-        ?? new Date().toISOString();
-      const monitoringActive = objectValue(objectValue(workflow.state_json).monitoring).active === true || state.monitoring_active;
+      const priorWatermark = optionalString(monitoring.watermark_after);
+      const observedWatermark = optionalString(
+        objectValue(objectValue(cursor.rows[0]?.metadata_json).cursor).last_published_at,
+      ) ?? await latestPublicationWatermarkForItems(this.db, {
+        spaceId,
+        sourceItemIds: processedSourceItemIds,
+        sourceChannelId: run.source_channel_id,
+      });
+      const watermarkAfter = laterPublicationWatermark(priorWatermark, observedWatermark);
       if (!monitoringActive) {
         if (state.source_backfill_plan_id) {
-          const baseline = await this.db.query<{ id: string }>(
-            `SELECT id FROM project_operations
+          const baseline = await this.db.query<{ id: string; progress_json: unknown }>(
+            `SELECT id, progress_json FROM project_operations
               WHERE space_id=$1 AND project_id=$2 AND kind='research'
                 AND ($3 = ANY(ARRAY(SELECT jsonb_array_elements_text(COALESCE(progress_json->'source_backfill_plan_ids', '[]'::jsonb)))) OR progress_json->>'source_backfill_plan_id'=$4)
               ORDER BY created_at DESC LIMIT 1`,
             [spaceId, run.project_id, state.source_backfill_plan_id, state.source_backfill_plan_id],
           );
-          if (baseline.rows[0]) await this.ports.reconcileOperation(spaceId, baseline.rows[0].id);
+          const baselineOperation = baseline.rows[0];
+          if (baselineOperation) {
+            const baselineState = researchState(baselineOperation.progress_json);
+            if (baselineState.current_stage === "backfill" || baselineState.current_stage === "screening") {
+              await this.ports.reconcileOperation(spaceId, baselineOperation.id);
+            } else {
+              await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, processedSourceItemIds);
+            }
+          }
         }
         return;
       }
       const historical = await this.ports.activeHistoricalBackfill(spaceId, run.project_id, workflow.id);
       if (historical) {
-        const origins = await this.ports.backfillPlanForItems(spaceId, sourceItemIds);
+        const origins = await this.ports.backfillPlanForItems(spaceId, processedSourceItemIds);
         const historicalPlanIds = researchState(historical.progress_json).source_backfill_plan_ids;
-        const historicalIds = sourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.created_plan_id ?? ""));
-        const historicalUpdates = sourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.last_plan_id ?? ""));
-        const pendingIds = sourceItemIds.filter((id) => !historicalIds.includes(id) && !historicalUpdates.includes(id));
+        const historicalIds = processedSourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.created_plan_id ?? ""));
+        const historicalUpdates = processedSourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.last_plan_id ?? ""));
+        const unscopedIds = processedSourceItemIds.filter((id) => !historicalIds.includes(id) && !historicalUpdates.includes(id));
+        const pendingIds = await filterItemsForPublicationWindow(this.db, {
+          spaceId,
+          sourceItemIds: unscopedIds,
+          watermark: priorWatermark,
+          overlapHours: state.watermark.overlap_hours,
+        });
         if (historicalIds.length > 0) {
           await refreshOperation(this.db, spaceId, historical.id, ({ state: current }) => {
             current.source_item_ids = unique([...current.source_item_ids, ...historicalIds]);
@@ -318,6 +345,17 @@ export class ProjectResearchMonitoringCoordinator {
         }
         if (pendingIds.length > 0) await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, pendingIds);
         await this.ports.reconcileOperation(spaceId, historical.id);
+        return;
+      }
+      const sourceItemIds = await filterItemsForPublicationWindow(this.db, {
+        spaceId,
+        sourceItemIds: processedSourceItemIds,
+        watermark: priorWatermark,
+        overlapHours: state.watermark.overlap_hours,
+      });
+      if (sourceItemIds.length === 0) return;
+      if (await this.ports.hasResearchQuestionDrift(spaceId, run.project_id, workflow.state_json)) {
+        await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, sourceItemIds);
         return;
       }
       const idempotencyKey = `source-post-processing:${run.source_channel_id}:${sourceItemIds[0]}`;

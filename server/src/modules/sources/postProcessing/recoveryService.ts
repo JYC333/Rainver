@@ -182,6 +182,8 @@ export class SourcePostProcessingRecoveryService {
           job_type: "source_post_processing_event",
           space_id: scope.spaceId,
           user_id: null,
+          priority: SOURCE_POST_PROCESSING_LIMITS.researchRecoveryJobPriority,
+          max_attempts: SOURCE_POST_PROCESSING_LIMITS.researchRecoveryJobMaxAttempts,
           payload: {
             phase: "research_recovery",
             rule_id: rule.id,

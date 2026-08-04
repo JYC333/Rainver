@@ -138,6 +138,37 @@ function fakeHttpClient(calls: string[]): ProviderHttpClient {
 }
 
 describe("runtime host internal route", () => {
+  it("propagates run cancellation to the provider HTTP request", async () => {
+    const calls: string[] = [];
+    let observedSignal = false;
+    __setProviderCommandStoreForTests(fakeStore(calls));
+    __setProviderHttpClientForTests({
+      fetch(_url, init) {
+        observedSignal = init?.signal instanceof AbortSignal;
+        return new Promise((_resolve, reject) => {
+          const rejectAbort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          if (init?.signal?.aborted) rejectAbort();
+          else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+        });
+      },
+    });
+    const controller = new AbortController();
+    const pending = executeRuntimeHost(
+      config(),
+      requestBody() as Parameters<typeof executeRuntimeHost>[1],
+      undefined,
+      { signal: controller.signal },
+    );
+
+    controller.abort();
+
+    await expect(pending).resolves.toMatchObject({
+      success: false,
+      error_code: "provider_request_aborted",
+    });
+    expect(observedSignal).toBe(true);
+  });
+
   it("streams OpenAI-compatible conversation deltas while retaining the canonical result", async () => {
     const calls: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
@@ -697,8 +728,12 @@ describe("runtime host internal route", () => {
       error_code: "structured_output_invalid",
     });
     expect(res.json().error_text).toContain("finish_reason=end_turn");
-    expect(res.json().error_text).toContain("content_blocks=text");
-    expect(res.json().error_text).toContain("tool_names=none");
+    // No tool_use block was returned, so the Anthropic path falls back to
+    // parsing the plain-text answer (same fallback the OpenAI-compatible path
+    // already has) instead of failing outright; the diagnostics record where
+    // the value came from without echoing the model's actual words.
+    expect(res.json().error_text).toContain("response_kind=message_content");
+    expect(res.json().error_text).toContain("transport=anthropic");
     expect(res.json().error_text).not.toContain("I cannot provide");
   });
 

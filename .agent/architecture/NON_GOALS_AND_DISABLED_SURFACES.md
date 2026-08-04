@@ -11,7 +11,7 @@
 | Automation / Trigger engine | Not implemented (`Run.trigger_origin` reserves enum values only) |
 | Connector marketplace / integration lifecycle | Not implemented |
 | Capability marketplace or install/discovery UX | Not implemented (file-defined registry; local workspace roots; external enable state in `config/settings.yaml`; no remote install) |
-| Self-evolution behavior execution | Disabled (`ENABLE_SYSTEM_EVOLUTION=false` by default) |
+| Automatic system self-evolution | Removed; no privileged Evolver Agent or implicit fallback |
 | App-container self-deployment | Blocked by deployer allowlist |
 | Deployment job persistence | 501-gated (`POST /deployments/jobs` → 501) |
 | Arbitrary deployer commands | Blocked; only `rebuild_agent_space`, `restart_agent_space`, `health_check` |
@@ -32,7 +32,7 @@
 - `Cards` — registry entry with `planned: true`; "soon" badge; non-interactive.
 - `Time` — registry entry with `planned: true`; "soon" badge; non-interactive.
 
-No automation, connector marketplace, crawler, or self-evolution controls appear in the frontend.
+No connector marketplace, crawler, or automatic system self-evolution controls appear in the frontend.
 
 ## What Is Allowed for Current Use
 
@@ -83,9 +83,6 @@ Policy engine, ownership model, actor identity, and proposal-safe automation inv
 
 **Before connector marketplace / integrations:**
 All connector data must enter Sources or Activity first. No direct-to-Memory connector writes.
-
-**Before self-evolution execution:**
-Evaluation gates, sandboxed experiment runs, deployment job persistence, capability lifecycle persistence, and rollback path must all be tested.
 
 **Before any broad external ingestion:**
 Retention/deletion semantics, Sources/Evidence candidate-only boundary, and trust gate must be enforced and tested.

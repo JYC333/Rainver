@@ -24,3 +24,31 @@ export function modelStructuredToolCallUnreliable(model: string | null | undefin
   const trimmed = model.trim();
   return STRUCTURED_TOOL_CALL_UNRELIABLE_MODELS.some((pattern) => pattern.test(trimmed));
 }
+
+export interface StructuredOutputToolStrategy {
+  /** Offer the schema as a single forced tool call. False for unreliable models. */
+  forceTool: boolean;
+  /** Embed the schema in the system prompt instead of forcing a tool call. */
+  schemaInstruction: string | null;
+}
+
+/**
+ * Single decision point every completion path must consult before offering
+ * structured output as a forced tool call: unreliable models never see the
+ * forced tool (their gateway corrupts its arguments), and instead get the
+ * schema embedded in the prompt, answering in prose that the caller must
+ * parse from text.
+ */
+export function structuredOutputToolStrategy(
+  model: string | null | undefined,
+  schema: Record<string, unknown> | null | undefined,
+): StructuredOutputToolStrategy {
+  if (!schema) return { forceTool: false, schemaInstruction: null };
+  if (modelStructuredToolCallUnreliable(model)) {
+    return {
+      forceTool: false,
+      schemaInstruction: `Reply with exactly one JSON object that validates against this JSON Schema. Match every key name and type exactly; do not add undeclared keys:\n${JSON.stringify(schema)}`,
+    };
+  }
+  return { forceTool: true, schemaInstruction: null };
+}

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService";
 import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundServices";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -18,6 +19,7 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // extracted_evidence row for it.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
+const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -174,13 +176,14 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
     });
 
     expect(result.status).toBe("waiting");
-    const jobs = await pool!.query<{ payload_json: { source_item_ids?: string[] } }>(
-      `SELECT payload_json FROM jobs
+    const jobs = await pool!.query<{ priority: number; max_attempts: number; payload_json: { source_item_ids?: string[] } }>(
+      `SELECT priority, max_attempts, payload_json FROM jobs
         WHERE space_id=$1 AND job_type='source_post_processing_event'
           AND payload_json->>'recovery_for_operation_id'=$2`,
       [SPACE, OPERATION],
     );
     expect(jobs.rows).toHaveLength(1);
+    expect(jobs.rows[0]).toMatchObject({ priority: 50, max_attempts: 2 });
     expect(jobs.rows[0]!.payload_json.source_item_ids).toEqual([ITEM_3]);
   });
 
@@ -258,7 +261,7 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
       [runId, SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), now],
     );
 
-    await reconcileProjectResearch(pool);
+    await reconcileProjectResearch(pool, CONFIG);
 
     const run = await pool.query<{ research_reconciled_at: string | null }>(
       `SELECT research_reconciled_at FROM source_post_processing_runs WHERE id=$1`,
@@ -288,7 +291,7 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
     );
     await pool.query(`UPDATE projects SET status='archived',archived_at=$3 WHERE id=$1 AND space_id=$2`, [PROJECT, SPACE, now]);
 
-    await reconcileProjectResearch(pool);
+    await reconcileProjectResearch(pool, CONFIG);
 
     expect((await pool.query<{ research_reconciled_at: string | null }>(
       `SELECT research_reconciled_at FROM source_post_processing_runs WHERE id=$1`, [runId],

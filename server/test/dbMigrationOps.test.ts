@@ -24,7 +24,6 @@ describe("database migration ops scripts", () => {
     expect(migrate).toContain("ensure_docker_database_exists");
     expect(migrate).toContain("run_drizzle_schema_check_host");
 
-    expect(reset).not.toContain('CREATE DATABASE "$PGDB";');
     expect(reset).toContain('"$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"');
 
     expect(start).toContain("generate_schema_migrations()");
@@ -35,6 +34,29 @@ describe("database migration ops scripts", () => {
     expect(start).toContain("run_database_migrations()");
     expect(start).toContain('"$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"');
     expect(start).toContain("ensure_server_image_for_migrations");
+  });
+
+  it("keeps the private dev setup outside the repo and imports it after migration", () => {
+    const saveSetup = readRepoFile("ops/scripts/db/save-dev-setup.sh");
+    const reset = readRepoFile("ops/scripts/db/reset-postgres.sh");
+
+    expect(saveSetup).toContain('SETUP_DIR="$MODE_ROOT/setup"');
+    expect(saveSetup).toContain('SETUP_DUMP="$SETUP_DIR/database.dump"');
+    expect(saveSetup).toContain("pg_dump -U");
+    expect(saveSetup).toContain('chmod 600 "$TEMP_DUMP"');
+    expect(reset).toContain('DEV_SETUP_DUMP="$MODE_ROOT/setup/database.dump"');
+    expect(reset).toContain('[[ "$MODE" == "dev"');
+    // Migration runs first, always, so the reset database is on the current
+    // schema; the dev setup archive is imported data-only on top of it
+    // afterward. Restoring the archive's own (possibly older) schema before
+    // migrating — the previous order — breaks under this repo's
+    // single-baseline-squash model as soon as the baseline SQL changes after
+    // the archive was saved.
+    expect(reset.indexOf('"$REPO_ROOT/ops/scripts/db/migrate.sh"')).toBeLessThan(
+      reset.indexOf("pg_restore -U"),
+    );
+    expect(reset).toContain("--data-only");
+    expect(reset).toContain("--no-dev-setup");
   });
 
   it("waits for stable postgres SQL readiness during compose bootstrap", () => {

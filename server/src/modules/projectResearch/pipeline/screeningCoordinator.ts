@@ -72,6 +72,8 @@ export class ProjectResearchScreeningCoordinator {
         evidence_count: counts.evidence_count,
         failed_items: counts.failed_items,
         partial: state.partial,
+        coverage_degraded: state.coverage_degraded === true,
+        deferred_sources: state.backfill_progress?.deferred_sources ?? [],
       },
     );
     if (!state.checkpoint_ids.includes(checkpointId)) state.checkpoint_ids.push(checkpointId);
@@ -259,11 +261,20 @@ export class ProjectResearchScreeningCoordinator {
         AND research_question_version=$5`,
       [spaceId, projectId, state.channel_ids, sourceItemIds, state.research_question_version],
     );
-    const jobs = await this.db.query<{ total: string; completed: string; active: string; failed: string }>(
+    const jobs = await this.db.query<{
+      total: string;
+      completed: string;
+      active: string;
+      queued: string;
+      running: string;
+      failed: string;
+    }>(
       `SELECT
          count(*)::int AS total,
          count(*) FILTER (WHERE status='completed' AND result_json->>'status'='succeeded')::int AS completed,
          count(*) FILTER (WHERE status IN ('pending','claimed','running'))::int AS active,
+         count(*) FILTER (WHERE status='pending')::int AS queued,
+         count(*) FILTER (WHERE status IN ('claimed','running'))::int AS running,
          count(*) FILTER (WHERE status='failed' OR (status='completed' AND result_json->>'status'='failed'))::int AS failed
        FROM jobs
       WHERE space_id=$1
@@ -279,6 +290,8 @@ export class ProjectResearchScreeningCoordinator {
     const totalBatches = Number(jobRow?.total ?? 0);
     const completedBatches = Number(jobRow?.completed ?? 0);
     const activeBatches = Number(jobRow?.active ?? 0);
+    const queuedBatches = Number(jobRow?.queued ?? 0);
+    const runningBatches = Number(jobRow?.running ?? 0);
     const failedBatches = Number(jobRow?.failed ?? 0);
     const phase = failedBatches > 0
       ? "failed"
@@ -290,7 +303,7 @@ export class ProjectResearchScreeningCoordinator {
       : phase === "ready_for_review"
         ? `All ${classifiedItems.toLocaleString()} papers are classified. The screening review is ready.`
         : phase === "screening_batches"
-          ? `${activeBatches > 0 ? "Screening" : "Waiting for"} batch ${Math.min(completedBatches + 1, totalBatches)} of ${totalBatches} · ${classifiedItems}/${totalItems} papers classified.`
+          ? `${runningBatches > 0 ? "Screening" : queuedBatches > 0 ? "Queued for screening" : "Waiting for"} batch ${Math.min(completedBatches + 1, totalBatches)} of ${totalBatches} · ${classifiedItems}/${totalItems} papers classified.`
           : `Preparing ${totalItems.toLocaleString()} papers for screening in batches of ${SOURCE_POST_PROCESSING_LIMITS.researchStructuredOutputBatchSize}.`;
     return {
       phase,
@@ -307,6 +320,8 @@ export class ProjectResearchScreeningCoordinator {
       total_batches: totalBatches,
       completed_batches: completedBatches,
       active_batches: activeBatches,
+      queued_batches: queuedBatches,
+      running_batches: runningBatches,
       failed_batches: failedBatches,
       started_at: startedAt,
       updated_at: new Date().toISOString(),

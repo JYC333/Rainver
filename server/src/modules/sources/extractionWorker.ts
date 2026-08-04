@@ -23,7 +23,12 @@ import {
   reindexExtractedEvidenceAndParentForRetrieval,
   reindexSourceItemAndEvidenceForRetrieval,
 } from "./retrievalIndexing";
-import { computeNextCheckAt } from "./scanSchedule";
+import { computeNextCheckAt } from "./sourceScanCadence";
+import {
+  fetchSourceConnection,
+  SourceFetchFailure,
+  type SourceFetchFailureDiagnostics,
+} from "./sourceConnectionFetch";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
@@ -76,6 +81,8 @@ const CONNECTION_SCAN_CHILD_JOB_LIMIT = 25;
 
 interface ConnectionWithConnectorRow extends SourceConnectionRow {
   connector_key: string;
+  provider_key: string;
+  provider_display_name: string;
   channel_type: string | null;
   endpoint_url: string | null;
   fetch_frequency: string;
@@ -91,6 +98,7 @@ interface ScanCursor {
   last_published_at?: string;
   cursor?: string;
   offset?: number;
+  overlap_hours?: number;
 }
 
 export class SourceExtractionWorker {
@@ -147,6 +155,9 @@ export class SourceExtractionWorker {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const code = error instanceof HttpError ? String(error.statusCode) : "run_error";
+      if (error instanceof SourceFetchFailure) {
+        await this.recordJobFailureDiagnostics(job, error.diagnostics);
+      }
       await this.finishJob(jobId, spaceId, "failed", code, message);
       if (job.job_type === "connection_scan" && job.connection_id) {
         await this.recordFailedConnectionScan(job);
@@ -300,14 +311,21 @@ export class SourceExtractionWorker {
     const request = isBackfillJob(job)
       ? handler.buildBackfillRequest(executableChannel, record(record(job.metadata_json).window), cursor as unknown as Record<string, unknown>)
       : handler.buildScanRequest(executableChannel, cursor as unknown as Record<string, unknown>);
-    await handler.prepareRequest?.();
     const credential = await new CustomSourceCredentialService(this.db, this.config)
       .resolveCredentialHeader(job.space_id, connection.credential_id);
     const requestHeaders = { ...headers, ...(request.headers ?? {}) };
     if (credential) requestHeaders[credential.header_name] = credential.header_value;
-    const response = await fetchSource(request.url, {
+    const response = await fetchSourceConnection({
+      handler,
+      url: request.url,
       headers: requestHeaders,
       maxDownloadBytes: await this.maxDownloadBytes(job.space_id),
+      backfill: isBackfillJob(job),
+      provider: {
+        providerKey: connection.provider_key,
+        providerDisplayName: connection.provider_display_name,
+        connectorKey: connection.connector_key,
+      },
     });
     const completedAt = new Date().toISOString();
     if (response.notModified) {
@@ -315,12 +333,16 @@ export class SourceExtractionWorker {
       if (!isBackfillJob(job)) await this.updateConnectionAfterScan(connection, cursor, completedAt, this.isManualScan(job));
       await this.updateJobStats(job, { seen: 0, created: 0, updated: 0, metadata: { not_modified: true } });
       if (!isBackfillJob(job)) {
-        await this.notifyResearchScanCompleted(job, connection.channel_id, completedAt, cursor.last_published_at ?? null, 0);
+        await this.notifyResearchScanCompleted(
+          job,
+          connection.channel_id,
+          completedAt,
+          cursor.last_published_at ?? null,
+          cursor.last_published_at ?? null,
+          0,
+        );
       }
       return { seen: 0, page_size: backfillMaxItems(job.metadata_json) };
-    }
-    if (!response.ok) {
-      throw new HttpError(502, `Failed to fetch source connection (${response.status})`);
     }
     if (!response.isText || response.text === null) {
       throw new HttpError(415, `Source connection returned unsupported binary content (${response.contentType ?? "unknown"})`);
@@ -354,9 +376,29 @@ export class SourceExtractionWorker {
       newItemCount: result.created,
     });
     if (!isBackfillJob(job)) {
-      await this.notifyResearchScanCompleted(job, connection.channel_id, completedAt, cursor.last_published_at ?? null, result.created);
+      await this.notifyResearchScanCompleted(
+        job,
+        connection.channel_id,
+        completedAt,
+        cursor.last_published_at ?? null,
+        result.cursor.last_published_at ?? cursor.last_published_at ?? null,
+        result.created,
+      );
     }
     return { seen: result.seen, page_size: backfillMaxItems(job.metadata_json) };
+  }
+
+  private async recordJobFailureDiagnostics(
+    job: ExtractionJobRow,
+    diagnostics: SourceFetchFailureDiagnostics,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE extraction_jobs
+          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
+            || jsonb_build_object('failure_diagnostics', $3::jsonb)
+        WHERE id = $1 AND space_id = $2`,
+      [job.id, job.space_id, JSON.stringify(diagnostics)],
+    );
   }
 
   /** Best-effort research timeline projection; a failure here must never fail the scan itself. */
@@ -365,6 +407,7 @@ export class SourceExtractionWorker {
     sourceChannelId: string | null,
     scannedAt: string,
     scanWindowStart: string | null,
+    scanWindowEnd: string | null,
     newItemCount: number,
   ): Promise<void> {
     await new ProjectResearchPipelineService(this.db, this.config).onSourceScanCompleted({
@@ -373,6 +416,7 @@ export class SourceExtractionWorker {
       scanJobId: job.id,
       scannedAt,
       scanWindowStart,
+      scanWindowEnd,
       newItemCount,
     }).catch((error) => {
       process.stderr.write(
@@ -1214,7 +1258,7 @@ export class SourceExtractionWorker {
 
   private async getConnection(spaceId: string, connectionId: string, channelId: string | null = null): Promise<ConnectionWithConnectorRow> {
     const result = await this.db.query<ConnectionWithConnectorRow>(
-      `SELECT sc.*, c.connector_key,
+      `SELECT sc.*, c.connector_key, p.provider_key, p.display_name AS provider_display_name,
               ch.id AS channel_id, ch.channel_type, ch.endpoint_url, ch.fetch_frequency,
               ch.schedule_rule_json,
               CASE WHEN ch.channel_type='search'
@@ -1223,6 +1267,7 @@ export class SourceExtractionWorker {
               END AS provider_query_json
          FROM source_connections sc
          JOIN source_provider_connectors spc ON spc.id = sc.provider_connector_id
+         JOIN source_providers p ON p.id = spc.provider_id
          JOIN source_connectors c ON c.id = spc.connector_id
          LEFT JOIN source_channels ch
            ON ch.source_connection_id = sc.id
@@ -1640,6 +1685,7 @@ function scanCursor(configJson: unknown): ScanCursor {
     last_modified: stringValue(cursor.last_modified),
     last_guid: stringValue(cursor.last_guid),
     last_published_at: stringValue(cursor.last_published_at),
+    overlap_hours: nonNegativeNumber(cursor.overlap_hours),
   };
 }
 
@@ -1649,7 +1695,14 @@ function compactCursor(cursor: ScanCursor): ScanCursor {
   if (cursor.last_modified) out.last_modified = cursor.last_modified;
   if (cursor.last_guid) out.last_guid = cursor.last_guid;
   if (cursor.last_published_at) out.last_published_at = cursor.last_published_at;
+  if (cursor.overlap_hours !== undefined) out.overlap_hours = cursor.overlap_hours;
   return out;
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function safeNormalizeUrl(value: string | null): string | null {

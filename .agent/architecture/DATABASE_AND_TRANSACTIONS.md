@@ -134,8 +134,17 @@ successful commit and never participate in the critical write outcome.
   valid empty-instance initialization path. `--host` runs the same schema check and migration
   runner from `server/` only against an explicitly configured, reachable external Postgres; run
   `npm run schema:generate` yourself before host-mode migrate when schema files changed.
-  `ops/scripts/db/reset-postgres.sh` reuses this path after dropping the target DB so it is
-  recreated by migrate and never left empty/unmigrated.
+  `ops/scripts/db/reset-postgres.sh` reuses this path after dropping the target DB and always runs
+  it before touching any saved dev setup archive, so the reset database is always on the current
+  schema (an empty DB is never left unmigrated). When a private dev setup archive exists (dev mode,
+  `$MODE_ROOT/setup/database.dump`, written by `ops/scripts/db/save-dev-setup.sh`), reset then
+  imports its data (`pg_restore --data-only`) into that freshly migrated schema — not the archive's
+  own schema. Restoring the archive's own (possibly older) schema and migrating on top of it, as
+  this used to do, fails once the baseline SQL has changed since the archive was saved: the
+  archive's tracking row still records the OLD checksum for what is now an immutable but different
+  applied migration. Data-only import is best-effort — `pg_restore` reports and continues past a
+  table/column that no longer matches rather than aborting the reset; refresh the archive with
+  `ops/scripts/db/save-dev-setup.sh` once the database looks right.
   `ops/scripts/start.sh` invokes schema generation and then this migration helper before starting
   app services; the server service process itself still does not run migrations on startup.
   Dev/test compose bind-mounts `server/migrations/` so generated local migration artifacts are

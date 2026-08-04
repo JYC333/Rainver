@@ -69,6 +69,20 @@ export class ResearchStrategyActivationService {
     if (active) {
       const previousChannels = await strategyChannelIds(this.db, identity.spaceId, active.strategy_id);
       if (previousChannels.length > 0) {
+        const liveConsumer = await this.db.query<{ id: string }>(
+          `SELECT id FROM project_operations
+            WHERE space_id=$1 AND project_id=$2 AND kind='research'
+              AND status IN ('active','waiting_review')
+              AND (
+                COALESCE(progress_json->'channel_ids','[]'::jsonb) ?| $3::text[]
+                OR COALESCE(progress_json->'query'->'source_channel_ids','[]'::jsonb) ?| $3::text[]
+              )
+            LIMIT 1`,
+          [identity.spaceId, strategy.project_id, previousChannels],
+        );
+        if (liveConsumer.rows[0]) {
+          throw new HttpError(409, "Wait for the active research operation to finish before activating a replacement query strategy");
+        }
         await this.db.query(
           `UPDATE project_source_bindings SET status='archived',updated_at=$3
             WHERE space_id=$1 AND project_id=$2 AND source_channel_id=ANY($4::text[]) AND status <> 'archived'`,
@@ -124,8 +138,11 @@ export class ResearchStrategyActivationService {
     await this.db.query(
       `UPDATE project_research_workflows
           SET state_json=jsonb_set(
-                jsonb_set(state_json,'{query_strategy_id}',to_jsonb($4::text),true),
-                '{channel_ids}',$5::jsonb,true
+                jsonb_set(
+                  jsonb_set(state_json,'{query_strategy_id}',to_jsonb($4::text),true),
+                  '{channel_ids}',$5::jsonb,true
+                ),
+                '{source_channel_ids}',$5::jsonb,true
               ),updated_at=$6
         WHERE space_id=$1 AND project_id=$2 AND status='active'
           AND ($3::text IS NULL OR state_json->>'query_strategy_id'=$3 OR NOT (state_json ? 'query_strategy_id'))`,

@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { IdSchema, SecretResponseGuards } from "./common.js";
+import { IdSchema, RunTriggerOriginSchema, SecretResponseGuards } from "./common.js";
 
 export const ProviderCredentialsAuthoritySchema = z.enum(["server"]);
 export type ProviderCredentialsAuthority = z.infer<
@@ -144,7 +144,7 @@ export const CliCredentialAuditRequestSchema = z.object({
   run_id: z.string().nullish(),
   runtime_adapter_type: z.string().nullish(),
   credential_profile_id: z.string().nullish(),
-  trigger_origin: z.string().nullish(),
+  trigger_origin: RunTriggerOriginSchema.nullish(),
   fallback_used: z.boolean().optional(),
   fallback_reason: z.string().nullish(),
   broker_error: z.boolean().optional(),

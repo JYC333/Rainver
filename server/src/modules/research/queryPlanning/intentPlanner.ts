@@ -43,7 +43,6 @@ export class ResearchIntentPlanner {
       model: execution.modelName,
       system: resolved.rendered_text,
       messages: [{ role: "user", content: "Extract the semantic search intent." }],
-      max_tokens: 1_400,
       task: "research_query_intent_plan",
       output_format: RESEARCH_INTENT_OUTPUT_CONTRACT,
       metering: {

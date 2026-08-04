@@ -13,6 +13,7 @@ import { getDbPool } from "../../db/pool";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
 import { ProjectCorpusRepository } from "../projects/corpusRepository";
 import { InquiryIterationService } from "./iterationService";
+import { tryQueueAdviceForFocusedThread } from "./adviceJob";
 
 const SIGNAL_CLASSIFICATIONS = ["supports", "contradicts", "adds_context", "adds_method", "fills_gap", "raises_gap", "unrelated"] as const;
 type SignalClassification = (typeof SIGNAL_CLASSIFICATIONS)[number];
@@ -204,7 +205,7 @@ export class InquirySignalService {
       : MATERIAL_BY_DEFAULT.has(classification as SignalClassification);
     const now = new Date().toISOString();
 
-    return withQueryableTransaction(this.db, async (db) => {
+    const created = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const thread = await db.query<{ id: string; lifecycle_status: string }>(
         `SELECT id, lifecycle_status FROM inquiry_threads
@@ -315,6 +316,20 @@ export class InquirySignalService {
       }
       return signalToOut(signal);
     });
+
+    // Only a material Signal changes what the Thread should do next; routine
+    // support auto-attaches and is not worth re-advising on. Queued after
+    // commit, and never allowed to fail Signal creation.
+    if (created.status === "consolidated") {
+      await tryQueueAdviceForFocusedThread(this.db, {
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        projectId,
+        threadId,
+        triggerKind: "candidate_created",
+      });
+    }
+    return created;
   }
 
   // Consolidation (plan section 10.2): find the one open Candidate for this
@@ -676,6 +691,39 @@ export class InquirySignalService {
       );
       return { id: packetId, status: "closed", closed_at: now };
     });
+  }
+
+  /**
+   * The most recently generated Brief, so a caller can continue the coverage
+   * window from where the last one ended instead of re-summarizing the whole
+   * Project history every time.
+   */
+  async latestDeltaBrief(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown> | null> {
+    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    const row = await this.db.query<{
+      id: string;
+      coverage_start: Date | string | null;
+      coverage_end: Date | string;
+      content_json: Record<string, unknown>;
+      created_at: Date | string;
+    }>(
+      `SELECT id, coverage_start, coverage_end, content_json, created_at
+         FROM inquiry_delta_briefs
+        WHERE space_id = $1 AND project_id = $2
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [identity.spaceId, projectId],
+    );
+    const brief = row.rows[0];
+    if (!brief) return null;
+    return {
+      id: brief.id,
+      project_id: projectId,
+      coverage_start: brief.coverage_start ? new Date(brief.coverage_start).toISOString() : null,
+      coverage_end: new Date(brief.coverage_end).toISOString(),
+      content: brief.content_json,
+      created_at: new Date(brief.created_at).toISOString(),
+    };
   }
 
   // Read-only cited change summary (plan section 10.3). Never writes Thread

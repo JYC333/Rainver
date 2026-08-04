@@ -40,6 +40,7 @@ class ScanDb implements Queryable {
     linkedProjectId?: string
     compiledQuery?: Record<string, unknown>
     searchSpecMissing?: boolean
+    backfill?: boolean
   }) {
     this.schedulerTask = {
       id: "task-1",
@@ -70,7 +71,7 @@ class ScanDb implements Queryable {
         child.status = "running";
         return { rows: [childJobRow(child)] as Row[], rowCount: 1 };
       }
-      return { rows: [scanJob(this.input.manualScan ? "manual_scan" : "scheduler")] as Row[], rowCount: 1 };
+      return { rows: [scanJob(this.input.manualScan ? "manual_scan" : "scheduler", this.input.backfill)] as Row[], rowCount: 1 };
     }
     if (sql.includes("JOIN source_connectors")) {
       return { rows: [this.connection()] as Row[], rowCount: 1 };
@@ -80,6 +81,9 @@ class ScanDb implements Queryable {
         rows: this.schedulerTask ? [this.schedulerTask as Row] : [],
         rowCount: this.schedulerTask ? 1 : 0,
       };
+    }
+    if (sql.includes("SELECT window_json,status FROM source_backfill_segments")) {
+      return { rows: [] as Row[], rowCount: 0 };
     }
     if (sql.includes("FROM settings")) {
       return { rows: [] as Row[], rowCount: 0 };
@@ -193,6 +197,9 @@ class ScanDb implements Queryable {
     if (sql.includes("UPDATE extraction_jobs") && sql.includes("items_seen")) {
       return { rows: [] as Row[], rowCount: 1 };
     }
+    if (sql.includes("UPDATE extraction_jobs") && sql.includes("failure_diagnostics")) {
+      return { rows: [] as Row[], rowCount: 1 };
+    }
     if (sql.includes("SET status = $3")) {
       const jobId = String(params[0]);
       const child = this.childJobs.find((entry) => entry.id === jobId);
@@ -226,7 +233,7 @@ class ScanDb implements Queryable {
       if (child) return { rows: [childJobRow(child)] as Row[], rowCount: 1 };
       return {
         rows: [{
-          ...scanJob(this.input.manualScan ? "manual_scan" : "scheduler"),
+          ...scanJob(this.input.manualScan ? "manual_scan" : "scheduler", this.input.backfill),
           status: this.status,
           source_item_id: this.itemId,
         }] as Row[],
@@ -264,6 +271,8 @@ class ScanDb implements Queryable {
       created_at: "2026-06-30T00:00:00.000Z",
       updated_at: "2026-06-30T00:00:00.000Z",
       connector_key: this.input.connectorKey,
+      provider_key: this.input.connectorKey === "arxiv_api" ? "arxiv" : "rss",
+      provider_display_name: this.input.connectorKey === "arxiv_api" ? "arXiv" : "RSS",
       channel_type: this.input.connectorKey === "arxiv_api" ? "search" : "feed",
       provider_query_json: this.input.connectorKey === "arxiv_api"
         ? this.input.searchSpecMissing
@@ -597,6 +606,77 @@ describe("SourceExtractionWorker connection_scan", () => {
     expect(stats?.params.slice(2, 5)).toEqual([1, 1, 0]);
   });
 
+  it("retries a transient arXiv backfill 5xx once before succeeding", async () => {
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    const db = new ScanDb({
+      connectorKey: "arxiv_api",
+      capturePolicy: "reference_only",
+      policyRetention: "metadata_only",
+      backfill: true,
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(arxivFeed(), { status: 200 }));
+
+    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+      .resolves.toMatchObject({ status: "succeeded" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("records safe diagnostics after an arXiv backfill exhausts automatic retries", async () => {
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    const db = new ScanDb({
+      connectorKey: "arxiv_api",
+      capturePolicy: "reference_only",
+      policyRetention: "metadata_only",
+      backfill: true,
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 500 }));
+
+    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+      .resolves.toMatchObject({ status: "failed" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const diagnosticsWrite = db.calls.find(call =>
+      call.sql.includes("failure_diagnostics")
+    );
+    expect(JSON.parse(String(diagnosticsWrite?.params[2]))).toEqual({
+      provider_key: "arxiv",
+      provider_display_name: "arXiv",
+      connector_key: "arxiv_api",
+      upstream_status: 500,
+      attempts: 2,
+      retryable: true,
+      failure_kind: "upstream_http",
+    });
+    const failure = db.calls.find(call => call.sql.includes("SET status = $3"));
+    expect(failure?.params.slice(2, 6)).toEqual([
+      "failed",
+      expect.any(String),
+      "503",
+      expect.stringContaining("failed after 2 attempts"),
+    ]);
+  });
+
+  it("does not retry a permanent arXiv backfill 4xx", async () => {
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    const db = new ScanDb({
+      connectorKey: "arxiv_api",
+      capturePolicy: "reference_only",
+      policyRetention: "metadata_only",
+      backfill: true,
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 400 }));
+
+    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+      .resolves.toMatchObject({ status: "failed" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed before fetch when a search channel has no executable Search Spec", async () => {
     const db = new ScanDb({
       connectorKey: "arxiv_api",
@@ -719,7 +799,7 @@ function config() {
   });
 }
 
-function scanJob(createdBy: "manual_scan" | "scheduler" = "scheduler") {
+function scanJob(createdBy: "manual_scan" | "scheduler" = "scheduler", backfill = false) {
   return {
     id: "job-1",
     space_id: "space-1",
@@ -729,7 +809,15 @@ function scanJob(createdBy: "manual_scan" | "scheduler" = "scheduler") {
     source_object_id: null,
     job_type: "connection_scan",
     status: "running",
-    metadata_json: { created_by: createdBy },
+    metadata_json: {
+      created_by: createdBy,
+      ...(backfill ? {
+        source_backfill_plan_id: "plan-1",
+        source_backfill_segment_id: "segment-1",
+        source_channel_id: "conn-1",
+        window: { from: "2024-01-01T00:00:00.000Z", to: "2026-01-01T00:00:00.000Z", max_items: 100 },
+      } : {}),
+    },
   };
 }
 

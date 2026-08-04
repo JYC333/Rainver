@@ -40,7 +40,6 @@ This is the index for design and operations docs. The root
 | [../.agent/architecture/EXECUTION_MODEL.md](../.agent/architecture/EXECUTION_MODEL.md) | Run/agent execution model, agent groups, delegation |
 | [CAPABILITY_SYSTEM.md](CAPABILITY_SYSTEM.md) | Capability manifests, registry, enable state, execution |
 | [EVOLUTION_CORE.md](EVOLUTION_CORE.md) | Evolution core — source of truth for targets, signals, strategies, runs, experiences |
-| [SELF_EVOLUTION.md](SELF_EVOLUTION.md) | Self-evolution deployment: worktrees, deployer jobs, merge flow |
 | [DAILY_CAPTURE_REPORT.md](DAILY_CAPTURE_REPORT.md) | Daily capture/report behavior |
 
 ## Operations

@@ -1,7 +1,14 @@
 import type { ServerModule } from "../../gateway/routeRegistry";
 import { registerRoutes } from "./routes";
+import { registerEvolutionReviewAutonomyDiscoverer } from "./autonomyDiscoverer";
 
-export const evolutionModule: ServerModule = { name: "evolution", registerRoutes };
+export const evolutionModule: ServerModule = {
+  name: "evolution",
+  registerRoutes: (app, context) => {
+    registerEvolutionReviewAutonomyDiscoverer();
+    registerRoutes(app, context);
+  },
+};
 
 export {
   __setEvolvableAssetRepositoryFactoryForTests,

@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Check, Edit2, Search } from 'lucide-react'
+import { Check, Search } from 'lucide-react'
 import type { ModelProviderOut } from '../../api/client'
 import type {
   CustomSourceCredentialDTO,
   ProjectResearchInitialIntakeInput,
-  ProjectResearchQuestionRefinement,
-  InquiryThread,
   MaterializedResearchStrategy,
   ResearchProviderKey,
   ResearchQueryAttempt,
@@ -14,6 +12,7 @@ import type {
   ResearchSemanticConcept,
 } from '../../types/api'
 import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/client'
+import { SpaceLink as Link } from '../../core/spaceNav'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog'
@@ -25,7 +24,6 @@ import {
   loadResearchSetupSession,
   saveResearchSetupSession,
   serializeResearchSetupDraft,
-  type ResearchClarifyingAnswer,
   type ResearchSetupDraft,
 } from './researchSetupDraft'
 import { defaultModelProvider } from '../providers/defaultProvider'
@@ -34,17 +32,23 @@ import { errMsg } from '../../lib/utils'
 interface ResearchSetupDialogProps {
   projectId?: string
   workflowId?: string | null
+  // The Inquiry Thread this search is for — question/hypothesis definition
+  // happens entirely on that Thread's own page now; this dialog only ever
+  // configures how the search runs against whatever wording is confirmed
+  // there.
+  threadId: string
   open: boolean
   draft: ResearchSetupDraft
   busyAction: string | null
   modelProviders: ModelProviderOut[]
   canAct: boolean
-  questionThreads?: InquiryThread[]
   onOpenChange: (open: boolean) => void
-  onSave: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
-  onRefineQuestion: (input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }) => Promise<ProjectResearchQuestionRefinement>
-  onStart: (config: ProjectResearchInitialIntakeInput) => void | Promise<void>
-  onEditQuestion: () => void
+  // `workflowId` here is this session's *effective* target — when the dialog
+  // opened with no Workflow of its own, that's whichever one its own first
+  // autosave created (see sessionWorkflowId below), so the caller reuses it
+  // too instead of creating yet another draft Workflow for the same session.
+  onSave: (config: ProjectResearchInitialIntakeInput, workflowId?: string | null) => Promise<boolean>
+  onStart: (config: ProjectResearchInitialIntakeInput, workflowId?: string | null) => void | Promise<void>
 }
 
 function copyDraft(draft: ResearchSetupDraft): ResearchSetupDraft {
@@ -67,53 +71,15 @@ function historyLabel(draft: ResearchSetupDraft): string {
 }
 
 const structuredOutputProviderTypes = new Set(['openai', 'openrouter', 'other', 'anthropic', 'ollama'])
+const academicDiscoveryProviders: Array<{ key: ResearchProviderKey; label: string; note: string }> = [
+  { key: 'arxiv', label: 'arXiv', note: 'Public academic API' },
+  { key: 'openalex', label: 'OpenAlex', note: 'Public academic API' },
+  { key: 'semantic_scholar', label: 'Semantic Scholar', note: 'Anonymous access; stricter shared rate limits' },
+]
 
 // Steps are freely navigable: an unfinished earlier step never blocks viewing
 // a later one — only the specific gated actions (Discover/Start) stay locked.
-const SETUP_STEPS = ['Question', 'Sources', 'Initial import', 'Execution'] as const
-
-type ClarifyingQuestion = ProjectResearchQuestionRefinement['clarifying_questions'][number]
-
-/** Sessions persisted before the structured-options contract stored plain strings. */
-function clarifyingQuestionItems(refinement: ProjectResearchQuestionRefinement): ClarifyingQuestion[] {
-  return refinement.clarifying_questions.map(item =>
-    typeof item === 'string' ? { question: item, options: [], allow_multiple: false } : item,
-  )
-}
-
-function normalizeClarifyingAnswer(value: unknown): ResearchClarifyingAnswer {
-  if (typeof value === 'string') return { selected: [], other: value }
-  const record = (value ?? {}) as Partial<ResearchClarifyingAnswer>
-  return {
-    selected: Array.isArray(record.selected) ? record.selected.filter((item): item is string => typeof item === 'string') : [],
-    other: typeof record.other === 'string' ? record.other : '',
-  }
-}
-
-function clarifyingAnswerText(value: ResearchClarifyingAnswer): string {
-  return [...value.selected, value.other.trim()].filter(Boolean).join('; ')
-}
-
-function FinerRadar({ scores }: { scores: ProjectResearchQuestionRefinement['assessment']['finer'] }) {
-  const entries = Object.entries(scores)
-  const point = (index: number, radius: number) => {
-    const angle = -Math.PI / 2 + index * (Math.PI * 2 / entries.length)
-    return `${50 + Math.cos(angle) * radius},${50 + Math.sin(angle) * radius}`
-  }
-  const outline = entries.map((_, index) => point(index, 34)).join(' ')
-  const value = entries.map(([, score], index) => point(index, 34 * score / 5)).join(' ')
-  return (
-    <svg viewBox="0 0 100 100" className="size-32 shrink-0" role="img" aria-label={`FINER scores: ${entries.map(([key, score]) => `${key} ${score} of 5`).join(', ')}`}>
-      <polygon points={outline} fill="none" stroke="currentColor" strokeOpacity="0.25" />
-      {entries.map((_, index) => <line key={index} x1="50" y1="50" x2={point(index, 34).split(',')[0]} y2={point(index, 34).split(',')[1]} stroke="currentColor" strokeOpacity="0.15" />)}
-      <polygon points={value} fill="currentColor" fillOpacity="0.16" stroke="currentColor" strokeWidth="1.5" />
-      {entries.map(([key], index) => {
-        const [x, y] = point(index, 43).split(',')
-        return <text key={key} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fontSize="7" fill="currentColor">{key[0]?.toUpperCase()}</text>
-      })}
-    </svg>
-  )
-}
+const SETUP_STEPS = ['Sources', 'Initial import', 'Execution'] as const
 
 // Every provider compiles the same semantic_query into its own boolean-query
 // dialect (arxiv's `all:"..." AND (... OR ...)`, plain keyword strings for
@@ -166,27 +132,28 @@ export function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
 export function ResearchSetupDialog({
   projectId = 'project-1',
   workflowId,
+  threadId,
   open,
   draft: initialDraft,
   busyAction,
   modelProviders,
   canAct,
-  questionThreads = [],
   onOpenChange,
   onSave,
-  onRefineQuestion,
   onStart,
-  onEditQuestion,
 }: ResearchSetupDialogProps) {
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(initialDraft))
-  const [refinement, setRefinement] = useState<ProjectResearchQuestionRefinement | null>(null)
-  const [refinementHistory, setRefinementHistory] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
-  const [clarifyingAnswers, setClarifyingAnswers] = useState<Record<number, ResearchClarifyingAnswer>>({})
-  const [refining, setRefining] = useState(false)
-  const [refineError, setRefineError] = useState<string | null>(null)
+  // Only relevant when `workflowId` (the prop) is null: the Workflow this
+  // session's own first autosave created, reused by every later autosave and
+  // by the final Save/Start so one session never creates more than one draft
+  // Workflow row. When `workflowId` is supplied, it always wins.
+  const [sessionWorkflowId, setSessionWorkflowId] = useState<string | null>(null)
+  const effectiveWorkflowId = workflowId ?? sessionWorkflowId
+  const sessionScope = workflowId ?? 'new'
   const [engineResult, setEngineResult] = useState<ResearchQueryStrategy | null>(null)
   const [materializedResult, setMaterializedResult] = useState<MaterializedResearchStrategy | null>(null)
   const [selectedProviders, setSelectedProviders] = useState<ResearchProviderKey[]>([])
+  const [evaluationProviders, setEvaluationProviders] = useState<ResearchProviderKey[]>(['arxiv', 'openalex'])
   const [engineBusy, setEngineBusy] = useState<'search' | 'create' | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
   const [retryingProvider, setRetryingProvider] = useState<ResearchProviderKey | null>(null)
@@ -198,7 +165,6 @@ export function ResearchSetupDialog({
   const ready = researchSetupDraftIsReady(draft)
   const maxItemsValue = Number(draft.max_items)
   const stepComplete = [
-    Boolean(draft.research_question.trim()) && !draft.question_refine_skipped,
     Boolean(draft.query_strategy_id),
     (draft.history_mode === 'all_available' || Boolean(draft.from && draft.to)) && Number.isInteger(maxItemsValue) && maxItemsValue >= 1 && maxItemsValue <= 10000,
     Boolean(draft.execution.model_provider_id),
@@ -210,36 +176,30 @@ export function ResearchSetupDialog({
 
   useEffect(() => {
     if (!open) return
-    // Restore the in-progress session (refined question, assessment,
-    // clarification history) unless the server-side draft changed while the
-    // dialog was closed. This deliberately runs only on open: our own actions
-    // (creating monitors, saving) refresh the parent draft mid-flight, and a
-    // fingerprint change while the dialog is open must never wipe the session
-    // — the persist effect below adopts the new fingerprint instead.
-    const session = loadResearchSetupSession(projectId)
+    // Restore the in-progress session unless the server-side draft changed
+    // while the dialog was closed. This deliberately runs only on open: our
+    // own actions (creating monitors, saving) refresh the parent draft
+    // mid-flight, and a fingerprint change while the dialog is open must
+    // never wipe the session — the persist effect below adopts the new
+    // fingerprint instead.
+    const session = loadResearchSetupSession(projectId, sessionScope)
     if (session && session.base_fingerprint === initialDraftFingerprint) {
       setDraft(copyDraft(session.draft))
-      setRefinement(session.refinement)
-      setRefinementHistory(session.refinement_history)
-      setClarifyingAnswers(Object.fromEntries(Object.entries(session.clarifying_answers ?? {}).map(([key, value]) => [key, normalizeClarifyingAnswer(value)])))
-      setStep(Number.isInteger(session.step) && session.step! >= 0 && session.step! <= 3 ? session.step! : 0)
+      setStep(Number.isInteger(session.step) && session.step! >= 0 && session.step! <= 2 ? session.step! : 0)
+      setSessionWorkflowId(session.workflow_id ?? null)
     } else {
-      if (session) clearResearchSetupSession(projectId)
+      if (session) clearResearchSetupSession(projectId, sessionScope)
       setDraft(copyDraft(initialDraft))
-      // The last assessment is durable in the server-side draft; a fresh
-      // browser still starts from it instead of an empty card.
-      setRefinement(initialDraft.question_refinement ?? null)
-      setRefinementHistory([])
-      setClarifyingAnswers({})
       setStep(0)
+      setSessionWorkflowId(null)
     }
-    setRefineError(null)
     setEngineResult(null)
     setMaterializedResult(null)
     setSelectedProviders([])
+    setEvaluationProviders(['arxiv', 'openalex'])
     setEngineError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, projectId])
+  }, [open, projectId, sessionScope])
 
   useEffect(() => {
     if (!open) return
@@ -254,15 +214,21 @@ export function ResearchSetupDialog({
 
   useEffect(() => {
     if (!open) return
-    saveResearchSetupSession(projectId, {
+    saveResearchSetupSession(projectId, sessionScope, {
       base_fingerprint: initialDraftFingerprint,
       draft,
-      refinement,
-      refinement_history: refinementHistory,
-      clarifying_answers: clarifyingAnswers,
       step,
+      workflow_id: sessionWorkflowId,
     })
-  }, [clarifyingAnswers, draft, initialDraftFingerprint, open, projectId, refinement, refinementHistory, step])
+  }, [draft, initialDraftFingerprint, open, projectId, sessionScope, sessionWorkflowId, step])
+
+  useEffect(() => {
+    if (!open) return
+    setEvaluationProviders(current => {
+      if (!webCredentialId) return current.filter(provider => provider !== 'web_search')
+      return current.includes('web_search') ? current : [...current, 'web_search']
+    })
+  }, [open, webCredentialId])
 
   useEffect(() => {
     if (!open) return
@@ -277,123 +243,50 @@ export function ResearchSetupDialog({
 
   async function saveDraft() {
     if (!ready || !canAct || busyAction !== null) return
-    const saved = await onSave(serializeResearchSetupDraft(draft))
+    const saved = await onSave(serializeResearchSetupDraft(draft), effectiveWorkflowId)
     if (saved) {
-      clearResearchSetupSession(projectId)
+      clearResearchSetupSession(projectId, sessionScope)
       onOpenChange(false)
     }
   }
 
-  function startResearch() {
+  async function startResearch() {
     if (!ready || !canAct || busyAction !== null || draft.question_refine_skipped) return
-    clearResearchSetupSession(projectId)
+    clearResearchSetupSession(projectId, sessionScope)
     onOpenChange(false)
-    onStart(serializeResearchSetupDraft(draft))
-  }
-
-  function editQuestion() {
-    onOpenChange(false)
-    onEditQuestion()
-  }
-
-  async function refineQuestion() {
-    if (!draft.research_question.trim() || !draft.execution.model_provider_id || refining || refinementHistory.length >= 4) return
-    const answered = refinement
-      ? clarifyingQuestionItems(refinement).map((item, index) => ({
-          question: item.question,
-          answer: clarifyingAnswerText(normalizeClarifyingAnswer(clarifyingAnswers[index])),
-        })).filter(item => item.answer)
-      : []
-    const history = refinement && answered.length
-      ? [...refinementHistory,
-          { role: 'assistant' as const, content: JSON.stringify(refinement) },
-          { role: 'user' as const, content: JSON.stringify({ clarifications: answered }) }]
-      : refinementHistory
-    setRefining(true)
-    setRefineError(null)
-    try {
-      const result = await onRefineQuestion({
-        research_question: draft.research_question.trim(),
-        history,
-        execution: {
-          model_provider_id: draft.execution.model_provider_id,
-          ...(draft.execution.model_name.trim() ? { model_name: draft.execution.model_name.trim() } : {}),
-        },
-      })
-      const scores = Object.values(result.assessment.finer)
-      const acceptable = result.assessment.answerable && scores.reduce((sum, score) => sum + score, 0) / scores.length >= 3
-      const next = {
-        ...draft,
-        question_refine_skipped: !acceptable,
-        question_refinement: result,
-        research_context_version_id: result.research_context_version_id,
-        query_strategy_id: '',
-      }
-      setDraft(next)
-      setRefinement(result)
-      setRefinementHistory(history)
-      setClarifyingAnswers({})
-      autoPersistDraft(next)
-    } catch (error) {
-      setRefineError(errMsg(error))
-    } finally {
-      setRefining(false)
-    }
+    onStart(serializeResearchSetupDraft(draft), effectiveWorkflowId)
   }
 
   /**
-   * Milestones (assessment, adoption, Next) are durably saved server-side:
-   * browser storage alone is too fragile to be the only holder of a passed
-   * refinement. The toast tells the user their progress is now on the server.
+   * Milestones (Discover, materialize) are durably saved server-side:
+   * browser storage alone is too fragile to be the only holder of them.
+   * The toast tells the user their progress is now on the server.
    */
   function autoPersistDraft(next: ResearchSetupDraft) {
     if (!canAct) return
     void projectResearchApi.saveInitialIntakeDraft(projectId, {
       ...serializeResearchSetupDraft(next),
-      ...(workflowId ? { workflow_id: workflowId } : {}),
+      ...(effectiveWorkflowId ? { workflow_id: effectiveWorkflowId } : {}),
     })
-      .then(() => toast.success('Setup progress saved to the project'))
+      .then((workflow) => {
+        // Only the dialog's own session tracking, not the `workflowId` prop:
+        // once this session's first autosave creates a Workflow, every later
+        // autosave (and the final Save/Start) must land on that same row
+        // instead of each creating its own new draft Workflow.
+        if (!workflowId) setSessionWorkflowId(workflow.id)
+        toast.success('Setup progress saved to the project')
+      })
       .catch((error) => toast.error(`Setup progress could not be saved: ${errMsg(error)}`))
   }
 
-  function adoptQuestion(question: string) {
-    const next = {
-      ...draft,
-      thread_id: '',
-      research_question: question,
-      question_refine_skipped: true,
-      research_context_version_id: '',
-      query_strategy_id: '',
-      question_refinement: null,
-    }
-    setDraft(next)
-    setEngineResult(null)
-    setMaterializedResult(null)
-    autoPersistDraft(next)
-    toast.info('Suggested question adopted. Answer any clarifying questions, then reassess it.')
-  }
-
-  function updateClarifyingAnswer(index: number, answer: ResearchClarifyingAnswer) {
-    setClarifyingAnswers(current => ({ ...current, [index]: answer }))
-    setDraft(current => ({
-      ...current,
-      question_refine_skipped: true,
-      research_context_version_id: '',
-      query_strategy_id: '',
-    }))
-    setEngineResult(null)
-    setMaterializedResult(null)
-  }
-
   async function discoverSources() {
-    if (!draft.research_context_version_id || engineBusy) return
+    if (!draft.research_context_version_id || engineBusy || evaluationProviders.length === 0) return
     setEngineBusy('search'); setEngineError(null)
     try {
-      const providers: ResearchProviderKey[] = ['arxiv', 'openalex', 'semantic_scholar', ...(webCredentialId ? ['web_search' as const] : [])]
       const result = await researchDiscoveryApi.evaluate({
         project_id: projectId,
         research_context_version_id: draft.research_context_version_id,
-        providers,
+        providers: evaluationProviders,
         candidate_budget: Math.max(50, Math.min(1000, Number(draft.max_items) || 1000)),
         execution: { model_provider_id: draft.execution.model_provider_id || undefined, model_name: draft.execution.model_name.trim() || undefined },
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
@@ -441,9 +334,16 @@ export function ResearchSetupDialog({
             <DialogHeader>
               <DialogTitle>Set up initial literature intake</DialogTitle>
               <DialogDescription>
-                Assess the research definition, evaluate provider-specific queries, then confirm the selected strategy and configure the one-time historical import.
+                Researching: {draft.research_question || 'this Thread’s question'}. Evaluate provider-specific queries, then confirm the selected strategy and configure the one-time historical import.
               </DialogDescription>
             </DialogHeader>
+
+            {draft.question_refine_skipped && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs">
+                <p>This question hasn&apos;t passed refinement yet — define and confirm it on the Thread&apos;s Inquiry page first.</p>
+                <Button size="sm" variant="outline" asChild><Link to={`/projects/${projectId}/inquiry?thread=${threadId}`}>Refine in Inquiry</Link></Button>
+              </div>
+            )}
 
             <nav aria-label="Setup steps" className="my-3 flex flex-wrap items-center gap-1.5">
               {SETUP_STEPS.map((label, index) => (
@@ -464,123 +364,36 @@ export function ResearchSetupDialog({
 
             <div className="space-y-4">
               {step === 0 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
-                <div>
-                  <h3 className="text-sm font-semibold">1. Refine the research question</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">Assess answerability and FINER quality before spending the intake budget. Starting requires a passing question: reassess with your answers or adopt a suggested rewrite.</p>
-                </div>
-                <label className="space-y-1 text-xs">
-                  <span className="text-muted-foreground">Inquiry Thread</span>
-                  <Select
-                    ariaLabel="Inquiry Thread"
-                    value={draft.thread_id ?? ''}
-                    options={[
-                      { value: '', label: 'Create a Question Thread from this research question' },
-                      ...questionThreads
-                        .filter(thread => thread.kind === 'question' && thread.lifecycle_status === 'active')
-                        .map(thread => ({ value: thread.id, label: thread.statement })),
-                    ]}
-                    onChange={value => {
-                      const selected = questionThreads.find(thread => thread.id === value)
-                      setDraft(current => ({
-                        ...current,
-                        thread_id: value,
-                        ...(selected ? {
-                          research_question: selected.statement,
-                          question_refine_skipped: true,
-                          research_context_version_id: '',
-                          query_strategy_id: '',
-                        } : {}),
-                      }))
-                      if (selected) {
-                        setRefinement(null)
-                        setRefinementHistory([])
-                        setClarifyingAnswers({})
-                        setEngineResult(null)
-                        setMaterializedResult(null)
-                      }
-                    }}
-                  />
-                </label>
-                <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(10rem,1fr)_minmax(12rem,1fr)]">
-                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Candidate question</span><Input value={draft.research_question} onChange={event => { setDraft(current => ({ ...current, thread_id: '', research_question: event.target.value, question_refine_skipped: true, research_context_version_id: '', query_strategy_id: '' })); setRefinement(null); setRefinementHistory([]); setClarifyingAnswers({}); setEngineResult(null); setMaterializedResult(null) }} /></label>
-                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Report depth</span><Select options={[{ value: 'quick', label: 'Quick brief' }, { value: 'full', label: 'Full report' }]} value={draft.report_depth} onChange={value => setDraft(current => ({ ...current, report_depth: value as ResearchSetupDraft['report_depth'] }))} ariaLabel="Report depth" /></label>
-                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Assessment provider</span><Select options={[{ value: '', label: selectableProviders.length ? 'Select provider' : 'No structured-output provider available' }, ...selectableProviders.map(provider => ({ value: provider.id, label: `${provider.name}${provider.is_default ? ' (default)' : ''}` }))]} value={draft.execution.model_provider_id} onChange={value => setDraft(current => ({ ...current, execution: { model_provider_id: value, model_name: selectableProviders.find(provider => provider.id === value)?.default_model ?? '' } }))} ariaLabel="Assessment provider" /></label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button type="button" size="sm" onClick={() => void refineQuestion()} disabled={refining || !draft.research_question.trim() || !draft.execution.model_provider_id || refinementHistory.length >= 4}>{refining ? 'Assessing…' : refinement ? 'Reassess with answers' : 'Assess question'}</Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={editQuestion}><Edit2 className="size-3.5" />Edit project focus</Button>
-                  {draft.question_refine_skipped && <Badge variant="warning">Refinement not passed</Badge>}
-                </div>
-                {refineError && <p className="text-sm text-destructive">{refineError}</p>}
-                {refinement && (
-                  <div className="space-y-3 rounded-md border border-border bg-background p-3">
-                    <div className="flex flex-wrap items-center gap-3 text-xs">
-                      <FinerRadar scores={refinement.assessment.finer} />
-                      <div className="flex flex-1 flex-wrap items-center gap-2">
-                        <Badge variant={refinement.assessment.answerable ? 'success' : 'destructive'}>{refinement.assessment.answerable ? 'Answerable' : 'Not yet answerable'}</Badge>
-                        {Object.entries(refinement.assessment.finer).map(([key, score]) => <span key={key} className="rounded bg-muted px-2 py-1 capitalize">{key} {score}/5</span>)}
-                      </div>
-                    </div>
-                    {refinement.assessment.issues.length > 0 && <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">{refinement.assessment.issues.map(issue => <li key={issue}>{issue}</li>)}</ul>}
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium">Suggested questions</p>
-                      {refinement.suggested_questions.map(question => {
-                        const adopted = draft.research_question === question
-                        return (
-                          <button key={question} type="button" aria-pressed={adopted} className={`flex w-full items-start gap-2 rounded border px-3 py-2 text-left text-xs ${adopted ? 'border-primary bg-primary/5' : 'border-border hover:border-primary'}`} onClick={() => adoptQuestion(question)}>
-                            <Check className={`mt-0.5 size-3.5 shrink-0 ${adopted ? 'text-primary' : 'invisible'}`} />
-                            <span>{question}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
-                    {(refinement.scope.in.length > 0 || refinement.scope.out.length > 0 || refinement.sub_questions.length > 0) && (
-                      <div className="grid gap-2 rounded border border-border bg-muted/20 p-3 text-xs md:grid-cols-3">
-                        <div><p className="font-medium">Include</p><p className="mt-1 text-muted-foreground">{refinement.scope.in.join(' · ') || 'No additional inclusion boundary'}</p></div>
-                        <div><p className="font-medium">Exclude</p><p className="mt-1 text-muted-foreground">{refinement.scope.out.join(' · ') || 'No explicit exclusions'}</p></div>
-                        <div><p className="font-medium">Sub-questions</p><p className="mt-1 text-muted-foreground">{refinement.sub_questions.join(' · ') || 'No separate sub-questions'}</p></div>
-                      </div>
-                    )}
-                    {refinement.clarifying_questions.length > 0 && refinementHistory.length < 4 && <div className="space-y-3">
-                      {clarifyingQuestionItems(refinement).map((item, index) => {
-                        const answer = normalizeClarifyingAnswer(clarifyingAnswers[index])
-                        const toggleOption = (option: string) => {
-                          const value = normalizeClarifyingAnswer(clarifyingAnswers[index])
-                          const selected = value.selected.includes(option)
-                            ? value.selected.filter(entry => entry !== option)
-                            : item.allow_multiple ? [...value.selected, option] : [option]
-                          updateClarifyingAnswer(index, { ...value, selected })
-                        }
-                        return (
-                          <div key={item.question} className="space-y-1.5 text-xs">
-                            <p>{item.question}{item.allow_multiple && <span className="ml-1 text-muted-foreground">(select all that apply)</span>}</p>
-                            {item.options.length > 0 && <div className="flex flex-wrap gap-1.5">
-                              {item.options.map(option => {
-                                const selected = answer.selected.includes(option)
-                                return <button key={option} type="button" aria-pressed={selected} className={`rounded-full border px-2.5 py-1 ${selected ? 'border-primary bg-primary/10 font-medium' : 'border-border hover:border-primary'}`} onClick={() => toggleOption(option)}>{option}</button>
-                              })}
-                            </div>}
-                            <Input
-                              value={answer.other}
-                              placeholder={item.options.length ? 'Other — add your own answer' : 'Type your answer'}
-                              onChange={event => updateClarifyingAnswer(index, { ...answer, other: event.target.value })}
-                            />
-                          </div>
-                        )
-                      })}
-                    </div>}
-                  </div>
-                )}
-              </section>}
-              {step === 1 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold">2. Evaluate provider queries</h3>
+                    <h3 className="text-sm font-semibold">1. Evaluate provider queries</h3>
                     <p className="mt-1 text-xs text-muted-foreground">Each provider starts with a recall-oriented query, then independently broadens or narrows it up to two times. The selected query is reused unchanged for import and ongoing monitoring.</p>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={() => void discoverSources()} disabled={Boolean(engineBusy) || draft.question_refine_skipped || !draft.research_context_version_id || !draft.execution.model_provider_id}>{engineBusy === 'search' ? 'Evaluating…' : engineResult ? 'Evaluate again' : 'Evaluate search coverage'}</Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void discoverSources()} disabled={Boolean(engineBusy) || evaluationProviders.length === 0 || draft.question_refine_skipped || !draft.research_context_version_id || !draft.execution.model_provider_id}>{engineBusy === 'search' ? 'Evaluating…' : engineResult ? 'Evaluate again' : 'Evaluate search coverage'}</Button>
                 </div>
                 <label className="block max-w-md space-y-1 text-xs"><span className="text-muted-foreground">Web search credential (optional)</span><Select options={[{ value: '', label: sourceCredentials.length ? 'Academic sources only unless web is available' : 'No managed web credential available' }, ...sourceCredentials.map(credential => ({ value: credential.id, label: credential.name }))]} value={webCredentialId} onChange={setWebCredentialId} ariaLabel="Web search credential" /><span className="block text-muted-foreground">When the planner selects current or general web evidence, this credential is injected only by the trusted fetch layer.</span></label>
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium">Providers to evaluate</legend>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {academicDiscoveryProviders.map(provider => {
+                      const checked = evaluationProviders.includes(provider.key)
+                      return (
+                        <label key={provider.key} className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 ${checked ? 'border-primary bg-primary/5' : 'border-border'}`}>
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={checked}
+                            onChange={() => setEvaluationProviders(current => checked
+                              ? current.filter(key => key !== provider.key)
+                              : [...current, provider.key])}
+                          />
+                          <span className="min-w-0 text-xs"><span className="block font-medium">{provider.label}</span><span className="block text-muted-foreground">{provider.note}</span></span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Semantic Scholar is opt-in because anonymous requests share a heavily rate-limited pool. A provider can still be excluded again after evaluation and before queries are confirmed.</p>
+                </fieldset>
                 {engineError && <p className="text-sm text-destructive">{engineError}</p>}
                 {!engineResult && <div className="rounded-md border border-dashed border-border px-4 py-5 text-center"><Search className="mx-auto size-5 text-muted-foreground" /><p className="mt-2 text-sm font-medium">No query evaluation yet</p><p className="mt-1 text-xs text-muted-foreground">Run evaluation after the question passes reassessment. Preview samples guide query width but are not imported yet.</p></div>}
                 {engineResult && <div className="space-y-3">
@@ -590,10 +403,10 @@ export function ResearchSetupDialog({
                     const selectedAttempt = plan.attempts.find(attempt => attempt.id === plan.selected_attempt_id)
                     return <div key={plan.provider_key} className={`rounded-md border px-3 py-3 ${selected ? 'border-primary bg-primary/5' : 'border-border'}`}>
                       <div className="flex w-full items-center justify-between gap-3">
-                        <button type="button" disabled={!selectable} className="flex flex-1 items-center justify-between gap-3 text-left disabled:cursor-default" onClick={() => setSelectedProviders(current => selected ? current.filter(key => key !== plan.provider_key) : [...current, plan.provider_key])}>
-                          <span className="font-medium capitalize">{plan.provider_key.replace(/_/g, ' ')}</span>
+                        <label className={`flex flex-1 items-center justify-between gap-3 text-left ${selectable && !draft.query_strategy_id ? 'cursor-pointer' : 'cursor-default'}`}>
+                          <span className="flex items-center gap-2"><input type="checkbox" checked={selected} disabled={!selectable || Boolean(draft.query_strategy_id)} onChange={() => setSelectedProviders(current => selected ? current.filter(key => key !== plan.provider_key) : [...current, plan.provider_key])} /><span className="font-medium capitalize">{plan.provider_key.replace(/_/g, ' ')}</span></span>
                           <Badge variant={selected ? 'success' : plan.status === 'failed' ? 'destructive' : plan.status === 'unavailable' ? 'warning' : 'outline'}>{selected ? 'Selected' : plan.status.replace(/_/g, ' ')}</Badge>
-                        </button>
+                        </label>
                         {(plan.status === 'unavailable' || plan.status === 'selected') && !draft.query_strategy_id && (
                           <Button type="button" size="sm" variant="outline" disabled={retryingProvider !== null || Boolean(engineBusy)} onClick={() => void retryProvider(plan.provider_key)} title={plan.status === 'selected' ? 'Keep adjusting from the selected query' : 'Retry this provider'}>
                             {retryingProvider === plan.provider_key ? 'Retrying…' : plan.status === 'selected' ? 'Retry / iterate' : 'Retry'}
@@ -629,9 +442,9 @@ export function ResearchSetupDialog({
                 {!materializedResult && draft.query_strategy_id && <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/5 px-3 py-2 text-sm"><Badge variant="success">Ready</Badge><span>Materialized query strategy {draft.query_strategy_id.slice(0, 8)}</span></div>}
               </section>}
 
-              {step === 2 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
+              {step === 1 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
                 <div>
-                  <h3 className="text-sm font-semibold">3. Initial literature import</h3>
+                  <h3 className="text-sm font-semibold">2. Initial literature import</h3>
                   <p className="mt-1 text-xs text-muted-foreground">The date range and item limit apply only to this one-time import that seeds the project corpus. After you approve the initial results, monitors keep scanning on schedule and new matches are screened automatically — without this limit.</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
@@ -644,14 +457,15 @@ export function ResearchSetupDialog({
                 <p className="text-xs text-muted-foreground">{historyLabel(draft)} · Up to {draft.max_items} items.</p>
               </section>}
 
-              {step === 3 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
+              {step === 2 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
                 <div>
-                  <h3 className="text-sm font-semibold">4. Managed research execution</h3>
+                  <h3 className="text-sm font-semibold">3. Managed research execution</h3>
                   <p className="mt-1 text-xs text-muted-foreground">Auto Research runs through the server-managed Model Provider API. The system creates and maintains the research agent and runtime profile automatically.</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Model provider</span><Select options={[{ value: '', label: selectableProviders.length ? 'Select provider' : 'No structured-output provider available' }, ...selectableProviders.map(provider => ({ value: provider.id, label: `${provider.name}${provider.is_default ? ' (default)' : ''}` }))]} value={draft.execution.model_provider_id} onChange={value => setDraft(current => ({ ...current, execution: { model_provider_id: value, model_name: selectableProviders.find(provider => provider.id === value)?.default_model ?? '' } }))} ariaLabel="Model provider" /></label>
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Model (optional)</span><Input value={draft.execution.model_name} onChange={event => setDraft(current => ({ ...current, execution: { ...current.execution, model_name: event.target.value } }))} placeholder="Provider default" /></label>
+                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Report depth</span><Select options={[{ value: 'quick', label: 'Quick brief' }, { value: 'full', label: 'Full report' }]} value={draft.report_depth} onChange={value => setDraft(current => ({ ...current, report_depth: value as ResearchSetupDraft['report_depth'] }))} ariaLabel="Report depth" /></label>
                 </div>
                 <p className="text-xs text-muted-foreground">Choose a model that reliably produces strict JSON. Weaker instruction-following models commonly fail screening or synthesis validation.</p>
               </section>}
@@ -667,7 +481,7 @@ export function ResearchSetupDialog({
               <Button type="button" variant="outline" onClick={() => void saveDraft()} disabled={!ready || !canAct || busyAction !== null}>
                 {busyAction === 'save-initial-intake' ? 'Saving…' : 'Save setup'}
               </Button>
-              <Button type="button" onClick={startResearch} disabled={!ready || !canAct || busyAction !== null || draft.question_refine_skipped}>
+              <Button type="button" onClick={() => void startResearch()} disabled={!ready || !canAct || busyAction !== null || draft.question_refine_skipped}>
                 {busyAction === 'start-initial-intake' ? 'Starting…' : 'Start initial research'}
               </Button>
             </DialogFooter>

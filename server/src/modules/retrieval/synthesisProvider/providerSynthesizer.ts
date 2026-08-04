@@ -5,7 +5,7 @@ import type { ProviderCommandStore } from "../../providers/commands/store";
 import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy";
 import { writePolicyAudit } from "../../policy/auditWriter";
 import { resolveRetrievalSynthesisSystemPrompt } from "../promptRegistry";
-import { DEFAULT_SYNTHESIS_MAX_TOKENS, RETRIEVAL_SYNTHESIS_TASK } from "./config";
+import { RETRIEVAL_SYNTHESIS_TASK } from "./config";
 import { buildSynthesisPrompt, parseSynthesis, type SynthesisDoc } from "./prompt";
 
 const TASK_POLICY_REQUIRED_PROVIDER_ID = "__retrieval_synthesis_task_policy_required__";
@@ -95,7 +95,6 @@ export class ProviderSynthesizer implements Synthesizer {
         provider_id: this.providerId ?? TASK_POLICY_REQUIRED_PROVIDER_ID,
         system: prompt.system,
         user: prompt.user,
-        max_tokens: DEFAULT_SYNTHESIS_MAX_TOKENS,
         task: RETRIEVAL_SYNTHESIS_TASK,
         egressPolicy: effectivePolicy,
         metering: { subject_user_id: viewerUserId },

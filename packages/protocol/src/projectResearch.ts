@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RESEARCH_QUESTION_MAX_LENGTH } from "./researchDiscovery.js";
 
 /** Public lifecycle vocabulary for the project research orchestration API. */
 export const ProjectResearchRunKindSchema = z.enum(["baseline", "historical_backfill", "incremental"]);
@@ -45,6 +46,8 @@ export const ProjectResearchInitialIntakeRequestSchema = z.object({
 export type ProjectResearchInitialIntakeRequest = z.infer<typeof ProjectResearchInitialIntakeRequestSchema>;
 
 export const ProjectResearchQuestionRefinementSchema = z.object({
+  reply: z.string().min(1),
+  recommended_question: z.string().min(1).max(RESEARCH_QUESTION_MAX_LENGTH),
   assessment: z.object({
     answerable: z.boolean(),
     finer: z.object({
@@ -56,7 +59,7 @@ export const ProjectResearchQuestionRefinementSchema = z.object({
     }).strict(),
     issues: z.array(z.string()),
   }).strict(),
-  suggested_questions: z.array(z.string().min(1)).min(1).max(3),
+  suggested_questions: z.array(z.string().min(1).max(RESEARCH_QUESTION_MAX_LENGTH)).min(1).max(3),
   sub_questions: z.array(z.string().min(1).max(200)).max(10),
   scope: z.object({
     in: z.array(z.string().min(1).max(200)).max(10),
@@ -71,6 +74,46 @@ export const ProjectResearchQuestionRefinementSchema = z.object({
   }).strict()).max(3),
 }).strict();
 export type ProjectResearchQuestionRefinement = z.infer<typeof ProjectResearchQuestionRefinementSchema>;
+
+export const ProjectResearchQuestionRefinementResultSchema = ProjectResearchQuestionRefinementSchema.extend({
+  research_context_version_id: z.string().min(1),
+}).strict();
+
+export const ProjectResearchQuestionAssessmentMessageSchema = z.object({
+  id: z.string().min(1),
+  turn_index: z.number().int().min(1),
+  role: z.enum(["user", "assistant"]),
+  content: z.string().min(1),
+  status: z.enum(["pending", "complete", "failed"]),
+  processing_events: z.array(z.object({
+    stage: z.literal("subquestion_repair"),
+    status: z.enum(["detected", "running", "completed", "failed"]),
+    message: z.string().min(1),
+    created_at: z.string(),
+  }).strict()).optional(),
+  created_by_user_id: z.string().nullable(),
+  created_at: z.string(),
+}).strict();
+
+export const ProjectResearchQuestionAssessmentSessionSchema = z.object({
+  id: z.string().min(1),
+  thread_id: z.string().min(1),
+  recommended_question: z.string().nullable(),
+  latest_refinement: ProjectResearchQuestionRefinementResultSchema.nullable(),
+  assessment_baseline: ProjectResearchQuestionRefinementResultSchema.nullable(),
+  research_context_version_id: z.string().nullable(),
+  messages: z.array(ProjectResearchQuestionAssessmentMessageSchema),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).strict();
+
+export const ProjectResearchQuestionRefinementResponseSchema = ProjectResearchQuestionRefinementResultSchema.extend({
+  assessment_session: ProjectResearchQuestionAssessmentSessionSchema,
+}).strict();
+
+export type ProjectResearchQuestionAssessmentMessage = z.infer<typeof ProjectResearchQuestionAssessmentMessageSchema>;
+export type ProjectResearchQuestionAssessmentSession = z.infer<typeof ProjectResearchQuestionAssessmentSessionSchema>;
+export type ProjectResearchQuestionRefinementResponse = z.infer<typeof ProjectResearchQuestionRefinementResponseSchema>;
 
 export const ResearchCitationRefSchema = z.object({
   source_item_id: z.string().min(1).optional(),

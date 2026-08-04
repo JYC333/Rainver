@@ -50,6 +50,42 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  // Self-service Always-on: any active Space member manages only their own
+  // autonomous_tick Automation here, never another member's. Registered
+  // before the parametric :automationId routes below for readability, though
+  // Fastify's router already prefers this static segment over a parametric
+  // match regardless of registration order.
+  app.get("/api/v1/spaces/:spaceId/automations/autonomy", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    const spaceId = params(request).spaceId ?? identity.spaceId;
+    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
+    try {
+      const row = await service().getOwnAutonomyAutomation({ spaceId, actorUserId: identity.userId });
+      if (!row) return reply.code(404).send({ detail: "Always-on is not enabled" });
+      return reply.send(automationToOut(row));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.put("/api/v1/spaces/:spaceId/automations/autonomy", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    const spaceId = params(request).spaceId ?? identity.spaceId;
+    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
+    try {
+      const row = await service().enableAutonomy({
+        spaceId,
+        actorUserId: identity.userId,
+        body: jsonBody(request),
+      });
+      return reply.send(automationToOut(row));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/spaces/:spaceId/automations/:automationId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;

@@ -81,8 +81,8 @@ export class ProjectOverviewService {
         label: "Project Brief goal",
         status: brief?.goal ? "ready" : "missing",
         required: true,
-        href: `/projects/${projectId}`,
-        detail: brief?.goal ? "Goal recorded" : "Add the intended outcome in Project settings",
+        href: `/projects/${projectId}/inquiry?setup=goal`,
+        detail: brief?.goal ? "Goal recorded" : "Add the intended outcome from the Inquiry Area",
       },
       {
         id: "provider",

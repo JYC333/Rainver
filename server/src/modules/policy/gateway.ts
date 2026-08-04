@@ -83,7 +83,7 @@ export function isDurableAuditRequired(
   if (decision.decision === "deny" || decision.decision === "require_approval")
     return true;
   if (decision.risk_level === "critical") return true;
-  if (triggerOrigin(req) === "automation") return true;
+  if (triggerOrigin(req) === "automation" || triggerOrigin(req) === "autonomous") return true;
   return false;
 }
 
@@ -99,11 +99,11 @@ export function resolveFailureMode(
   const auditRequired = Boolean(defn && defn.audit_required);
   const origin = triggerOrigin(req);
   if (auditRequired) {
-    if (origin === "automation") return "fail_closed";
+    if (origin === "automation" || origin === "autonomous") return "fail_closed";
     if (decision.risk_level === "critical") return "fail_closed";
   }
   if (decision.decision !== "allow") {
-    if (origin === "automation") return "fail_closed";
+    if (origin === "automation" || origin === "autonomous") return "fail_closed";
     if (decision.risk_level === "critical") return "fail_closed";
   }
   return "best_effort";

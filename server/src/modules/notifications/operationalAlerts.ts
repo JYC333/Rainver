@@ -5,7 +5,7 @@ import type { Queryable } from "../routeUtils/common";
 import { redactEvidenceText, sanitizeEvidenceJson } from "../runs/evidenceRedaction";
 
 export interface OperationalAlertInput {
-  kind: "job_exhausted" | "automation_fire_failed" | "scheduler_task_failed";
+  kind: "job_exhausted" | "automation_fire_failed" | "scheduler_task_failed" | "autonomous_review_timeout";
   title: string;
   message: string;
   dedupeKey: string;

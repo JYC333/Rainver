@@ -10,9 +10,6 @@
 /** Provider task policy used to route reranking (ADR 0008 channel). */
 export const RETRIEVAL_RERANK_TASK = "retrieval_rerank";
 
-/** Max tokens for the reranker's JSON scoring response. */
-export const DEFAULT_RERANK_MAX_TOKENS = 700;
-
 /**
  * Per-candidate text budget sent to the reranker. Bounds the prompt size so a
  * large window of long documents cannot blow up the provider payload; the

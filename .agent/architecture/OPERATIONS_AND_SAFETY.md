@@ -138,6 +138,10 @@ ops/scripts/system/restore.sh ~/.aspace/dev/backups/auto-<timestamp>.tar.gz --mo
 
 **After restore, verify before resuming writes:**
 1. `curl -s http://localhost:3000/api/v1/server/health` — expected: `{"status":"ok","service":"server","checks":{"database":"ok"}}`
+1b. `GET /api/v1/status` as a space owner/admin — expected `overall: "ok"`, a
+   running `jobs_worker`, and no `stalled` entry in `scheduler_tasks`. A
+   restored instance whose background loops did not come back reads healthy on
+   step 1 alone.
 2. Spaces and users readable.
 3. Memory, artifacts, proposals, and runs readable.
 4. Activity inbox survives.
@@ -179,9 +183,19 @@ Operator restores an archived Folder: `PATCH /projects/{id}/folders/{folderId}` 
 ## Minimal Failure Alerting
 
 - `/health` and `/api/v1/server/health` execute a database probe and return 503 when
-  PostgreSQL is unreachable.
+  PostgreSQL is unreachable. They are a container probe only: they stay 200 while a
+  scheduled task has silently stopped turning or the jobs worker never started.
+- `GET /api/v1/status` (space owner/admin) reports component-level status —
+  database, per-scheduled-task liveness, jobs worker presence, and queue depth.
+  This is the surface that detects a *stalled* task, which raises no exception
+  and therefore triggers no alert on its own. See
+  [../modules/server-status.md](../modules/server-status.md).
 - A job that reaches `max_attempts`, a scheduled automation fire failure, or a scheduler
   task exception writes a deduplicated `operational_alert` pointer into Activity Inbox.
+- A scheduled task that exceeds its reporting deadline emits the same
+  `scheduler_task_failed` alert as a thrown error, and no further pass of that
+  task starts until the outstanding one settles. The hung pass itself is not
+  cancelled; the deadline reports, it does not abort.
 - Job and automation alerts are scoped to their owning space/user. Instance scheduler alerts
   fan out to an active owner/admin in every space, including shared/team-only instances. Alert persistence is best-effort and never masks the
   originating failure or changes retry/schedule semantics.

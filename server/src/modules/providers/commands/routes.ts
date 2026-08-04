@@ -25,7 +25,6 @@ import {
 } from "../invocation/invocation";
 import type { ProviderChatRequestBody } from "../invocation/invocation";
 import { CliCredentialBroker } from "../cli/credentialBroker";
-import { startCliUsageRefreshScheduler } from "../cli/usageScheduler";
 import {
   enqueueRetrievalEmbeddingBackfill,
   resetRetrievalEmbeddingsForSpace,
@@ -143,14 +142,11 @@ export function registerProviderCommandRoutes(
   app: FastifyInstance,
   config: ServerConfig,
 ): void {
+  // CLI usage quota auto-refresh is not started here. It is a scheduled task
+  // owned by SchedulerRegistry (see modules/scheduler/backgroundServices.ts)
+  // so that shutdown, failure alerting, and liveness cover it like every other
+  // recurring job.
   const broker = new CliCredentialBroker(config, app.log);
-  const usageScheduler = startCliUsageRefreshScheduler(broker, {
-    isEnabled: () => broker.isCliUsageAutoRefreshEnabled(),
-    logger: app.log,
-  });
-  app.addHook("onClose", async () => {
-    usageScheduler.stop();
-  });
 
   app.post("/api/v1/providers", async (request, reply) => {
     const identity = await resolveIdentity(config, request, reply);

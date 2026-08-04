@@ -22,7 +22,7 @@ import {
   type Queryable,
   type SpaceUserIdentity,
 } from "../../routeUtils/common";
-import { researchQuestionDrift } from "../../projectResearch/questionDrift";
+import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope";
 import {
   enforceSourceDerivedImportTarget,
   normalizeSourceConnectionReadGovernance,
@@ -105,12 +105,6 @@ interface CandidatePrefilterResult {
 const SOURCE_POST_PROCESSING_PROMPT_BUDGET_CHARS = 48_000;
 const SOURCE_POST_PROCESSING_PROMPT_FIXED_RESERVE_CHARS = 12_000;
 const SOURCE_POST_PROCESSING_EXTRACTED_TEXT_SNIPPET_RESERVE_CHARS = 2_400;
-// The result contract (digest + per-item summaries/decisions/evidence) plus
-// any reasoning-model "thinking" tokens spent before the JSON answer can
-// comfortably exceed the provider's own no-tools default (as low as 1024),
-// which silently truncates output_json mid-object. Request a generous
-// explicit ceiling instead of relying on that default.
-const SOURCE_POST_PROCESSING_OUTPUT_MAX_TOKENS = 8_192;
 
 export class SourcePostProcessingService {
   constructor(
@@ -320,6 +314,7 @@ export class SourcePostProcessingService {
       triggerConfig,
       batch,
       summaryGoal: inputConfig.summary_goal ?? null,
+      executionTimeoutMs: SOURCE_POST_PROCESSING_LIMITS.researchStructuredOutputTimeoutMs,
     });
   }
 
@@ -889,31 +884,21 @@ export class SourcePostProcessingService {
 
   private async researchQuestionDrift(rule: SourcePostProcessingRuleRow): Promise<boolean> {
     if (!rule.project_id || !rule.name.startsWith("Auto Research:")) return false;
-    const result = await this.db.query<{
-      current_focus: string | null;
-      research_question: string | null;
-      workflow_state_json: unknown;
-    }>(
-      `SELECT p.current_focus, pr.research_question, w.state_json AS workflow_state_json
-         FROM projects p
-         LEFT JOIN project_research_profiles pr ON pr.space_id=p.space_id AND pr.project_id=p.id
-         LEFT JOIN LATERAL (
-           SELECT state_json
-             FROM project_research_workflows
-            WHERE space_id=p.space_id AND project_id=p.id AND status IN ('active','paused')
-            ORDER BY updated_at DESC
-            LIMIT 1
-         ) w ON TRUE
-        WHERE p.space_id=$1 AND p.id=$2
+    const result = await this.db.query<{ workflow_state_json: unknown }>(
+      `SELECT state_json AS workflow_state_json
+         FROM project_research_workflows
+        WHERE space_id=$1 AND project_id=$2 AND status IN ('active','paused')
+        ORDER BY updated_at DESC
         LIMIT 1`,
       [rule.space_id, rule.project_id],
     );
     const row = result.rows[0];
     if (!row) return false;
-    return researchQuestionDrift(
-      optionalString(row.current_focus) ?? optionalString(row.research_question),
-      optionalString(objectValue(row.workflow_state_json).research_question),
-    );
+    // The pinned Inquiry Thread is the sole Question authority; there is
+    // nothing to compare drift against once the Workflow has no scope yet.
+    const pinned = normalizeThreadScope(objectValue(row.workflow_state_json).thread_scope)[0];
+    if (!pinned) return false;
+    return (await checkPinnedThreadDrift(this.db, rule.space_id, rule.project_id, pinned)).drifted;
   }
 
   private async executeBatch(input: {
@@ -929,6 +914,7 @@ export class SourcePostProcessingService {
     triggerConfig: SourcePostProcessingTriggerConfig;
     batch: SourcePostProcessingInputBatch;
     summaryGoal: string | null;
+    executionTimeoutMs?: number;
   }): Promise<SourcePostProcessingRunOut> {
     if (input.rule && await this.researchQuestionDrift(input.rule)) {
       throw new HttpError(409, "Research question changed; apply it to future runs before processing this item");
@@ -1017,6 +1003,7 @@ export class SourcePostProcessingService {
           ? SOURCE_POST_PROCESSING_OUTPUT_CONTRACT
           : null,
         postProcessingRunId: postRun.id,
+        executionTimeoutMs: input.executionTimeoutMs,
       });
       if (agentRun.status !== "succeeded" && agentRun.status !== "degraded") {
         const agentOutput = runOutputResult(agentRun.output_json);
@@ -1264,6 +1251,7 @@ export class SourcePostProcessingService {
     runtimeProfileId: string | null;
     structuredOutputContract: typeof SOURCE_POST_PROCESSING_OUTPUT_CONTRACT | null;
     postProcessingRunId: string;
+    executionTimeoutMs?: number;
   }): Promise<RunRecord> {
     const pool = this.requirePool();
     await refreshSourcePostProcessingAgentPrompt(pool, input.spaceId, input.agentId);
@@ -1310,9 +1298,8 @@ export class SourcePostProcessingService {
     await orchestration.executeRun({
       run_id: run.id,
       space_id: input.spaceId,
-      ...sourcePostProcessingExecutionRequest(input.postProcessingRunId),
+      ...sourcePostProcessingExecutionRequest(input.postProcessingRunId, input.executionTimeoutMs),
       prompt: sourcePostProcessingRuntimePrompt(input.instruction),
-      max_tokens: SOURCE_POST_PROCESSING_OUTPUT_MAX_TOKENS,
     });
     const finished = await repository.getRun(input.spaceId, run.id);
     if (!finished) throw new Error("Agent run disappeared after execution");
@@ -1968,15 +1955,17 @@ export function validateSourcePostProcessingInputContextBinding(
   }
 }
 
-export function sourcePostProcessingExecutionRequest(postProcessingRunId: string): {
+export function sourcePostProcessingExecutionRequest(postProcessingRunId: string, timeoutMs?: number): {
   worker_id: string;
   job_id: null;
   command_source: "internal";
+  timeout_ms?: number;
 } {
   return {
     worker_id: `source_post_processing:${postProcessingRunId}`,
     job_id: null,
     command_source: "internal",
+    ...(timeoutMs && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {}),
   };
 }
 
@@ -2368,9 +2357,11 @@ function errorCodeFromRun(run: RunRecord): string | null {
 }
 
 function structuredOutput(run: RunRecord, expectedSchemaId: string | null): string {
-  const output = run.output_json && typeof run.output_json === "object" && !Array.isArray(run.output_json)
-    ? run.output_json as Record<string, unknown>
-    : {};
+  // canonicalRunOutput() nests the model/tool result under `.result`
+  // (schema_version: "run_output.v1" at the envelope's top level); read
+  // through that wrapper instead of treating the envelope itself as the
+  // result, or every schema/output_text lookup below sees undefined.
+  const output = runOutputResult(run.output_json);
   if (expectedSchemaId) {
     if (output.schema !== expectedSchemaId) {
       throw new HttpError(422, `Structured output schema must be ${expectedSchemaId}`);

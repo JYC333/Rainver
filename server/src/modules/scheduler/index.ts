@@ -15,6 +15,6 @@ export {
 export {
   startBackgroundServices,
   pruneMemoryAccessLogs,
-  enqueueDueSourceChannelScansForConfig,
   type BackgroundServicesHandle,
 } from "./backgroundServices";
+export { buildSourceSchedulerTasks } from "./sourceTasks";

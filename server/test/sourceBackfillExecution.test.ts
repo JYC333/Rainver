@@ -78,6 +78,72 @@ describe("source backfill extraction windows",()=>{
     expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE source_backfill_plans SET status='paused'"),expect.arrayContaining(["plan-1","space-1",reset]));
   });
 
+  it("defers a retryable extraction failure and preserves safe diagnostics", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith("SELECT s.id AS segment_id")) {
+        return {
+          rows: [{
+            segment_id: "segment-1",
+            extraction_job_id: "job-1",
+            window_json: {},
+            status: "failed",
+            items_created: 0,
+            items_updated: 0,
+            error_code: "503",
+            error_message: "arXiv history import failed after 2 attempts",
+            metadata_json: {
+              failure_diagnostics: {
+                provider_key: "arxiv",
+                provider_display_name: "arXiv",
+                connector_key: "arxiv_api",
+                upstream_status: 500,
+                attempts: 2,
+                retryable: true,
+                failure_kind: "upstream_http",
+              },
+            },
+            attempt_count: 1,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.startsWith("SELECT p.project_operation_id")) {
+        return { rows: [{ project_operation_id: null, project_operation_kind: null }], rowCount: 1 };
+      }
+      if (sql.startsWith("SELECT p.*, o.kind AS project_operation_kind")) {
+        return { rows: [{ status: "failed" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    await new SourceBackfillExecutionService({ query } as Queryable).reconcile("space-1", "plan-1");
+
+    const failureWrite = query.mock.calls.find(([sql]) =>
+      String(sql).includes("SET status='pending', extraction_job_id=NULL")
+    );
+    expect(failureWrite?.[1]?.[2]).toEqual(expect.any(String));
+    expect(JSON.parse(String(failureWrite?.[1]?.[3]))).toMatchObject({
+      code: "503",
+      message: "arXiv history import failed after 2 attempts",
+      extraction_job_id: "job-1",
+      deferred_retry: true,
+      next_retry_at: expect.any(String),
+      diagnostics: {
+        provider_key: "arxiv",
+        provider_display_name: "arXiv",
+        connector_key: "arxiv_api",
+        upstream_status: 500,
+        attempts: 2,
+        retryable: true,
+        failure_kind: "upstream_http",
+      },
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status='paused', next_eligible_at=$3"),
+      ["plan-1", "space-1", expect.any(String), expect.any(String)],
+    );
+  });
+
   it("keys the quota bucket by source connection so two plans on the same connection share one budget", async () => {
     const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
       if (sql.startsWith("SELECT p.project_operation_id")) {

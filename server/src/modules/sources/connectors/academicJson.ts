@@ -5,6 +5,7 @@ import type {
   SourceConnectorCapabilities,
   SourceConnectorHandler,
 } from "../catalog/sourceConnectorRegistry";
+import { scanPublicationWindowStart } from "./monitoringWindow";
 
 const OPENALEX_FIELDS = "id,doi,title,display_name,publication_date,authorships,primary_location,type,cited_by_count,referenced_works_count,ids,abstract_inverted_index";
 const S2_FIELDS = "paperId,externalIds,url,title,abstract,authors,publicationDate,year,venue,publicationTypes,citationCount,referenceCount,openAccessPdf";
@@ -13,7 +14,14 @@ export class OpenAlexConnectorHandler implements SourceConnectorHandler {
   readonly connectorKey = "openalex_api";
 
   buildScanRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, cursor: Record<string, unknown>): RequestSpec {
-    return { url: openAlexUrl(objectValue(channel.compiled_query), stringValue(cursor.cursor) ?? "*") };
+    const query = { ...objectValue(channel.compiled_query) };
+    const windowStart = scanPublicationWindowStart(cursor);
+    if (windowStart) {
+      const existing = isoDate(query.from_publication_date);
+      const cutoff = isoDate(windowStart);
+      query.from_publication_date = laterDate(existing, cutoff);
+    }
+    return { url: openAlexUrl(query, stringValue(cursor.cursor) ?? "*") };
   }
 
   buildBackfillRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
@@ -44,7 +52,12 @@ export class SemanticScholarConnectorHandler implements SourceConnectorHandler {
   readonly connectorKey = "semantic_scholar_api";
 
   buildScanRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, cursor: Record<string, unknown>): RequestSpec {
-    return { url: semanticScholarUrl(objectValue(channel.compiled_query), boundedInt(cursor.offset, 0, 0, 900)) };
+    const query = { ...objectValue(channel.compiled_query) };
+    const windowStart = scanPublicationWindowStart(cursor);
+    if (windowStart) {
+      query.publication_date_or_year = dateRange(windowStart, new Date().toISOString());
+    }
+    return { url: semanticScholarUrl(query, boundedInt(cursor.offset, 0, 0, 900)) };
   }
 
   buildBackfillRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, window: Record<string, unknown>, cursor: Record<string, unknown>): RequestSpec {
@@ -198,6 +211,11 @@ function isoDate(value: unknown): string | null {
 }
 function dateRange(from: unknown, to: unknown): string | null {
   const start = isoDate(from); const end = isoDate(to); return start || end ? `${start ?? ""}:${end ?? ""}` : null;
+}
+function laterDate(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return left >= right ? left : right;
 }
 function normalizeDoi(value: string | null): string | null { return value?.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").toLowerCase() ?? null; }
 function tailId(value: string | null): string | null { return value?.split("/").filter(Boolean).at(-1) ?? null; }

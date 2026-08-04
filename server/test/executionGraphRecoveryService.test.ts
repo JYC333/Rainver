@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../src/config";
 import { ExecutionGraphRecoveryService } from "../src/modules/execution/executionGraphRecoveryService";
+
+const CONFIG = loadConfig({});
 
 describe("ExecutionGraphRecoveryService", () => {
   it("isolates graph failures and continues reconciling other graphs", async () => {
@@ -15,7 +18,7 @@ describe("ExecutionGraphRecoveryService", () => {
     const alerts = { emit: vi.fn(async () => undefined) };
     const plan = vi.fn(async () => { throw new Error("transient plan failure"); });
     const workflow = vi.fn(async () => undefined);
-    const result = await new ExecutionGraphRecoveryService(db, alerts, undefined, plan, workflow).reconcileActive();
+    const result = await new ExecutionGraphRecoveryService(db, CONFIG, alerts, undefined, plan, workflow).reconcileActive();
     expect(result).toEqual({ plans: 0, workflows: 1, failures: 1 });
     expect(workflow).toHaveBeenCalledWith("space-1", "user-1", "workflow-1");
     expect(alerts.emit).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: "execution_graph_recovery:plan:plan-1" }));
@@ -35,7 +38,7 @@ describe("ExecutionGraphRecoveryService", () => {
       if (attempts === 1) throw new Error("post-finalization reconcile failed");
     });
     const alerts = { emit: vi.fn(async () => undefined) };
-    const recovery = new ExecutionGraphRecoveryService(db, alerts, undefined, plan, vi.fn(async () => undefined));
+    const recovery = new ExecutionGraphRecoveryService(db, CONFIG, alerts, undefined, plan, vi.fn(async () => undefined));
     await expect(recovery.reconcileActive()).resolves.toEqual({ plans: 0, workflows: 0, failures: 1 });
     await expect(recovery.reconcileActive()).resolves.toEqual({ plans: 1, workflows: 0, failures: 0 });
     expect(plan).toHaveBeenCalledTimes(2);

@@ -244,6 +244,27 @@ describe("Project Kernel (real Postgres)", () => {
     expect(await attention.listAttentionItems(ownerIdentity, project.id as string)).toHaveLength(1);
   });
 
+  it("points a waiting-review research operation at its Operations Area row", async () => {
+    if (!available || !pool) return;
+    const repo = new PgProjectRepository(pool);
+    const attention = new ProjectAttentionService(pool);
+    const project = await repo.create(ownerIdentity, { name: "Research Attention Project" });
+    const now = new Date().toISOString();
+    const opId = randomUUID();
+    await pool.query(
+      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, progress_json, created_at, updated_at)
+       VALUES ($1, $2, $3, 'research', 'Screening review', 'waiting_review', '{}'::jsonb, $4, $4)`,
+      [opId, SPACE, project.id, now],
+    );
+
+    const items = await attention.listAttentionItems(ownerIdentity, project.id as string);
+    expect(items).toHaveLength(1);
+    // Operations Area now renders this operation's own Checkpoint decide
+    // controls directly, so a research operation shares the same
+    // destination as every other kind instead of a special-cased detour.
+    expect(items[0]?.href).toBe(`/projects/${project.id}/operations?open=${opId}`);
+  });
+
   it("surfaces a project-scoped operational alert at its exact Operations destination", async () => {
     if (!available || !pool) return;
     registerAutomationsProjectIntegration();

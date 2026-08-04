@@ -2,7 +2,6 @@ import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import {
   HttpError,
-  numberValue,
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common";
@@ -31,9 +30,6 @@ export {
   PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
   PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
 } from "./publicSummaryPrompt";
-
-const DEFAULT_MAX_TOKENS = 1200;
-const MAX_MAX_TOKENS = 3000;
 
 interface ProjectContextRow {
   id: string;
@@ -113,7 +109,7 @@ type CompleteText = (
     model: string | null;
     system: string;
     user: string;
-    maxTokens: number;
+    maxTokens?: number | null;
     subjectUserId: string;
   },
 ) => Promise<{ text: string; model: string; usage: Record<string, unknown> }>;
@@ -163,7 +159,7 @@ export class ProjectPublicSummaryGenerator {
         model: input.model ?? null,
         system: prompt.system,
         user: prompt.user,
-        maxTokens: clampMaxTokens(input.maxTokens),
+        maxTokens: input.maxTokens,
         subjectUserId: identity.userId,
       });
     } catch (error) {
@@ -399,19 +395,13 @@ function addAllowedSource(refs: Map<string, PublicSummarySourceRef>, ref: Public
   refs.set(sourceKey(ref.source_type, ref.source_id), ref);
 }
 
-function clampMaxTokens(value: number | null | undefined): number {
-  const parsed = numberValue(value);
-  if (parsed === null) return DEFAULT_MAX_TOKENS;
-  return Math.min(MAX_MAX_TOKENS, Math.max(256, Math.trunc(parsed)));
-}
-
 function providerCompleteText(store: ProviderCommandStore): CompleteText {
   return async (spaceId, input) => completeProviderText(store, spaceId, {
     provider_id: input.providerId,
     model: input.model,
     system: input.system,
     user: input.user,
-    max_tokens: input.maxTokens,
+    max_tokens: input.maxTokens ?? undefined,
     task: PROJECT_PUBLIC_SUMMARY_TASK,
     metering: { subject_user_id: input.subjectUserId },
   });

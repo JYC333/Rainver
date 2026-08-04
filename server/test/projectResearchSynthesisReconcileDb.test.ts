@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -29,6 +30,7 @@ const VERSION = "84444444-4444-4444-8444-444444444444";
 const RUNTIME_PROFILE = "83333333-3333-4333-8333-333333333333";
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+const CONFIG = loadConfig({});
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -139,7 +141,7 @@ async function settleDelegatedRun(runId: string): Promise<void> {
        'acceptable','{}'::jsonb,'[]'::jsonb,$4)`,
     [randomUUID(), SPACE, runId, now],
   );
-  const executions = new WorkflowExecutionService();
+  const executions = new WorkflowExecutionService(CONFIG);
   // A terminal delegated Run completes its Action node. Two bounded apply
   // nodes then advance one at a time, so drain one graph-length here just as
   // production finalization/reconciliation does.
@@ -158,7 +160,7 @@ async function settleDelegatedRun(runId: string): Promise<void> {
   expect(stillActive.rows).toHaveLength(0);
   // Production terminal handling first reconciles WorkflowExecution and then
   // dispatches exactly one domain-owned terminal hook. Exercise both halves.
-  await new ProjectResearchOrchestrator(pool!).reconcileRun(SPACE, runId);
+  await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileRun(SPACE, runId);
 }
 
 // A project's notebook is ordinary Notes (see notebookNotes.ts /
@@ -278,7 +280,16 @@ async function seedCritiqueScenario(input: { depth: "quick" | "full"; round: num
   const archiveArtifactId = randomUUID();
   await seedSynthesisRun(candidateRunId, "succeeded", synthesisContract());
   await seedSynthesisRun(critiqueRunId, "succeeded", critiqueContract());
-  await pool!.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [critiqueRunId, JSON.stringify(input.output)]);
+  // Runs persist output_json through canonicalRunOutput() (schema_version:
+  // "run_output.v1" wrapping the actual result under `.result`); match that
+  // shape so reconcileCompletedCritique's runOutputResult() unwrap finds it.
+  await pool!.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [critiqueRunId, JSON.stringify({
+    schema_version: "run_output.v1",
+    status: "succeeded",
+    summary: "",
+    result: input.output,
+    output_manifest: [],
+  })]);
   const now = new Date().toISOString();
   await pool!.query(
     `INSERT INTO artifacts (
@@ -356,7 +367,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     if (!available || !pool) return;
     const seeded = await seedCritiqueScenario({ depth: "full", round: 0, revisionCount: 0, output: { verdict: "pass", issues: [] } });
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
     expect(operation.rows[0]).toMatchObject({ status: "waiting_review", progress_json: { current_stage: "idea_review" } });
@@ -374,7 +385,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await seedQueryStrategy();
     await seedCritiqueScenario({ depth: "full", round: 0, revisionCount: 0, output: { verdict: "pass", issues: [] } });
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const stored = await pool.query<{ content_json: { limitations: string[] } }>(`SELECT content_json FROM project_research_reports WHERE operation_id=$1`, [OPERATION]);
     expect(stored.rows[0]!.content_json.limitations).toEqual(["Coverage ends in 2026."]);
@@ -388,7 +399,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       issues: [{ severity: "critical", kind: "unsupported_claim", detail: "The main claim is too strong.", affected_refs: ["ref-1"] }],
     } });
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const stored = await pool.query<{ content_json: { limitations: string[] } }>(`SELECT content_json FROM project_research_reports WHERE operation_id=$1`, [OPERATION]);
     expect(stored.rows[0]!.content_json.limitations.some((item) => item.includes("[unresolved critique]") && item.includes("too strong"))).toBe(true);
@@ -407,7 +418,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       issues: [{ severity: "critical", kind: "missing_contradiction", detail: "Contradictory evidence remains omitted.", affected_refs: ["ref-1"] }],
     } });
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const stored = await pool.query<{ content_json: { limitations: string[] } }>(`SELECT content_json FROM project_research_reports WHERE operation_id=$1`, [OPERATION]);
     expect(stored.rows[0]!.content_json.limitations.some((item) => item.includes("[unresolved critique]") && item.includes("Contradictory evidence"))).toBe(true);
@@ -422,7 +433,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       issues: [{ severity: "critical", kind: "overreach", detail: "The conclusion exceeds the evidence.", affected_refs: ["ref-1"] }],
     } });
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const revisionRuns = await pool.query<{ id: string; contract_snapshot_json: Record<string, unknown> }>(
       `SELECT id,contract_snapshot_json FROM runs WHERE contract_snapshot_json->'workflow_input_json'->'project_research'->>'stage_key'='synthesis_revision'`,
@@ -457,7 +468,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     );
     await seedSynthesisOperation(runId);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { current_stage?: string; synthesis_progress?: Record<string, unknown> } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -484,7 +495,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await seedSynthesisRun(runId, "failed", synthesisContract(), "provider_rate_limited: model quota exhausted");
     await seedSynthesisOperation(runId);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { error?: { message?: string } } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -514,7 +525,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     );
     await seedSynthesisOperation(runId);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool.query<{
       status: string;
@@ -539,7 +550,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await seedSynthesisRun(runId, "succeeded", {});
     await seedSynthesisOperation(runId);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { error?: { message?: string } } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -561,7 +572,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // ever refresh its heartbeat.
     await seedSynthesisOperation(null);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { synthesis_run_id?: string | null; error?: { message?: string } } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -576,7 +587,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     if (!available || !pool) return;
     await seedSynthesisOperation(null);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { failed_stage?: string; error?: { message?: string } } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -591,7 +602,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     if (!available || !pool) return;
     await seedSynthesisOperation(randomUUID());
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { error?: { message?: string } } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -656,7 +667,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
         WHERE id = $1 AND space_id = $2 AND project_id = $3`,
       [OPERATION, SPACE, PROJECT, JSON.stringify(progress), now],
     );
-    await new ProjectResearchOrchestrator(pool).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
     const operation = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(operation).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
     expect((await pool.query(`SELECT stance,comparison_detail FROM research_paper_cards WHERE source_item_id=$1`, [sourceItem])).rows[0]).toEqual({ stance: "contradicts", comparison_detail: "No effect under stronger controls." });
@@ -737,7 +748,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // First batch completes: results accumulate, but the operation must stay
     // in "comparison" — batch 2 hasn't run yet — with nothing persisted to
     // the scan summary or notebook.
-    await new ProjectResearchOrchestrator(pool).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
     const afterFirstBatch = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(afterFirstBatch).toMatchObject({ status: "active", progress_json: { current_stage: "comparison" } });
     expect(afterFirstBatch.progress_json.comparison_run_id).toBeNull();
@@ -763,7 +774,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
         WHERE id=$1`,
       [OPERATION, run2],
     );
-    await new ProjectResearchOrchestrator(pool).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
     const final = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(final).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
     expect((await pool.query(`SELECT count(*)::int AS n FROM research_paper_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(7);
@@ -834,7 +845,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       [randomUUID(), SPACE, PROJECT, WORKFLOW, OPERATION, `operation:${OPERATION}`, now],
     );
 
-    await new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).retryFailedOperation(identity, PROJECT, OPERATION);
 
     const after = (await pool.query<{
       status: string;
@@ -924,7 +935,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       ],
     })]);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
     const afterBatch = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(afterBatch).toMatchObject({ status: "active", progress_json: { current_stage: "comparison" } });
     expect(afterBatch.progress_json.comparison_run_id).toBeNull();
@@ -933,7 +944,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
 
     // Reconciling again with no run in flight dispatches the next chunk —
     // now the failed pool, one paper at a time.
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
     const soloQueued = (await pool.query(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0].progress_json;
     const soloRunId = soloQueued.comparison_run_id;
     expect(soloRunId).toBeTruthy();
@@ -1044,7 +1055,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       ],
     })]);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
     const afterZeroMatch = (await pool.query(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0].progress_json;
     expect(afterZeroMatch.comparison_degraded).toBe(true);
     expect(afterZeroMatch.comparison_failed_source_item_ids).toEqual(batch1);
@@ -1053,7 +1064,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
 
     // The next dispatch pulls from the (still non-empty) pending pool, but
     // degraded mode forces it to a single paper, not another 6-paper batch.
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
     const nextDispatch = (await pool.query(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0].progress_json;
     expect(nextDispatch.comparison_source_item_ids).toEqual([rest[0]]);
     expect(nextDispatch.comparison_pending_source_item_ids).toEqual(rest.slice(1));
@@ -1080,15 +1091,15 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const runId = randomUUID();
     await seedSynthesisRun(runId, "succeeded", adhocContract(3));
     await pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, JSON.stringify(output)]);
-    await new ProjectResearchOrchestrator(pool).reconcileRun(SPACE, runId);
-    await new ProjectResearchOrchestrator(pool).reconcileRun(SPACE, runId);
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileRun(SPACE, runId);
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileRun(SPACE, runId);
     const applied = (await pool.query(`SELECT version,plain_text,refs_json FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
     expect(applied).toMatchObject({ version: 4, plain_text: "Revised claim\n\nKept block", refs_json: ["source-9"] });
     expect(Number((await pool.query(`SELECT count(*) AS count FROM note_revisions WHERE note_id=$1`, [understandingId])).rows[0]?.count)).toBe(1);
     const staleRun = randomUUID();
     await seedSynthesisRun(staleRun, "succeeded", adhocContract(3));
     await pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [staleRun, JSON.stringify(output)]);
-    await new ProjectResearchOrchestrator(pool).reconcileRun(SPACE, staleRun);
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileRun(SPACE, staleRun);
     const conflicted = (await pool.query(`SELECT version,plain_text FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
     expect(conflicted?.version).toBe(5);
     expect(String(conflicted?.plain_text)).toContain("AI update (note changed since v3)");

@@ -1,0 +1,157 @@
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+  varchar,
+  doublePrecision,
+  type PgTableExtraConfigValue,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { artifacts } from "./artifacts";
+import { automationRuns, automations } from "./automations";
+import { users } from "./auth";
+import { evolutionSignals } from "./evolution";
+import { projects } from "./projects";
+import { runs } from "./runs";
+import { spaces } from "./spaces";
+
+export const autonomyTicks = pgTable("autonomy_ticks", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  automationId: varchar("automation_id", { length: 36 }).notNull(),
+  coordinatorRunId: varchar("coordinator_run_id", { length: 36 }),
+  automationRunId: varchar("automation_run_id", { length: 36 }),
+  ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+  mode: varchar({ length: 32 }).notNull(),
+  status: varchar({ length: 32 }).notNull(),
+  candidatesSeen: integer("candidates_seen").default(0).notNull(),
+  candidatesRanked: integer("candidates_ranked").default(0).notNull(),
+  candidatesAdmitted: integer("candidates_admitted").default(0).notNull(),
+  candidatesLaunched: integer("candidates_launched").default(0).notNull(),
+  configSnapshotJson: jsonb("config_snapshot_json").default({}).notNull(),
+  summaryJson: jsonb("summary_json").default({}).notNull(),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+  index("ix_autonomy_ticks_automation_created").using("btree", table.automationId.asc(), table.createdAt.desc()),
+  index("ix_autonomy_ticks_space_owner_created").using("btree", table.spaceId.asc(), table.ownerUserId.asc(), table.createdAt.desc()),
+  foreignKey({ columns: [table.automationId, table.spaceId], foreignColumns: [automations.id, automations.spaceId], name: "autonomy_ticks_automation_space_fkey" }),
+  foreignKey({ columns: [table.ownerUserId], foreignColumns: [users.id], name: "autonomy_ticks_owner_user_id_fkey" }),
+  foreignKey({ columns: [table.automationRunId], foreignColumns: [automationRuns.id], name: "autonomy_ticks_automation_run_id_fkey" }),
+  foreignKey({ columns: [table.coordinatorRunId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "autonomy_ticks_coordinator_run_space_fkey" }),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "autonomy_ticks_space_id_fkey" }),
+  unique("uq_autonomy_ticks_id_space").on(table.id, table.spaceId),
+  check("ck_autonomy_ticks_mode", sql`mode IN ('observe_only', 'launch')`),
+  check("ck_autonomy_ticks_status", sql`status IN ('running', 'succeeded', 'failed')`),
+  check("ck_autonomy_ticks_counts", sql`candidates_seen >= 0 AND candidates_ranked >= 0 AND candidates_admitted >= 0 AND candidates_launched >= 0`),
+]);
+
+export const autonomyCandidates = pgTable("autonomy_candidates", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+  projectId: varchar("project_id", { length: 36 }),
+  candidateKind: varchar("candidate_kind", { length: 64 }).notNull(),
+  candidateKey: varchar("candidate_key", { length: 256 }).notNull(),
+  status: varchar({ length: 32 }).notNull(),
+  durableFactRefsJson: jsonb("durable_fact_refs_json").default([]).notNull(),
+  discoverySnapshotJson: jsonb("discovery_snapshot_json").default({}).notNull(),
+  rankingScore: doublePrecision("ranking_score"),
+  rankingEvidenceJson: jsonb("ranking_evidence_json").default({}).notNull(),
+  decisionReason: varchar("decision_reason", { length: 128 }),
+  admissionDecisionJson: jsonb("admission_decision_json").default({}).notNull(),
+  firstSeenTickId: varchar("first_seen_tick_id", { length: 36 }).notNull(),
+  lastSeenTickId: varchar("last_seen_tick_id", { length: 36 }).notNull(),
+  launchTickId: varchar("launch_tick_id", { length: 36 }),
+  runId: varchar("run_id", { length: 36 }),
+  artifactId: varchar("artifact_id", { length: 36 }),
+  discoveredAt: timestamp("discovered_at", { withTimezone: true, mode: "string" }).notNull(),
+  rankedAt: timestamp("ranked_at", { withTimezone: true, mode: "string" }),
+  decidedAt: timestamp("decided_at", { withTimezone: true, mode: "string" }),
+  launchedAt: timestamp("launched_at", { withTimezone: true, mode: "string" }),
+  completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+  index("ix_autonomy_candidates_space_owner_status").using("btree", table.spaceId.asc(), table.ownerUserId.asc(), table.status.asc()),
+  index("ix_autonomy_candidates_project").using("btree", table.spaceId.asc(), table.projectId.asc()),
+  index("ix_autonomy_candidates_run").using("btree", table.spaceId.asc(), table.runId.asc()),
+  unique("uq_autonomy_candidates_logical").on(table.spaceId, table.ownerUserId, table.candidateKind, table.candidateKey),
+  unique("uq_autonomy_candidates_id_space").on(table.id, table.spaceId),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "autonomy_candidates_space_id_fkey" }),
+  foreignKey({ columns: [table.ownerUserId], foreignColumns: [users.id], name: "autonomy_candidates_owner_user_id_fkey" }),
+  foreignKey({ columns: [table.projectId], foreignColumns: [projects.id], name: "autonomy_candidates_project_id_delete_fkey" }).onDelete("set null"),
+  foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "autonomy_candidates_project_space_fkey" }),
+  foreignKey({ columns: [table.firstSeenTickId, table.spaceId], foreignColumns: [autonomyTicks.id, autonomyTicks.spaceId], name: "autonomy_candidates_first_tick_space_fkey" }),
+  foreignKey({ columns: [table.lastSeenTickId, table.spaceId], foreignColumns: [autonomyTicks.id, autonomyTicks.spaceId], name: "autonomy_candidates_last_tick_space_fkey" }),
+  foreignKey({ columns: [table.launchTickId, table.spaceId], foreignColumns: [autonomyTicks.id, autonomyTicks.spaceId], name: "autonomy_candidates_launch_tick_space_fkey" }),
+  foreignKey({ columns: [table.runId], foreignColumns: [runs.id], name: "autonomy_candidates_run_id_delete_fkey" }).onDelete("set null"),
+  foreignKey({ columns: [table.runId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "autonomy_candidates_run_space_fkey" }),
+  foreignKey({ columns: [table.artifactId], foreignColumns: [artifacts.id], name: "autonomy_candidates_artifact_id_fkey" }).onDelete("set null"),
+  check("ck_autonomy_candidates_status", sql`status IN ('discovered', 'ranked', 'observed', 'refused', 'admitted', 'launched', 'completed', 'failed', 'superseded')`),
+  check("ck_autonomy_candidates_fact_refs_array", sql`jsonb_typeof(durable_fact_refs_json) = 'array'`),
+]);
+
+export const autonomyTickCandidates = pgTable("autonomy_tick_candidates", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  tickId: varchar("tick_id", { length: 36 }).notNull(),
+  candidateId: varchar("candidate_id", { length: 36 }).notNull(),
+  rank: integer().notNull(),
+  rankingScore: doublePrecision("ranking_score").notNull(),
+  decision: varchar({ length: 32 }).notNull(),
+  decisionReason: varchar("decision_reason", { length: 128 }).notNull(),
+  evidenceJson: jsonb("evidence_json").default({}).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+  index("ix_autonomy_tick_candidates_tick_rank").using("btree", table.tickId.asc(), table.rank.asc()),
+  unique("uq_autonomy_tick_candidates_tick_candidate").on(table.tickId, table.candidateId),
+  foreignKey({ columns: [table.tickId, table.spaceId], foreignColumns: [autonomyTicks.id, autonomyTicks.spaceId], name: "autonomy_tick_candidates_tick_space_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.candidateId, table.spaceId], foreignColumns: [autonomyCandidates.id, autonomyCandidates.spaceId], name: "autonomy_tick_candidates_candidate_space_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "autonomy_tick_candidates_space_id_fkey" }),
+  check("ck_autonomy_tick_candidates_rank", sql`rank > 0`),
+  check("ck_autonomy_tick_candidates_decision", sql`decision IN ('observed', 'refused', 'admitted', 'launched')`),
+]);
+
+export const autonomyCandidateEvolutionSignals = pgTable("autonomy_candidate_evolution_signals", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  candidateId: varchar("candidate_id", { length: 36 }).notNull(),
+  signalId: varchar("signal_id", { length: 36 }).notNull(),
+  linkedAt: timestamp("linked_at", { withTimezone: true, mode: "string" }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true, mode: "string" }),
+}, (table): PgTableExtraConfigValue[] => [
+  index("ix_autonomy_candidate_evolution_signals_candidate").using("btree", table.candidateId.asc()),
+  unique("uq_autonomy_candidate_evolution_signals").on(table.candidateId, table.signalId),
+  foreignKey({ columns: [table.candidateId, table.spaceId], foreignColumns: [autonomyCandidates.id, autonomyCandidates.spaceId], name: "autonomy_candidate_evolution_signals_candidate_space_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.signalId], foreignColumns: [evolutionSignals.id], name: "autonomy_candidate_evolution_signals_signal_id_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "autonomy_candidate_evolution_signals_space_id_fkey" }),
+]);
+
+export const autonomyReviewCursors = pgTable("autonomy_review_cursors", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+  candidateKind: varchar("candidate_kind", { length: 64 }).notNull(),
+  candidateId: varchar("candidate_id", { length: 36 }).notNull(),
+  lastFactCreatedAt: timestamp("last_fact_created_at", { withTimezone: true, mode: "string" }).notNull(),
+  lastFactId: varchar("last_fact_id", { length: 36 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+  unique("uq_autonomy_review_cursors_owner_kind").on(table.spaceId, table.ownerUserId, table.candidateKind),
+  foreignKey({ columns: [table.candidateId, table.spaceId], foreignColumns: [autonomyCandidates.id, autonomyCandidates.spaceId], name: "autonomy_review_cursors_candidate_space_fkey" }),
+  foreignKey({ columns: [table.ownerUserId], foreignColumns: [users.id], name: "autonomy_review_cursors_owner_user_id_fkey" }),
+  foreignKey({ columns: [table.lastFactId], foreignColumns: [evolutionSignals.id], name: "autonomy_review_cursors_last_fact_id_fkey" }),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "autonomy_review_cursors_space_id_fkey" }),
+  check("ck_autonomy_review_cursors_kind", sql`candidate_kind = 'evolution_review'`),
+]);

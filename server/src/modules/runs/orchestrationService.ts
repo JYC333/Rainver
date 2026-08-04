@@ -268,6 +268,8 @@ export interface RunExecutionInput extends RunExecuteRequest {
   adapter_config?: Record<string, unknown>;
   risk_level?: string | null;
   timeout_ms?: number | null;
+  /** Internal cancellation ownership for managed provider execution. */
+  abort_signal?: AbortSignal;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   text_delta_sink?: (delta: string) => void;
 }
@@ -297,6 +299,7 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
         context_snapshot_id: run.context_snapshot_id,
         max_tokens: input.max_tokens ?? null,
         text_delta_sink: input.text_delta_sink,
+        abort_signal: input.abort_signal,
       },
       deps.managedApi,
     ),
@@ -1375,7 +1378,13 @@ export class RunOrchestrationService {
     const callerConfig = input.command_source === "http" ? {} : input.adapter_config ?? {};
     const contract = recordValue(run.contract_snapshot_json);
     const managedPolicy = managedExecutionPolicyFromContract(run.contract_snapshot_json);
-    const credentialMetadata = credentialPolicyMetadata(managedPolicy);
+    const policyContext = recordValue(contract.policy_context_json);
+    const credentialMetadata = {
+      ...credentialPolicyMetadata(managedPolicy),
+      ...(run.trigger_origin === "autonomous"
+        ? { automation_pre_authorized: policyContext.automation_pre_authorized === true }
+        : {}),
+    };
     // The immutable run contract is authoritative. An internal execution
     // caller may supply a fallback risk for legacy runs, but it can never
     // downgrade a critical contract to reach a weaker sandbox.
@@ -1886,24 +1895,35 @@ export class RunOrchestrationService {
       : requestedTimeoutMs === null
         ? contractTimeoutMs
         : Math.min(requestedTimeoutMs, contractTimeoutMs);
-    const adapterInput = contractTimeoutMs === null
-      ? input
-      : {
-          ...input,
-          adapter_config: {
-            ...(input.adapter_config ?? {}),
-            timeout: Math.min(
-              positiveNumber(input.adapter_config?.timeout) ?? contractTimeoutMs / 1000,
-              contractTimeoutMs / 1000,
-            ),
-          },
-        };
+    const spec = getRuntimeAdapterSpec(run.adapter_type);
+    const timeoutSeconds = timeoutMs === null ? null : Math.max(1, Math.ceil(timeoutMs / 1000));
+    const controller = timeoutMs && spec?.executor_family === "managed_api"
+      ? new AbortController()
+      : null;
+    const adapterInput: RunExecutionInput = {
+      ...input,
+      ...(controller ? { abort_signal: controller.signal } : {}),
+      ...(timeoutSeconds ? {
+        adapter_config: {
+          ...(input.adapter_config ?? {}),
+          timeout: Math.min(
+            positiveNumber(input.adapter_config?.timeout) ?? timeoutSeconds,
+            timeoutSeconds,
+          ),
+        },
+      } : {}),
+    };
     const promise = this.invokeAdapterUnbounded(run, adapterInput);
     if (!timeoutMs || timeoutMs <= 0) return promise;
+    // Local CLI adapters own their deadline: LocalCliCommandExecutor terminates
+    // the process group and waits for exit. Racing that cleanup here would
+    // release the Job while the child process was still alive.
+    if (spec?.executor_family === "local_cli") return promise;
     return withTimeout(
       promise,
       timeoutMs,
       adapterTimeoutEnvelope(run, timeoutMs),
+      () => controller?.abort(),
     );
   }
 

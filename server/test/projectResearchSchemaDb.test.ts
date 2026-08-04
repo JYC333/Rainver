@@ -6,7 +6,7 @@ import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPost
 import { migrate } from "../src/db/migrator";
 
 // Real-Postgres coverage for the Academic Research schema foundation:
-// profiles, workflows, checkpoints, scan outcomes, and report FK isolation.
+// workflows, checkpoints, scan outcomes, and report FK isolation.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -37,7 +37,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE project_research_reports, project_research_checkpoints, project_research_workflows,
-       project_research_profiles, artifacts, projects, space_memberships, users, spaces CASCADE`,
+       artifacts, projects, space_memberships, users, spaces CASCADE`,
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
@@ -53,18 +53,6 @@ beforeEach(async () => {
     [PROJECT, SPACE, OWNER, now],
   );
 });
-
-async function insertProfile(): Promise<string> {
-  const id = randomUUID();
-  const now = new Date().toISOString();
-  await pool!.query(
-    `INSERT INTO project_research_profiles (
-       id, space_id, project_id, research_question, status, created_at, updated_at
-     ) VALUES ($1,$2,$3,'Does X improve Y?','draft',$4,$4)`,
-    [id, SPACE, PROJECT, now],
-  );
-  return id;
-}
 
 async function insertWorkflow(): Promise<string> {
   const id = randomUUID();
@@ -104,12 +92,6 @@ describe("project_research_* schema (real Postgres)", () => {
     )).rejects.toThrow();
   });
 
-  it("allows only one research profile per project", async () => {
-    if (!available) return;
-    await insertProfile();
-    await expect(insertProfile()).rejects.toThrow();
-  });
-
   it("rejects an invalid workflow status", async () => {
     if (!available) return;
     const now = new Date().toISOString();
@@ -131,7 +113,7 @@ describe("project_research_* schema (real Postgres)", () => {
     await pool!.query(
       `INSERT INTO project_research_checkpoints (
          id, space_id, project_id, workflow_id, stage_key, checkpoint_type, status, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'research_setup','profile_approval','pending',$5,$5)`,
+       ) VALUES ($1,$2,$3,$4,'research_setup','other','pending',$5,$5)`,
       [checkpointId, SPACE, PROJECT, workflowId, now],
     );
 

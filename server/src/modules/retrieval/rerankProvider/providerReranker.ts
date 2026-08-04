@@ -9,7 +9,7 @@ import type { ProviderCommandStore } from "../../providers/commands/store";
 import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy";
 import { writePolicyAudit } from "../../policy/auditWriter";
 import { resolveRetrievalRerankSystemPrompt } from "../promptRegistry";
-import { DEFAULT_RERANK_MAX_TOKENS, RETRIEVAL_RERANK_TASK } from "./config";
+import { RETRIEVAL_RERANK_TASK } from "./config";
 import { buildRerankPrompt, parseRerankScores } from "./prompt";
 
 export type RerankSystemPromptResolver = (
@@ -96,7 +96,6 @@ export class ProviderReranker implements Reranker {
         provider_id: this.providerId ?? "",
         system: prompt.system,
         user: prompt.user,
-        max_tokens: DEFAULT_RERANK_MAX_TOKENS,
         task: RETRIEVAL_RERANK_TASK,
         egressPolicy: effectivePolicy,
         metering: { subject_user_id: viewerUserId },

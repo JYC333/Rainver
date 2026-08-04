@@ -71,32 +71,35 @@ export function researchSetupDraftFromWorkflow(
 }
 
 /**
- * The refine conversation is client-held by design (the server endpoint is
- * stateless), so closing the setup dialog must not lose it. The in-progress
- * dialog state is kept per project in localStorage and restored on reopen as
- * long as the server-side draft it was based on has not changed underneath.
+ * Browser-local UI recovery for unsaved setup fields only. Question-assessment
+ * messages and model context are server-authoritative and never restored from
+ * this object.
  */
-export interface ResearchClarifyingAnswer {
-  selected: string[]
-  other: string
-}
-
 export interface ResearchSetupSession {
   base_fingerprint: string
   draft: ResearchSetupDraft
-  refinement: ProjectResearchQuestionRefinement | null
-  refinement_history: Array<{ role: 'user' | 'assistant'; content: string }>
-  clarifying_answers: Record<number, ResearchClarifyingAnswer>
   step?: number
+  /**
+   * The Workflow this in-progress session has already saved a draft to (once
+   * the dialog opened with no Workflow of its own — otherwise this always
+   * equals that Workflow's own id, never a fresh one). Restoring it is what
+   * lets every subsequent autosave and the final Save/Start reuse that one
+   * row instead of creating a new draft Workflow on every autosave.
+   */
+  workflow_id?: string | null
 }
 
-function sessionKey(projectId: string): string {
-  return `agent-space:research-setup-session:${projectId}`
+// Scoped by which Workflow (if any) the dialog opened for, not just the
+// Project — the "edit this Workflow" dialog and the independent "start a new
+// search" dialog can be open/used around the same time and must not stomp on
+// each other's in-progress session.
+function sessionKey(projectId: string, workflowScope: string): string {
+  return `agent-space:research-setup-session:${projectId}:${workflowScope}`
 }
 
-export function loadResearchSetupSession(projectId: string): ResearchSetupSession | null {
+export function loadResearchSetupSession(projectId: string, workflowScope: string): ResearchSetupSession | null {
   try {
-    const raw = window.localStorage.getItem(sessionKey(projectId))
+    const raw = window.localStorage.getItem(sessionKey(projectId, workflowScope))
     if (!raw) return null
     const value = objectValue(JSON.parse(raw))
     const draft = objectValue(value.draft)
@@ -107,17 +110,17 @@ export function loadResearchSetupSession(projectId: string): ResearchSetupSessio
   }
 }
 
-export function saveResearchSetupSession(projectId: string, session: ResearchSetupSession): void {
+export function saveResearchSetupSession(projectId: string, workflowScope: string, session: ResearchSetupSession): void {
   try {
-    window.localStorage.setItem(sessionKey(projectId), JSON.stringify(session))
+    window.localStorage.setItem(sessionKey(projectId, workflowScope), JSON.stringify(session))
   } catch {
     // Storage may be unavailable (private mode, quota); the dialog still works, it just will not restore.
   }
 }
 
-export function clearResearchSetupSession(projectId: string): void {
+export function clearResearchSetupSession(projectId: string, workflowScope: string): void {
   try {
-    window.localStorage.removeItem(sessionKey(projectId))
+    window.localStorage.removeItem(sessionKey(projectId, workflowScope))
   } catch {
     // Ignore storage failures on cleanup.
   }

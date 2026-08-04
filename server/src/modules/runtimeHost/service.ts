@@ -18,6 +18,7 @@ export interface RuntimeHostLogger {
 
 export interface RuntimeHostExecutionHooks {
   onTextDelta?: (delta: string) => void;
+  signal?: AbortSignal;
 }
 
 function nowIso(): string {
@@ -186,6 +187,7 @@ export async function executeRuntimeHost(
         output_format: input.output_format ?? null,
         cache_strategy: input.cache_strategy,
         on_text_delta: hooks.onTextDelta,
+        abort_signal: hooks.signal,
         task: "runtime_host",
         tools: toolMode === "authorized_bindings" ? tools : undefined,
         metering: {
@@ -287,6 +289,24 @@ export async function executeRuntimeHost(
         error.attempts ?? 1,
       );
     }
+    // Anything that reaches here is not a ProviderInvocationError, so none of
+    // the branches above logged it — without this, the only trace of the
+    // real failure is the generic message below.
+    logger?.error(
+      {
+        run_id: input.run_id,
+        space_id: input.space_id,
+        project_id: input.project_id ?? null,
+        model_provider_id: input.model_provider_id,
+        model: input.model ?? "provider-default",
+        stage: input.output_format?.stage ?? "managed_api",
+        schema_id: input.output_format?.schema_id ?? null,
+        error_name: error instanceof Error ? error.name : typeof error,
+        error_message: error instanceof Error ? error.message : String(error),
+        error_stack: error instanceof Error ? error.stack : undefined,
+      },
+      "runtime host call failed with an unclassified error",
+    );
     return failureResponse(
       input,
       startedAt,

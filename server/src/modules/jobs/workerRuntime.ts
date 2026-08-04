@@ -18,6 +18,7 @@ import { OperationalAlertService } from "../notifications/operationalAlerts";
 import { registerEvaluationHarnessHandler } from "../evolution/evaluationJob";
 import { registerProjectResearchHandler } from "../projectResearch";
 import { registerKnowledgeExtractionHandler } from "../knowledgePromotion/extractionJob";
+import { registerInquiryAdviceHandler } from "../inquiry/adviceJob";
 import { registerExperimentReconcileHandler } from "../experiments/reconcileJob";
 import type { RuntimeHostLogger } from "../runtimeHost";
 import { finalizeChatTurn } from "../runs/chatTurnFinalizer";
@@ -25,6 +26,9 @@ import { isHardTerminalRunStatus } from "../runs/orchestrationResults";
 
 const POLL_INTERVAL_MS = 1_000;
 const RECLAIM_INTERVAL_MS = 120_000;
+// Keep the shared worker lease conservative for every job family. Individual
+// adapters own their execution deadlines and cancellation; a Research-specific
+// latency requirement must not shorten the global orphan-reclaim boundary.
 const STUCK_AFTER_SECONDS = 600;
 
 export interface JobsWorkerLogger {
@@ -58,6 +62,7 @@ export function buildJobHandlerRegistry(
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);
+  registerInquiryAdviceHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   return registry;

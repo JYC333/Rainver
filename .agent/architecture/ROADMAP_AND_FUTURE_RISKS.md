@@ -221,13 +221,28 @@ OpenCode-first Router preference and does not route the managed API path through
 - Design external trigger registry after manual/scheduled/internal-event automation behavior is stable.
 - Add run caps, cost guardrails, and user-facing credential allowance UX before broad background execution.
 - Keep automation-origin runs on the same preflight and policy path as manual runs.
-- Decision 1-B (2026-07-11, [orchestration plan](../plans/orchestration-and-self-evolution-plan.md)):
+- Decision 1-B (2026-07-11, formerly recorded in the now-retired orchestration
+  plan):
   the two hardcoded automation fire paths (`knowledge_retrieval_maintenance`,
   context review cycle in `automations/service.ts`) are frozen — no new
   hardcoded business fires may be added. Re-evaluate migrating them to system
   workflow templates (or explicitly retiring them as documented native
   targets) once versioned workflow graph execution (plan Track B2/B3) is
   stable. Do not let the freeze silently become permanent.
+
+  **Amended 2026-07-26 — re-evaluation done; the migration option is
+  withdrawn.** `WorkflowTemplate` is a *user-facing* process that users choose
+  to run, declaring an input schema and output artifact types and moving
+  through the evolvable-asset approval path. Both frozen paths — and the
+  planned `autonomous_tick` — are maintenance/control-plane jobs with none of
+  those properties, so migrating them would surface them in user-facing
+  Workflow panels and force control flow into a bounded data-flow DAG. The
+  standing rule is now: a domain process a user chooses to run is a
+  `WorkflowTemplate`; a maintenance or control-plane job the user only switches
+  on or off is a **registered native Automation target**. The freeze is
+  replaced by a declarative target registry with a frozen fixture and a
+  drift test, which is what actually prevents a new unregistered hardcoded
+  fire. See [the current Automation module architecture](../modules/automations.md).
 
 **Prerequisites**
 - Automation create/update/fire gates, preflight snapshots, and credential behavior remain auditable.
@@ -281,14 +296,18 @@ OpenCode-first Router preference and does not route the managed API path through
 
 ---
 
-### 9. Learning Loop and Self-Evolution
+### 9. Learning and Evolution Loop
 
 **Next work**
 - Run managed dogfood flows against real Project Folders before automating more of the loop.
 - Validate RunReflection and proposal payload quality through human review.
-- Define allowed self-evolution surfaces and evaluation gates before enabling capability lifecycle persistence.
-- Phased implementation for planning/routing/verification and the evolution
-  loop lives in [orchestration plan](../plans/orchestration-and-self-evolution-plan.md).
+- Keep automatic system self-evolution removed; Evolution execution must continue to require
+  an explicitly selected ordinary Agent.
+- The Always-on evolution/autonomy loop is delivered; current-state behavior
+  lives in [autonomy.md](../modules/autonomy.md) and
+  [automations.md](../modules/automations.md). Remaining
+  planning/routing/verification follow-ups (A2.1, B4.1, D1.2) live in
+  [product-capability-followups-plan.md](../plans/product-capability-followups-plan.md).
 - Decision 2-B (2026-07-11): the evolvable-asset promotion evaluation gate
   starts **warn-only**. When an asset type accumulates enough evaluation
   cases (threshold set in plan Track D2), high/critical-risk promotions for
@@ -305,7 +324,10 @@ OpenCode-first Router preference and does not route the managed API path through
 - The `/evolution` UI now creates candidate versions, edits drafts, transitions
   candidate/testing versions, creates Evaluation Cases, queues evaluations
   against existing successful candidate Runs, shows evidence, and creates the
-  proposal-backed Promotion flow. Automatic candidate-run launch remains D2.1.
+  proposal-backed Promotion flow. Automatic candidate-run launch remains D2.1,
+  which as of 2026-07-26 is merged into the Always-on autonomous work section
+  of the orchestration plan as an `evaluation_candidate` candidate kind rather
+  than a separate launch mechanism.
 - Decision 3-B (2026-07-11): artifact user-edit/revision tracking is
   deferred. Proposal reject/request-changes signals are the interim
   user-correction evidence. Design an artifact revision model (who edited,

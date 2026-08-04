@@ -44,12 +44,50 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const reports = () => new ProjectResearchReportRepository(dbPool(context.config));
   registerProjectResearchAreaRoutes(app, context, base);
 
+  // Assessment routes are server-owned and rebuilt with this module by the dev polling watcher.
+  app.get(`${base}/question/assessment`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const threadId = optionalString(query(request).thread_id);
+      if (!threadId) throw new HttpError(422, "thread_id is required");
+      return reply.send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
+        .getConversation(identity, requireParam(request, "projectId"), threadId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.post(`${base}/question/refine`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       return reply.send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
         .refine(identity, requireParam(request, "projectId"), jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get(`${base}/question/assessment/confirmations`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const threadId = optionalString(query(request).thread_id);
+      if (!threadId) throw new HttpError(422, "thread_id is required");
+      return reply.send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
+        .listConfirmations(identity, requireParam(request, "projectId"), threadId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post(`${base}/question/assessment/confirm`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.code(201).send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
+        .confirm(identity, requireParam(request, "projectId"), jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -151,38 +189,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get(`${base}/profile`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const profile = await repository(context).getProfile(identity, requireParam(request, "projectId"));
-      if (!profile) throw new HttpError(404, "Research profile not found");
-      return reply.send(profile);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.put(`${base}/profile`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository(context).upsertProfile(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post(`${base}/profile/approve`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository(context).approveProfile(identity, requireParam(request, "projectId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get(`${base}/workflow`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -203,18 +209,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         requireParam(request, "projectId"),
         Number.isFinite(rawLimit) ? rawLimit : 30,
       ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post(`${base}/workflow/start`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository(context).startWorkflow(identity, requireParam(request, "projectId"), jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }

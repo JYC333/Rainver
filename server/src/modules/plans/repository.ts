@@ -9,7 +9,8 @@ import { PgJobQueueRepository } from "../jobs/repository";
 import { PgRunRepository } from "../runs/repository";
 import { canonicalRunOutput } from "../runs/orchestrationResults";
 import { assertBudgetSourceReferences, assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
-import { type RunBudgetSource } from "../runs/contractSnapshot";
+import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot";
+import { loadCanonicalPlanBudgetAuthority, type CanonicalBudgetAuthority } from "../runs/budgetAuthority";
 import { budgetSourcesFromNode, decidePlanApproval, materializePlanGraph, planNodeContentHash, type MaterializedPlanGraph } from "./graph";
 import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerification";
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler";
@@ -261,12 +262,7 @@ export class PgPlanRepository {
 
   async createPlanFromAgent(identity: SpaceUserIdentity, input: AgentPlanProposalInput): Promise<Record<string, unknown>> {
     const graph = await materializePlanGraph(input.definitionJson);
-    const budgetCap = input.budgetCap ?? declaredBudgetCap(graph.definition.metadata_json);
-    const budgetSources = [
-      ...(input.budgetSources ?? []),
-      ...budgetSourcesFromContract("task", input.sourceTaskId, graph.definition.metadata_json),
-    ];
-    const approval = decidePlanApproval(graph, { budgetCap, budgetSources });
+    const declaredPlanCap = input.budgetCap ?? declaredBudgetCap(graph.definition.metadata_json);
     return withQueryableTransaction(this.db, async (client) => {
       await this.assertPlanningRun(client, identity, input);
       const taskResult = await client.query<{ id: string; task_role: string; title: string; description: string | null; project_folder_id: string | null; project_id: string | null }>(
@@ -277,14 +273,6 @@ export class PgPlanRepository {
       const task = taskResult.rows[0];
       if (!task) throw new HttpError(404, "Source task not found");
       if (task.task_role !== "source") throw new HttpError(409, "Only source tasks can own a Plan");
-      // Node-level contract_json.budget_sources are just as capable of
-      // referencing an exhausted or nonexistent Automation/Workflow/Plan cap
-      // as the top-level PlanVersion sources, so both must be validated
-      // before this Plan/Version becomes visible for execution.
-      await assertBudgetSourceReferences(client, identity.spaceId, [
-        ...budgetSources,
-        ...graph.nodes.flatMap(budgetSourcesFromNode),
-      ]);
 
       const idempotent = await client.query<{ plan_id: string }>(
         `SELECT plan_id FROM plan_versions
@@ -304,6 +292,35 @@ export class PgPlanRepository {
         throw new HttpError(409, "plan_id does not belong to the source task");
       }
       const planId = existing.rows[0]?.id ?? randomUUID();
+      const inheritedAuthority = await loadCanonicalPlanBudgetAuthority(client, {
+        spaceId: identity.spaceId,
+        sourceTaskId: input.sourceTaskId,
+        planningRunId: input.planningRunId,
+        referenceWorkflowVersionId: input.referenceWorkflowVersionId,
+      });
+      const planSource: RunBudgetSource | null = declaredPlanCap === null
+        ? null
+        : { source: { kind: "plan", id: planId }, max_cost: declaredPlanCap };
+      const budgetSources = planSource
+        ? [...inheritedAuthority.sources, planSource]
+        : inheritedAuthority.sources;
+      const resolvedAuthority = {
+        ...inheritedAuthority,
+        ...resolveBudgetSources(budgetSources),
+        ownership: planSource
+          ? [...inheritedAuthority.ownership, { source: planSource.source, authority: "plan_declaration" as const }]
+          : inheritedAuthority.ownership,
+      };
+      const budgetCap = resolvedAuthority.effective.max_cost;
+      const approval = decidePlanApproval(graph, { budgetCap, budgetSources });
+      // Node declarations remain model-authored execution contracts. They may
+      // narrow a Plan, but every durable reference still has to exist.
+      await assertBudgetSourceReferences(client, identity.spaceId, [
+        ...budgetSources.filter((source) =>
+          source.source.kind !== "plan" || source.source.id !== planId
+        ),
+        ...graph.nodes.flatMap(budgetSourcesFromNode),
+      ]);
       const current = existing.rows[0];
       if (current?.root_run_id) {
         const root = await client.query<{ status: string }>(`SELECT status FROM runs WHERE space_id = $1 AND id = $2 FOR SHARE`, [identity.spaceId, current.root_run_id]);
@@ -350,6 +367,7 @@ export class PgPlanRepository {
         graph,
         budgetCap,
         budgetSources,
+        budgetAuthority: resolvedAuthority,
         plannerMetadata: input.plannerMetadata ?? null,
         agentId: input.agentId,
         now,
@@ -708,6 +726,12 @@ async function insertPlanVersion(client: Queryable, input: {
   graph: MaterializedPlanGraph;
   budgetCap: number | null;
   budgetSources: RunBudgetSource[];
+  budgetAuthority: Omit<CanonicalBudgetAuthority, "ownership"> & {
+    ownership: Array<CanonicalBudgetAuthority["ownership"][number] | {
+      source: RunBudgetSource["source"];
+      authority: "plan_declaration";
+    }>;
+  };
   plannerMetadata: Record<string, unknown> | null;
   agentId: string;
   now: string;
@@ -721,7 +745,13 @@ async function insertPlanVersion(client: Queryable, input: {
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15, $15)`,
     [input.id, input.spaceId, input.planId, input.version, input.referenceWorkflowVersionId, input.plannerMode, input.status,
       input.planningRunId, input.planningToolCallId, input.graph.nodes.length, input.graph.depth,
-      JSON.stringify({ cap: input.budgetCap, sources: input.budgetSources }),
+      JSON.stringify({
+        cap: input.budgetCap,
+        sources: input.budgetSources,
+        effective: input.budgetAuthority.effective,
+        resolution: input.budgetAuthority.resolution,
+        ownership: input.budgetAuthority.ownership,
+      }),
       JSON.stringify({ graphVersion: input.graph.graphVersion, definition: input.graph.definition, planner_metadata: input.plannerMetadata ?? {} }), input.agentId, input.now],
   );
 }
@@ -768,7 +798,7 @@ function budgetSourcesForNode(
   const sources = [...inherited];
   const declared = Array.isArray(node.budget_sources_json) ? node.budget_sources_json.filter((value): value is RunBudgetSource => {
     const source = recordValue(recordValue(value).source).kind;
-    return ["direct", "task", "automation", "workflow", "delegation", "plan"].includes(String(source));
+    return ["direct", "space", "task", "automation", "workflow", "delegation", "plan"].includes(String(source));
   }) : [];
   sources.push(...declared);
   if (node.max_runs !== null || node.max_cost !== null || node.max_duration_seconds !== null) {
@@ -784,13 +814,7 @@ function budgetSourcesForNode(
 
 function budgetSourcesFromPlan(value: unknown): RunBudgetSource[] {
   const sources = recordValue(value).sources;
-  return Array.isArray(sources) ? sources.filter((item): item is RunBudgetSource => ["direct", "task", "automation", "workflow", "delegation", "plan"].includes(String(recordValue(recordValue(item).source).kind))) : [];
-}
-
-function budgetSourcesFromContract(kind: RunBudgetSource["source"]["kind"], id: string, value: unknown): RunBudgetSource[] {
-  const contract = recordValue(value);
-  const hasBudget = ["max_runs", "max_attempts", "max_cost", "max_duration_seconds"].some((key) => contract[key] !== undefined && contract[key] !== null);
-  return hasBudget ? [{ source: { kind, id }, max_runs: positiveIntegerOrNull(contract.max_runs), max_attempts: positiveIntegerOrNull(contract.max_attempts), max_cost: nonNegativeNumberOrNull(contract.max_cost), max_duration_seconds: positiveIntegerOrNull(contract.max_duration_seconds) }] : [];
+  return Array.isArray(sources) ? sources.filter((item): item is RunBudgetSource => ["direct", "space", "task", "automation", "workflow", "delegation", "plan"].includes(String(recordValue(recordValue(item).source).kind))) : [];
 }
 
 function declaredBudgetCap(value: unknown): number | null {

@@ -15,7 +15,7 @@ import { CustomSourceMaterializationService } from "./customSourceMaterializer";
 import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter";
 import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch";
 import { CustomSourceCredentialService } from "./customSourceCredentialService";
-import { computeNextCheckAt } from "../scanSchedule";
+import { computeNextCheckAt } from "../sourceScanCadence";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,

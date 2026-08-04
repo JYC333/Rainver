@@ -20,7 +20,7 @@ async function applyWorkflowExecutionCheckpoint(context: ProposalApplyContext): 
   if (node.status !== "waiting_for_review" || node.approval_proposal_id !== context.proposal.id) throw new HttpError(409, "Workflow Execution node is not awaiting this checkpoint proposal");
   const now = new Date().toISOString();
   await context.db.query(`UPDATE workflow_execution_nodes SET status = 'done', blocked_reason = NULL, approval_proposal_id = NULL, updated_at = $4 WHERE id = $1 AND execution_id = $2 AND space_id = $3`, [nodeId, executionId, context.proposal.space_id, now]);
-  await new WorkflowExecutionService().reconcile(context.db, context.proposal.space_id, executionId, context.userId);
+  await new WorkflowExecutionService(context.config).reconcile(context.db, context.proposal.space_id, executionId, context.userId);
   return { result_type: "workflow_execution_checkpoint", result: { workflow_execution_id: executionId, node_id: nodeId, status: "completed" } };
 }
 

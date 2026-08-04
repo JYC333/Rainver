@@ -44,9 +44,12 @@ export class ProjectResearchReportRepository {
     );
     if (!rows.rows[0]) throw new HttpError(404, "Research report not found or not accessible");
     const row = rows.rows[0];
-    const profile = await this.db.query<{ research_question: string | null }>(
-      `SELECT research_question FROM project_research_profiles WHERE space_id=$1 AND project_id=$2 LIMIT 1`,
-      [identity.spaceId, projectId],
+    // "Current" question means the live workflow's question now, not the
+    // immutable value this report was generated against (row.research_question).
+    const workflow = await this.db.query<{ research_question: string | null }>(
+      `SELECT state_json->>'research_question' AS research_question
+         FROM project_research_workflows WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+      [identity.spaceId, projectId, row.workflow_id],
     );
     const references = await resolveResearchReportReferences(this.db, identity, objectValue(row.content_json));
     return {
@@ -61,7 +64,7 @@ export class ProjectResearchReportRepository {
         ...(row.literature_matrix_artifact_id ? [{ kind: "literature_matrix", artifact_id: row.literature_matrix_artifact_id }] : []),
         ...(row.integrity_artifact_id ? [{ kind: "integrity", artifact_id: row.integrity_artifact_id }] : []),
       ],
-      current_research_question: profile.rows[0]?.research_question ?? null,
+      current_research_question: workflow.rows[0]?.research_question ?? null,
       resolved_references: references.resolved,
     };
   }

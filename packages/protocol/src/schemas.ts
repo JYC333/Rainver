@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod";
-import { IdSchema, ISODateTimeSchema, SpaceOversightModeSchema } from "./common.js";
+import { IdSchema, ISODateTimeSchema, RunTriggerOriginSchema, SpaceOversightModeSchema } from "./common.js";
 
 // ---------------------------------------------------------------------------
 // Lightweight references (id + the minimum a UI needs to label the entity)
@@ -105,7 +105,7 @@ export const RunDTOSchema = z.object({
   active_route_decision_id: IdSchema.nullish(),
   status: z.string(),
   run_type: z.string(),
-  trigger_origin: z.string(),
+  trigger_origin: RunTriggerOriginSchema,
   mode: z.string(),
   project_folder_id: IdSchema.nullish(),
   session_id: IdSchema.nullish(),

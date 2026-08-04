@@ -20,7 +20,10 @@ import { readCodexTokenUsage } from "./codexUsageReader";
 import { probeClaudeQuota, type QuotaResult } from "./usageProbe";
 import { probeClaudeOAuthQuota } from "./claudeOAuthUsageProbe";
 import { probeCodexQuota } from "./codexUsageProbe";
-import { CLI_USAGE_REFRESH_INTERVAL_MS } from "./usageScheduler";
+import { CLI_USAGE_REFRESH_INTERVAL_SECONDS } from "./usageScheduler";
+
+/** The settings contract exposes milliseconds; the scheduled task uses seconds. */
+const CLI_USAGE_REFRESH_INTERVAL_MS = CLI_USAGE_REFRESH_INTERVAL_SECONDS * 1000;
 import { RuntimeToolRegistry } from "../../runtimeTools";
 import { resolveNetworkProfileRepository } from "../../networkProfiles";
 import { isSpaceOwnerOrAdmin } from "../../access/roles";
@@ -98,6 +101,7 @@ export interface QuotaUsage {
   week_resets: string | null;
   checked_at: string | null;
   error: string | null;
+  source?: "live_probe" | "run_piggyback";
 }
 
 export interface CliUsageEntry {
@@ -459,6 +463,12 @@ export class CliCredentialBroker {
     return result;
   }
 
+  /** Server-internal admission read; returns telemetry only, never credentials. */
+  async quotaForProfile(runtime: string, profileId: string): Promise<QuotaUsage | null> {
+    if (runtime !== "claude_code" && runtime !== "codex_cli") return null;
+    return this.readQuotaCache(runtime, profileId);
+  }
+
   /**
    * Run the live quota probe for a runtime, persist it to the cache, and return
    * the combined (tokens + fresh quota) entry. Runtimes without a quota adapter
@@ -579,6 +589,7 @@ export class CliCredentialBroker {
         }
       }
       quota.checked_at = new Date().toISOString();
+      quota.source = "live_probe";
       if (profile) await this.writeQuotaCache(runtime, profile.id, quota);
     } else if (runtime === "codex_cli") {
       if (profile) tokens = await readCodexTokenUsage(profile.source_path);
@@ -606,6 +617,7 @@ export class CliCredentialBroker {
         }
       }
       quota.checked_at = new Date().toISOString();
+      quota.source = "live_probe";
       if (profile) await this.writeQuotaCache(runtime, profile.id, quota);
     }
     return { runtime, label: cfg.label, tokens, quota };
@@ -655,6 +667,7 @@ export class CliCredentialBroker {
     };
     quota.available = true;
     quota.checked_at = new Date().toISOString();
+    quota.source = "run_piggyback";
     quota.error = live.status === "rejected"
       ? "The CLI subscription quota rejected this request."
       : null;

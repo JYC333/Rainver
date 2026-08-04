@@ -15,13 +15,7 @@ import { ProjectCorpusRepository } from "../projects/corpusRepository";
 import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
 import { PgUsageRepository, type UsageRunSummaryRecord } from "../usage/repository";
 
-const OUTPUT_TYPES = new Set(["paper", "thesis", "report", "review", "proposal", "other"]);
-const PAPER_TYPES = new Set(["empirical", "theory", "survey", "review", "position", "case_study", "other"]);
-const CITATION_STYLES = new Set(["apa", "mla", "chicago", "ieee", "acm", "vancouver", "other"]);
-const EXPERIMENT_INTAKE = new Set(["none", "code_experiments", "human_study", "both", "undecided"]);
-const WORKFLOW_TYPES = new Set(["literature_review", "empirical_paper", "theory_paper", "paper_review", "revision"]);
-const WORKFLOW_MODES = new Set(["manual", "agent_assisted", "autonomous"]);
-const CHECKPOINT_TYPES = new Set(["profile_approval", "screening_gate", "idea_review", "integrity_gate", "manuscript_gate", "review_gate", "other"]);
+const CHECKPOINT_TYPES = new Set(["screening_gate", "idea_review", "integrity_gate", "manuscript_gate", "review_gate", "other"]);
 const SCREENING_REVIEW_ITEM_LIMIT = 200;
 const CHECKPOINT_DECISIONS = new Set(["approved", "rejected", "waived"]);
 const SUPPORT_STATUSES = new Set(["unsupported", "supported", "partial", "gap_declared"]);
@@ -29,26 +23,6 @@ const RESEARCH_OBJECT_ACCESS = contentResourceDefinition("space_object")!;
 const RESEARCH_SOURCE_ACCESS = contentResourceDefinition("source_item")!;
 const RESEARCH_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const RESEARCH_ANNOTATION_ACCESS = contentResourceDefinition("reader_annotation")!;
-
-interface ProfileRow {
-  id: string;
-  project_id: string;
-  preset_key: string;
-  research_question: string | null;
-  working_title: string | null;
-  domain: string | null;
-  output_type: string | null;
-  paper_type: string | null;
-  citation_style: string | null;
-  target_venue: string | null;
-  language: string;
-  experiment_intake_declaration: string;
-  status: string;
-  approved_by_user_id: string | null;
-  approved_at: unknown;
-  created_at: unknown;
-  updated_at: unknown;
-}
 
 interface WorkflowRow {
   id: string;
@@ -58,6 +32,7 @@ interface WorkflowRow {
   status: string;
   mode: string;
   state_json: unknown;
+  primary_thread_id: string | null;
   started_by_user_id: string | null;
   started_run_id: string | null;
   created_at: unknown;
@@ -257,15 +232,9 @@ interface ClaimLinkRow {
   updated_at: unknown;
 }
 
-const PROFILE_COLUMNS = `
-  id, project_id, preset_key, research_question, working_title, domain, output_type,
-  paper_type, citation_style, target_venue, language, experiment_intake_declaration,
-  status, approved_by_user_id, approved_at, created_at, updated_at
-`;
-
 const WORKFLOW_COLUMNS = `
   id, project_id, workflow_type, current_stage, status, mode, state_json,
-  started_by_user_id, started_run_id, created_at, updated_at
+  primary_thread_id, started_by_user_id, started_run_id, created_at, updated_at
 `;
 
 const CLAIM_LINK_SELECT = `
@@ -283,28 +252,6 @@ function requiredDateIso(value: unknown): string {
   return dateIso(value) ?? new Date(0).toISOString();
 }
 
-function profileOut(row: ProfileRow): Record<string, unknown> {
-  return {
-    id: row.id,
-    project_id: row.project_id,
-    preset_key: row.preset_key,
-    research_question: row.research_question,
-    working_title: row.working_title,
-    domain: row.domain,
-    output_type: row.output_type,
-    paper_type: row.paper_type,
-    citation_style: row.citation_style,
-    target_venue: row.target_venue,
-    language: row.language,
-    experiment_intake_declaration: row.experiment_intake_declaration,
-    status: row.status,
-    approved_by_user_id: row.approved_by_user_id,
-    approved_at: dateIso(row.approved_at),
-    created_at: requiredDateIso(row.created_at),
-    updated_at: requiredDateIso(row.updated_at),
-  };
-}
-
 function workflowOut(row: WorkflowRow): Record<string, unknown> {
   return {
     id: row.id,
@@ -314,6 +261,7 @@ function workflowOut(row: WorkflowRow): Record<string, unknown> {
     status: row.status,
     mode: row.mode,
     state_json: objectValue(row.state_json),
+    primary_thread_id: row.primary_thread_id,
     started_by_user_id: row.started_by_user_id,
     started_run_id: row.started_run_id,
     created_at: requiredDateIso(row.created_at),
@@ -415,93 +363,6 @@ export class ProjectResearchRepository {
     this.usageRepository = new PgUsageRepository(db);
   }
 
-  // --- Profile ---------------------------------------------------------
-
-  async getProfile(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown> | null> {
-    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const row = await this.profileRow(identity.spaceId, projectId);
-    return row ? profileOut(row) : null;
-  }
-
-  async upsertProfile(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const outputType = enumValue(body.output_type, OUTPUT_TYPES, "output_type");
-    const paperType = enumValue(body.paper_type, PAPER_TYPES, "paper_type");
-    const citationStyle = enumValue(body.citation_style, CITATION_STYLES, "citation_style");
-    const experimentIntake = enumValue(body.experiment_intake_declaration, EXPERIMENT_INTAKE, "experiment_intake_declaration") ?? "undecided";
-    const now = new Date().toISOString();
-    const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO project_research_profiles (
-         id, space_id, project_id, research_question, working_title, domain, output_type,
-         paper_type, citation_style, target_venue, language, experiment_intake_declaration,
-         status, created_at, updated_at
-       ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7,
-         $8, $9, $10, $11, $12,
-         'draft', $13, $13
-       )
-       ON CONFLICT (space_id, project_id)
-       DO UPDATE SET research_question = EXCLUDED.research_question,
-                     working_title = EXCLUDED.working_title,
-                     domain = EXCLUDED.domain,
-                     output_type = EXCLUDED.output_type,
-                     paper_type = EXCLUDED.paper_type,
-                     citation_style = EXCLUDED.citation_style,
-                     target_venue = EXCLUDED.target_venue,
-                     language = EXCLUDED.language,
-                     experiment_intake_declaration = EXCLUDED.experiment_intake_declaration,
-                     status = 'draft',
-                     approved_by_user_id = NULL,
-                     approved_at = NULL,
-                     updated_at = EXCLUDED.updated_at`,
-      [
-        id,
-        identity.spaceId,
-        projectId,
-        optionalString(body.research_question),
-        optionalString(body.working_title),
-        optionalString(body.domain),
-        outputType,
-        paperType,
-        citationStyle,
-        optionalString(body.target_venue),
-        optionalString(body.language) ?? "en",
-        experimentIntake,
-        now,
-      ],
-    );
-    const row = await this.profileRow(identity.spaceId, projectId);
-    if (!row) throw new HttpError(500, "Failed to upsert research profile");
-    return profileOut(row);
-  }
-
-  async approveProfile(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const row = await this.profileRow(identity.spaceId, projectId);
-    if (!row) throw new HttpError(404, "Research profile not found");
-    if (row.status === "archived") throw new HttpError(422, "Cannot approve an archived research profile");
-    if (row.status === "approved") return profileOut(row);
-    const now = new Date().toISOString();
-    await this.db.query(
-      `UPDATE project_research_profiles
-          SET status = 'approved', approved_by_user_id = $3, approved_at = $4, updated_at = $4
-        WHERE space_id = $1 AND project_id = $2`,
-      [identity.spaceId, projectId, identity.userId, now],
-    );
-    const updated = await this.profileRow(identity.spaceId, projectId);
-    if (!updated) throw new HttpError(500, "Failed to approve research profile");
-    return profileOut(updated);
-  }
-
-  private async profileRow(spaceId: string, projectId: string): Promise<ProfileRow | null> {
-    const result = await this.db.query<ProfileRow>(
-      `SELECT ${PROFILE_COLUMNS} FROM project_research_profiles WHERE space_id = $1 AND project_id = $2 LIMIT 1`,
-      [spaceId, projectId],
-    );
-    return result.rows[0] ?? null;
-  }
-
   // --- Workflows ---------------------------------------------------------
 
   async listWorkflows(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
@@ -560,39 +421,6 @@ export class ProjectResearchRepository {
       integrity_alerts: Array.isArray(row.integrity_alerts_json) ? row.integrity_alerts_json : [],
       scan_count: row.scan_count,
     }));
-  }
-
-  async startWorkflow(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    return withQueryableTransaction(this.db, async (db) => {
-      await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      return new ProjectResearchRepository(db).startWorkflowLocked(identity, projectId, body);
-    });
-  }
-
-  private async startWorkflowLocked(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const profile = await this.profileRow(identity.spaceId, projectId);
-    if (!profile || profile.status !== "approved") {
-      throw new HttpError(422, "The research profile must be approved before starting a workflow");
-    }
-    const workflowType = enumValue(body.workflow_type, WORKFLOW_TYPES, "workflow_type");
-    if (!workflowType) throw new HttpError(422, "workflow_type is required");
-    const mode = enumValue(body.mode, WORKFLOW_MODES, "mode") ?? "manual";
-    const now = new Date().toISOString();
-    const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO project_research_workflows (
-       id, space_id, project_id, workflow_type, status, mode, state_json,
-         started_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, 'active', $5, $6::jsonb, $7, $8, $8)`,
-      [id, identity.spaceId, projectId, workflowType, mode, JSON.stringify({
-        research_question: profile.research_question,
-        research_question_version: 1,
-      }), identity.userId, now],
-    );
-    const row = await this.workflowRow(identity.spaceId, projectId, id);
-    if (!row) throw new HttpError(500, "Failed to start research workflow");
-    return workflowOut(row);
   }
 
   async runStage(
@@ -850,6 +678,8 @@ export class ProjectResearchRepository {
         failed_items: Number(summaryRow?.failed_items ?? 0),
         processing_status: classified >= sourceTotal && sourceTotal > 0 ? "complete" : sourceTotal === 0 ? "empty" : "incomplete",
         partial: machineResult.partial === true,
+        coverage_degraded: machineResult.coverage_degraded === true,
+        deferred_source_count: Array.isArray(machineResult.deferred_sources) ? machineResult.deferred_sources.length : 0,
       };
       const isEmpty = summary.processing_status === "empty";
       return {

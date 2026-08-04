@@ -91,6 +91,24 @@ export class ResearchContextRepository {
     const protocol = await loadProtocol();
     return mapContextVersion(result.rows[0], protocol.ResearchContextSchema.parse);
   }
+
+  async listAssessmentConfirmations(
+    spaceId: string,
+    projectId: string,
+    threadId: string,
+  ): Promise<ResearchContextVersion[]> {
+    const result = await this.db.query<ContextVersionRow>(
+      `SELECT id,project_id,version,context_json,assessment_json,provenance_json,created_at
+         FROM project_research_context_versions
+        WHERE space_id=$1 AND project_id=$2
+          AND provenance_json->>'source'='question_assessment_confirmation'
+          AND provenance_json->>'thread_id'=$3
+        ORDER BY created_at DESC, version DESC`,
+      [spaceId, projectId, threadId],
+    );
+    const protocol = await loadProtocol();
+    return result.rows.map(row => mapContextVersion(row, protocol.ResearchContextSchema.parse));
+  }
 }
 
 function mapContextVersion(row: ContextVersionRow, parseContext: (value: unknown) => ResearchContext): ResearchContextVersion {

@@ -13,6 +13,8 @@ import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
 import { computeNextRunAt, InvalidScheduleError } from "../src/modules/automations/schedule";
 import { AutomationService } from "../src/modules/automations/service";
 import type { AutomationRow } from "../src/modules/automations/repository";
+import { registerRetrievalMaintenanceAutomationTarget } from "../src/modules/retrieval/automationTarget";
+import { registerContextOpsReviewCycleAutomationTarget } from "../src/modules/contextOps/automationTarget";
 import {
   isValidTimezone,
   PgDailyReportSettingsRepository,
@@ -33,8 +35,8 @@ vi.mock("../src/db/pool", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/modules/retrieval", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/retrieval")>();
+vi.mock("../src/modules/retrieval/maintenance/service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/retrieval/maintenance/service")>();
   return {
     ...actual,
     RetrievalMaintenanceService: vi.fn().mockImplementation(() => ({
@@ -608,6 +610,8 @@ describe("AutomationService policy preflight", () => {
   const configWithoutDb = loadConfig({});
 
   beforeEach(() => {
+    registerRetrievalMaintenanceAutomationTarget();
+    registerContextOpsReviewCycleAutomationTarget();
     vi.mocked(enforce).mockReset();
     maintenanceScanMock.mockReset();
     dbPoolMock.current = null;
@@ -649,6 +653,46 @@ describe("AutomationService policy preflight", () => {
       }),
     ).resolves.toMatchObject({ id: "auto-1" });
     expect(enforce).toHaveBeenCalledOnce();
+  });
+
+  it("rejects targets that are absent from the protocol registry", async () => {
+    const repo = new FakeAutomationRepository(sampleAutomation());
+    const service = new AutomationService(configWithoutDb, repo);
+    await expect(
+      service.create({
+        spaceId: "space-1",
+        ownerUserId: "owner-1",
+        body: {
+          name: "Unknown target",
+          agent_id: "agent-1",
+          config_json: { target_type: "quietly_hardcoded_target" },
+        },
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: expect.stringContaining("Unsupported automation target_type"),
+    });
+    expect(repo.createInputs).toHaveLength(0);
+  });
+
+  it("does not let users create the registered control-plane target", async () => {
+    const repo = new FakeAutomationRepository(sampleAutomation());
+    const service = new AutomationService(configWithoutDb, repo);
+    await expect(
+      service.create({
+        spaceId: "space-1",
+        ownerUserId: "owner-1",
+        body: {
+          name: "Autonomous work",
+          agent_id: "agent-1",
+          config_json: { target_type: "autonomous_tick" },
+        },
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: expect.stringContaining("not user-selectable"),
+    });
+    expect(repo.createInputs).toHaveLength(0);
   });
 
   it("passes active membership_role into automation policy checks", async () => {

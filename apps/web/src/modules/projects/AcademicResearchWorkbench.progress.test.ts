@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectOperation } from '../../types/api'
-import { researchOperationDetail, researchOperationPercent, synthesisHealth, workflowQuestionNeedsSync } from './AcademicResearchWorkbench'
-import type { Project, ProjectResearchWorkflow } from '../../types/api'
+import { researchOperationDetail, researchOperationPercent, researchOperationSteps, synthesisHealth } from './AcademicResearchWorkbench'
 
 function operation(overrides: Partial<ProjectOperation['progress_json']> = {}): ProjectOperation {
   return {
@@ -21,13 +20,6 @@ function operation(overrides: Partial<ProjectOperation['progress_json']> = {}): 
 }
 
 describe('AcademicResearchWorkbench operation progress', () => {
-  it('detects a changed question from the workflow snapshot', () => {
-    const project = { current_focus: 'New question' } as Project
-    const workflow = { state_json: { research_question: 'Old question' } } as unknown as ProjectResearchWorkflow
-    expect(workflowQuestionNeedsSync(project, workflow)).toBe(true)
-    expect(workflowQuestionNeedsSync({ current_focus: 'Old question' } as Project, workflow)).toBe(false)
-  })
-
   it('reports backfill windows and ingestion records', () => {
     expect(researchOperationDetail(operation({
       backfill_progress: {
@@ -41,6 +33,22 @@ describe('AcademicResearchWorkbench operation progress', () => {
         updated_at: '2026-07-15T00:00:00.000Z',
       },
     }))).toBe('8/20 history windows · 437 ingestion records')
+  })
+
+  it('shows deferred source windows as background recovery instead of failure', () => {
+    expect(researchOperationDetail(operation({
+      backfill_progress: {
+        total_segments: 2,
+        completed_segments: 1,
+        failed_segments: 0,
+        deferred_segments: 1,
+        running_segments: 0,
+        pending_segments: 1,
+        items_ingested: 10,
+        plans: [],
+        updated_at: '2026-07-15T00:00:00.000Z',
+      },
+    }))).toBe('1/2 history windows · 10 ingestion records · 1 retrying in background')
   })
 
   it('shows unique papers separately from ingestion records', () => {
@@ -105,14 +113,36 @@ describe('AcademicResearchWorkbench operation progress', () => {
         total_batches: 9,
         completed_batches: 2,
         active_batches: 1,
+        queued_batches: 0,
+        running_batches: 1,
         failed_batches: 0,
         started_at: '2026-07-15T00:00:00.000Z',
         updated_at: '2026-07-15T00:05:00.000Z',
         message: 'Screening batch 3 of 9 is in progress · 20/87 papers classified.',
       },
     })
-    expect(researchOperationDetail(value)).toBe('2/9 screening batches · 20/87 papers classified')
+    expect(researchOperationDetail(value)).toBe('2/9 screening batches · model processing · 20/87 papers classified')
     expect(researchOperationPercent(value)).toBeGreaterThan(40)
+  })
+
+  it('distinguishes a screening batch waiting in the queue from model processing', () => {
+    const value = operation({
+      current_stage: 'screening',
+      screening_progress: {
+        phase: 'screening_batches',
+        total_items: 4,
+        classified_items: 0,
+        total_batches: 1,
+        completed_batches: 0,
+        active_batches: 1,
+        queued_batches: 1,
+        running_batches: 0,
+      },
+    })
+    expect(researchOperationDetail(value)).toBe('0/1 screening batches · queued · 0/4 papers classified')
+    expect(researchOperationSteps(value)[2]?.title).toBe('Screen papers')
+    value.status = 'waiting_review'
+    expect(researchOperationSteps(value)[2]?.title).toBe('Review screening')
   })
 
   it('reports comparison batches remaining and papers compared', () => {

@@ -8,6 +8,8 @@ import {
 describe("Project Research P0 structured contracts", () => {
   it("accepts the bounded FINER question refinement shape", () => {
     const output = {
+      reply: "The current topic needs a bounded population and outcome.",
+      recommended_question: "How does tool-use planning affect completion rate for coding agents?",
       assessment: {
         answerable: false,
         finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 },
@@ -23,6 +25,8 @@ describe("Project Research P0 structured contracts", () => {
 
   it("rejects clarifying questions without structured options metadata", () => {
     const output = {
+      reply: "The question is answerable.",
+      recommended_question: "How does tool-use planning affect completion rate for coding agents?",
       assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
       suggested_questions: ["How does tool-use planning affect completion rate for coding agents?"],
       sub_questions: [],

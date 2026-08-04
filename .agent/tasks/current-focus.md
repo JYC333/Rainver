@@ -6,6 +6,18 @@ default-Assistant chat entry are gone, replaced by `/rooms` — see
 and ADRs 0002/0004/0007/0008 for the delivered state. The current work is
 controlled acceptance execution before unattended hardening and dogfooding.
 
+**Open question, not silently resolved (2026-07-26):** the Always-on
+autonomous-work capability (`autonomous_tick`, see
+[modules/autonomy.md](../modules/autonomy.md) and
+[modules/automations.md](../modules/automations.md)) is fully implemented and
+self-service activatable by any Space member, including bounded unattended
+launch, and shipped without item 1 below being recorded as passed here. Either
+controlled acceptance was satisfied elsewhere and this file simply never
+recorded it, or autonomous-launch capability shipped ahead of its own stated
+entry gate. Confirm which, and record the resolution here (or fold Always-on
+explicitly into the acceptance script below) before treating it as safe for
+unattended production dogfooding.
+
 ## Active delivery sequence
 
 ### 1 — Controlled product acceptance
@@ -54,10 +66,14 @@ the unattended completion gate passes.
 
 Usage-triggered Project/Inquiry defers live in the
 [Project / Inquiry defer register](project-inquiry-defer-register.md).
-Orchestration/evolution defers live in
-[../plans/orchestration-and-self-evolution-plan.md](../plans/orchestration-and-self-evolution-plan.md).
+Verification Engine, Workflow-lifecycle, and Artifact-provenance follow-ups
+live in
+[../plans/product-capability-followups-plan.md](../plans/product-capability-followups-plan.md).
 General hardening/watch items live in
 [../plans/hardening-blind-spot-remediation-plan.md](../plans/hardening-blind-spot-remediation-plan.md).
+The Always-on autonomous-work chain is delivered; current-state behavior
+lives in [modules/autonomy.md](../modules/autonomy.md) and
+[modules/automations.md](../modules/automations.md), not in a plan.
 
 Do not pull a deferred item into the active sequence without its recorded
 trigger or a newly observed correctness/security requirement.

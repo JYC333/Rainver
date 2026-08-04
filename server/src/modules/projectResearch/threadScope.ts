@@ -1,5 +1,5 @@
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
+import { HttpError, objectValue, optionalString } from "../routeUtils/common";
 import { InquiryThreadService } from "../inquiry/threadService";
 
 export interface ResearchThreadScopeRef {
@@ -7,6 +7,48 @@ export interface ResearchThreadScopeRef {
   version: number;
   kind: "question";
   statement: string;
+}
+
+export function normalizeThreadScope(value: unknown): ResearchThreadScopeRef[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const row = objectValue(item);
+    const threadId = optionalString(row.thread_id);
+    const statement = optionalString(row.statement);
+    const version = row.version;
+    if (!threadId || !statement || typeof version !== "number" || !Number.isInteger(version) || version < 1) return [];
+    return [{ thread_id: threadId, version, kind: "question" as const, statement }];
+  });
+}
+
+export interface ResearchThreadDriftResult {
+  /** True when the pinned ref no longer matches the Thread's live row (or the Thread is gone/inactive). */
+  drifted: boolean;
+  /** The Thread's current row, or null if it no longer exists/is no longer an active Question. */
+  current: { id: string; version: number; statement: string } | null;
+}
+
+/**
+ * The pinned Inquiry Thread is the sole Question authority for a research
+ * Workflow — Project.current_focus and the legacy research profile are
+ * presentation/setup state, never compared here.
+ */
+export async function checkPinnedThreadDrift(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  pinned: ResearchThreadScopeRef,
+  options?: { forUpdate?: boolean },
+): Promise<ResearchThreadDriftResult> {
+  const result = await db.query<{ id: string; version: number; statement: string }>(
+    `SELECT id, version, statement FROM inquiry_threads
+      WHERE id=$1 AND space_id=$2 AND project_id=$3
+        AND kind='question' AND lifecycle_status='active'${options?.forUpdate ? " FOR UPDATE" : ""}`,
+    [pinned.thread_id, spaceId, projectId],
+  );
+  const row = result.rows[0] ?? null;
+  const drifted = !row || row.version !== pinned.version || row.statement !== pinned.statement;
+  return { drifted, current: row };
 }
 
 /**

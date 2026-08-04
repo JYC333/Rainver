@@ -58,7 +58,9 @@ and grants only the Agent planning action. It does not create a Plan.
 During that Run, the Agent-only `task.plan.propose` action submits a structured
 `workflow_definition.v1` through `PgPlanRepository.createPlanFromAgent`. The
 service derives Agent and planning Run identity from the current Run, checks
-Task/Space ownership, validates the graph and budget sources, and uses the
+Task/Space ownership, loads inherited Space/Automation/Task/Workflow budget
+sources only from server-owned settings and immutable snapshots, validates the
+graph and budget sources, and uses the
 planning Run plus tool-call id as an idempotency key. A repeated tool call
 returns the existing PlanVersion.
 
@@ -165,6 +167,9 @@ Neither mechanism creates, adopts, or reschedules the other's nodes.
 - Workflow asset/version pages manage version lifecycle, evaluation, promotion,
   and Automation references; they do not create Plans.
 
-There is no Workflow Canvas in this scope. D2.1 still selects existing
-candidate Runs rather than starting a candidate Run automatically. Runtime
-session checkpoint/resume remains A3.1.
+There is no Workflow Canvas in this scope. Automatic candidate-run launch is
+still open; it selects existing candidate Runs rather than starting one
+automatically, and is tracked as an `evaluation_candidate` candidate kind in
+the Always-on section of the orchestration plan. Runtime session
+checkpoint/resume is delivered — see the "Runtime session" section of ADR 0007
+and [../modules/rooms.md](../modules/rooms.md).

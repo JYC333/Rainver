@@ -16,6 +16,7 @@ describe('research setup draft', () => {
         initial_intake: { history_mode: 'all_available', max_items: 10000 },
         execution: {},
       },
+      primary_thread_id: null,
       started_by_user_id: null,
       started_run_id: null,
       created_at: '2026-07-15T00:00:00.000Z',

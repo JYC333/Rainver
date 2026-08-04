@@ -23,6 +23,7 @@ import { streamingModule } from "../modules/streaming";
 import { notificationsModule } from "../modules/notifications";
 import { jobsModule } from "../modules/jobs";
 import { automationsModule } from "../modules/automations";
+import { autonomyModule } from "../modules/autonomy";
 import { dailyReportsModule } from "../modules/dailyReports";
 import { backupsModule } from "../modules/backups";
 import { providersModule } from "../modules/providers";
@@ -160,6 +161,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   projectFolderExecutionConfigsModule,
   projectFoldersModule,
   jobsModule,
+  autonomyModule,
   automationsModule,
   dailyReportsModule,
   backupsModule,

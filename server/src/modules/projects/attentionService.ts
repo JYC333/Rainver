@@ -44,6 +44,9 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
       reason: `${row.kind} operation is waiting for review`,
       due_at: null,
       blocking_refs: [],
+      // Operations Area now renders a research operation's own progress row,
+      // including its screening/idea-review Checkpoint decide controls, so
+      // every operation kind (research included) shares one destination.
       action_descriptors: [{ label: "Review", href: `/projects/${projectId}/operations?open=${row.id}` }],
       href: `/projects/${projectId}/operations?open=${row.id}`,
     }));

@@ -33,6 +33,7 @@ import {
 } from "../agentGroups/runtimeDelegationMaterializer";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
 import { runOutputResult } from "./orchestrationResults";
+import { runFinalizationReconcilerRegistry } from "./finalizationReconcilerRegistry";
 
 export interface RunMaterializationResult {
   items: RunMaterializationItemSummary[];
@@ -83,7 +84,9 @@ export class RunMaterializationService {
       {
         reconcileForRun: async (spaceId: string, runId: string, userId: string) => {
           await new PlanExecutionService(db).reconcileForRun(spaceId, runId, userId);
-          await new WorkflowExecutionService().reconcileForRun(db, spaceId, runId, userId);
+          await new WorkflowExecutionService(config).reconcileForRun(db, spaceId, runId, userId);
+          const run = await new PgRunRepository(db).getRun(spaceId, runId);
+          if (run) await runFinalizationReconcilerRegistry.reconcileAll(db, run);
         },
       },
       new PgRunSupervisor(db, new EvolutionSignalEmitter(db)),

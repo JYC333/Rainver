@@ -339,7 +339,6 @@ export class AgentToolGateway {
         definitionJson: body.definition_json,
         referenceWorkflowVersionId: typeof body.reference_workflow_version_id === "string" ? body.reference_workflow_version_id : null,
         budgetCap: typeof body.budget_cap === "number" ? body.budget_cap : null,
-        budgetSources: Array.isArray(body.budget_sources) ? body.budget_sources as never : undefined,
         plannerMetadata: body.planner_metadata && typeof body.planner_metadata === "object" && !Array.isArray(body.planner_metadata) ? body.planner_metadata as Record<string, unknown> : null,
       });
       return {

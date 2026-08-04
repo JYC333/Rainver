@@ -214,6 +214,14 @@ async function budgetSourceExists(
     );
     return result.rows.length > 0;
   }
+  if (kind === "space") {
+    if (id !== spaceId) return false;
+    const result = await db.query(
+      `SELECT 1 FROM spaces WHERE id = $1 LIMIT 1`,
+      [spaceId],
+    );
+    return result.rows.length > 0;
+  }
   if (kind === "automation") {
     const result = await db.query(
       `SELECT 1 FROM automations WHERE id = $1 AND space_id = $2 LIMIT 1`,
@@ -399,5 +407,5 @@ function isSource(value: unknown): value is RunContractSource {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const kind = (value as { kind?: unknown }).kind;
   return kind === "direct" || kind === "task" || kind === "automation"
-    || kind === "workflow" || kind === "delegation" || kind === "plan";
+    || kind === "space" || kind === "workflow" || kind === "delegation" || kind === "plan";
 }

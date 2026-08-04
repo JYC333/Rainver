@@ -8,7 +8,7 @@ import { CustomSourceMaterializationService } from "../customSources/customSourc
 import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch";
 import { cleanupSandbox } from "../customSources/customSourceRunner";
-import { computeNextCheckAt } from "../scanSchedule";
+import { computeNextCheckAt } from "../sourceScanCadence";
 import {
   getSourceChannelScanTask,
   listDueSourceChannelScanTasks,

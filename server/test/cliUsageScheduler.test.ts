@@ -1,22 +1,29 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  startCliUsageRefreshScheduler,
-  type CliUsageRefreshScheduler,
+  CLI_USAGE_REFRESH_INTERVAL_SECONDS,
+  createCliUsageRefreshTask,
 } from "../src/modules/providers";
 
-let scheduler: CliUsageRefreshScheduler | null = null;
+describe("createCliUsageRefreshTask", () => {
+  it("is a scheduled task, not a self-owned timer", () => {
+    const task = createCliUsageRefreshTask({
+      async listQuotaRefreshTargets() {
+        return [];
+      },
+      async refreshStaleCliQuota() {
+        return null;
+      },
+    });
+    // Timing, shutdown, failure alerting, and liveness belong to
+    // SchedulerRegistry; this module only declares the work and its cadence.
+    expect(task.name).toBe("cli_usage_quota_refresh");
+    expect(task.intervalSeconds).toBe(CLI_USAGE_REFRESH_INTERVAL_SECONDS);
+    expect(task.runOnStart).toBe(false);
+  });
 
-afterEach(() => {
-  scheduler?.stop();
-  scheduler = null;
-  vi.useRealTimers();
-});
-
-describe("startCliUsageRefreshScheduler", () => {
-  it("refreshes stale usage on the configured interval", async () => {
-    vi.useFakeTimers();
+  it("refreshes every target of every runtime with the configured max age", async () => {
     const calls: Array<{ runtime: string; maxAgeMs: number }> = [];
-    scheduler = startCliUsageRefreshScheduler(
+    const task = createCliUsageRefreshTask(
       {
         async listQuotaRefreshTargets() {
           return [
@@ -29,10 +36,10 @@ describe("startCliUsageRefreshScheduler", () => {
           return null;
         },
       },
-      { intervalMs: 50, maxAgeMs: 123, runtimes: ["claude_code"] },
+      { maxAgeMs: 123, runtimes: ["claude_code"] },
     );
 
-    await vi.advanceTimersByTimeAsync(50);
+    await task.run();
 
     expect(calls).toEqual([
       { runtime: "claude_code:space-1:user-1:profile-1", maxAgeMs: 123 },
@@ -40,14 +47,34 @@ describe("startCliUsageRefreshScheduler", () => {
     ]);
   });
 
-  it("does not start a second refresh while one is still running", async () => {
+  it("derives the default max age from the interval", async () => {
+    const seen: number[] = [];
+    const task = createCliUsageRefreshTask(
+      {
+        async listQuotaRefreshTargets() {
+          return [{ profile_id: "p", space_id: "s", owner_user_id: "u" }];
+        },
+        async refreshStaleCliQuota(_runtime, maxAgeMs) {
+          seen.push(maxAgeMs);
+          return null;
+        },
+      },
+      { intervalSeconds: 60, runtimes: ["claude_code"] },
+    );
+
+    await task.run();
+
+    expect(seen).toEqual([60_000]);
+  });
+
+  it("does not start a second pass while one is still running", async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => {
       release = resolve;
     });
     const calls: string[] = [];
 
-    scheduler = startCliUsageRefreshScheduler(
+    const task = createCliUsageRefreshTask(
       {
         async listQuotaRefreshTargets() {
           return [{ profile_id: "profile-1", space_id: "space-1", owner_user_id: "user-1" }];
@@ -58,11 +85,11 @@ describe("startCliUsageRefreshScheduler", () => {
           return null;
         },
       },
-      { intervalMs: 1_000_000, runtimes: ["claude_code"] },
+      { runtimes: ["claude_code"] },
     );
 
-    const first = scheduler.refreshDueUsage();
-    const second = scheduler.refreshDueUsage();
+    const first = task.run();
+    const second = task.run();
     await Promise.resolve();
     expect(calls).toEqual(["claude_code"]);
 
@@ -71,9 +98,8 @@ describe("startCliUsageRefreshScheduler", () => {
   });
 
   it("skips broker refresh when auto-refresh is disabled", async () => {
-    vi.useFakeTimers();
     let calls = 0;
-    scheduler = startCliUsageRefreshScheduler(
+    const task = createCliUsageRefreshTask(
       {
         async listQuotaRefreshTargets() {
           return [];
@@ -83,17 +109,17 @@ describe("startCliUsageRefreshScheduler", () => {
           return null;
         },
       },
-      { intervalMs: 50, isEnabled: () => false },
+      { isEnabled: () => false },
     );
 
-    await vi.advanceTimersByTimeAsync(50);
+    await task.run();
 
     expect(calls).toBe(0);
   });
 
   it("continues refreshing other profiles when one profile fails", async () => {
     const calls: string[] = [];
-    scheduler = startCliUsageRefreshScheduler(
+    const task = createCliUsageRefreshTask(
       {
         async listQuotaRefreshTargets() {
           return [
@@ -107,10 +133,10 @@ describe("startCliUsageRefreshScheduler", () => {
           return null;
         },
       },
-      { intervalMs: 1_000_000, runtimes: ["codex_cli"] },
+      { runtimes: ["codex_cli"] },
     );
 
-    await scheduler.refreshDueUsage();
+    await task.run();
 
     expect(calls).toEqual(["profile-1", "profile-2"]);
   });

@@ -28,7 +28,6 @@ export const agents = pgTable("agents", {
 	index("ix_agents_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_agents_status").using("btree", table.status.asc().nullsLast()),
 	uniqueIndex("uq_agents_system_assistant_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text))`),
-	uniqueIndex("uq_agents_system_evolver_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_evolver'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_source_post_processor_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_research_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text))`),
 	foreignKey({
@@ -47,7 +46,7 @@ export const agents = pgTable("agents", {
 			name: "fk_agents_current_version_id_agent_versions"
 		}),
 	unique("uq_agents_space_id_id").on(table.id, table.spaceId),
-	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_evolver'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_research'::character varying)::text])`),
+	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_research'::character varying)::text])`),
 	check("ck_agents_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('inactive'::character varying)::text, ('archived'::character varying)::text, ('disabled'::character varying)::text])`),
 	check("ck_agents_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_agents_access_level", sql`access_level IN ('full', 'summary')`),

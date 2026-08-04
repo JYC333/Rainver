@@ -154,6 +154,7 @@ Load only the module docs relevant to your task.
 | Agent profiles, runs, adapters | [modules/agents.md](modules/agents.md) |
 | Rooms (project-bound multi-party conversation, agent dispatch) | [modules/rooms.md](modules/rooms.md) |
 | Automations (manual/schedule/event triggers, project binding) | [modules/automations.md](modules/automations.md) |
+| Always-on candidate discovery and autonomous execution | [modules/autonomy.md](modules/autonomy.md) |
 | Long-term memory | [modules/memory.md](modules/memory.md) |
 | Raw input and event capture | [modules/activity.md](modules/activity.md) |
 | Activity inbox UI and quick capture | [modules/activity-inbox.md](modules/activity-inbox.md) |

@@ -22,7 +22,7 @@ Support packages are documented in `MODULES.md`.
 |---|---|
 | `kernel` | Identity, isolation, governance, execution spine. |
 | `infra` | Cross-cutting infrastructure and host/runtime integration. |
-| `capability` | Code-defined agent skills and self-evolution surfaces. |
+| `capability` | Code-defined agent skills and reviewable evolution surfaces. |
 | `product` | User-facing domain feature surface. |
 | `frontend-support` | Backend read models and aggregation endpoints for UI views. |
 | `support-package` | Import-only package without HTTP route registration. |

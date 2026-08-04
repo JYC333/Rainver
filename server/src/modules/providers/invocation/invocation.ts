@@ -54,7 +54,7 @@ import {
   type RetrievalEgressPolicy,
 } from "../../retrieval/egress/egressPolicy";
 import { normalizeGatewayShapes, normalizeNullableNearMisses, validateStructuredOutput } from "../../runs/structuredOutputValidation";
-import { modelStructuredToolCallUnreliable, providerSupportsStructuredOutput } from "../structuredOutputCapabilities";
+import { providerSupportsStructuredOutput, structuredOutputToolStrategy } from "../structuredOutputCapabilities";
 import { effectiveMaxOutputTokens } from "../modelOutputLimits";
 
 export interface ChatMessage {
@@ -76,6 +76,7 @@ export interface ProviderChatRequestBody {
   output_format?: ProviderStructuredOutput | null;
   cache_strategy?: "conversation";
   on_text_delta?: (delta: string) => void;
+  abort_signal?: AbortSignal;
   egressPolicy?: RetrievalEgressPolicy | null;
   metering: ProviderMeteringContext;
 }
@@ -188,6 +189,14 @@ async function fetchProviderResponse(
     });
   } catch (error) {
     if (error instanceof ProviderInvocationError) throw error;
+    if (init?.signal?.aborted) {
+      throw new ProviderInvocationError(
+        499,
+        "Provider request was cancelled by the run owner",
+        { failure_class: "permanent", actions: ["fail"] },
+        "provider_request_aborted",
+      );
+    }
     throw new ProviderInvocationError(
       502,
       `Provider network request failed (${safeUrlForError(url)}): ${errorDetail(error)}`,
@@ -681,7 +690,8 @@ async function completeOpenAiCompatible(
   // the payload as tool arguments, which the response path already prefers
   // (structuredOutputFromOpenAiChoice checks the schema-named tool first).
   const structuredToolName = body.output_format ? providerStructuredOutputName(body.output_format.schema_id) : null;
-  const forcedStructuredTool = body.output_format && !tools && !modelStructuredToolCallUnreliable(model)
+  const structuredStrategy = structuredOutputToolStrategy(model, body.output_format?.schema);
+  const forcedStructuredTool = body.output_format && !tools && structuredStrategy.forceTool
     ? [{
         type: "function",
         function: {
@@ -694,9 +704,7 @@ async function completeOpenAiCompatible(
   // A model that neither honors response_format nor gets the forced tool
   // otherwise NEVER sees the contract — it can only guess field shapes from
   // prose. Embed the schema itself in the system instruction for those.
-  const schemaInstruction = body.output_format && modelStructuredToolCallUnreliable(model)
-    ? `Reply with exactly one JSON object that validates against this JSON Schema. Match every key name and type exactly; do not add undeclared keys:\n${JSON.stringify(body.output_format.schema)}`
-    : null;
+  const schemaInstruction = structuredStrategy.schemaInstruction;
   const messagesBody = schemaInstruction
     ? { ...body, system: body.system ? `${body.system}\n\n${schemaInstruction}` : schemaInstruction }
     : body;
@@ -732,6 +740,7 @@ async function completeOpenAiCompatible(
         stream_options: { include_usage: true },
       } : {}),
     }),
+    signal: body.abort_signal,
   });
   if (streaming) {
     return completeOpenAiStream(response, provider.provider_type, model, body.on_text_delta!);
@@ -908,7 +917,8 @@ async function completeAnthropic(
     );
   }
   const model = bareModelName("anthropic", resolveModel(provider, body.model));
-  const structuredDefinition: CanonicalToolDefinition[] = body.output_format
+  const structuredStrategy = structuredOutputToolStrategy(model, body.output_format?.schema);
+  const structuredDefinition: CanonicalToolDefinition[] = body.output_format && structuredStrategy.forceTool
     ? [{
         name: providerStructuredOutputName(body.output_format.schema_id),
         description: `Return the ${body.output_format.schema_id} structured result.`,
@@ -918,10 +928,17 @@ async function completeAnthropic(
   const requestTools = [...structuredDefinition, ...(body.tools ?? [])];
   const tools = anthropicTools(requestTools);
   const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
-  const system = body.system
+  // A model whose tool-call gateway corrupts forced arguments (see
+  // structuredOutputToolStrategy) never gets the forced tool; the schema is
+  // embedded in the system prompt instead, and the response is parsed from
+  // prose (see the text fallback below).
+  const effectiveSystem = structuredStrategy.schemaInstruction
+    ? (body.system ? `${body.system}\n\n${structuredStrategy.schemaInstruction}` : structuredStrategy.schemaInstruction)
+    : body.system;
+  const system = effectiveSystem
     ? body.cache_strategy === "conversation"
-      ? [{ type: "text", text: body.system, cache_control: { type: "ephemeral" } }]
-      : body.system
+      ? [{ type: "text", text: effectiveSystem, cache_control: { type: "ephemeral" } }]
+      : effectiveSystem
     : undefined;
   const response = await fetchProviderResponse(networkProfile, anthropicMessagesUrl(provider), {
     method: "POST",
@@ -940,12 +957,13 @@ async function completeAnthropic(
       max_tokens: effectiveMaxOutputTokens(model, body.max_tokens) ?? (tools ? 2048 : 1024),
       ...(tools ? {
         tools,
-        tool_choice: body.output_format
-          ? { type: "tool", name: providerStructuredOutputName(body.output_format.schema_id) }
+        tool_choice: structuredStrategy.forceTool
+          ? { type: "tool", name: providerStructuredOutputName(body.output_format!.schema_id) }
           : { type: "auto" },
       } : {}),
       ...(streaming ? { stream: true } : {}),
     }),
+    signal: body.abort_signal,
   });
   if (streaming) {
     return completeAnthropicStream(response, model, body.on_text_delta!);
@@ -971,21 +989,24 @@ async function completeAnthropic(
       // block is unambiguously the structured result in that case.
       ?? (!body.tools?.length ? data.content?.find((block) => block.type === "tool_use") : undefined)
     : undefined;
-  if (body.output_format && (!structuredBlock || !isStructuredObject(structuredBlock.input))) {
-    throw new ProviderInvocationError(
-      502,
-      `Provider returned no structured output for schema '${body.output_format.schema_id}' (${anthropicStructuredOutputDiagnostic(data)})`,
-      { failure_class: "permanent", actions: ["fail"] },
-      "structured_output_invalid",
-    );
-  }
+  const textContent = data.content?.map((c) => c.text ?? "").join("") ?? "";
+  // Unreliable models never get the forced tool (structuredStrategy.forceTool
+  // is false), so they never produce a tool_use block; parse their answer
+  // from prose instead, mirroring the OpenAI-compatible path's fallback.
   const structuredOutput = body.output_format
-    ? structuredOutputFromValue(structuredBlock!.input, body.output_format, {
-        transport: "anthropic",
-        finish_reason: data.stop_reason ?? "unknown",
-        response_model: data.model ?? model,
-        response_kind: "tool_use_input",
-      })
+    ? structuredBlock && isStructuredObject(structuredBlock.input)
+      ? structuredOutputFromValue(structuredBlock.input, body.output_format, {
+          transport: "anthropic",
+          finish_reason: data.stop_reason ?? "unknown",
+          response_model: data.model ?? model,
+          response_kind: "tool_use_input",
+        })
+      : structuredOutputFromText(textContent, body.output_format, {
+          transport: "anthropic",
+          finish_reason: data.stop_reason ?? "unknown",
+          response_model: data.model ?? model,
+          response_kind: "message_content",
+        })
     : null;
   return {
     content: data.content?.map((c) => c.text ?? "").join("") ?? "",
@@ -1045,25 +1066,6 @@ function isStructuredObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function anthropicStructuredOutputDiagnostic(data: {
-  content?: Array<{ type?: string; name?: string }>;
-  stop_reason?: string | null;
-  model?: string;
-}): string {
-  const blocks = data.content ?? [];
-  const blockTypes = blocks.map((block) => block.type ?? "unknown").join(",") || "none";
-  const toolNames = blocks
-    .filter((block) => block.type === "tool_use")
-    .map((block) => block.name ?? "unnamed")
-    .join(",") || "none";
-  return [
-    `finish_reason=${data.stop_reason ?? "unknown"}`,
-    `content_blocks=${blockTypes}`,
-    `tool_names=${toolNames}`,
-    `model=${data.model ?? "unknown"}`,
-  ].join("; ");
-}
-
 async function completeOllama(
   provider: ProviderInfo,
   networkProfile: ResolvedNetworkProfile | null,
@@ -1090,6 +1092,7 @@ async function completeOllama(
       },
       ...(body.output_format ? { format: body.output_format.schema } : {}),
     }),
+    signal: body.abort_signal,
   });
   if (streaming) {
     return completeOllamaStream(response, model, body.on_text_delta!);
@@ -1653,6 +1656,7 @@ export interface ProviderMessagesCompletionInput {
   output_format?: ProviderStructuredOutput | null;
   cache_strategy?: "conversation";
   on_text_delta?: (delta: string) => void;
+  abort_signal?: AbortSignal;
   /** Auxiliary-task name; resolves a ProviderTaskPolicy chain when present. */
   task?: string | null;
   egressPolicy?: RetrievalEgressPolicy | null;
@@ -1705,6 +1709,7 @@ export async function completeProviderMessages(
     output_format: input.output_format,
     cache_strategy: input.cache_strategy,
     on_text_delta: input.on_text_delta,
+    abort_signal: input.abort_signal,
     egressPolicy: input.egressPolicy,
     metering: meteringContext(input.metering, input.task),
   });

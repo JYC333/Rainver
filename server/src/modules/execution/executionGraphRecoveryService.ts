@@ -1,3 +1,4 @@
+import type { ServerConfig } from "../../config";
 import type { Queryable } from "../routeUtils/common";
 import { PlanExecutionService } from "../plans/executionService";
 import { WorkflowExecutionService } from "../automations/workflowExecutionService";
@@ -7,12 +8,13 @@ import { safelyEmitOperationalAlert } from "../notifications/operationalAlerts";
 export class ExecutionGraphRecoveryService {
   constructor(
     private readonly db: Queryable,
+    config: ServerConfig,
     private readonly alerts?: OperationalAlertPort | null,
     private readonly log?: { warn(message: string): void },
     private readonly reconcilePlan: (spaceId: string, userId: string, planId: string) => Promise<unknown> =
       (spaceId, userId, planId) => new PlanExecutionService(db).reconcile({ spaceId, userId }, planId),
     private readonly reconcileWorkflow: (spaceId: string, userId: string, executionId: string) => Promise<unknown> =
-      (spaceId, userId, executionId) => new WorkflowExecutionService().reconcile(db, spaceId, executionId, userId),
+      (spaceId, userId, executionId) => new WorkflowExecutionService(config).reconcile(db, spaceId, executionId, userId),
   ) {}
 
   async reconcileActive(limit = 50): Promise<{ plans: number; workflows: number; failures: number }> {

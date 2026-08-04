@@ -10,7 +10,8 @@ and governs what becomes durable memory or action.
 
 Personal, household, and small-team use are first-order contexts from the start; collaboration
 is not a later enterprise add-on. Memory and context are foundational substrate for the
-workbench, not the complete product identity. Controlled self-evolution is supporting cast.
+workbench, not the complete product identity. Reviewable Evolution workflows are supporting
+cast and always execute through an explicitly selected ordinary Agent.
 
 It is not:
 - a chat app
@@ -135,7 +136,7 @@ capture / trigger
 | Project Folder file write / code patch | Approved `code_patch` proposal gate + `PathPolicy` | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Authenticated 501 stub; operator-only deployer allowlist | Deferred / fail-closed |
-| Self-evolution execution | Disabled by default (`ENABLE_SYSTEM_EVOLUTION=false`) | Active |
+| Automatic system self-evolution | Removed; Evolution runs require an explicit Agent | Removed |
 | Future automation trigger | No model yet — reserved | Not built |
 | Future connector sync | No model yet | Not built |
 
@@ -162,5 +163,5 @@ Run these before structural changes:
 - Are secrets absent from run output, steps, artifacts, and logs?
 - Does an accepted active Policy row change a real enforcement decision?
 - Is deployment still manual or allowlisted-deployer-only?
-- Is self-evolution disabled by default?
+- Does every Evolution run use an explicitly selected ordinary Agent?
 - Does Project Folder archive/unregister leave the physical directory untouched rather than hard-delete?

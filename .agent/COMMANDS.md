@@ -56,8 +56,11 @@ Default client-facing API (server): http://localhost:3000/api/v1
 
 In dev/test Docker Compose, server hot reload is enabled: the service
 uses the Dockerfile `dev-runtime` target, bind-mounts `server/src` and
-`packages/protocol/src`, runs both TypeScript compilers in watch mode, and
-restarts with `node --watch dist/index.js`. Prod still runs compiled JS only.
+`packages/protocol/src`, uses `server/scripts/watch-typescript.mjs` to poll
+those bind mounts plus official plugin packages, compile protocol, server, and
+official plugins in order, and restart with `node --watch dist/index.js`. This
+avoids native watcher failures on Docker bind mounts. Prod still runs compiled
+JS only.
 
 ## Database scripts (run from repo root)
 
@@ -87,8 +90,17 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 # Restore database from a pg_dump custom-format archive
 ./ops/scripts/db/restore.sh <path/to/dump.dump> [--mode dev|test|prod]
 
-# Drop + migrate (destructive; migrate recreates POSTGRES_DB when missing)
+# Save the current dev database as the private reset baseline. The archive is
+# written to $ASPACE_ROOT/dev/setup/database.dump (0600), outside the repo. It
+# includes encrypted credential rows; CLI login files and provider_keys.key
+# remain in $ASPACE_ROOT/dev/secrets.
+./ops/scripts/db/save-dev-setup.sh
+
+# Drop + restore the private dev setup baseline when present + migrate.
+# Test/prod never consume the dev baseline. Use --no-dev-setup for a genuinely
+# empty dev database.
 ./ops/scripts/db/reset-postgres.sh [--mode dev|test|prod]
+./ops/scripts/db/reset-postgres.sh --mode dev --no-dev-setup
 
 # Open a psql shell
 ./ops/scripts/db/shell.sh [--mode dev|test|prod]

@@ -8,6 +8,7 @@ import {
 } from "../connectors/arxiv";
 import { acquireArxivRequestSlot } from "../connectors/arxivThrottle";
 import { BraveWebSearchConnectorHandler, OpenAlexConnectorHandler, SemanticScholarConnectorHandler } from "../connectors/academicJson";
+import { scanPublicationWindowStart } from "../connectors/monitoringWindow";
 
 export interface SourceConnectorCapabilities {
   protocol: string;
@@ -70,13 +71,12 @@ class ArxivConnectorHandler implements SourceConnectorHandler {
 
   buildScanRequest(channel: { endpoint_url: string | null; compiled_query: unknown }, cursor: Record<string, unknown>): RequestSpec {
     const query = objectValue(channel.compiled_query);
-    const lastSeen = typeof cursor.last_published_at === "string" ? new Date(cursor.last_published_at) : null;
-    if (lastSeen && !Number.isNaN(lastSeen.getTime())) {
+    const windowStart = scanPublicationWindowStart(cursor);
+    if (windowStart) {
       const monitoringField = query.monitoring_field === "lastUpdatedDate" ? "lastUpdatedDate" : "submittedDate";
-      const from = new Date(lastSeen.getTime() - 48 * 60 * 60 * 1000);
       const formatDate = (value: Date) => value.toISOString().replace(/\D/g, "").slice(0, 12);
       const current = String(query.search_query ?? "");
-      const range = `${monitoringField}:[${formatDate(from)} TO ${formatDate(new Date())}]`;
+      const range = `${monitoringField}:[${formatDate(new Date(windowStart))} TO ${formatDate(new Date())}]`;
       const url = buildArxivQueryUrl({
         search_query: current ? `(${current}) AND ${range}` : range,
         max_results: 100,

@@ -8,7 +8,7 @@
  */
 
 import { z } from "zod";
-import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
+import { IdSchema, ISODateTimeSchema, RunTriggerOriginSchema, SecretResponseGuards } from "./common.js";
 import {
   CanonicalMessageSchema,
   CanonicalToolDefinitionSchema,
@@ -64,7 +64,7 @@ export const RuntimeHostExecuteRequestSchema = z.object({
   agent_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   project_folder_id: IdSchema.nullish(),
-  trigger_origin: z.string().nullish(),
+  trigger_origin: RunTriggerOriginSchema.nullish(),
   capability_id: z.string().nullish(),
   context_snapshot_id: IdSchema.nullish(),
   max_tokens: z.number().int().positive().optional(),

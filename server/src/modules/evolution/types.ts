@@ -146,16 +146,6 @@ export interface EvolutionRunSetupRecord {
   signalId: string | null;
 }
 
-export interface EvolutionRunRequestResult {
-  run_id: string;
-  target_id: string;
-  selector_decision_id: string;
-  selected_strategy_key: string | null;
-  run_status: string;
-  proposal_ids: string[];
-  is_fallback_agent: boolean;
-}
-
 export interface EvolutionSelection {
   selectedStrategy: EvolutionStrategyAssetRow | null;
   candidateStrategyIds: string[];

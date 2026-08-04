@@ -58,10 +58,38 @@ These items are not duplicated here:
   in [Product Acceptance](../architecture/PRODUCT_ACCEPTANCE.md);
 - backoff, egress, scheduler catch-up, and unattended failure alerting →
   [unattended-execution-hardening-plan.md](unattended-execution-hardening-plan.md);
-- orchestration/evolution work →
-  [orchestration-and-self-evolution-plan.md](orchestration-and-self-evolution-plan.md).
+- the Always-on autonomous-work chain is delivered, including self-service
+  activation; current-state behavior lives in
+  [autonomy.md](../modules/autonomy.md) and
+  [automations.md](../modules/automations.md). Its one open item — whether
+  autonomous launch shipped ahead of the controlled-acceptance /
+  unattended-hardening gates — is tracked in
+  [current-focus.md](../tasks/current-focus.md), not here;
+- unrelated Verification Engine, Workflow-lifecycle, and Artifact-provenance
+  follow-ups, plus parked ideas →
+  [product-capability-followups-plan.md](product-capability-followups-plan.md).
 
 ## Scheduled but not blocking
+
+### C3.1 — Conformance second wave
+
+Moved 2026-07-26 from the now-retired orchestration-and-self-evolution-plan.md,
+which no longer tracks anything: its Always-on chain was delivered and its
+other items moved out to this file and product-capability-followups-plan.md.
+
+- [ ] Add forbidden-tool detection.
+- [ ] Add premature-completion detection.
+- [ ] Add validation-compliance checks.
+- [ ] Add artifact-production checks.
+- [ ] Add timeout-behavior checks.
+- [ ] Add cost/latency profiling.
+- [ ] Feed the results into routing trust decisions without weakening the
+  current fail-closed behavior.
+
+Minimum structured event/output conformance and execution-shape routing are
+implemented. This item retains the broader trust/profiling wave after
+controlled smoke, following the same controlled-smoke needs as the active
+acceptance work.
 
 ### Retention and pruning design
 
@@ -134,6 +162,7 @@ After unattended hardening, consolidate one operator page covering:
 | Broader browser E2E suite | Second real user, or a frontend regression that loses/corrupts data |
 | TLS/rate limiting/CSRF hardening | Any move toward public internet exposure, currently forbidden |
 | Multi-user sharing regression expansion | Second member joins a real shared Space |
+| Private content carried into shared digests | Second member joins a real shared Space. Only `highly_restricted` is excluded from digests and maintenance outputs; ordinary `private` source content can reach a digest that its owner later shares by hand. Owned by the digest/context mechanism, not by any single digest producer (see [autonomy.md](../modules/autonomy.md)) |
 | Offline queue | Real mobile/offline usage; until then docs must not claim unsupported behavior |
 | Large-file/module splits | Next substantive edit to the affected oversized file |
 | Master-key rotation | Suspected exposure or a future multi-instance requirement |

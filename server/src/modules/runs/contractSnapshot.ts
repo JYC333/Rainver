@@ -2,6 +2,7 @@ export const RUN_CONTRACT_VERSION = "run_contract.v1" as const;
 
 export type RunContractSourceKind =
   | "direct"
+  | "space"
   | "task"
   | "automation"
   | "workflow"
@@ -246,7 +247,7 @@ function resolveBudget(sources: RunBudgetSource[]): {
 }
 
 function isSourceKind(value: unknown): value is RunContractSourceKind {
-  return value === "direct" || value === "task" || value === "automation" || value === "workflow" || value === "delegation" || value === "plan";
+  return value === "direct" || value === "space" || value === "task" || value === "automation" || value === "workflow" || value === "delegation" || value === "plan";
 }
 
 function nonNegativeNumberOrNull(value: number | null | undefined): number | null {

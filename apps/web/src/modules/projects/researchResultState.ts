@@ -132,9 +132,28 @@ export function researchFailurePresentation(operation: ProjectOperation): { conc
   const code = typeof error.code === 'string' ? error.code : ''
   const message = typeof error.message === 'string' ? error.message : 'The operation failed before the server returned an error message.'
   const searchable = `${code} ${message}`.toLowerCase()
+  const diagnostics = objectValue(error.diagnostics)
   let conclusion = `The ${operationStage(operation)} step did not complete.`
   let suggestion = 'Retry the operation. If it fails again, review the technical details before changing the research setup.'
-  if (/quota|rate.limit|429/.test(searchable)) {
+  if (code === 'source_history_backfill_failed') {
+    const failedSources = Array.isArray(diagnostics.failed_sources)
+      ? diagnostics.failed_sources.map(objectValue)
+      : []
+    const providers = [...new Set(failedSources
+      .map(source => typeof source.provider_display_name === 'string'
+        ? source.provider_display_name
+        : typeof source.provider_key === 'string' ? source.provider_key : null)
+      .filter((value): value is string => Boolean(value)))]
+    const rateLimited = failedSources.some(source => source.upstream_status === 429)
+    conclusion = providers.length > 0
+      ? `History import from ${providers.join(', ')} did not complete.`
+      : 'The literature history import did not complete.'
+    suggestion = rateLimited
+      ? 'The source provider temporarily rate-limited the import. Retry the research operation; another 429 will move this source into background backoff while completed papers are kept.'
+      : diagnostics.retryable === true
+      ? 'The provider request was already retried automatically. Retry the research operation now; completed papers and results will be kept.'
+      : 'Review the provider response in Technical details, correct the source setup if needed, then retry the research operation.'
+  } else if (/quota|rate.limit|429/.test(searchable)) {
     conclusion = 'The research provider temporarily reached its request limit.'
     suggestion = 'Wait for the quota window to reset, then retry. No completed research data was changed.'
   } else if (/query|syntax|date.range|validation/.test(searchable)) {
@@ -147,10 +166,13 @@ export function researchFailurePresentation(operation: ProjectOperation): { conc
     conclusion = 'The model returned an unusable structured research result.'
     suggestion = 'Use a model that reliably follows strict JSON output, then retry synthesis.'
   } else if (/timeout|timed.out|network|connection|unavailable|503/.test(searchable)) {
-    conclusion = 'A research service stopped responding before this step completed.'
-    suggestion = 'Retry now. If the service remains unavailable, wait and try again later.'
+    conclusion = diagnostics.automatic_retry_exhausted === true
+      ? 'The model provider did not respond after the automatic retries were exhausted.'
+      : 'A research service stopped responding before this step completed.'
+    suggestion = diagnostics.automatic_retry_exhausted === true
+      ? 'The completed research data was kept. Retry the operation now, or wait and try again if the provider is still unavailable.'
+      : 'Retry now. If the service remains unavailable, wait and try again later.'
   }
-  const diagnostics = objectValue(error.diagnostics)
   const technical = JSON.stringify({ code: code || null, message, diagnostics }, null, 2)
   return { conclusion, suggestion, technical }
 }
@@ -236,6 +258,20 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
   const monitoring = monitoringActive(input.workflow)
   const latestTodaySummary = todaySummary(input.scanSummaries)
   const noReportOutcome = completedWithoutReport(latestOperation)
+  const deferredSources = input.operations.flatMap(operation => {
+    const stage = operation.progress_json.current_stage
+    if (stage !== 'backfill' && stage !== 'screening') return []
+    const backfill = objectValue(operation.progress_json.backfill_progress)
+    return Array.isArray(backfill.deferred_sources) ? backfill.deferred_sources.map(objectValue) : []
+  })
+  const deferredSourceCount = deferredSources.length
+  const deferredProviderNames = [...new Set(deferredSources.flatMap(source => {
+    const name = typeof source.provider_display_name === 'string'
+      ? source.provider_display_name
+      : typeof source.provider_key === 'string' ? source.provider_key : null
+    return name ? [name] : []
+  }))]
+  const deferredProviderLabel = deferredProviderNames.length > 0 ? deferredProviderNames.join(', ') : 'A source'
 
   const candidates: Array<{ active: boolean; notice: string }> = [
     { active: drift, notice: 'The research question changed; existing judgements and reports still use the previous question.' },
@@ -243,6 +279,7 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
     { active: failedOperations.length > 0, notice: `${failedOperations.length} research operation${failedOperations.length === 1 ? '' : 's'} failed and can be retried.` },
     { active: runningOperations.length > 0, notice: `${runningOperations.length} research operation${runningOperations.length === 1 ? ' is' : 's are'} still running.` },
     { active: monitoring, notice: `Monitoring is active. Last project scan: ${formatDate(latestScanAt(input.workflow))}.` },
+    { active: deferredSourceCount > 0, notice: `${deferredProviderLabel} history (${deferredSourceCount} window${deferredSourceCount === 1 ? '' : 's'}) is temporarily unavailable and retrying in the background; collected papers can continue through research.` },
   ]
   const noticesFor = (excluded: number) => candidates.flatMap((candidate, index) => candidate.active && index !== excluded ? [candidate.notice] : [])
   const corpusMetrics = [

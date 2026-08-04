@@ -1,10 +1,24 @@
+/**
+ * CLI subscription-quota refresh, shaped as a `ScheduledTask`.
+ *
+ * This owns *what* to refresh, never *when*. It previously ran on its own
+ * detached `setInterval` outside `SchedulerRegistry`, which meant shutdown did
+ * not stop it, a failure never reached `scheduler_task_failed`, and its
+ * liveness was invisible. Timing, cancellation, timeout, failure alerting, and
+ * the liveness record all belong to the registry; this module only exposes the
+ * work.
+ *
+ * The refresh is a fallback path: a `claude_code` Run piggybacks live quota on
+ * every execution, so this exists so quota does not go stale when nobody is
+ * running anything, and so runtimes without piggybacked quota
+ * (`codex_cli`) refresh at all.
+ */
+
 import type { FastifyBaseLogger } from "fastify";
 import type { CliUsageEntry } from "./credentialBroker";
 
-export const CLI_USAGE_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
+export const CLI_USAGE_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60;
 const DEFAULT_RUNTIMES = ["claude_code", "codex_cli"] as const;
-
-type TimerHandle = ReturnType<typeof setInterval>;
 
 export interface CliUsageRefreshBroker {
   listQuotaRefreshTargets(runtime: string): Promise<Array<{
@@ -21,31 +35,34 @@ export interface CliUsageRefreshBroker {
   ): Promise<CliUsageEntry | null>;
 }
 
-export interface CliUsageRefreshScheduler {
-  refreshDueUsage(): Promise<void>;
-  stop(): void;
-}
-
-export interface CliUsageRefreshSchedulerOptions {
-  intervalMs?: number;
+export interface CliUsageRefreshTaskOptions {
+  intervalSeconds?: number;
   maxAgeMs?: number;
   runtimes?: readonly string[];
   isEnabled?: () => boolean | Promise<boolean>;
   logger?: Pick<FastifyBaseLogger, "debug" | "warn">;
 }
 
-export function startCliUsageRefreshScheduler(
+export interface CliUsageRefreshTask {
+  name: string;
+  intervalSeconds: number;
+  runOnStart: boolean;
+  run(): Promise<void>;
+}
+
+export function createCliUsageRefreshTask(
   broker: CliUsageRefreshBroker,
-  options: CliUsageRefreshSchedulerOptions = {},
-): CliUsageRefreshScheduler {
-  const intervalMs = options.intervalMs ?? CLI_USAGE_REFRESH_INTERVAL_MS;
-  const maxAgeMs = options.maxAgeMs ?? intervalMs;
+  options: CliUsageRefreshTaskOptions = {},
+): CliUsageRefreshTask {
+  const intervalSeconds = options.intervalSeconds ?? CLI_USAGE_REFRESH_INTERVAL_SECONDS;
+  const maxAgeMs = options.maxAgeMs ?? intervalSeconds * 1000;
   const runtimes = options.runtimes ?? DEFAULT_RUNTIMES;
-  let stopped = false;
+  // The registry never re-enters a task, but `run` is also callable directly;
+  // keep the guard so a manual call cannot overlap a scheduled pass.
   let running = false;
 
-  async function refreshDueUsage(): Promise<void> {
-    if (stopped || running) return;
+  async function run(): Promise<void> {
+    if (running) return;
     running = true;
     try {
       if (options.isEnabled && !(await options.isEnabled())) {
@@ -75,6 +92,8 @@ export function startCliUsageRefreshScheduler(
                 );
               }
             } catch (error) {
+              // One unreachable profile must not stop the remaining profiles;
+              // a probe failure is expected and self-heals on the next pass.
               options.logger?.warn(
                 {
                   runtime,
@@ -100,16 +119,10 @@ export function startCliUsageRefreshScheduler(
     }
   }
 
-  const timer: TimerHandle = setInterval(() => {
-    void refreshDueUsage();
-  }, intervalMs);
-  timer.unref?.();
-
   return {
-    refreshDueUsage,
-    stop() {
-      stopped = true;
-      clearInterval(timer);
-    },
+    name: "cli_usage_quota_refresh",
+    intervalSeconds,
+    runOnStart: false,
+    run,
   };
 }

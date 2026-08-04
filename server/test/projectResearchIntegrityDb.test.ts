@@ -44,7 +44,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE project_research_claim_links, project_research_reports, project_research_checkpoints,
-       project_research_workflows, project_research_profiles, experiment_definitions,
+       project_research_workflows, experiment_definitions,
        claim_sources, claims, academic_papers, sources,
        space_objects, project_corpus_items, artifacts, projects, space_memberships, users, spaces CASCADE`,
   );
@@ -90,11 +90,16 @@ async function addSpaceMember(userId: string): Promise<void> {
   );
 }
 
-async function seedWorkflow(): Promise<string> {
-  await repo().upsertProfile(identity, PROJECT, {});
-  await repo().approveProfile(identity, PROJECT);
-  const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
-  return workflow.id as string;
+async function seedWorkflow(workflowType = "literature_review"): Promise<string> {
+  const workflowId = randomUUID();
+  const now = new Date().toISOString();
+  await pool!.query(
+    `INSERT INTO project_research_workflows (
+       id, space_id, project_id, workflow_type, status, mode, state_json, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'active','manual','{}'::jsonb,$5,$5)`,
+    [workflowId, SPACE, PROJECT, workflowType, now],
+  );
+  return workflowId;
 }
 
 async function seedClaim(
@@ -213,9 +218,9 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   it("does not let an unrelated workflow claim link block the current workflow integrity gate", async () => {
     if (!available) return;
     const currentWorkflowId = await seedWorkflow();
-    const otherWorkflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "revision" });
+    const otherWorkflowId = await seedWorkflow("revision");
     const claimId = await seedClaim();
-    await repo().createClaimLink(identity, PROJECT, { claim_id: claimId, workflow_id: otherWorkflow.id });
+    await repo().createClaimLink(identity, PROJECT, { claim_id: claimId, workflow_id: otherWorkflowId });
 
     const checkpoint = await repo().evaluateWorkflowIntegrity(identity, PROJECT, currentWorkflowId);
     const report = checkpoint as { blocking: boolean; findings: Array<{ code: string }> };

@@ -4,14 +4,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
 import { advanceOperation } from "../src/modules/projectResearch/operationProjection";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
+const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -277,37 +278,6 @@ describe("Project archive lifecycle (real Postgres)", () => {
     expect(final.rows[0]).toEqual({ project_status: "archived", active_operations: 0 });
   });
 
-  it("serializes archive with the general workflow-start producer", async () => {
-    if (!available || !pool) return;
-    const now = new Date().toISOString();
-    await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
-    await pool.query(`DELETE FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
-    await pool.query(
-      `INSERT INTO project_research_profiles (
-         id,space_id,project_id,research_question,status,approved_by_user_id,approved_at,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Does archiving fence workflow creation?','approved',$4,$5,$5,$5)`,
-      [randomUUID(), SPACE, PROJECT, OWNER, now],
-    );
-    await Promise.allSettled([
-      new PgProjectRepository(pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT),
-      new ProjectResearchRepository(pool).startWorkflow(
-        { spaceId: SPACE, userId: OWNER },
-        PROJECT,
-        { workflow_type: "literature_review" },
-      ),
-    ]);
-    const final = await pool.query<{ project_status: string; active_workflows: number }>(
-      `SELECT p.status AS project_status,
-              count(w.id) FILTER (WHERE w.status='active')::int AS active_workflows
-         FROM projects p
-         LEFT JOIN project_research_workflows w ON w.space_id=p.space_id AND w.project_id=p.id
-        WHERE p.space_id=$1 AND p.id=$2
-        GROUP BY p.status`,
-      [SPACE, PROJECT],
-    );
-    expect(final.rows[0]).toEqual({ project_status: "archived", active_workflows: 0 });
-  });
-
   it("does not lose pending incremental items when archive wins the producer race", async () => {
     if (!available || !pool) return;
     const pendingItemId = "99999999-9999-4999-8999-999999999999";
@@ -345,7 +315,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     );
     await Promise.allSettled([
       new PgProjectRepository(pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT),
-      new ProjectResearchOrchestrator(pool).triggerIncremental(
+      new ProjectResearchOrchestrator(pool, CONFIG).triggerIncremental(
         { spaceId: SPACE, userId: OWNER }, PROJECT, workflow.rows[0]!.id,
         { idempotency_key: "archive-pending-race" },
       ),
@@ -404,7 +374,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
         pending_incremental_source_item_ids: [firstItem],
       })],
     );
-    const orchestrator = new ProjectResearchOrchestrator(pool);
+    const orchestrator = new ProjectResearchOrchestrator(pool, CONFIG);
     const pendingAppender = orchestrator as unknown as {
       appendPendingIncrementalItems(spaceId: string, projectId: string, workflowId: string, itemIds: string[]): Promise<void>;
     };

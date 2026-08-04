@@ -64,8 +64,14 @@ describe("Source post-processing service", () => {
   });
 
   it("executes post-processing agent runs without a jobs-table job id", () => {
-    expect(sourcePostProcessingExecutionRequest("post-run-1")).toEqual({
+    expect(sourcePostProcessingExecutionRequest("post-run-1", 120_000)).toEqual({
       worker_id: "source_post_processing:post-run-1",
+      job_id: null,
+      command_source: "internal",
+      timeout_ms: 120_000,
+    });
+    expect(sourcePostProcessingExecutionRequest("post-run-2")).toEqual({
+      worker_id: "source_post_processing:post-run-2",
       job_id: null,
       command_source: "internal",
     });

@@ -114,6 +114,18 @@ pauses a plan until `next_eligible_at`; the Sources scheduler reconciles
 completed extraction jobs and resumes eligible plans. Project-initiated plans
 may link to a ProjectOperation for product-level progress.
 
+History-import fetches retry a transient network failure or upstream 5xx once
+inside the same extraction job, with the connector's normal request preparation
+and arXiv politeness interval applied to each attempt. Permanent 4xx responses
+are not retried. If both attempts fail, the job and segment retain safe
+structured diagnostics (provider, upstream status, attempt count, and
+retryability; never query text, endpoint URLs, response bodies, or credentials)
+for the owning operation. A retryable failure moves the segment back to
+`pending`, pauses the plan until `next_eligible_at`, and retries after
+1 minute, 5 minutes, 30 minutes, 2 hours, 6 hours, then at most once per day.
+This provider-friendly repair cadence is not a failed Research operation.
+Permanent failures remain terminal and use the separate operation Retry action.
+
 For the Academic Research initial literature intake, an arXiv date window is a logical segment,
 not one API page. The extraction worker keeps paging at 100 items, persists the
 page cursor and cumulative segment count, and marks a segment exhausted only
@@ -212,6 +224,14 @@ monitoring timestamp together with ETag/Last-Modified values. The next daily
 scan asks for a 48-hour overlap through now, starts at page zero, and relies on
 the same source-item/arXiv-id/DOI dedupe. Historical backfill jobs do not
 advance the live monitoring cursor.
+`scheduler_tasks.next_run_at` is only execution timing.
+`metadata_json.cursor.last_published_at` is the publication watermark, and
+`cursor.overlap_hours` defines the connector overlap. Activating a monitor
+schedules the next configured cadence boundary rather than scanning
+immediately. arXiv, OpenAlex, and Semantic Scholar push the derived lower bound
+into their provider request where supported, while Project Research applies the
+same publication-window boundary after materialization so provider ordering or
+page-size differences cannot create false incremental runs.
 
 arXiv-specific parsing lives in `connectors/arxiv.ts` (query URL building, Atom
 response parsing, and id/URL normalization for abs/pdf/html URLs, `arXiv:`

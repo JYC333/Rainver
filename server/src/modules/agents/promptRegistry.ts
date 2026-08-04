@@ -3,7 +3,6 @@ import type { Queryable } from "../routeUtils/common";
 import { resolvePrompt } from "../prompts/resolver";
 
 export const AGENT_DEFAULT_ASSISTANT_SYSTEM_PROMPT_KEY = "agent.default_assistant.system";
-export const AGENT_SYSTEM_EVOLVER_SYSTEM_PROMPT_KEY = "agent.system_evolver.system";
 
 export function agentTemplateSystemPromptKey(templateKey: string): string {
   return `agent_template.${templateKey}.system`;

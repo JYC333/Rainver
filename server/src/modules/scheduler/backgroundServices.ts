@@ -4,31 +4,23 @@ import { startSchedulerRegistry, type ScheduledTask } from "./registry";
 import { scanDailyReportsAndEnqueue } from "../dailyReports/scheduler";
 import { scanAutomationsAndFire } from "../automations/scheduler";
 import { runScheduledBackup } from "../backups/service";
-import { SourceExtractionWorker } from "../sources/extractionWorker";
-import { enqueueDueSourceChannelScans } from "../sources/scanSchedule";
-import { enqueueDueSourcePostProcessingRules } from "../sources/postProcessing/scheduler";
-import {
-  enqueueDueCustomSourceHandlerRuns,
-  reclaimStuckCustomSourceHandlerRuns,
-} from "../sources/customSources/customSourceScanSchedule";
-import { runPendingCustomSourceHandlerRuns } from "../sources/customSources/customSourceScanWorker";
-import {
-  enqueueDueSourceRecipeScans,
-  runPendingSourceRecipeScans,
-} from "../sources/sourceRecipes/recipeScanWorker";
 import { pruneSupersededCustomSourceHandlerArtifacts } from "../sources/customSources/customSourceArtifactRetention";
 import { runDueMemoryMaintenanceJobs } from "../memory/maintenanceJobs";
 import { withDbTransaction } from "../routeUtils/common";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { startJobsWorker, type JobsWorkerHandle } from "../jobs/workerRuntime";
 import type { PluginHost } from "../plugins/host";
-import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService";
+import { buildSourceSchedulerTasks } from "./sourceTasks";
 import { OperationalAlertService } from "../notifications/operationalAlerts";
 import { ExecutionGraphRecoveryService } from "../execution/executionGraphRecoveryService";
 import { ProjectResearchPipelineService } from "../projectResearch";
 import { enqueueDueResearchIntegrityChecks } from "../projectResearch/integrityMonitorService";
 import { processAllUnclaimedDomainChangeEvents } from "../knowledgePromotion/revalidationService";
 import { sweepConversationRuntimeState } from "../runs/conversationRuntimeState";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+import { createCliUsageRefreshTask } from "../providers/cli/usageScheduler";
+import { setBackgroundServicesStatusSource } from "./runtimeStatus";
+import { AutonomyRecoveryService } from "../autonomy/recoveryService";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -84,6 +76,21 @@ export function startBackgroundServices(
 
   if (config.databaseUrl) {
     tasks.push({
+      name: "autonomous_review_timeout_recovery",
+      intervalSeconds: 300,
+      runOnStart: true,
+      awaitRunOnStart: false,
+      run: async () => {
+        const result = await new AutonomyRecoveryService(
+          getDbPool(config.databaseUrl!),
+        ).cancelStaleWaitingForReview({ maxAgeSeconds: 3_600 });
+        if (result.cancelled > 0) {
+          log?.warn(`[scheduler] autonomous review timeout cancelled ${result.cancelled} Run(s)`);
+        }
+      },
+    });
+
+    tasks.push({
       name: "execution_graph_recovery",
       intervalSeconds: 60,
       runOnStart: true,
@@ -91,6 +98,7 @@ export function startBackgroundServices(
       run: async () => {
         const result = await new ExecutionGraphRecoveryService(
           getDbPool(config.databaseUrl!),
+          config,
           OperationalAlertService.fromConfig(config),
           log,
         ).reconcileActive();
@@ -105,7 +113,7 @@ export function startBackgroundServices(
       intervalSeconds: Math.max(5, Math.min(15, config.sourceExtractionSchedulerIntervalSeconds)),
       runOnStart: true,
       run: async () => {
-        await reconcileProjectResearch(getDbPool(config.databaseUrl!));
+        await reconcileProjectResearch(getDbPool(config.databaseUrl!), config);
       },
     });
 
@@ -179,37 +187,7 @@ export function startBackgroundServices(
     });
   }
 
-  if (config.sourceExtractionSchedulerEnabled && config.databaseUrl) {
-    tasks.push({
-      name: "source_extraction_scheduler",
-      intervalSeconds: config.sourceExtractionSchedulerIntervalSeconds,
-      run: async () => {
-        const enqueued = await enqueueDueSourceChannelScansForConfig(config);
-        if (enqueued > 0) log?.info(`[scheduler] source enqueued ${enqueued} source scan job(s)`);
-        const processed = await processPendingSourceJobs(config, log);
-        if (processed > 0) log?.info(`[scheduler] source processed ${processed} extraction job(s)`);
-        await reconcileSourceBackfills(getDbPool(config.databaseUrl!));
-        const customDb = getDbPool(config.databaseUrl!);
-        const reclaimed = await reclaimStuckCustomSourceHandlerRuns(customDb);
-        if (reclaimed > 0) log?.warn(`[scheduler] custom source reclaimed ${reclaimed} stuck run(s)`);
-        const customEnqueued = await enqueueDueCustomSourceHandlerRuns(customDb);
-        if (customEnqueued > 0) log?.info(`[scheduler] custom source enqueued ${customEnqueued} handler run(s)`);
-        const customProcessed = await runPendingCustomSourceHandlerRuns(customDb, config);
-        if (customProcessed > 0) log?.info(`[scheduler] custom source processed ${customProcessed} handler run(s)`);
-        const recipeEnqueued = await enqueueDueSourceRecipeScans(customDb);
-        if (recipeEnqueued > 0) log?.info(`[scheduler] source recipe enqueued ${recipeEnqueued} scan job(s)`);
-        const recipeProcessed = await runPendingSourceRecipeScans(customDb, config);
-        if (recipeProcessed > 0) log?.info(`[scheduler] source recipe processed ${recipeProcessed} scan job(s)`);
-        if (worker) {
-          const postProcessingEnqueued = await enqueueDueSourcePostProcessingRules(config, worker.queue);
-          if (postProcessingEnqueued > 0) {
-            log?.info(`[scheduler] source enqueued ${postProcessingEnqueued} post-processing job(s)`);
-          }
-        }
-      },
-      runOnStart: true,
-    });
-  }
+  tasks.push(...buildSourceSchedulerTasks(config, { queue: worker?.queue ?? null, log }));
 
   if (config.customSourceArtifactRetentionEnabled && config.databaseUrl) {
     tasks.push({
@@ -223,10 +201,24 @@ export function startBackgroundServices(
     });
   }
 
+  if (config.databaseUrl) {
+    // Previously a detached setInterval started from the provider routes, so it
+    // survived shutdown and never reported a failure or a liveness record.
+    const broker = new CliCredentialBroker(config);
+    tasks.push(
+      createCliUsageRefreshTask(broker, {
+        isEnabled: () => broker.isCliUsageAutoRefreshEnabled(),
+      }),
+    );
+  }
+
   if (config.backupEnabled) {
     tasks.push({
       name: "backup_scheduler",
       intervalSeconds: config.backupIntervalHours * 3600,
+      // A dump legitimately runs far longer than the default reporting
+      // deadline; without this a normal backup would be reported as a stall.
+      timeoutSeconds: Math.max(3600, config.backupIntervalHours * 3600),
       run: async () => {
         await runScheduledBackup(config);
         log?.info("[scheduler] backup_scheduler completed tick");
@@ -249,19 +241,18 @@ export function startBackgroundServices(
       payload: { task_name: taskName },
     });
   });
+
+  setBackgroundServicesStatusSource({
+    schedulerStatuses: (now) => scheduler.statuses(now),
+    workerId: () => worker?.worker_id ?? null,
+    queueDepth: async () => (worker ? worker.queue.countQueueDepth() : null),
+  });
+
   return { worker, scheduler };
 }
 
-async function reconcileSourceBackfills(db: ReturnType<typeof getDbPool>):Promise<void>{
-  const plans=await db.query<{id:string;space_id:string}>(`SELECT id,space_id FROM source_backfill_plans WHERE status IN ('approved','running') OR (status='paused' AND next_eligible_at<=now()) ORDER BY updated_at LIMIT 25`);
-  for(const plan of plans.rows){
-    await db.query(`UPDATE source_backfill_plans SET status='approved',next_eligible_at=NULL,updated_at=now() WHERE id=$1 AND space_id=$2 AND status='paused' AND next_eligible_at<=now()`,[plan.id,plan.space_id]);
-    await new SourceBackfillExecutionService(db).reconcile(plan.space_id,plan.id);
-  }
-}
-
-export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>): Promise<void> {
-  const orchestrator = new ProjectResearchPipelineService(db);
+export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>, config: ServerConfig): Promise<void> {
+  const orchestrator = new ProjectResearchPipelineService(db, config);
   const unreconciledRuns = await db.query<{ id: string; space_id: string }>(
     `SELECT id, space_id
        FROM source_post_processing_runs
@@ -297,45 +288,6 @@ export async function pruneMemoryAccessLogs(config: ServerConfig): Promise<numbe
     [cutoff],
   );
   return result.rowCount ?? 0;
-}
-
-export async function enqueueDueSourceChannelScansForConfig(config: ServerConfig): Promise<number> {
-  if (!config.databaseUrl) return 0;
-  return enqueueDueSourceChannelScans(getDbPool(config.databaseUrl), 25);
-}
-
-async function processPendingSourceJobs(
-  config: ServerConfig,
-  log?: { warn(message: string): void },
-): Promise<number> {
-  if (!config.databaseUrl) return 0;
-  const db = getDbPool(config.databaseUrl);
-  const worker = new SourceExtractionWorker(db, config);
-  const pending = await db.query<{ id: string; space_id: string }>(
-    `SELECT id, space_id
-       FROM extraction_jobs
-      WHERE status = 'pending'
-        AND COALESCE(metadata_json->>'implementation', '') <> 'recipe'
-        AND NOT EXISTS (
-          SELECT 1
-            FROM source_handler_runs shr
-           WHERE shr.extraction_job_id = extraction_jobs.id
-        )
-      ORDER BY created_at ASC
-      LIMIT 10`,
-  );
-  let count = 0;
-  for (const row of pending.rows) {
-    try {
-      await worker.runPendingJob(row.id, row.space_id);
-      count += 1;
-    } catch (err) {
-      log?.warn(
-        `[source-extraction] job ${row.id} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-  return count;
 }
 
 // Re-export for tests that need queue without full worker.

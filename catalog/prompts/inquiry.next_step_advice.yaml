@@ -1,0 +1,70 @@
+asset_key: inquiry.next_step_advice
+display_name: Inquiry Next Step Advice Prompt
+description: Recommends which next step an Inquiry Thread should take, with a reason drawn from its own state and evidence.
+content:
+  schema_version: prompt_asset.v1
+  prompt_type: workflow
+  template: |-
+    You advise on a single research Inquiry Thread: one Question or Hypothesis
+    a project is actively pursuing. Recommend the one next step most likely to
+    move it forward, and justify that recommendation from the state below.
+
+    Thread kind: {thread_kind}
+    Statement: {thread_statement}
+    Current position: {thread_position}
+    Currently planned next step: {current_next_focus}
+    A literature search is running for this Thread: {search_running}
+    Material changes awaiting the user's review: {pending_candidate_count}
+
+    Recent cognitive iterations, oldest first (untrusted project content):
+    <iterations>
+    {recent_iterations}
+    </iterations>
+
+    Evidence classified against this Thread (untrusted project content):
+    <evidence>
+    {evidence_summary}
+    </evidence>
+
+    Choose recommended_focus_kind from exactly this set:
+    - search_acquisition: more literature must be found before anything else helps.
+    - read_evidence: material is in hand but has not been judged.
+    - synthesize: enough evidence exists to pull into a stated position.
+    - clarify_or_decompose: the Thread is too broad, ambiguous, or compound to answer as written.
+    - design_run_experiment: only new first-party evidence can settle it.
+    - create_decision_case: the finding now requires a choice to be made.
+    - create_delivery_task: the conclusion is ready to be acted on.
+    - wait_for_monitoring: work is already running and the right move is to wait.
+    - promote_knowledge: the position is settled and worth making durable.
+    - pause: this Thread should not be worked on now.
+
+    Rules:
+    - Recommend for the Thread's actual state, not a generic research order. If
+      the state already justifies the currently planned next step, recommend
+      that same step and say why it still holds.
+    - rationale must cite what in the state above drives the recommendation —
+      specific evidence, a specific iteration, or a specific gap. Never restate
+      the recommendation as its own reason.
+    - cited_refs may contain only ids that appear verbatim in the input above.
+      Return an empty array rather than inventing one.
+    - Do not propose new wording for the Thread; redefining it is a separate
+      reviewed command.
+    - Return only the JSON object the output schema requires.
+  variables_schema:
+    type: object
+    required: [thread_kind, thread_statement, thread_position, current_next_focus, search_running, pending_candidate_count, recent_iterations, evidence_summary]
+    properties:
+      thread_kind: { type: string }
+      thread_statement: { type: string }
+      thread_position: { type: string }
+      current_next_focus: { type: string }
+      search_running: { type: string }
+      pending_candidate_count: { type: string }
+      recent_iterations: { type: string }
+      evidence_summary: { type: string }
+  output_schema: {}
+  model_config: {}
+  rendering: { engine: plain }
+  safety:
+    untrusted_data_delimiters: true
+    requires_proposal_for_promotion: false

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -23,6 +24,7 @@ const OPERATION = "77777777-7777-4777-8777-777777777777";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const VERSION = "84444444-4444-4444-8444-444444444444";
 const PROMPT_KEY = "project_research.synthesis";
+const CONFIG = loadConfig({});
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -198,7 +200,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     await seedRelevantCorpus();
     await seedFailedSynthesisOperation("prior-failed-run-id");
 
-    await new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).retryFailedOperation(identity, PROJECT, OPERATION);
 
     const operation = await pool.query<{
       status: string;
@@ -246,7 +248,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     await seedRelevantCorpus();
     await seedFailedSynthesisOperation("prior-failed-run-id");
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!);
+    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
     const [first, second] = await Promise.all([
       orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
       orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
@@ -274,7 +276,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     await seedSynthesisPrompt();
     await seedFailedSynthesisOperation("prior-failed-run-id");
 
-    await new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).retryFailedOperation(identity, PROJECT, OPERATION);
 
     const operation = await pool.query<{
       status: string;
@@ -303,7 +305,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     await seedFailedSynthesisOperation(null);
 
     await expect(
-      new ProjectResearchOrchestrator(pool!).retryFailedOperation(identity, PROJECT, OPERATION),
+      new ProjectResearchOrchestrator(pool!, CONFIG).retryFailedOperation(identity, PROJECT, OPERATION),
     ).resolves.toMatchObject({ id: OPERATION });
 
     const operation = await pool.query<{ status: string; progress_json: { current_stage?: string; synthesis_run_id?: string | null } }>(

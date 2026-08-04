@@ -14,6 +14,7 @@ const ProjectSourcesPage = lazy(() => import('./ProjectSourcesPage'))
 const ProjectFilesPage = lazy(() => import('../project_files/ProjectFilesPage'))
 const ProjectFolderSettingsPage = lazy(() => import('../project_files/ProjectFolderSettingsPage'))
 const InquiryAreaPage = lazy(() => import('./InquiryAreaPage'))
+const QuestionAssessmentPage = lazy(() => import('./QuestionAssessmentPage'))
 const ExperimentAreaPage = lazy(() => import('./ExperimentAreaPage'))
 const DecisionAreaPage = lazy(() => import('./DecisionAreaPage'))
 const LearningAreaPage = lazy(() => import('./LearningAreaPage'))
@@ -44,6 +45,7 @@ export default function ProjectsModule() {
         <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
         <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
         <Route path="inquiry" element={<Suspense fallback={<PageFallback />}><InquiryAreaPage /></Suspense>} />
+        <Route path="inquiry/:threadId/assess" element={<Suspense fallback={<PageFallback />}><QuestionAssessmentPage /></Suspense>} />
         <Route path="experiments" element={<Suspense fallback={<PageFallback />}><ExperimentAreaPage /></Suspense>} />
         <Route path="decisions" element={<Suspense fallback={<PageFallback />}><DecisionAreaPage /></Suspense>} />
         <Route path="learning" element={<Suspense fallback={<PageFallback />}><LearningAreaPage /></Suspense>} />

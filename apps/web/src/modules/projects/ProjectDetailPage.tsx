@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import {
@@ -17,7 +17,7 @@ import type {
   SourceChannel, ProjectSourceBinding, SourceItem, ExtractedEvidence,
   ReaderAnnotation, AutomationOut, SourcePostProcessingItemDecision,
   ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem,
-  ProjectResearchQuestionRefinement, ProjectResearchWorkflow,
+  ProjectResearchWorkflow,
   ProjectOperation, ProjectResearchScanSummary,
   InquiryThread,
 } from '../../types/api'
@@ -32,8 +32,9 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ResearchWorkflowPanel } from '../capabilities/ResearchWorkflowPanel'
 import { AcademicResearchWorkbench, researchOperationStage, objectValue, numberValue } from './AcademicResearchWorkbench'
-import { isResearchHumanReviewCheckpoint, researchCheckpointLabel } from './researchReviewAttention'
+import { isResearchHumanReviewCheckpoint, researchCheckpointLabel, researchReviewToastId } from './researchReviewAttention'
 import { researchSetupDraftFromWorkflow } from './researchSetupDraft'
+import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { researchWorkflowForDisplayFrom } from './researchWorkflowView'
 import { ProjectSourceLinkDialog } from './ProjectSourceLinkDialog'
 import { sourceQueryText } from '../sources/sourceQueryText'
@@ -49,6 +50,19 @@ import {
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
+}
+
+function researchWorkflowThreadId(workflow: ProjectResearchWorkflow): string | null {
+  return workflow.primary_thread_id || null
+}
+
+function researchWorkflowForThread(
+  workflows: ProjectResearchWorkflow[],
+  threadId: string,
+): ProjectResearchWorkflow | null {
+  return workflows
+    .filter(workflow => workflow.status !== 'archived' && researchWorkflowThreadId(workflow) === threadId)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))[0] ?? null
 }
 
 const FOLDER_KINDS = [
@@ -111,7 +125,6 @@ interface ResearchSettingsProps {
   // can't be applied (already-spent budget can't be un-spent), only raised.
   // Before that, the setting is just a draft value and any 1-10000 value is fine.
   hasLiveOperation: boolean
-  hasStartedWorkflow: boolean
   busy: boolean
   onUpdateItemLimit: (newLimit: number) => void
   snapshot: {
@@ -198,18 +211,13 @@ function EditProjectDialog({ project, open, onOpenChange, onSaved, research }: E
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="project-current-focus">{research ? 'Research question' : 'Current focus'}</Label>
+              <Label htmlFor="project-current-focus">Current focus</Label>
               <Input
                 id="project-current-focus"
                 value={focus}
                 onChange={e => setFocus(e.target.value)}
-                placeholder={research ? 'What question should this research answer?' : 'What are you actively working on right now?'}
+                placeholder="What are you actively working on right now?"
               />
-              {research?.hasStartedWorkflow && (
-                <p className="text-xs text-muted-foreground">
-                  Saving a new question does not rewrite existing screening decisions or reports. After saving, you will choose how to apply the change.
-                </p>
-              )}
             </div>
           </div>
           {research && (
@@ -569,6 +577,26 @@ export default function ProjectDetailPage() {
   const [modelProviders, setModelProviders] = useState<Awaited<ReturnType<typeof providersApi.list>>>([])
   const [inquiryThreads, setInquiryThreads] = useState<InquiryThread[]>([])
   const [researchActionBusy, setResearchActionBusy] = useState<string | null>(null)
+  // Independent from the "edit the currently selected workflow" dialog that
+  // AcademicResearchWorkbench owns internally: this Project can now have
+  // several concurrently active research workflows (one per Inquiry Thread
+  // that wants its own search), so "start another one" must never reuse
+  // whichever workflow happens to be selected/displayed right now.
+  const [newSearchDialogOpen, setNewSearchDialogOpen] = useState(false)
+  const [newSearchThreadId, setNewSearchThreadId] = useState<string | null>(null)
+  const newSearchThread = inquiryThreads.find(thread => thread.id === newSearchThreadId)
+  const newSearchWorkflow = useMemo(() => newSearchThread
+    ? researchWorkflowForThread(researchWorkflows, newSearchThread.id)
+    : null, [newSearchThread, researchWorkflows])
+  const newSearchDraft = useMemo(() => {
+    // Question definition now happens on the Thread's own Inquiry page —
+    // whatever wording/assessment was confirmed there lives on a `not_started`
+    // draft Workflow already linked to this Thread by its canonical
+    // `primary_thread_id`. Without finding it, this dialog would reopen as if
+    // nothing had been refined yet.
+    const base = researchSetupDraftFromWorkflow(newSearchWorkflow, newSearchThread?.statement ?? '', [], literatureMatrix.length)
+    return newSearchThread ? { ...base, thread_id: newSearchThread.id } : base
+  }, [newSearchThread, newSearchWorkflow, literatureMatrix.length])
   const [researchDataLoading, setResearchDataLoading] = useState(true)
   const [loading, setLoading] = useState(true)
   const [detailsLoading, setDetailsLoading] = useState(false)
@@ -587,6 +615,40 @@ export default function ProjectDetailPage() {
   useEffect(() => {
     if (searchParams.get('create_folder') === '1') setLinkOpen(true)
   }, [searchParams])
+
+  useEffect(() => {
+    if (searchParams.get('research') !== 'new') return
+    if (researchDataLoading) return
+    const threadId = searchParams.get('thread')
+    // The setup dialog now always configures a search for an already-defined
+    // Thread — without one to target, send the user to Inquiry to pick or
+    // create one instead of opening a dialog with nothing to configure.
+    if (!threadId) {
+      navigate(`/projects/${projectId}/inquiry?research_intent=1`, { replace: true })
+      return
+    }
+    const targetThread = inquiryThreads.find(thread => thread.id === threadId)
+    if (!targetThread) {
+      navigate(`/projects/${projectId}/inquiry`, { replace: true })
+      return
+    }
+    const existingWorkflow = researchWorkflowForThread(researchWorkflows, threadId)
+    if (existingWorkflow && !['not_started', 'paused'].includes(existingWorkflow.status)) {
+      setSelectedResearchWorkflowId(existingWorkflow.id)
+      window.localStorage.setItem(`project:${projectId}:research-workflow`, existingWorkflow.id)
+      toast.info('Research has already started for this Inquiry. Opening its operation instead.')
+      navigate(`/projects/${projectId}/operations`, { replace: true })
+      return
+    }
+    setNewSearchThreadId(threadId)
+    setNewSearchDialogOpen(true)
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous)
+      next.delete('research')
+      next.delete('thread')
+      return next
+    }, { replace: true })
+  }, [inquiryThreads, navigate, projectId, researchDataLoading, researchWorkflows, searchParams, setSearchParams])
 
   const setFolderDialogOpen = useCallback((open: boolean) => {
     setLinkOpen(open)
@@ -877,7 +939,7 @@ export default function ProjectDetailPage() {
         || !isResearchHumanReviewCheckpoint(checkpoint)
         || researchReviewToastIdsRef.current.has(checkpoint.id)
       ) continue
-      const toastId = `research-review:${projectId}:${checkpoint.id}`
+      const toastId = researchReviewToastId(projectId, checkpoint.id)
       researchReviewToastIdsRef.current.set(checkpoint.id, toastId)
       toast.warning('Research review required', {
         id: toastId,
@@ -885,14 +947,7 @@ export default function ProjectDetailPage() {
         description: `${researchCheckpointLabel(checkpoint)} is ready for your review. The workflow is paused until you decide.`,
         action: {
           label: 'Review now',
-          onClick: () => {
-            const section = document.getElementById('research-checkpoints')
-            if (section) {
-              section.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            } else {
-              navigate(`/projects/${projectId}`)
-            }
-          },
+          onClick: () => navigate(`/projects/${projectId}/operations`),
         },
       })
     }
@@ -998,19 +1053,28 @@ export default function ProjectDetailPage() {
     }
   }
 
-  async function startInitialResearch(config: ProjectResearchInitialIntakeInput) {
+  // `workflowIdOverride` lets a caller force which workflow (if any) this
+  // targets instead of the one currently selected/displayed — the
+  // independent "start another search" dialog always passes `null` here so
+  // it can never silently overwrite whichever workflow the user has open.
+  async function startInitialResearch(config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) {
     if (!project) return
     setResearchActionBusy('start-initial-intake')
     try {
+      const workflowId = workflowIdOverride !== undefined ? workflowIdOverride : selectedResearchWorkflowId
       const response = await projectResearchApi.startInitialIntake(project.id, {
         ...config,
-        ...(selectedResearchWorkflowId ? { workflow_id: selectedResearchWorkflowId } : {}),
+        ...(workflowId ? { workflow_id: workflowId } : {}),
       })
       if (response.workflow) setResearchWorkflows(current => upsertById(current, response.workflow!))
       setOperations(current => upsertById(current, response.operation))
       setSourceChannels(current => mergeById(current, response.source_channels))
       setSourceBindings(current => mergeById(current, response.source_bindings))
-      toast.success('Initial literature research started')
+      toast.success('Literature search started')
+      if (response.workflow) {
+        setSelectedResearchWorkflowId(response.workflow.id)
+        window.localStorage.setItem(`project:${project.id}:research-workflow`, response.workflow.id)
+      }
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -1018,13 +1082,14 @@ export default function ProjectDetailPage() {
     }
   }
 
-  async function saveInitialIntake(config: ProjectResearchInitialIntakeInput): Promise<boolean> {
+  async function saveInitialIntake(config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null): Promise<boolean> {
     if (!project) return false
     setResearchActionBusy('save-initial-intake')
     try {
+      const workflowId = workflowIdOverride !== undefined ? workflowIdOverride : selectedResearchWorkflowId
       const workflow = await projectResearchApi.saveInitialIntakeDraft(project.id, {
         ...config,
-        ...(selectedResearchWorkflowId ? { workflow_id: selectedResearchWorkflowId } : {}),
+        ...(workflowId ? { workflow_id: workflowId } : {}),
       })
       setResearchWorkflows((current) => {
         const existing = current.findIndex((item) => item.id === workflow.id)
@@ -1039,11 +1104,6 @@ export default function ProjectDetailPage() {
     } finally {
       setResearchActionBusy(null)
     }
-  }
-
-  async function refineResearchQuestion(input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }): Promise<ProjectResearchQuestionRefinement> {
-    if (!project) throw new Error('Project is not loaded')
-    return projectResearchApi.refineQuestion(project.id, input)
   }
 
   async function loadResearchQuestionImpact() {
@@ -1126,34 +1186,6 @@ export default function ProjectDetailPage() {
     }
   }
 
-  async function reconcileResearchOperation(operationId: string) {
-    if (!project) return
-    const operation = operations.find(item => item.id === operationId)
-    if (!operation) {
-      toast.error('The research operation is no longer in the page state. Refresh the project and try again.')
-      return
-    }
-    setResearchActionBusy('reconcile-operation')
-    try {
-      const reconciled = await projectResearchApi.reconcileOperation(project.id, operation.id)
-      await Promise.all([refreshOperations(), refreshResearchState()])
-      const stillInSynthesis = reconciled.status === 'active'
-        && reconciled.progress_json.current_stage === 'synthesis'
-      if (stillInSynthesis) {
-        const boundRunStatus = reconciled.reconcile_diagnostic?.bound_run_status
-        toast.error(boundRunStatus
-          ? `The operation is still in synthesis because its bound run is ${boundRunStatus}. Open that run to inspect it.`
-          : 'The operation is still in synthesis and has no readable bound run. Check the server reconciliation log.')
-      } else {
-        toast.success('Research operation status synchronized')
-      }
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setResearchActionBusy(null)
-    }
-  }
-
   async function rescanResearchBackfill() {
     if (!project) return
     const operation = operations.find(item => item.kind === 'research'
@@ -1167,28 +1199,6 @@ export default function ProjectDetailPage() {
       await projectResearchApi.rescanBackfill(project.id, operation.id)
       toast.success('Rescan queued using the current monitor query')
       await refreshOperations()
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setResearchActionBusy(null)
-    }
-  }
-
-  async function decideResearchCheckpoint(checkpoint: ProjectResearchCheckpoint, decision: 'approved' | 'rejected') {
-    if (!project) return
-    setResearchActionBusy(`checkpoint-${checkpoint.id}`)
-    try {
-      await projectResearchApi.decideCheckpoint(project.id, checkpoint.workflow_id, checkpoint.id, { decision })
-      const toastId = researchReviewToastIdsRef.current.get(checkpoint.id)
-      if (toastId) {
-        toast.dismiss(toastId)
-        researchReviewToastIdsRef.current.delete(checkpoint.id)
-      }
-      toast.success(decision === 'approved' ? 'Checkpoint approved' : 'Checkpoint rejected')
-      await Promise.all([
-        refreshResearchState(),
-        checkpoint.checkpoint_type === 'idea_review' && decision === 'approved' ? refreshSourceSelection() : Promise.resolve(),
-      ])
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -1558,20 +1568,33 @@ export default function ProjectDetailPage() {
           questionThreads={inquiryThreads}
           researchActionBusy={researchActionBusy}
           onSaveInitialIntake={saveInitialIntake}
-          onRefineQuestion={refineResearchQuestion}
           onStartInitialIntake={startInitialResearch}
           onExtendHistory={extendResearchHistory}
           onTriggerIncremental={triggerIncrementalResearch}
           onLoadQuestionImpact={loadResearchQuestionImpact}
           onResolveQuestion={resolveResearchQuestion}
           onRetryOperation={retryResearchOperation}
-          onReconcileOperation={reconcileResearchOperation}
           onOpenSettings={() => setEditOpen(true)}
           onRescanBackfill={rescanResearchBackfill}
-          onDecideCheckpoint={decideResearchCheckpoint}
           onRebuildMatrix={rebuildLiteratureMatrix}
           onRunIntegrity={runIntegrityGate}
           onEditQuestion={() => navigate(`/projects/${project.id}/inquiry`)}
+        />
+      )}
+
+      {isAcademicProject && newSearchThread && (
+        <ResearchSetupDialog
+          projectId={project.id}
+          workflowId={newSearchWorkflow && ['not_started', 'paused'].includes(newSearchWorkflow.status) ? newSearchWorkflow.id : null}
+          threadId={newSearchThread.id}
+          open={newSearchDialogOpen}
+          draft={newSearchDraft}
+          busyAction={researchActionBusy}
+          modelProviders={modelProviders}
+          canAct={project.status === 'active'}
+          onOpenChange={setNewSearchDialogOpen}
+          onSave={(config, dialogWorkflowId) => saveInitialIntake(config, dialogWorkflowId ?? null)}
+          onStart={(config, dialogWorkflowId) => startInitialResearch(config, dialogWorkflowId ?? null)}
         />
       )}
 
@@ -2034,11 +2057,10 @@ export default function ProjectDetailPage() {
         research={isAcademicProject ? {
           currentItemLimit,
           hasLiveOperation: researchOperationForSettings !== undefined,
-          hasStartedWorkflow: researchWorkflows.some(workflow => workflow.status !== 'not_started'),
           busy: researchActionBusy !== null,
           onUpdateItemLimit: updateResearchItemLimit,
           snapshot: {
-            question: project.current_focus ?? '',
+            question: researchSetupDraft.research_question,
             monitors: researchMonitorLabels,
             history: researchSetupDraft.history_mode === 'all_available' ? 'All available history' : `${researchSetupDraft.from || '—'} to ${researchSetupDraft.to || '—'}`,
             maxItems: Number(researchSetupDraft.max_items) || null,

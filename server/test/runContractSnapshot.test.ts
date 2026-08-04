@@ -11,6 +11,28 @@ import { runToOut } from "../src/modules/runs/runReadModel";
 import type { RunRecord } from "../src/modules/runs/repository";
 
 describe("Run contract snapshots", () => {
+  it("resolves Space, Automation, Workflow, and Plan caps with a persisted source trace", () => {
+    const snapshot = createRunContractSnapshot({
+      source: { kind: "plan", id: "plan-1" },
+      budget_sources: [
+        { source: { kind: "space", id: "space-1" }, precedence: 10, max_cost: 25, max_runs: 20 },
+        { source: { kind: "automation", id: "automation-1" }, precedence: 20, max_cost: 15, max_runs: 5 },
+        { source: { kind: "workflow", id: "workflow-1" }, precedence: 20, max_cost: 10, max_runs: 8 },
+        { source: { kind: "plan", id: "plan-1" }, max_cost: 1 },
+      ],
+    }, "2026-07-26T12:00:00.000Z");
+    expect(snapshot.effective_budget).toMatchObject({ max_cost: 10, max_runs: 5 });
+    expect(snapshot.budget_resolution.mode).toBe("explicit_precedence");
+    expect(snapshot.budget_resolution.selected_source_by_dimension.max_cost).toEqual({
+      kind: "workflow",
+      id: "workflow-1",
+    });
+    expect(snapshot.budget_resolution.selected_source_by_dimension.max_runs).toEqual({
+      kind: "automation",
+      id: "automation-1",
+    });
+  });
+
   it("records explicit budget precedence and uses the strictest value on ties", () => {
     const snapshot = createRunContractSnapshot({
       source: { kind: "task", id: "task-1" },

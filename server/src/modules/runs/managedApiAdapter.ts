@@ -5,6 +5,7 @@ import type {
   RunInputEnvelope,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
+  RunTriggerOrigin,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { executeRuntimeHost, type RuntimeHostLogger } from "../runtimeHost";
@@ -31,6 +32,7 @@ export type ManagedApiAdapterType = "model_api" | "ts_agent_host";
 export type RuntimeHostExecutor = (
   config: ServerConfig,
   request: RuntimeHostExecuteRequest,
+  options?: { signal?: AbortSignal },
 ) => Promise<RuntimeHostExecuteResponse>;
 
 export interface ManagedApiNoToolAdapterInput {
@@ -43,6 +45,7 @@ export interface ManagedApiNoToolAdapterInput {
   max_tokens?: number | null;
   context_snapshot_id?: string | null;
   text_delta_sink?: (delta: string) => void;
+  abort_signal?: AbortSignal;
 }
 
 export interface ManagedApiNoToolAdapterDeps extends ManagedApiRetrievalToolDeps {
@@ -81,14 +84,16 @@ export async function executeManagedApiNoToolAdapter(
   }
 
   const request = runtimeHostRequest(input, adapterType, modelProviderId);
-  const execute = deps.executeRuntimeHost
-    ?? ((runtimeConfig, runtimeRequest) =>
+  const baseExecute = deps.executeRuntimeHost
+    ?? ((runtimeConfig, runtimeRequest, options) =>
       executeRuntimeHost(
         runtimeConfig,
         runtimeRequest,
         deps.runtimeHostLogger,
-        { onTextDelta: input.text_delta_sink },
+        { onTextDelta: input.text_delta_sink, signal: options?.signal },
       ));
+  const execute = (runtimeConfig: ServerConfig, runtimeRequest: RuntimeHostExecuteRequest) =>
+    baseExecute(runtimeConfig, runtimeRequest, { signal: input.abort_signal });
   const response = await new AgentToolGateway(config).execute(input.run, request, execute, deps);
   return envelopeFromRuntimeHost(input, adapterType, response, startedAt);
 }
@@ -156,7 +161,7 @@ function runtimeHostRequest(
     agent_id: input.run.agent_id,
     project_id: input.run.project_id,
     project_folder_id: input.run.project_folder_id,
-    trigger_origin: input.run.trigger_origin ?? null,
+    trigger_origin: (input.run.trigger_origin ?? null) as RunTriggerOrigin | null,
     capability_id: null,
     context_snapshot_id: input.context_snapshot_id ?? null,
     max_tokens: input.max_tokens ?? undefined,

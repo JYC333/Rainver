@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { BookOpen, Edit2, RefreshCw } from 'lucide-react'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import type {
@@ -7,7 +7,7 @@ import type {
   ProjectResearchWorkflow, ProjectSourceBinding, ReaderAnnotation, SourceItem,
   SourceChannel,
   ProjectOperation,
-  ProjectResearchQuestionImpact, ProjectResearchQuestionRefinement, ProjectResearchQuestionResolutionStrategy,
+  ProjectResearchQuestionImpact, ProjectResearchQuestionResolutionStrategy,
   ProjectResearchScanSummary,
   InquiryThread,
 } from '../../types/api'
@@ -23,22 +23,14 @@ import { researchSetupDraftFromWorkflow, serializeResearchSetupDraft } from './r
 import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { ResearchSetupSummary } from './ResearchSetupSummary'
 import { defaultResearchSetupGuideSteps, ResearchSetupGuide } from './ResearchSetupGuide'
+import { ResearchTabsLegend } from './ResearchTabsLegend'
 import { isResearchHumanReviewCheckpoint } from './researchReviewAttention'
-import { ResearchCheckpointReview } from './ResearchCheckpointReview'
 import { ResearchResultCard } from './ResearchResultCard'
 import { researchResultState, savedSetupDiffersFromOperation, type ResearchResultAction } from './researchResultState'
 import { ResearchScanTimeline } from './ResearchScanTimeline'
 
 export function activeResearchWorkflowFrom(workflows: ProjectResearchWorkflow[]): ProjectResearchWorkflow | null {
   return workflows.find(workflow => workflow.status === 'active') ?? null
-}
-
-export function workflowQuestionNeedsSync(project: Project, workflow: ProjectResearchWorkflow | null): boolean {
-  const focus = project.current_focus?.trim()
-  const workflowQuestion = typeof workflow?.state_json.research_question === 'string'
-    ? workflow.state_json.research_question.trim()
-    : ''
-  return Boolean(focus && workflowQuestion && focus !== workflowQuestion)
 }
 
 function historyCoverageRanges(workflow: ProjectResearchWorkflow | null): Array<{ from: string; to: string; operation_id: string; status: string }> {
@@ -173,6 +165,7 @@ export function researchOperationDetail(operation: ProjectOperation): string {
   const backfill = objectValue(operation.progress_json.backfill_progress)
   const total = numberValue(backfill.total_segments)
   const completed = numberValue(backfill.completed_segments)
+  const deferred = numberValue(backfill.deferred_segments)
   const ingestionRecords = numberValue(backfill.items_ingested)
   const sourceItemIds = Array.isArray(operation.progress_json.source_item_ids)
     ? operation.progress_json.source_item_ids.filter((value): value is string => typeof value === 'string' && value.length > 0)
@@ -187,10 +180,16 @@ export function researchOperationDetail(operation: ProjectOperation): string {
     const classified = numberValue(screening.classified_items)
     const totalBatches = numberValue(screening.total_batches)
     const completedBatches = numberValue(screening.completed_batches)
+    const queuedBatches = numberValue(screening.queued_batches)
+    const runningBatches = numberValue(screening.running_batches)
     const batchDetail = totalBatches > 0
-      ? `${completedBatches}/${totalBatches} screening batches`
+      ? runningBatches > 0
+        ? `${completedBatches}/${totalBatches} screening batches · model processing`
+        : queuedBatches > 0
+          ? `${completedBatches}/${totalBatches} screening batches · queued`
+          : `${completedBatches}/${totalBatches} screening batches`
       : screening.phase === 'ready_for_review' ? 'Screening complete' : 'Preparing screening batches'
-    return `${batchDetail} · ${classified}/${screeningTotal} papers classified`
+    return `${batchDetail} · ${classified}/${screeningTotal} papers classified${deferred > 0 ? ` · ${deferred} source window${deferred === 1 ? '' : 's'} retrying in background` : ''}`
   }
   if (stage === 'comparison') {
     const { done, total: comparisonTotal, remainingBatches } = comparisonProgress(operation)
@@ -207,18 +206,26 @@ export function researchOperationDetail(operation: ProjectOperation): string {
     return `Synthesis run ${synthesis.run_status}${since}`
   }
   return stage === 'backfill' && total > 0
-    ? `${completed}/${total} history windows · ${uniquePapers > 0 ? `${uniquePapers.toLocaleString()} unique papers · ` : ''}${ingestionRecords.toLocaleString()} ingestion records`
+    ? `${completed}/${total} history windows · ${uniquePapers > 0 ? `${uniquePapers.toLocaleString()} unique papers · ` : ''}${ingestionRecords.toLocaleString()} ingestion records${deferred > 0 ? ` · ${deferred} retrying in background` : ''}`
     : `Stage ${researchStageIndex(stage) + 1} of 5`
 }
 
-function researchOperationNextStep(operation: ProjectOperation): string {
+export function researchOperationNextStep(operation: ProjectOperation): string {
   if (isEmptySearchOperation(operation)) return 'Next: adjust the saved setup, then start the initial literature search again. Screening and synthesis were skipped.'
   const outcome = noReportOutcome(operation)
   if (outcome) return 'Next: review the collected papers and adjust the research scope or search settings. This is a completed research outcome, not an execution failure.'
   const stage = researchOperationStage(operation)
+  const backfill = objectValue(operation.progress_json.backfill_progress)
+  const deferred = numberValue(backfill.deferred_segments)
+  const ingested = numberValue(backfill.items_ingested)
   const screening = objectValue(operation.progress_json.screening_progress)
   if (operation.status === 'failed') {
     return `Failed during ${researchStageLabel(stage).toLowerCase()}. Retry is available for this stage.`
+  }
+  if (stage === 'backfill' && deferred > 0) {
+    return ingested > 0
+      ? 'A source window is temporarily unavailable and will retry automatically. Other successful sources can continue without waiting.'
+      : 'The source is temporarily unavailable and will retry automatically in the background. You can leave this page; research will continue when papers become available.'
   }
   if (stage === 'backfill') return 'Next: finish the history import, then screen the collected papers in batches.'
   if (stage === 'screening' && numberValue(screening.total_items) === 0) return 'Next: revise the search query or date range, then rescan the empty windows. Synthesis is paused until papers are found.'
@@ -231,20 +238,28 @@ function researchOperationNextStep(operation: ProjectOperation): string {
   return 'The research workflow is progressing automatically.'
 }
 
-function researchOperationSteps(operation: ProjectOperation): Array<{ title: string; status: string }> {
+export function researchOperationSteps(operation: ProjectOperation): Array<{ title: string; status: string }> {
   const fallback = ['Resolve literature monitors', 'Import history or scan delta', 'Review screening', 'Synthesize approved corpus', 'Review idea candidates']
   const stage = researchOperationStage(operation)
   const currentIndex = researchStageIndex(stage)
-  return fallback.map((title, index) => ({
-    title: operation.steps?.find(step => step.seq === index)?.title ?? title,
-    status: operation.status === 'failed' && index === currentIndex
-      ? 'failed'
-      : operation.steps?.find(step => step.seq === index)?.status ?? (
-        index < currentIndex ? 'done'
-          : index === currentIndex ? operation.status === 'waiting_review' ? 'blocked' : 'active'
-            : 'pending'
-      ),
-  }))
+  return fallback.map((fallbackTitle, index) => {
+    const persisted = operation.steps?.find(step => step.seq === index)
+    // Classification is model work, not yet the human screening review.
+    // Keep legacy persisted step titles, but clarify the live phase.
+    const title = index === 2 && stage === 'screening' && operation.status !== 'waiting_review'
+      ? 'Screen papers'
+      : persisted?.title ?? fallbackTitle
+    return {
+      title,
+      status: operation.status === 'failed' && index === currentIndex
+        ? 'failed'
+        : persisted?.status ?? (
+          index < currentIndex ? 'done'
+            : index === currentIndex ? operation.status === 'waiting_review' ? 'blocked' : 'active'
+              : 'pending'
+        ),
+    }
+  })
 }
 
 function relativeTime(value: string): string {
@@ -325,17 +340,14 @@ export interface AcademicResearchWorkbenchProps {
   questionThreads?: InquiryThread[]
   researchActionBusy: string | null
   onSaveInitialIntake: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
-  onRefineQuestion: (input: { research_question: string; history: Array<{ role: 'user' | 'assistant'; content: string }>; execution: { model_provider_id?: string; model_name?: string } }) => Promise<ProjectResearchQuestionRefinement>
   onStartInitialIntake: (config: ProjectResearchInitialIntakeInput) => void
   onExtendHistory: (config: { from: string; to?: string; max_items: number }) => void
   onTriggerIncremental: () => void
   onLoadQuestionImpact: () => Promise<ProjectResearchQuestionImpact>
   onResolveQuestion: (strategy: ProjectResearchQuestionResolutionStrategy) => Promise<boolean>
   onRetryOperation: (operationId: string) => void
-  onReconcileOperation: (operationId: string) => void
   onOpenSettings: () => void
   onRescanBackfill: () => void
-  onDecideCheckpoint: (checkpoint: ProjectResearchCheckpoint, decision: 'approved' | 'rejected') => void
   onRebuildMatrix: () => void
   onRunIntegrity: () => void
   onEditQuestion: () => void
@@ -362,17 +374,14 @@ export function AcademicResearchWorkbench({
   questionThreads = [],
   researchActionBusy,
   onSaveInitialIntake,
-  onRefineQuestion,
   onStartInitialIntake,
   onExtendHistory,
   onTriggerIncremental,
   onLoadQuestionImpact,
   onResolveQuestion,
   onRetryOperation,
-  onReconcileOperation,
   onOpenSettings,
   onRescanBackfill,
-  onDecideCheckpoint,
   onRebuildMatrix,
   onRunIntegrity,
   onEditQuestion,
@@ -385,7 +394,6 @@ export function AcademicResearchWorkbench({
   const [questionResolutionOpen, setQuestionResolutionOpen] = useState(false)
   const [questionImpact, setQuestionImpact] = useState<ProjectResearchQuestionImpact | null>(null)
   const [questionImpactError, setQuestionImpactError] = useState<string | null>(null)
-  const checkpointsRef = useRef<HTMLDivElement>(null)
   const sourceHref = `/projects/${project.id}/sources`
   const displayWorkflow = researchWorkflowForDisplayFrom(researchWorkflows, selectedWorkflowId)
   const activeWorkflow = displayWorkflow?.status === 'active' ? displayWorkflow : null
@@ -453,6 +461,13 @@ export function AcademicResearchWorkbench({
     return !operation || ['active', 'waiting_review'].includes(operation.status)
   })
   const canAct = project.status === 'active'
+  // Project-wide, not scoped to displayWorkflow — this Project can have
+  // several concurrently active searches (one per Question/Hypothesis
+  // Thread), and Operations Area is where all of them are actually visible;
+  // this is only a pointer there, not a second render of each one.
+  const allResearchOperations = researchOperations.filter(item => item.kind === 'research')
+  const runningResearchCount = allResearchOperations.filter(item => item.status === 'active').length
+  const waitingReviewResearchCount = allResearchOperations.filter(item => item.status === 'waiting_review').length
   const includedPaperCount = literatureMatrix.filter(row => row.triage_status === 'included').length
   // Before the matrix is built, the papers actually in scope live on the
   // current operation; the capped recent-items list is not a paper count.
@@ -473,12 +488,18 @@ export function AcademicResearchWorkbench({
     savedSetupDiffers: emptyInitialLiteratureOperation !== null
       && savedSetupDiffersFromOperation(serializeResearchSetupDraft(researchSetupDraft), emptyInitialLiteratureOperation),
   })
+  // The search-setup Modal now always targets a specific, already-defined
+  // Inquiry Thread — without one linked yet there is nothing valid to
+  // configure inside it, so every entry point that used to open it routes to
+  // Inquiry instead, the same way a missing question already did.
+  function openSetup() {
+    if (!currentThread) onEditQuestion()
+    else setResearchSetupOpen(true)
+  }
   function handleResultAction(action: ResearchResultAction) {
     if (action === 'configure') {
-      if (!projectQuestion) onEditQuestion()
-      else setResearchSetupOpen(true)
+      openSetup()
     } else if (action === 'resolve_question') void openQuestionResolution()
-    else if (action === 'review_results') checkpointsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     else if (action === 'retry' && resultState.operation) onRetryOperation(resultState.operation.id)
     else if (action === 'rescan') onRescanBackfill()
     else if (action === 'start_search') startSavedResearch()
@@ -498,7 +519,7 @@ export function AcademicResearchWorkbench({
   }
   function startSavedResearch() {
     if (!initialIntakeSaved) {
-      setResearchSetupOpen(true)
+      openSetup()
       return
     }
     onStartInitialIntake(serializeResearchSetupDraft(researchSetupDraft))
@@ -507,7 +528,7 @@ export function AcademicResearchWorkbench({
     hasResearchQuestion: Boolean(projectQuestion),
     hasInitialIntake: initialIntakeSaved,
     onEditQuestion,
-    onConfigureInitialIntake: () => setResearchSetupOpen(true),
+    onConfigureInitialIntake: openSetup,
   })
   const nextAction = !projectQuestion
     ? 'Set the research question before starting auto research.'
@@ -555,6 +576,18 @@ export function AcademicResearchWorkbench({
         <span aria-hidden="true">·</span>
         <Link className="hover:text-foreground hover:underline" to={`/projects/${project.id}/research`}>Open reading list, notebook, checklist, and reports</Link>
       </nav>
+      {(runningResearchCount > 0 || waitingReviewResearchCount > 0) && (
+        <Link
+          to={`/projects/${project.id}/operations`}
+          className="block rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground hover:bg-muted/40"
+        >
+          {runningResearchCount > 0 && `${runningResearchCount} search${runningResearchCount === 1 ? '' : 'es'} running`}
+          {runningResearchCount > 0 && waitingReviewResearchCount > 0 && ' · '}
+          {waitingReviewResearchCount > 0 && `${waitingReviewResearchCount} waiting for your review`}
+          {' — view all in Operations'}
+        </Link>
+      )}
+      {initialIntakeStarted && <ResearchTabsLegend projectId={project.id} />}
       {!initialIntakeStarted && (
         <ResearchSetupGuide steps={setupGuideSteps} />
       )}
@@ -565,25 +598,23 @@ export function AcademicResearchWorkbench({
           saved={initialIntakeSaved}
           busyAction={researchActionBusy}
           canAct={canAct}
-          onEdit={() => setResearchSetupOpen(true)}
+          onEdit={openSetup}
           onStart={startSavedResearch}
         />
       )}
-      <ResearchSetupDialog
+      {currentThread && <ResearchSetupDialog
         projectId={project.id}
         workflowId={selectedWorkflowId}
+        threadId={currentThread.id}
         open={researchSetupOpen}
         draft={researchSetupDraft}
         busyAction={researchActionBusy}
         modelProviders={modelProviders}
-        questionThreads={questionThreads}
         canAct={canAct}
         onOpenChange={setResearchSetupOpen}
         onSave={onSaveInitialIntake}
-        onRefineQuestion={onRefineQuestion}
         onStart={onStartInitialIntake}
-        onEditQuestion={onEditQuestion}
-      />
+      />}
       <section className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="border-b border-border p-4 lg:p-5 flex items-start justify-between gap-4 flex-wrap">
         <div className="space-y-1.5 min-w-0">
@@ -614,7 +645,7 @@ export function AcademicResearchWorkbench({
             <Edit2 className="size-3.5" />
             {projectQuestion ? 'Edit question' : 'Set research question'}
           </Button>
-          {!initialIntakeStarted && <Button size="sm" variant="outline" onClick={() => setResearchSetupOpen(true)}>
+          {!initialIntakeStarted && <Button size="sm" variant="outline" onClick={openSetup}>
             Set up intake
           </Button>}
         </div>
@@ -662,34 +693,6 @@ export function AcademicResearchWorkbench({
               )}
             </div>
           </div>
-
-
-          {pendingCheckpoints.length > 0 && (
-            <div ref={checkpointsRef} id="research-checkpoints" className="rounded-md border border-warning/35 bg-warning/5 p-4 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold">Review required</h3>
-                  <p className="text-xs text-muted-foreground">These are the two deliberate human gates in auto research. The decisions below control what enters the formal outputs.</p>
-                </div>
-                <Badge variant="warning">{pendingCheckpoints.length} pending</Badge>
-              </div>
-              {pendingCheckpoints.map(checkpoint => {
-                const operationId = typeof checkpoint.machine_result_json?.operation_id === 'string'
-                  ? checkpoint.machine_result_json.operation_id
-                  : null
-                return (
-                  <ResearchCheckpointReview
-                    key={checkpoint.id}
-                    checkpoint={checkpoint}
-                    onDecide={decision => onDecideCheckpoint(checkpoint, decision)}
-                    onRefresh={operationId ? () => onReconcileOperation(operationId) : undefined}
-                    refreshing={researchActionBusy === 'reconcile-operation'}
-                  />
-                )
-              })}
-            </div>
-          )}
-
         </div>
       </div>
       <Dialog open={questionResolutionOpen} onOpenChange={setQuestionResolutionOpen}>

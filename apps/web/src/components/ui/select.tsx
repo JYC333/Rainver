@@ -43,6 +43,7 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
   useLayoutEffect(() => {
     if (!open) {
       setInsideDialog(false)
+      setMenuStyle(null)
       return undefined
     }
     setInsideDialog(Boolean(triggerRef.current?.closest('[role="dialog"]')))
@@ -52,17 +53,31 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
       const rect = trigger.getBoundingClientRect()
       const gap = 4
       const viewportPadding = 8
-      const maxWidth = Math.min(Math.max(rect.width, 320), window.innerWidth - viewportPadding * 2)
+      // Measure the menu's own natural content width (it's mounted off-screen with
+      // `width: max-content` via measureStyle below until the first position is computed)
+      // instead of assuming a fixed width. A fixed floor wider than the actual content forced
+      // the menu wider than narrow trigger/viewport combinations could fit, which made the
+      // final viewport clamp below pin it far from the trigger regardless of alignment.
+      const naturalWidth = menuRef.current?.getBoundingClientRect().width ?? rect.width
+      const maxWidth = Math.min(Math.max(rect.width, naturalWidth), window.innerWidth - viewportPadding * 2)
+      // Prefer aligning the menu's left edge with the trigger's left edge. If that would
+      // overflow the viewport's right edge, align the menu's right edge with the trigger's
+      // right edge instead, so the menu stays visually anchored to the trigger rather than
+      // jumping to a position determined purely by viewport width.
+      const preferredLeft = rect.left + maxWidth > window.innerWidth - viewportPadding
+        ? rect.right - maxWidth
+        : rect.left
       const left = Math.min(
-        Math.max(rect.left, viewportPadding),
+        Math.max(preferredLeft, viewportPadding),
         Math.max(viewportPadding, window.innerWidth - maxWidth - viewportPadding),
       )
       setMenuStyle({
+        position: 'fixed',
         left,
         top: dropUp ? undefined : rect.bottom + gap,
         bottom: dropUp ? window.innerHeight - rect.top + gap : undefined,
+        width: maxWidth,
         minWidth: Math.min(rect.width, maxWidth),
-        maxWidth,
         maxHeight: dropUp
           ? Math.max(120, rect.top - gap * 2)
           : Math.max(120, window.innerHeight - rect.bottom - gap * 2),
@@ -79,12 +94,16 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
 
   const h = size === 'sm' ? 'h-7' : 'h-9'
   const renderInPlace = !portal || insideDialog
+  // Placeholder style used for the one frame (flushed before paint, so invisible to the user)
+  // between mount and the first computed position: mounts the menu off-screen so its natural
+  // content width can be measured via menuRef above.
+  const measureStyle: CSSProperties = { position: 'fixed', top: -9999, left: -9999, visibility: 'hidden', width: 'max-content' }
   const menu = (
     <div
       ref={menuRef}
       id={listboxId}
       role="listbox"
-      style={renderInPlace ? { maxHeight: 'min(18rem, 40vh)' } : menuStyle ?? undefined}
+      style={renderInPlace ? { maxHeight: 'min(18rem, 40vh)' } : menuStyle ?? measureStyle}
       className={cn(
         'z-[1000] overflow-auto rounded-lg border border-border bg-card shadow-md',
         renderInPlace
@@ -134,7 +153,7 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
         <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
       </button>
 
-      {open && !disabled && (renderInPlace ? menu : menuStyle ? createPortal(menu, document.body) : null)}
+      {open && !disabled && (renderInPlace ? menu : portal ? createPortal(menu, document.body) : null)}
     </div>
   )
 }

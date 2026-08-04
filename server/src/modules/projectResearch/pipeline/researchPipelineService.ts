@@ -13,7 +13,7 @@ import { ProjectResearchOrchestrator } from "../orchestrator";
 export class ProjectResearchPipelineService {
   private readonly orchestrator: ProjectResearchOrchestrator;
 
-  constructor(db: Queryable, config?: ServerConfig) {
+  constructor(db: Queryable, config: ServerConfig) {
     this.orchestrator = new ProjectResearchOrchestrator(db, config);
   }
 

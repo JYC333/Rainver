@@ -12,9 +12,6 @@
 /** Provider task policy used to route synthesis (ADR 0008 channel). */
 export const RETRIEVAL_SYNTHESIS_TASK = "retrieval_synthesis";
 
-/** Max tokens for the synthesized answer + gap JSON. */
-export const DEFAULT_SYNTHESIS_MAX_TOKENS = 1200;
-
 /**
  * Per-source text budget sent to the synthesizer. Bounds the prompt so a large
  * window of long documents cannot blow up the payload; the model only needs a

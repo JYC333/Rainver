@@ -10,7 +10,7 @@ import {
 } from '../../../api/client'
 
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), dismiss: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), dismiss: vi.fn() },
 }))
 
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -66,6 +66,7 @@ vi.mock('../../../api/client', () => ({
     transitionMode: vi.fn(),
     update: vi.fn(),
     archive: vi.fn(),
+    operations: vi.fn().mockResolvedValue([]),
     deleteSourceBinding: vi.fn().mockResolvedValue({ id: 'binding-1', status: 'archived' }),
     createSourceBinding: vi.fn().mockResolvedValue({
       id: 'binding-new',
@@ -137,6 +138,7 @@ vi.mock('../../../api/client', () => ({
     list: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 5, offset: 0 }),
   },
   sourcesApi: {
+    customSourceCredentials: vi.fn().mockResolvedValue([]),
     channels: vi.fn().mockResolvedValue([{
       id: 'channel-1',
       space_id: 'space-1',
@@ -450,7 +452,7 @@ describe('ProjectDetailPage Source consumption', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(screen.getByText('Saved intake configuration')).toBeInTheDocument()
-    expect(screen.getByLabelText('Research question')).toBeInTheDocument()
+    expect(screen.getByLabelText('Current focus')).toBeInTheDocument()
     expect(screen.getByText(/Engineering feed/)).toBeInTheDocument()
   })
 
@@ -560,6 +562,7 @@ describe('ProjectDetailPage Source consumption', () => {
       status: 'active',
       mode: 'autonomous',
       state_json: {},
+      primary_thread_id: null,
       started_by_user_id: 'user-1',
       started_run_id: null,
       created_at: '2026-06-30T00:00:00.000Z',
@@ -614,19 +617,6 @@ describe('ProjectDetailPage Source consumption', () => {
     expect(screen.queryByRole('button', { name: /edit question/i })).not.toBeInTheDocument()
   })
 
-  it('warns that saving a changed question does not rewrite started research', async () => {
-    mockAcademicProject()
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'complete',
-      status: 'active', mode: 'autonomous', state_json: { research_question: 'Old question', research_question_version: 1 },
-      started_by_user_id: 'user-1', started_run_id: null, created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-    renderPage()
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
-    expect(screen.getByText(/saving a new question does not rewrite existing screening decisions or reports/i)).toBeInTheDocument()
-  })
-
   it('resolves question drift through the impact-aware decision dialog', async () => {
     mockAcademicProject({ current_focus: 'New question' })
     vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
@@ -635,6 +625,7 @@ describe('ProjectDetailPage Source consumption', () => {
         research_question: 'Old question', research_question_version: 3, monitoring: { active: true },
         thread_scope: [{ thread_id: 'thread-1', version: 3, kind: 'question', statement: 'Old question' }],
       },
+      primary_thread_id: 'thread-1',
       started_by_user_id: 'user-1', started_run_id: null, created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
     }])
     vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
@@ -987,5 +978,164 @@ describe('ProjectDetailPage Source consumption', () => {
     await waitFor(() => {
       expect(readerApi.listByProject).toHaveBeenCalledWith('project-1', 5)
     })
+  })
+
+  // Kept last: this suite does not reset mocks between tests, and asserting
+  // an active research Workflow here would otherwise shift the call history
+  // that earlier "not.toHaveBeenCalledWith" assertions depend on.
+  it('replaces the setup guide with a tab-legend compass once initial research has started', async () => {
+    mockAcademicProject()
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
+      id: 'workflow-1',
+      project_id: 'project-1',
+      workflow_type: 'literature_review',
+      current_stage: 'screening',
+      status: 'active',
+      mode: 'autonomous',
+      state_json: { research_question: 'Does caching improve latency?' },
+      started_by_user_id: 'user-1',
+      started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z',
+      updated_at: '2026-07-24T00:00:00.000Z',
+    }] as never)
+    // Not `mockResolvedValueOnce`: Overview polls `projectsApi.operations` more
+    // than once per mount, and a single queued value would be consumed by
+    // whichever call lands first, leaving the operation state that matters
+    // here reset to empty by the next poll.
+    vi.mocked(projectsApi.operations).mockResolvedValue([{
+      id: 'operation-1',
+      project_id: 'project-1',
+      kind: 'research',
+      title: 'Initial literature search',
+      status: 'active',
+      progress_json: { run_kind: 'baseline', workflow_id: 'workflow-1', current_stage: 'screening' },
+      created_at: '2026-07-24T00:00:00.000Z',
+      updated_at: '2026-07-24T00:00:00.000Z',
+    }] as never)
+
+    renderPage()
+
+    expect(await screen.findByText("Where this Project's Areas fit in")).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Inquiry' })).toHaveAttribute('href', '/projects/project-1/inquiry')
+    // Once research is under way the per-step setup guide (Set research question / Set up intake) is gone.
+    expect(screen.queryByText('Complete the setup choices you want to make before the system starts the research workflow.')).not.toBeInTheDocument()
+    // Overview points at Operations for the full multi-workflow picture
+    // instead of drawing every running search's progress here itself.
+    expect(screen.getByRole('link', { name: /1 search running.*view all in Operations/ })).toHaveAttribute('href', '/projects/project-1/operations')
+  })
+
+  it('opens an independent new-search dialog preselecting the ?thread= Hypothesis, without disturbing the currently selected Workflow', async () => {
+    mockAcademicProject()
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
+      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'screening',
+      status: 'active', mode: 'autonomous', state_json: { research_question: 'Does caching improve latency?' },
+      primary_thread_id: 'thread-1',
+      started_by_user_id: 'user-1', started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
+    }] as never)
+    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
+      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
+      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
+      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+      version: 1, created_from: 'user', created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
+    }, {
+      id: 'thread-2', space_id: 'space-1', project_id: 'project-1', kind: 'hypothesis', statement: 'Batching improves throughput',
+      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
+      owner_user_id: 'user-1', next_focus_kind: 'search_acquisition', next_focus_note: null, blocked_reason: null,
+      version: 1, created_from: 'user', created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
+    }])
+
+    render(
+      <MemoryRouter
+        initialEntries={['/spaces/space-1/projects/project-1?research=new&thread=thread-2']}
+        future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
+      >
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    // The independent dialog opens preselecting thread-2's own wording — proof
+    // the ?research=new wiring reached the right dialog with the right
+    // thread, not the "edit the currently selected Workflow" dialog (which is
+    // workflow-1 / thread-1, a Question). Question/Hypothesis definition
+    // itself now happens on Inquiry, so with no draft Workflow yet linked to
+    // thread-2 this dialog shows the "not refined yet" hand-off back there.
+    expect(await screen.findByText(/Researching: Batching improves throughput/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Refine in Inquiry' })).toHaveAttribute('href', '/projects/project-1/inquiry?thread=thread-2')
+  })
+
+  it('reuses the confirmed Thread draft instead of reopening setup as unrefined', async () => {
+    mockAcademicProject()
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
+      id: 'workflow-confirmed', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'initial_intake_setup',
+      status: 'not_started', mode: 'autonomous', primary_thread_id: 'thread-1',
+      state_json: {
+        thread_id: 'thread-1',
+        research_question: 'Does caching improve latency?',
+        research_context_version_id: '11111111-1111-4111-8111-111111111111',
+        question_refine_skipped: false,
+        initial_intake: { history_mode: 'bounded_range', max_items: 1000, monitoring_field: 'submittedDate', report_depth: 'quick' },
+        execution: {},
+      },
+      started_by_user_id: 'user-1', started_run_id: null,
+      created_at: '2026-08-03T20:09:57.000Z', updated_at: '2026-08-03T20:09:57.000Z',
+    }] as never)
+    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
+      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
+      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
+      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+      version: 1, created_from: 'user', created_by_user_id: 'user-1',
+      created_at: '2026-08-03T20:00:00.000Z', updated_at: '2026-08-03T20:00:00.000Z',
+    }])
+
+    render(
+      <MemoryRouter
+        initialEntries={['/spaces/space-1/projects/project-1?research=new&thread=thread-1']}
+        future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
+      >
+        <Routes><Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText(/Researching: Does caching improve latency/)).toBeInTheDocument()
+    expect(screen.queryByText(/question has not passed refinement/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Refine in Inquiry' })).not.toBeInTheDocument()
+  })
+
+  it('opens the existing operation instead of a duplicate setup after that Inquiry intake completed', async () => {
+    mockAcademicProject()
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
+      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'completed',
+      status: 'completed', mode: 'autonomous', state_json: { research_question: 'Does caching improve latency?' },
+      primary_thread_id: 'thread-1', started_by_user_id: 'user-1', started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
+    }] as never)
+    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
+      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
+      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
+      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+      version: 1, created_from: 'user', created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
+    }])
+
+    render(
+      <MemoryRouter
+        initialEntries={['/spaces/space-1/projects/project-1?research=new&thread=thread-1']}
+        future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
+      >
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
+      'Research has already started for this Inquiry. Opening its operation instead.',
+    ))
+    expect(screen.queryByText(/Researching: Does caching improve latency/)).not.toBeInTheDocument()
   })
 })

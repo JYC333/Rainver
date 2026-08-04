@@ -32,11 +32,22 @@ runs and unrelated proposals do not create orphan evolution signals.
 | A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; A2 engine owns result production |
 | A supervisor records an outcome | `supervisor_outcome` | `PgRunSupervisor` emits after its durable decision |
 | A runtime conformance check fails | `runtime_conformance_violation` | `RuntimeConformanceService` emits after persistence |
+| An autonomous Run exceeds its review wait bound | `supervisor_outcome` | `AutonomyRecoveryService` emits after cancellation and operational alert persistence |
 
 Signals expose a triage state (`new`, `acknowledged`, `dismissed`, or
 `actioned`) and support `PATCH /api/v1/evolution/signals/:signalId` plus the
 convenience `POST /api/v1/evolution/signals/:signalId/dismiss`. Triage is
 space-scoped and does not mutate system-wide signals.
+
+## Autonomous review consumption
+
+The Evolution module registers `evolution_review` with the Autonomy candidate
+registry. The discoverer selects `new` and `acknowledged` signals for active
+space-owned targets after the Automation owner's durable successful-review
+cursor. It links the exact set to a deduplicated candidate without changing
+signal triage. A successful private review report marks only those links
+consumed and advances the cursor transactionally; a failed or in-flight review
+does neither. This consumption model is separate from manual triage.
 
 Cost uses the finalization-time sum of `token_usage_events.estimated_cost_usd`
 for the run. Duration uses the run's `started_at` to `ended_at` timestamps.
@@ -108,3 +119,10 @@ conformance facts by C3; both production hooks emit through the bounded
 target/deduplication path. The D1 triage/dismiss surface is now present;
 proposal `request_changes` remains a future status because the current proposal
 lifecycle has no such state.
+
+The D1.1 inventory is complete for current durable event classes. The manual
+`review_requested` signal is an explicit user intent record, and the direct
+signal-create route is an explicit ingestion surface; neither represents a
+missing automatic performance emitter. Direct Artifact edit evidence remains
+D1.2 (see [../plans/product-capability-followups-plan.md](../plans/product-capability-followups-plan.md))
+because there is not yet an authoritative Artifact revision event.

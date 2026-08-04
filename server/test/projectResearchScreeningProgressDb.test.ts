@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -16,6 +17,7 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // their final value instead of updating incrementally.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
+const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -219,7 +221,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
     await seedRecoveryJob("completed", { status: "succeeded" });
     await seedRecoveryJob("running", null);
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ status: string; progress_json: { screening_progress?: Record<string, unknown> } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
@@ -234,6 +236,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
       total_batches: 2,
       completed_batches: 1,
       active_batches: 1,
+      queued_batches: 0,
+      running_batches: 1,
     });
     // The pipeline isn't drained yet (one batch still running), so the stage
     // transition — and the screening_gate checkpoint it creates — must not
@@ -322,7 +326,7 @@ describe("ProjectResearchRepository checkpointReview classified count (real Post
     // subsequent reconcile tick while classification is still in flight.
     await seedIncrementalOperation(["item-1", "item-2", "item-3"]);
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!);
+    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
     const repo = new ProjectResearchRepository(pool!);
 
     await orchestrator.reconcileOperation(SPACE, INCREMENTAL_OPERATION);

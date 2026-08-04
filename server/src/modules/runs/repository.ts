@@ -459,10 +459,15 @@ export class PgRunRepository {
     const contractSnapshot = createRunContractSnapshot(input.contract_snapshot, now);
     const contextSnapshotId = randomUUID();
     const capabilitiesJson = normalizeRunCapabilitiesJson(input.capabilities_json);
-    const toolGrants = await buildRunToolGrants(
+    const declaredToolGrants = await buildRunToolGrants(
       capabilitiesJson,
       agentVersion.tool_permissions_json,
     );
+    const toolGrants = input.trigger_origin === "autonomous"
+      ? declaredToolGrants.filter((grant) =>
+          grant.action_id !== "authorization.request" && !grant.side_effecting
+        )
+      : declaredToolGrants;
     const permissionSnapshotJson = JSON.stringify({ tool_grants: toolGrants });
     const contextArtifactIds = normalizeContextArtifactIds(input.context_artifact_ids);
     await this.db.query(
@@ -639,7 +644,7 @@ export class PgRunRepository {
     project_id?: string | null;
     prompt?: string | null;
     instruction?: string | null;
-    trigger_origin: "automation" | "job" | "system";
+    trigger_origin: "automation" | "autonomous" | "job" | "system";
     capability_id?: string | null;
     capabilities_json?: unknown[] | null;
     contract_snapshot?: RunContractSnapshotInput;

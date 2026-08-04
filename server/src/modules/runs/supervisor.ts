@@ -9,25 +9,9 @@ import { contractRecord } from "./contractSnapshot";
 import { isManagedFailFastRun } from "../policy/managedExecutionPolicy";
 import { PgRunRepository, type RunRecord } from "./repository";
 import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes";
+import { isRetryableRunErrorCode } from "./retryPolicy";
 
 export const DEFAULT_MAX_RUN_ATTEMPTS = 2;
-
-const RETRYABLE_ERROR_CODES = new Set([
-  "adapter_timeout",
-  "cli_adapter_timeout",
-  "cli_stall_timeout",
-  "adapter_runtime_error",
-  "cli_runtime_provider_config_failed",
-  "runtime_tool_version_unavailable",
-  "runtime_session_invalid",
-  "provider_network_error",
-  "provider_rate_limit",
-  "orphaned",
-  "semantic_rejection",
-  "verification_failed",
-  "validation_failed",
-  "run_exchange_output_validation_failed",
-]);
 
 export interface RunSupervisorPort {
   supervise(input: {
@@ -66,10 +50,7 @@ export class PgRunSupervisor implements RunSupervisorPort {
   }): Promise<SupervisorDecision | null> {
     if (input.run.run_role === "coordinator") return null;
     if (!isSupervisableStatus(input.run.status)) return null;
-    // Managed Source/Research executions have an owning operation that
-    // records the terminal failure and exposes its own retry action. Sending
-    // them through the generic Supervisor would create a second review gate.
-    if (isManagedFailFastRun(input.run)) return null;
+    const managedFailFast = isManagedFailFastRun(input.run);
 
     return withQueryableTransaction(this.db, async (db) => {
       const repository = new PgRunRepository(db);
@@ -97,8 +78,14 @@ export class PgRunSupervisor implements RunSupervisorPort {
       const attemptNumber = attempt.attempt_number;
       const maxAttempts = maxAttemptsForRun(input.run);
       const budgetExceeded = maxCost !== null && totalCost !== null && totalCost >= maxCost;
-      const retryable = RETRYABLE_ERROR_CODES.has(reasonCode);
+      const retryable = isRetryableRunErrorCode(reasonCode);
       const canRetry = retryable && !budgetExceeded && attemptNumber < maxAttempts;
+      // Managed Source/Research executions still own their final failure and
+      // user-facing retry action. Allow only the Supervisor's bounded,
+      // automatic recovery for transient failures; once that is unavailable
+      // or exhausted, leave the run terminal so the owning operation can
+      // surface the real error instead of creating a second review gate.
+      if (managedFailFast && !canRetry) return null;
       const hasFallbackRoute = canRetry
         ? await new PgRouteDecisionRepository(db).hasFallbackRoute(input.run)
         : false;

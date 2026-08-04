@@ -1,12 +1,22 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
+vi.mock('../../core/spaceNav', () => ({
+  SpaceLink: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
+}))
 
+// Question/hypothesis definition now happens entirely on the Inquiry Thread
+// page (see QuestionRefinementPanel.test.tsx) — by the time this dialog
+// opens, `research_question`/`research_context_version_id` already reflect
+// whatever was confirmed there. These drafts model that already-refined state.
 const initialDraft = {
   research_question: 'How should agent tools be evaluated?',
   research_context_version_id: '11111111-1111-4111-8111-111111111111',
@@ -28,166 +38,37 @@ describe('ResearchSetupDialog', () => {
     vi.spyOn(projectResearchApi, 'saveInitialIntakeDraft').mockResolvedValue({} as never)
   })
 
-  it('assesses an unanswerable question and lets the user adopt an actionable rewrite', async () => {
+  it('locks discovery and start until the question passes refinement, with a link back to Inquiry to fix it', async () => {
     const user = userEvent.setup()
-    const onRefineQuestion = vi.fn().mockResolvedValue({
-      research_context_version_id: '11111111-1111-4111-8111-111111111111',
-      assessment: { answerable: false, finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 }, issues: ['Too broad'] },
-      suggested_questions: ['How do tool-using agents recover from failed calls?'],
-      sub_questions: [],
-      scope: { in: ['tool use'], out: ['all agents'] },
-      clarifying_questions: [{ question: 'Which agent environment?', options: ['Coding agents', 'Assistant agents'], allow_multiple: true }],
-    })
     render(
       <ResearchSetupDialog
         open
-        draft={{ ...initialDraft, research_question: 'agent' }}
+        threadId="thread-1"
+        draft={{ ...initialDraft, question_refine_skipped: true }}
         busyAction={null}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
         onOpenChange={vi.fn()}
         onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={onRefineQuestion}
         onStart={vi.fn()}
-        onEditQuestion={vi.fn()}
-      />,
-    )
-
-    await user.click(screen.getByRole('button', { name: 'Assess question' }))
-    expect(await screen.findByText('Not yet answerable')).toBeInTheDocument()
-    // Refinement milestones are durably auto-saved to the server-side draft.
-    expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenCalledWith('project-1', expect.objectContaining({
-      question_refinement: expect.objectContaining({ assessment: expect.objectContaining({ answerable: false }) }),
-    }))
-    await user.click(screen.getByRole('button', { name: 'How do tool-using agents recover from failed calls?' }))
-    expect(screen.getByDisplayValue('How do tool-using agents recover from failed calls?')).toBeInTheDocument()
-    expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenLastCalledWith('project-1', expect.objectContaining({
-      research_question: 'How do tool-using agents recover from failed calls?',
-      question_refine_skipped: true,
-    }))
-    // Adopting a rewrite must retain the current assessment as the context for
-    // its clarifying questions. Only the approved context/strategy is invalidated.
-    expect(screen.getByText('Which agent environment?')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Coding agents' }))
-    expect(screen.getByRole('button', { name: 'Coding agents' })).toHaveAttribute('aria-pressed', 'true')
-    await user.click(screen.getByRole('button', { name: 'Reassess with answers' }))
-    expect(onRefineQuestion).toHaveBeenLastCalledWith(expect.objectContaining({
-      research_question: 'How do tool-using agents recover from failed calls?',
-      history: expect.arrayContaining([
-        expect.objectContaining({ role: 'user', content: expect.stringContaining('Coding agents') }),
-      ]),
-    }))
-    expect(toast.info).toHaveBeenCalled()
-  })
-
-  it('locks discovery and start until the question passes refinement, and unlocks after adoption', async () => {
-    const user = userEvent.setup()
-    const onRefineQuestion = vi.fn().mockResolvedValue({
-      research_context_version_id: '11111111-1111-4111-8111-111111111111',
-      assessment: { answerable: false, finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 }, issues: ['Too broad'] },
-      suggested_questions: ['How do tool-using agents recover from failed calls?'],
-      sub_questions: [],
-      scope: { in: [], out: [] },
-      clarifying_questions: [],
-    })
-    render(
-      <ResearchSetupDialog
-        open
-        draft={{ ...initialDraft, research_question: 'agent', question_refine_skipped: true }}
-        busyAction={null}
-        modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
-        canAct
-        onOpenChange={vi.fn()}
-        onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={onRefineQuestion}
-        onStart={vi.fn()}
-        onEditQuestion={vi.fn()}
       />,
     )
 
     expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: /Sources/ }))
+    expect(screen.getByText(/hasn.t passed refinement yet/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Refine in Inquiry' })).toHaveAttribute('href', '/projects/project-1/inquiry?thread=thread-1')
+    // Already on the Sources step (step 0) — no in-dialog way left to fix
+    // this; the only affordance is the link back to Inquiry above.
     expect(screen.getByRole('button', { name: 'Evaluate search coverage' })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: /Question/ }))
-    await user.click(screen.getByRole('button', { name: 'Assess question' }))
-    // Still failing after assessment: the gate stays closed until a rewrite is adopted.
-    expect(await screen.findByText('Not yet answerable')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Initial import/ }))
     expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: 'How do tool-using agents recover from failed calls?' }))
-    await user.click(screen.getByRole('button', { name: /Sources/ }))
-    expect(screen.getByRole('button', { name: 'Evaluate search coverage' })).toBeDisabled()
-  })
-
-  it('keeps start locked when clarification answers invalidate the materialized strategy', async () => {
-    const user = userEvent.setup()
-    const onStart = vi.fn()
-    const onRefineQuestion = vi.fn().mockResolvedValue({
-      research_context_version_id: '11111111-1111-4111-8111-111111111111',
-      assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
-      suggested_questions: ['How do tool-using agents recover from failed calls?'],
-      sub_questions: [],
-      scope: { in: [], out: [] },
-      clarifying_questions: [{ question: 'Which agent environment?', options: ['Coding agents'], allow_multiple: false }],
-    })
-    render(
-      <ResearchSetupDialog
-        open
-        draft={initialDraft}
-        busyAction={null}
-        modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
-        canAct
-        onOpenChange={vi.fn()}
-        onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={onRefineQuestion}
-        onStart={onStart}
-        onEditQuestion={vi.fn()}
-      />,
-    )
-
-    await user.click(screen.getByRole('button', { name: 'Assess question' }))
-    await user.click(await screen.findByRole('button', { name: 'Coding agents' }))
-    expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
-    expect(onStart).not.toHaveBeenCalled()
-  })
-
-  it('invalidates a persisted context and materialized strategy when clarification answers change', async () => {
-    const user = userEvent.setup()
-    render(
-      <ResearchSetupDialog
-        open
-        draft={{
-          ...initialDraft,
-          question_refinement: {
-            research_context_version_id: initialDraft.research_context_version_id,
-            assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
-            suggested_questions: [initialDraft.research_question],
-            sub_questions: [],
-            scope: { in: [], out: [] },
-            clarifying_questions: [{ question: 'Which agent environment?', options: ['Coding agents'], allow_multiple: false }],
-          },
-        }}
-        busyAction={null}
-        modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
-        canAct
-        onOpenChange={vi.fn()}
-        onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={vi.fn()}
-        onStart={vi.fn()}
-        onEditQuestion={vi.fn()}
-      />,
-    )
-
-    expect(screen.getByRole('button', { name: /start initial research/i })).toBeEnabled()
-    await user.click(screen.getByRole('button', { name: 'Coding agents' }))
-    expect(screen.getByRole('button', { name: /start initial research/i })).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: /Sources/ }))
-    expect(screen.getByRole('button', { name: 'Evaluate search coverage' })).toBeDisabled()
   })
 
   it('preselects the space default provider and its default model when the draft has none', async () => {
     render(
       <ResearchSetupDialog
         open
+        threadId="thread-1"
         draft={{ ...initialDraft, execution: { model_provider_id: '', model_name: '' } }}
         busyAction={null}
         modelProviders={[
@@ -197,15 +78,12 @@ describe('ResearchSetupDialog', () => {
         canAct
         onOpenChange={vi.fn()}
         onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={vi.fn()}
         onStart={vi.fn()}
-        onEditQuestion={vi.fn()}
       />,
     )
 
-    expect(await screen.findByText('Default provider (default)')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Assess question' })).toBeEnabled()
     await userEvent.setup().click(screen.getByRole('button', { name: /Execution/ }))
+    expect(await screen.findByText('Default provider (default)')).toBeInTheDocument()
     expect(await screen.findByDisplayValue('MiniMax-M3')).toBeInTheDocument()
   })
 
@@ -214,15 +92,14 @@ describe('ResearchSetupDialog', () => {
     render(
       <ResearchSetupDialog
         open
+        threadId="thread-1"
         draft={initialDraft}
         busyAction={null}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}
         onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={vi.fn()}
         onStart={vi.fn()}
-        onEditQuestion={vi.fn()}
       />,
     )
 
@@ -233,70 +110,37 @@ describe('ResearchSetupDialog', () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Setup progress saved to the project'))
   })
 
-  it('keeps the refinement session when the dialog is closed and reopened', async () => {
+  it('reuses the same draft Workflow for every autosave in one session instead of creating a new one each time', async () => {
     const user = userEvent.setup()
-    const onRefineQuestion = vi.fn().mockResolvedValue({
-      research_context_version_id: '11111111-1111-4111-8111-111111111111',
-      assessment: { answerable: false, finer: { feasible: 1, interesting: 3, novel: 1, ethical: 3, relevant: 1 }, issues: ['Too broad'] },
-      suggested_questions: ['How do tool-using agents recover from failed calls?'],
-      sub_questions: [],
-      scope: { in: ['tool use'], out: ['all agents'] },
-      clarifying_questions: [{ question: 'Which agent environment?', options: [], allow_multiple: false }],
+    let nextWorkflowId = 0
+    vi.spyOn(projectResearchApi, 'saveInitialIntakeDraft').mockImplementation(async () => {
+      nextWorkflowId += 1
+      return { id: `workflow-${nextWorkflowId}` } as never
     })
-    const props = {
-      draft: { ...initialDraft, research_question: 'agent' },
-      busyAction: null,
-      modelProviders: [{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never],
-      canAct: true,
-      onOpenChange: vi.fn(),
-      onSave: vi.fn().mockResolvedValue(true),
-      onRefineQuestion,
-      onStart: vi.fn(),
-      onEditQuestion: vi.fn(),
-    }
-    const { rerender } = render(<ResearchSetupDialog open {...props} />)
-    await user.click(screen.getByRole('button', { name: 'Assess question' }))
-    expect(await screen.findByText('Not yet answerable')).toBeInTheDocument()
+    render(
+      <ResearchSetupDialog
+        open
+        threadId="thread-1"
+        draft={initialDraft}
+        busyAction={null}
+        modelProviders={[]}
+        canAct
+        onOpenChange={vi.fn()}
+        onSave={vi.fn().mockResolvedValue(true)}
+        onStart={vi.fn()}
+      />,
+    )
 
-    rerender(<ResearchSetupDialog open={false} {...props} />)
-    rerender(<ResearchSetupDialog open {...props} />)
+    // First autosave ("Next" on Sources) creates workflow-1 with no
+    // workflow_id in the request — this dialog opened with none of its own.
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenCalledTimes(1))
+    expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenCalledWith('project-1', expect.not.objectContaining({ workflow_id: expect.anything() }))
 
-    expect(await screen.findByText('Not yet answerable')).toBeInTheDocument()
-    expect(screen.getByText('Too broad')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('agent')).toBeInTheDocument()
-    expect(onRefineQuestion).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps the in-progress refinement when the parent draft changes while the dialog stays open', async () => {
-    const user = userEvent.setup()
-    const onRefineQuestion = vi.fn().mockResolvedValue({
-      research_context_version_id: '11111111-1111-4111-8111-111111111111',
-      assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 4 }, issues: [] },
-      suggested_questions: ['How do tool-using agents recover from failed calls?'],
-      sub_questions: [],
-      scope: { in: [], out: [] },
-      clarifying_questions: [],
-    })
-    const props = {
-      busyAction: null,
-      modelProviders: [{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never],
-      canAct: true,
-      onOpenChange: vi.fn(),
-      onSave: vi.fn().mockResolvedValue(true),
-      onRefineQuestion,
-      onStart: vi.fn(),
-      onEditQuestion: vi.fn(),
-    }
-    const { rerender } = render(<ResearchSetupDialog open draft={{ ...initialDraft, research_question: 'agent', question_refine_skipped: true }} {...props} />)
-    await user.click(screen.getByRole('button', { name: 'Assess question' }))
-    expect(await screen.findByText('Answerable')).toBeInTheDocument()
-
-    // A monitor confirmation refreshes the parent, which rebuilds the incoming
-    // draft (different fingerprint) while the dialog is still open.
-    rerender(<ResearchSetupDialog open draft={{ ...initialDraft, query_strategy_id: '33333333-3333-4333-8333-333333333333' }} {...props} />)
-
-    expect(screen.getByDisplayValue('agent')).toBeInTheDocument()
-    expect(screen.getByText('Answerable')).toBeInTheDocument()
+    // Second autosave ("Next" on Initial import) must target workflow-1 again, not create workflow-2.
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenCalledTimes(2))
+    expect(projectResearchApi.saveInitialIntakeDraft).toHaveBeenLastCalledWith('project-1', expect.objectContaining({ workflow_id: 'workflow-1' }))
   })
 
   it('renders adaptive provider attempts and materializes selected queries', async () => {
@@ -310,36 +154,24 @@ describe('ResearchSetupDialog', () => {
     render(
       <ResearchSetupDialog
         open
-        draft={{
-          ...initialDraft,
-          query_strategy_id: '',
-          question_refinement: {
-            research_context_version_id: '11111111-1111-4111-8111-111111111111',
-            assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 5 }, issues: [] },
-            suggested_questions: [initialDraft.research_question],
-            sub_questions: ['Which benchmarks measure recovery?'],
-            scope: { in: ['Tool-using coding agents'], out: ['Human-only studies'] },
-            clarifying_questions: [],
-          },
-        }}
+        threadId="thread-1"
+        draft={{ ...initialDraft, query_strategy_id: '' }}
         busyAction={null}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
         onOpenChange={vi.fn()}
         onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={vi.fn()}
         onStart={vi.fn()}
-        onEditQuestion={vi.fn()}
       />,
     )
 
-    expect(screen.getByText('Tool-using coding agents')).toBeInTheDocument()
-    expect(screen.getByText('Human-only studies')).toBeInTheDocument()
-    expect(screen.getByText('Which benchmarks measure recovery?')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /Sources/ }))
+    expect(screen.getByRole('checkbox', { name: /arXiv Public academic API/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /OpenAlex Public academic API/i })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /Semantic Scholar Anonymous access/i })).not.toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Evaluate search coverage' }))
     expect(researchDiscoveryApi.evaluate).toHaveBeenCalledWith(expect.objectContaining({
       research_context_version_id: '11111111-1111-4111-8111-111111111111',
+      providers: ['arxiv', 'openalex'],
     }))
     expect(await screen.findByText(/42 provider hits/)).toBeInTheDocument()
     expect(screen.getAllByText('coding agent memory')).toHaveLength(2)
@@ -349,6 +181,11 @@ describe('ResearchSetupDialog', () => {
     expect(screen.getByText(/accessible preview is smaller/)).toBeInTheDocument()
     expect(screen.getByText(/View 1 evaluation attempt/)).toBeInTheDocument()
     expect(screen.getByText(/Provider counts are independent estimates and may overlap/)).toBeInTheDocument()
+    const evaluatedArxiv = screen.getAllByRole('checkbox', { name: /arxiv/i }).slice(-1)[0]
+    expect(evaluatedArxiv).toBeChecked()
+    await user.click(evaluatedArxiv!)
+    expect(evaluatedArxiv).not.toBeChecked()
+    await user.click(evaluatedArxiv!)
     await user.click(screen.getByRole('button', { name: 'Confirm selected queries' }))
     expect(await screen.findByText(/Ready/)).toBeInTheDocument()
     expect(researchDiscoveryApi.materialize).toHaveBeenCalled()
@@ -359,15 +196,14 @@ describe('ResearchSetupDialog', () => {
     const { rerender } = render(
       <ResearchSetupDialog
         open
+        threadId="thread-1"
         draft={initialDraft}
         busyAction={null}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}
         onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={vi.fn()}
         onStart={onStart}
-        onEditQuestion={vi.fn()}
       />,
     )
 
@@ -376,21 +212,20 @@ describe('ResearchSetupDialog', () => {
     rerender(
       <ResearchSetupDialog
         open
+        threadId="thread-1"
         draft={{ ...initialDraft, execution: { ...initialDraft.execution } }}
         busyAction={null}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}
         onSave={vi.fn().mockResolvedValue(true)}
-        onRefineQuestion={vi.fn()}
         onStart={onStart}
-        onEditQuestion={vi.fn()}
       />,
     )
 
     expect(screen.getByRole('spinbutton')).toHaveValue(5)
     fireEvent.click(screen.getByRole('button', { name: /start initial research/i }))
 
-    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ max_items: 5 }))
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ max_items: 5 }), null)
   })
 })

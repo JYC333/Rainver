@@ -19,6 +19,21 @@
 
 import { z } from "zod";
 
+export const RUN_TRIGGER_ORIGIN_VALUES = [
+  "manual",
+  "automation",
+  "autonomous",
+  "job",
+  "system",
+  "delegation",
+  // Read-side compatibility values emitted by older/API-derived records.
+  "user",
+  "api",
+  "workflow",
+] as const;
+export const RunTriggerOriginSchema = z.enum(RUN_TRIGGER_ORIGIN_VALUES);
+export type RunTriggerOrigin = z.infer<typeof RunTriggerOriginSchema>;
+
 /** An opaque, server-generated identifier (UUID string in practice). */
 export const IdSchema = z.string().min(1);
 export type Id = z.infer<typeof IdSchema>;

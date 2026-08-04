@@ -1,4 +1,5 @@
 import type { ServerConfig } from "../../config";
+import type { AutomationTargetType } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import {
   OperationalAlertService,
   safelyEmitOperationalAlert,
@@ -11,21 +12,9 @@ import { HttpError } from "../routeUtils/common";
 import { enforce } from "../policy";
 import { loadActionRegistry } from "../policy/actionRegistry";
 import { computeDecision } from "../policy/gateway";
-import { runContextReviewCycle } from "../contextOps/reviewCycle";
-import {
-  RetrievalMaintenanceService,
-  createRetrievalMaintenanceProposalPacket,
-  persistRetrievalMaintenanceReportArtifact,
-} from "../retrieval";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
 import { PgRunRepository } from "../runs/repository";
-import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
-import { contractRouteHints, type RunBudgetSource } from "../runs/contractSnapshot";
 import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters";
 import { resolveEvolvableAssetVersion } from "../evolution/assetResolutionService";
-import { lockActiveProjectForMutation } from "../projects/access";
 import { WorkflowExecutionService } from "./workflowExecutionService";
 import { computeNextRunAt, InvalidScheduleError } from "./schedule";
 import {
@@ -34,19 +23,35 @@ import {
   type AutomationRepositoryPort,
   type AutomationRow,
 } from "./repository";
+import {
+  requireAutomationTargetHandler,
+  type AutomationTargetExecutionContext,
+  type AutomationTargetPreflightInput,
+} from "./targetRegistry";
+import { registerAutomationOwnedTargetHandlers } from "./targetHandlers";
+import { loadAutomationTargetDefinition } from "./targetDefinitions";
+import {
+  automationBudgetSource,
+  automationContract,
+  automationScheduleWasHandled,
+  lockAndCheckAutomationBudget,
+} from "./targetSupport";
 
 const VALID_TRIGGER_TYPES = new Set(["manual", "schedule"]);
 const VALID_STATUSES = new Set(["active", "paused", "archived"]);
 const AUTOMATION_TARGET_AGENT_RUN = "agent_run";
-const AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE = "knowledge_retrieval_maintenance";
-const AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE = "context_ops_review_cycle";
 const AUTOMATION_TARGET_WORKFLOW = "workflow";
-const AUTOMATION_SCHEDULE_HANDLED = Symbol("automation_schedule_handled");
-const VALID_AUTOMATION_TARGETS = new Set([
-  AUTOMATION_TARGET_AGENT_RUN,
-  AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE,
-  AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE,
-  AUTOMATION_TARGET_WORKFLOW,
+const AUTOMATION_TARGET_AUTONOMOUS_TICK = "autonomous_tick";
+const DEFAULT_AUTONOMY_CRON = "0 * * * *";
+const AUTONOMY_ENABLE_KEYS = new Set([
+  "agent_id",
+  "name",
+  "observe_only",
+  "autonomy_budget",
+  "project_ids",
+  "runtime_profile_id",
+  "cron",
+  "timezone",
 ]);
 const CREATE_KEYS = new Set([
   "name",
@@ -110,6 +115,7 @@ export class AutomationService {
     private readonly repo: AutomationRepositoryPort,
     alerts?: OperationalAlertPort | null,
   ) {
+    registerAutomationOwnedTargetHandlers();
     this.alerts = alerts === undefined ? OperationalAlertService.fromConfig(config) : alerts;
   }
 
@@ -136,7 +142,8 @@ export class AutomationService {
         throw error;
       }
     }
-    const targetType = automationTargetType(configJson);
+    const targetType = await automationTargetType(configJson);
+    await assertUserSelectableTarget(targetType);
     configJson = await normalizeWorkflowConfig(configJson, {
       targetType,
       triggerType,
@@ -208,7 +215,11 @@ export class AutomationService {
         throw error;
       }
     }
-    const nextTargetType = automationTargetType(configJson ?? existing.config_json);
+    const nextTargetType = await automationTargetType(configJson ?? existing.config_json);
+    const existingTargetType = await automationTargetType(existing.config_json);
+    if (configJson && nextTargetType !== existingTargetType) {
+      await assertUserSelectableTarget(nextTargetType);
+    }
     const hasProjectKey = Object.prototype.hasOwnProperty.call(input.body, "project_id");
     const nextProjectId = hasProjectKey
       ? optionalString(input.body.project_id, "project_id")
@@ -238,6 +249,7 @@ export class AutomationService {
       target_type: nextTargetType,
       project_id: authorityProjectId ?? null,
       project_writer: hasProjectWriterAuthority,
+      actor_is_owner: input.actorUserId === existing.owner_user_id,
     }, input.automationId);
     if (nextTargetType !== AUTOMATION_TARGET_AGENT_RUN) {
       await this.runTargetPreflight({
@@ -263,6 +275,77 @@ export class AutomationService {
     });
   }
 
+  /**
+   * Self-service enable/reconfigure of the caller's own Always-on
+   * (`autonomous_tick`) Automation. `autonomous_tick` is deliberately
+   * `user_selectable: false` in the target registry — it cannot be created
+   * through the generic `create()` body, which accepts an open-ended
+   * `config_json` for a control-plane target with a fixed shape and identity
+   * model. This is the one narrow, purpose-built path around that gate: any
+   * active Space member may enable their own tick, scoped to their own
+   * identity and whatever Agent they already have Space access to run — the
+   * same reachability rule manual Run creation already applies (no extra
+   * per-Agent ownership check beyond Space membership). It is not an
+   * admin/owner-only action, unlike other Automation targets.
+   */
+  async enableAutonomy(input: {
+    spaceId: string;
+    actorUserId: string;
+    body: Record<string, unknown>;
+  }): Promise<AutomationRow> {
+    rejectExtraKeys(input.body, AUTONOMY_ENABLE_KEYS);
+    const agentId = requiredString(input.body.agent_id, "agent_id");
+    const name = optionalString(input.body.name, "name", 256) ?? "Always-on";
+    const configJson = buildAutonomyConfigJson(input.body);
+    try {
+      computeNextRunAt(configJson);
+    } catch (error) {
+      if (error instanceof InvalidScheduleError) throw new HttpError(422, error.message);
+      throw error;
+    }
+    await this.enforceAction("automation.create", input.spaceId, input.actorUserId, {
+      agent_id: agentId,
+      trigger_type: "schedule",
+      target_type: AUTOMATION_TARGET_AUTONOMOUS_TICK,
+      project_id: null,
+      project_writer: false,
+      actor_is_owner: true,
+    });
+    const preflightSnapshot = await this.runTargetPreflight({
+      targetType: AUTOMATION_TARGET_AUTONOMOUS_TICK,
+      spaceId: input.spaceId,
+      actorUserId: input.actorUserId,
+      agentId,
+      projectFolderId: null,
+      projectId: null,
+      automationPreAuthorized: true,
+      configJson,
+    });
+    return this.repo.upsertAutonomyAutomation({
+      spaceId: input.spaceId,
+      ownerUserId: input.actorUserId,
+      agentId,
+      name,
+      configJson,
+      preflightSnapshot,
+    });
+  }
+
+  /** The caller's own Always-on Automation, or null if never enabled. */
+  async getOwnAutonomyAutomation(input: {
+    spaceId: string;
+    actorUserId: string;
+  }): Promise<AutomationRow | null> {
+    const rows = await this.repo.list(input.spaceId);
+    return (
+      rows.find(
+        (row) =>
+          row.owner_user_id === input.actorUserId
+          && row.config_json?.target_type === AUTOMATION_TARGET_AUTONOMOUS_TICK,
+      ) ?? null
+    );
+  }
+
   async fire(input: {
     spaceId: string;
     automationId: string;
@@ -281,7 +364,7 @@ export class AutomationService {
     if (!VALID_TRIGGER_TYPES.has(triggerType)) {
       throw new HttpError(422, `Unsupported trigger_type ${JSON.stringify(triggerType)}`);
     }
-    const targetType = automationTargetType(auto.config_json);
+    const targetType = await automationTargetType(auto.config_json);
     let hasProjectWriterAuthority = false;
     if (auto.project_id) {
       await this.repo.assertProjectWriter(input.spaceId, auto.project_id, input.actorUserId);
@@ -296,6 +379,7 @@ export class AutomationService {
       target_type: targetType,
       project_id: auto.project_id ?? null,
       project_writer: hasProjectWriterAuthority,
+      actor_is_owner: input.actorUserId === auto.owner_user_id,
     }, auto.id);
     const preflightSnapshot = await this.runTargetPreflight({
       targetType,
@@ -308,51 +392,29 @@ export class AutomationService {
       configJson: auto.config_json,
     });
 
-    if (targetType === AUTOMATION_TARGET_WORKFLOW) {
-      const result = await this.executeWorkflowFire(auto, input, triggerType, preflightSnapshot);
-      if (triggerType === "manual") await this.repo.recordFire(input.spaceId, auto.id);
-      return result;
-    }
-
-    if (!this.config.databaseUrl) {
-      throw new HttpError(502, "SERVER_DATABASE_URL is required");
-    }
-    if (targetType === AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE) {
-      const result = await this.executeMaintenanceFire(auto, input, triggerType, preflightSnapshot);
-      if (triggerType === "manual") {
-        await this.repo.recordFire(input.spaceId, auto.id);
-      }
-      return result;
-    }
-    if (targetType === AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE) {
-      const result = await this.executeContextReviewCycleFire(auto, input, triggerType, preflightSnapshot);
-      if (triggerType === "manual") {
-        await this.repo.recordFire(input.spaceId, auto.id);
-      }
-      return result;
-    }
-    const result = await withTransaction(getDbPool(this.config.databaseUrl), async (client) => {
-      return this.persistFire(client, auto, input, triggerType, preflightSnapshot);
+    const result = await requireAutomationTargetHandler(targetType).execute({
+      config: this.config,
+      repo: this.repo,
+      host: this,
+      automation: auto,
+      fireInput: input,
+      triggerType,
+      preflightSnapshot,
+      advanceSchedule: false,
     });
     if (triggerType === "manual") {
       await this.repo.recordFire(input.spaceId, auto.id);
     }
-    return {
-      run_id: result.runId,
-      automation_run_id: result.automationRunId,
-      trigger_origin: "automation",
-      preflight_executable: Boolean(preflightSnapshot.executable),
-    };
+    return result;
   }
 
   async scanAndFire(): Promise<number> {
     if (!this.config.databaseUrl) return 0;
-    const pool = getDbPool(this.config.databaseUrl);
     const due = await this.repo.listDue(new Date().toISOString());
     let fired = 0;
     for (const auto of due) {
       try {
-        const targetType = automationTargetType(auto.config_json);
+        const targetType = await automationTargetType(auto.config_json);
         let hasProjectWriterAuthority = false;
         if (auto.project_id) {
           await this.repo.assertProjectWriter(auto.space_id, auto.project_id, auto.owner_user_id);
@@ -373,6 +435,7 @@ export class AutomationService {
           target_type: targetType,
           project_id: auto.project_id ?? null,
           project_writer: hasProjectWriterAuthority,
+          actor_is_owner: true,
         }, auto.id);
         const preflightSnapshot = await this.runTargetPreflight({
           targetType,
@@ -384,26 +447,16 @@ export class AutomationService {
           automationPreAuthorized: preAuthorized,
           configJson: auto.config_json,
         });
-        if (targetType === AUTOMATION_TARGET_WORKFLOW) {
-          await this.executeWorkflowFire(auto, fireInput, "schedule", preflightSnapshot, {
-            advanceSchedule: true,
-          });
-        } else if (targetType === AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE) {
-          await this.executeMaintenanceFire(auto, fireInput, "schedule", preflightSnapshot, {
-            advanceSchedule: true,
-          });
-        } else if (targetType === AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE) {
-          await this.executeContextReviewCycleFire(auto, fireInput, "schedule", preflightSnapshot, {
-            advanceSchedule: true,
-          });
-        } else {
-          await withTransaction(pool, async (client) => {
-            const automations = new PgAutomationRepository(client);
-            const persisted = await this.persistFire(client, auto, fireInput, "schedule", preflightSnapshot);
-            await automations.advanceSchedule(auto);
-            return persisted;
-          });
-        }
+        await requireAutomationTargetHandler(targetType).execute({
+          config: this.config,
+          repo: this.repo,
+          host: this,
+          automation: auto,
+          fireInput,
+          triggerType: "schedule",
+          preflightSnapshot,
+          advanceSchedule: true,
+        });
         fired += 1;
       } catch (error) {
         await safelyEmitOperationalAlert(this.alerts, {
@@ -422,12 +475,51 @@ export class AutomationService {
             trigger_type: auto.trigger_type,
           },
         });
-        if (!scheduleWasHandled(error)) {
+        if (!automationScheduleWasHandled(error)) {
           await this.repo.advanceSchedule(auto);
         }
       }
     }
     return fired;
+  }
+
+  async executeAgentRun(
+    context: AutomationTargetExecutionContext,
+  ): Promise<Record<string, unknown>> {
+    if (!this.config.databaseUrl) {
+      throw new HttpError(502, "SERVER_DATABASE_URL is required");
+    }
+    const result = await withTransaction(getDbPool(this.config.databaseUrl), async (client) => {
+      const persisted = await this.persistFire(
+        client,
+        context.automation,
+        context.fireInput,
+        context.triggerType,
+        context.preflightSnapshot,
+      );
+      if (context.advanceSchedule) {
+        await new PgAutomationRepository(client).advanceSchedule(context.automation);
+      }
+      return persisted;
+    });
+    return {
+      run_id: result.runId,
+      automation_run_id: result.automationRunId,
+      trigger_origin: "automation",
+      preflight_executable: Boolean(context.preflightSnapshot.executable),
+    };
+  }
+
+  async executeWorkflow(
+    context: AutomationTargetExecutionContext,
+  ): Promise<Record<string, unknown>> {
+    return this.executeWorkflowFire(
+      context.automation,
+      context.fireInput,
+      context.triggerType,
+      context.preflightSnapshot,
+      { advanceSchedule: context.advanceSchedule },
+    );
   }
 
   private async persistFire(
@@ -507,7 +599,7 @@ export class AutomationService {
       target,
     });
     const executionResult = await withTransaction(getDbPool(this.config.databaseUrl), async (client) => {
-      const execution = await new WorkflowExecutionService().start({
+      const execution = await new WorkflowExecutionService(this.config).start({
         db: client,
         identity: { spaceId: input.spaceId, userId: input.actorUserId },
         automation: auto,
@@ -549,289 +641,6 @@ export class AutomationService {
       workflow_version_id: resolved.versionId,
       preflight_executable: Boolean(preflightSnapshot.executable),
     };
-  }
-
-  private async executeMaintenanceFire(
-    auto: AutomationRow,
-    input: {
-      spaceId: string;
-      actorUserId: string;
-    },
-    triggerType: string,
-    preflightSnapshot: Record<string, unknown>,
-    options: { advanceSchedule?: boolean } = {},
-  ): Promise<Record<string, unknown>> {
-    if (!this.config.databaseUrl) {
-      throw new HttpError(502, "SERVER_DATABASE_URL is required");
-    }
-    const pool = getDbPool(this.config.databaseUrl);
-    const started = await withTransaction(pool, async (client) => {
-      const runs = new PgRunRepository(client);
-      const automations = new PgAutomationRepository(client);
-      await lockAndCheckAutomationBudget(client, auto);
-      const run = await runs.createRunningSystemRun({
-        space_id: input.spaceId,
-        user_id: input.actorUserId,
-        agent_id: auto.agent_id,
-        project_folder_id: auto.project_folder_id,
-        trigger_origin: "automation",
-        prompt: "Run Knowledge retrieval maintenance scan.",
-        instruction: "Persist an owner-private maintenance report and optionally create a review packet.",
-        capability_id: "knowledge.retrieval.maintenance",
-        capabilities_json: ["knowledge.retrieval.maintenance"],
-        source: triggerType === "schedule" ? "scheduled" : "managed",
-        contract_snapshot: automationContract(auto),
-      });
-      const automationRunId = await automations.createAutomationRun({
-        automationId: auto.id,
-        runId: run.id,
-        triggeredByUserId: input.actorUserId,
-        triggerType,
-        preflightSnapshot,
-      });
-      return { runId: run.id, automationRunId };
-    });
-
-    try {
-      const report = await new RetrievalMaintenanceService(
-        pool,
-        knowledgeRetrievalRegistry,
-      ).scan(input.spaceId, input.actorUserId);
-      const settings = await readSpaceRetrievalSettings(pool, input.spaceId);
-      const createPacket = shouldCreateMaintenancePacket(auto.config_json);
-      const persisted = await withTransaction(pool, async (client) => {
-        const contextInput = {
-          spaceId: input.spaceId,
-          ownerUserId: input.actorUserId,
-          runId: started.runId,
-          report,
-          source: "automation_knowledge_retrieval_maintenance",
-          settingsSnapshot: {
-            default_search_mode: settings.defaultSearchMode,
-            rerank_enabled: settings.rerankEnabled,
-            query_rewrite_enabled: settings.queryRewriteEnabled,
-            use_query_cache: settings.useQueryCache,
-            include_trace: settings.includeTrace,
-            external_egress_enabled: settings.externalEgressEnabled,
-            retrieval_tool_mode: settings.retrievalToolMode,
-            embedding_dimensions: settings.embeddingDimensions,
-            max_results_default: settings.maxResultsDefault,
-          },
-        };
-        const artifactId = await persistRetrievalMaintenanceReportArtifact(client, contextInput);
-        const proposalId = createPacket
-          ? await createRetrievalMaintenanceProposalPacket(client, {
-              ...contextInput,
-              artifactId,
-            })
-          : undefined;
-        await new PgRunRepository(client).markRunTerminal({
-          run_id: started.runId,
-          space_id: input.spaceId,
-          status: "succeeded",
-          output_text: `Knowledge retrieval maintenance scan completed with ${report.findings.length} finding(s).`,
-          output_json: canonicalRunOutput({
-            success: true,
-            outputText: `Knowledge retrieval maintenance scan completed with ${report.findings.length} finding(s).`,
-            outputJson: {
-            automation_target: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE,
-            retrieval_maintenance_report: {
-              artifact_id: artifactId,
-              proposal_id: proposalId ?? null,
-              finding_count: report.findings.length,
-              scanned: report.scanned,
-              counts: report.counts,
-              truncated: report.truncated,
-            },
-            },
-          }),
-          exit_code: 0,
-          completed_at: new Date().toISOString(),
-        });
-        if (options.advanceSchedule) {
-          await new PgAutomationRepository(client).advanceSchedule(auto);
-        }
-        return { artifactId, proposalId };
-      });
-      return {
-        run_id: started.runId,
-        automation_run_id: started.automationRunId,
-        trigger_origin: "automation",
-        preflight_executable: Boolean(preflightSnapshot.executable),
-        target_type: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE,
-        artifact_id: persisted.artifactId,
-        proposal_id: persisted.proposalId ?? null,
-        finding_count: report.findings.length,
-        scanned: report.scanned,
-        truncated: report.truncated,
-      };
-    } catch (error) {
-      await withTransaction(pool, async (client) => {
-        await new PgRunRepository(client).markRunTerminal({
-          run_id: started.runId,
-          space_id: input.spaceId,
-          status: "failed",
-          output_text: "Knowledge retrieval maintenance scan failed.",
-          output_json: canonicalRunOutput({
-            success: false,
-            outputText: "Knowledge retrieval maintenance scan failed.",
-            outputJson: { automation_target: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE },
-          }),
-          error_json: {
-            error_code: "retrieval_maintenance_automation_failed",
-            error_text: error instanceof Error ? error.message : "Maintenance scan failed",
-          },
-          exit_code: 1,
-          completed_at: new Date().toISOString(),
-        });
-        if (options.advanceSchedule) {
-          await new PgAutomationRepository(client).advanceSchedule(auto);
-        }
-      });
-      if (options.advanceSchedule) {
-        throw markScheduleHandled(error);
-      }
-      throw error;
-    }
-  }
-
-  private async executeContextReviewCycleFire(
-    auto: AutomationRow,
-    input: {
-      spaceId: string;
-      actorUserId: string;
-    },
-    triggerType: string,
-    preflightSnapshot: Record<string, unknown>,
-    options: { advanceSchedule?: boolean } = {},
-  ): Promise<Record<string, unknown>> {
-    if (!this.config.databaseUrl) {
-      throw new HttpError(502, "SERVER_DATABASE_URL is required");
-    }
-    const pool = getDbPool(this.config.databaseUrl);
-    const started = await withTransaction(pool, async (client) => {
-      const runs = new PgRunRepository(client);
-      const automations = new PgAutomationRepository(client);
-      await lockAndCheckAutomationBudget(client, auto);
-      const run = await runs.createRunningSystemRun({
-        space_id: input.spaceId,
-        user_id: input.actorUserId,
-        agent_id: auto.agent_id,
-        project_folder_id: auto.project_folder_id,
-        trigger_origin: "automation",
-        prompt: "Run Context Review Cycle.",
-        instruction: "Persist aggregate Context Ops reports and review packets without direct canonical writes.",
-        capability_id: "context_ops.review_cycle",
-        capabilities_json: ["context_ops.review_cycle"],
-        source: triggerType === "schedule" ? "scheduled" : "managed",
-        contract_snapshot: automationContract(auto),
-      });
-      const automationRunId = await automations.createAutomationRun({
-        automationId: auto.id,
-        runId: run.id,
-        triggeredByUserId: input.actorUserId,
-        triggerType,
-        preflightSnapshot,
-      });
-      return { runId: run.id, automationRunId };
-    });
-
-    try {
-      const request = reviewCycleRequestFromConfig(auto.config_json);
-      const result = await withTransaction(pool, async (client) => {
-        const reviewResult = await runContextReviewCycle(client, {
-          spaceId: input.spaceId,
-          userId: input.actorUserId,
-          request,
-          runId: started.runId,
-        });
-        const terminalStatus = reviewResult.degraded ? "degraded" : "succeeded";
-        await new PgRunRepository(client).markRunTerminal({
-          run_id: started.runId,
-          space_id: input.spaceId,
-          status: terminalStatus,
-          output_text: reviewResult.degraded
-            ? "Context Review Cycle completed with warnings."
-            : "Context Review Cycle completed.",
-          output_json: canonicalRunOutput({
-            success: true,
-            outputText: reviewResult.degraded
-              ? "Context Review Cycle completed with warnings."
-              : "Context Review Cycle completed.",
-            outputJson: {
-            automation_target: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE,
-            context_ops_review_cycle: reviewResult,
-            },
-          }),
-          exit_code: 0,
-          completed_at: new Date().toISOString(),
-        });
-        if (options.advanceSchedule) {
-          await new PgAutomationRepository(client).advanceSchedule(auto);
-        }
-        return reviewResult;
-      });
-      return {
-        run_id: started.runId,
-        automation_run_id: started.automationRunId,
-        trigger_origin: "automation",
-        preflight_executable: Boolean(preflightSnapshot.executable),
-        target_type: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE,
-        artifact_id: result.artifact_id,
-        proposal_id: result.claim_candidates.proposal_id,
-        artifact_ids: {
-          context_review_cycle_report: result.artifact_id,
-          retrieval_maintenance: result.retrieval_maintenance.artifact_id,
-          diagnostics: result.diagnostics.artifact_id,
-          memory_maintenance: result.memory_maintenance.artifact_id,
-          claim_candidates: result.claim_candidates.artifact_id,
-        },
-        proposal_ids: {
-          retrieval_maintenance: result.retrieval_maintenance.proposal_id,
-          diagnostics: result.diagnostics.proposal_id,
-          memory_maintenance: result.memory_maintenance.proposal_id,
-          claim_candidates: result.claim_candidates.proposal_id,
-        },
-        finding_count:
-          result.retrieval_maintenance.finding_count +
-          result.memory_maintenance.finding_count,
-        scanned:
-          result.retrieval_maintenance.scanned +
-          result.memory_maintenance.scanned,
-        truncated:
-          result.retrieval_maintenance.truncated ||
-          result.memory_maintenance.truncated,
-        degraded: result.degraded,
-        warnings: result.warnings,
-      };
-    } catch (error) {
-      await withTransaction(pool, async (client) => {
-        await new PgRunRepository(client).markRunTerminal({
-          run_id: started.runId,
-          space_id: input.spaceId,
-          status: "failed",
-          output_text: "Context Review Cycle failed.",
-          output_json: canonicalRunOutput({
-            success: false,
-            outputText: "Context Review Cycle failed.",
-            outputJson: { automation_target: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE },
-          }),
-          error_json: {
-            error_code: "context_ops_review_cycle_automation_failed",
-            error_text: error instanceof Error ? error.message : "Context review cycle failed",
-          },
-          exit_code: 1,
-          completed_at: new Date().toISOString(),
-        });
-        if (options.advanceSchedule) {
-          await new PgAutomationRepository(client).advanceSchedule(auto);
-        }
-      });
-      if (options.advanceSchedule) {
-        throw markScheduleHandled(error, "Context review cycle failed");
-      }
-      throw error;
-    }
   }
 
   private async enforceAction(
@@ -1045,35 +854,20 @@ export class AutomationService {
     return snapshot;
   }
 
-  private async runTargetPreflight(input: {
-    targetType: AutomationTargetType;
-    spaceId: string;
-    actorUserId: string;
-    agentId: string;
-    projectFolderId: string | null | undefined;
-    projectId: string | null | undefined;
-    automationPreAuthorized: boolean;
-    configJson: Record<string, unknown> | null | undefined;
-  }): Promise<Record<string, unknown>> {
-    if (input.targetType === AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE) {
-      return this.runMaintenancePreflight(
-        input.spaceId,
-        input.actorUserId,
-        input.agentId,
-        shouldCreateMaintenancePacket(input.configJson),
-      );
-    }
-    if (input.targetType === AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE) {
-      return this.runContextReviewCyclePreflight(
-        input.spaceId,
-        input.actorUserId,
-        input.agentId,
-        reviewCycleRequestFromConfig(input.configJson),
-      );
-    }
-    if (input.targetType === AUTOMATION_TARGET_WORKFLOW) {
-      return this.runWorkflowPreflight(input);
-    }
+  private async runTargetPreflight(
+    input: AutomationTargetPreflightInput,
+  ): Promise<Record<string, unknown>> {
+    return requireAutomationTargetHandler(input.targetType).preflight({
+      config: this.config,
+      repo: this.repo,
+      host: this,
+      input,
+    });
+  }
+
+  async preflightAgentRun(
+    input: AutomationTargetPreflightInput,
+  ): Promise<Record<string, unknown>> {
     return this.runPreflight(
       input.spaceId,
       input.actorUserId,
@@ -1084,120 +878,9 @@ export class AutomationService {
     );
   }
 
-  private async runMaintenancePreflight(
-    spaceId: string,
-    actorUserId: string,
-    agentId: string,
-    createPacket: boolean,
+  async preflightWorkflow(
+    input: AutomationTargetPreflightInput,
   ): Promise<Record<string, unknown>> {
-    const membershipRole = await this.repo.getMembershipRole(spaceId, actorUserId);
-    const errors: string[] = [];
-    let hasPermissionError = false;
-    if (membershipRole !== "owner" && membershipRole !== "admin") {
-      hasPermissionError = true;
-      errors.push("Knowledge retrieval maintenance automation requires space owner or admin authority");
-    }
-    const agent = await this.repo.getAgentPreflight(spaceId, agentId);
-    if (!agent) {
-      errors.push("Knowledge retrieval maintenance automation requires an existing attribution Agent");
-    } else {
-      if (agent.status !== "active") {
-        errors.push(`Knowledge retrieval maintenance attribution Agent is not active (status=${agent.status})`);
-      }
-      if (!agent.current_version_id) {
-        errors.push("Knowledge retrieval maintenance attribution Agent has no current version");
-      } else if (!agent.version_id) {
-        errors.push("Knowledge retrieval maintenance attribution Agent current version was not found");
-      }
-    }
-    const snapshot = {
-      executable: errors.length === 0,
-      target_type: AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE,
-      maintenance_preflight: {
-        executable: errors.length === 0,
-        scope: "knowledge",
-        attribution_agent_id: agentId,
-        attribution_agent_status: agent?.status ?? null,
-        attribution_agent_version_id: agent?.current_version_id ?? null,
-        persist_report: true,
-        create_packet: createPacket,
-        membership_role: membershipRole ?? "guest",
-        errors,
-        warnings: this.config.databaseUrl ? [] : ["SERVER_DATABASE_URL is not configured"],
-      },
-    };
-    if (errors.length) {
-      throw new HttpError(hasPermissionError ? 403 : 422, errors.join("; "));
-    }
-    return snapshot;
-  }
-
-  private async runContextReviewCyclePreflight(
-    spaceId: string,
-    actorUserId: string,
-    agentId: string,
-    request: ReturnType<typeof reviewCycleRequestFromConfig>,
-  ): Promise<Record<string, unknown>> {
-    const membershipRole = await this.repo.getMembershipRole(spaceId, actorUserId);
-    const errors: string[] = [];
-    let hasPermissionError = false;
-    if (membershipRole !== "owner" && membershipRole !== "admin") {
-      hasPermissionError = true;
-      errors.push("Context Review Cycle automation requires space owner or admin authority");
-    }
-    if (request.review_scope === "space_ops" && this.config.databaseUrl) {
-      const settings = await readSpaceRetrievalSettings(getDbPool(this.config.databaseUrl), spaceId);
-      if (settings.contextOpsReviewMode === "private_only") {
-        errors.push("Context Review Cycle space_ops review requires Context Ops review mode to allow admins");
-      }
-    }
-    const agent = await this.repo.getAgentPreflight(spaceId, agentId);
-    if (!agent) {
-      errors.push("Context Review Cycle automation requires an existing attribution Agent");
-    } else {
-      if (agent.status !== "active") {
-        errors.push(`Context Review Cycle attribution Agent is not active (status=${agent.status})`);
-      }
-      if (!agent.current_version_id) {
-        errors.push("Context Review Cycle attribution Agent has no current version");
-      } else if (!agent.version_id) {
-        errors.push("Context Review Cycle attribution Agent current version was not found");
-      }
-    }
-    const snapshot = {
-      executable: errors.length === 0,
-      target_type: AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE,
-      context_review_cycle_preflight: {
-        executable: errors.length === 0,
-        scope: "context_ops",
-        attribution_agent_id: agentId,
-        attribution_agent_status: agent?.status ?? null,
-        attribution_agent_version_id: agent?.current_version_id ?? null,
-        persist_report: true,
-        create_packets: request.create_packets,
-        review_scope: request.review_scope,
-        include_memory_maintenance: request.include_memory_maintenance,
-        membership_role: membershipRole ?? "guest",
-        errors,
-        warnings: this.config.databaseUrl ? [] : ["SERVER_DATABASE_URL is not configured"],
-      },
-    };
-    if (errors.length) {
-      throw new HttpError(hasPermissionError ? 403 : 422, errors.join("; "));
-    }
-    return snapshot;
-  }
-
-  private async runWorkflowPreflight(input: {
-    targetType: AutomationTargetType;
-    spaceId: string;
-    actorUserId: string;
-    agentId: string;
-    projectFolderId: string | null | undefined;
-    projectId: string | null | undefined;
-    automationPreAuthorized: boolean;
-    configJson: Record<string, unknown> | null | undefined;
-  }): Promise<Record<string, unknown>> {
     if (!this.config.databaseUrl) throw new HttpError(422, "workflow automations require a configured database");
     const target = workflowTargetFromConfig(input.configJson);
     const resolved = await resolveWorkflowTarget(this.config.databaseUrl, {
@@ -1230,12 +913,6 @@ export class AutomationService {
   }
 }
 
-type AutomationTargetType =
-  | typeof AUTOMATION_TARGET_AGENT_RUN
-  | typeof AUTOMATION_TARGET_KNOWLEDGE_MAINTENANCE
-  | typeof AUTOMATION_TARGET_CONTEXT_OPS_REVIEW_CYCLE
-  | typeof AUTOMATION_TARGET_WORKFLOW;
-
 interface WorkflowAutomationTarget {
   workflowAssetKey: string;
   resolution: "pin" | "follow";
@@ -1248,18 +925,25 @@ interface ResolvedWorkflowTarget {
   contentJson: unknown;
   resolutionTrace: string[];
 }
-type ScheduleHandledError = Error & { [AUTOMATION_SCHEDULE_HANDLED]?: true };
-
 function isUnattendedTrigger(triggerType: string): boolean {
   return triggerType === "schedule";
 }
 
-function automationTargetType(configJson: Record<string, unknown> | null | undefined): AutomationTargetType {
+async function automationTargetType(
+  configJson: Record<string, unknown> | null | undefined,
+): Promise<AutomationTargetType> {
   const raw = stringValue(recordValue(configJson).target_type) ?? AUTOMATION_TARGET_AGENT_RUN;
-  if (!VALID_AUTOMATION_TARGETS.has(raw)) {
+  if (!await loadAutomationTargetDefinition(raw)) {
     throw new HttpError(422, `Unsupported automation target_type ${JSON.stringify(raw)}`);
   }
   return raw as AutomationTargetType;
+}
+
+async function assertUserSelectableTarget(targetType: AutomationTargetType): Promise<void> {
+  const definition = await loadAutomationTargetDefinition(targetType);
+  if (!definition?.user_selectable) {
+    throw new HttpError(422, `Automation target '${targetType}' is not user-selectable`);
+  }
 }
 
 async function normalizeWorkflowConfig(
@@ -1345,82 +1029,8 @@ async function resolveWorkflowTarget(
   };
 }
 
-function shouldCreateMaintenancePacket(configJson: Record<string, unknown> | null | undefined): boolean {
-  return recordValue(configJson).create_packet === true;
-}
-
-function reviewCycleRequestFromConfig(configJson: Record<string, unknown> | null | undefined): {
-  window_days: number;
-  artifact_limit: number;
-  create_packets: boolean;
-  review_scope: "private" | "space_ops";
-  include_memory_maintenance: boolean;
-  memory_limit: number;
-  memory_stale_after_days: number;
-  memory_thin_content_chars: number;
-  memory_max_findings: number;
-  max_claim_candidates: number;
-} {
-  const config = recordValue(configJson);
-  const reviewScope = optionalStringLiteral(config.review_scope, "review_scope", ["private", "space_ops"]) ?? "private";
-  return {
-    window_days: optionalPositiveInt(config.window_days, "window_days", 14, 90),
-    artifact_limit: optionalPositiveInt(config.artifact_limit, "artifact_limit", 50, 200),
-    create_packets: optionalBoolean(config.create_packets, "create_packets", true),
-    review_scope: reviewScope,
-    include_memory_maintenance: optionalBoolean(config.include_memory_maintenance, "include_memory_maintenance", true),
-    memory_limit: optionalPositiveInt(config.memory_limit, "memory_limit", 500, 1000),
-    memory_stale_after_days: optionalPositiveInt(config.memory_stale_after_days, "memory_stale_after_days", 180, 3650),
-    memory_thin_content_chars: optionalPositiveInt(config.memory_thin_content_chars, "memory_thin_content_chars", 80, 1000),
-    memory_max_findings: optionalPositiveInt(config.memory_max_findings, "memory_max_findings", 100, 200),
-    max_claim_candidates: optionalPositiveInt(config.max_claim_candidates, "max_claim_candidates", 40, 100),
-  };
-}
-
 function automationConfiguredPrompt(configJson: Record<string, unknown> | null | undefined): string | null {
   return stringValue(recordValue(configJson).prompt);
-}
-
-function optionalPositiveInt(value: unknown, field: string, fallback: number, max: number): number {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > max) {
-    throw new HttpError(422, `config_json.${field} must be a positive integer no greater than ${max}`);
-  }
-  return value;
-}
-
-function optionalBoolean(value: unknown, field: string, fallback: boolean): boolean {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value !== "boolean") throw new HttpError(422, `config_json.${field} must be a boolean`);
-  return value;
-}
-
-function optionalStringLiteral<T extends string>(
-  value: unknown,
-  field: string,
-  allowed: readonly T[],
-): T | null {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string" || !allowed.includes(value as T)) {
-    throw new HttpError(422, `config_json.${field} must be one of ${allowed.join(", ")}`);
-  }
-  return value as T;
-}
-
-function markScheduleHandled(error: unknown, fallbackMessage = "Maintenance scan failed"): Error {
-  const marked: ScheduleHandledError = error instanceof Error
-    ? (error as ScheduleHandledError)
-    : (new Error(fallbackMessage) as ScheduleHandledError);
-  marked[AUTOMATION_SCHEDULE_HANDLED] = true;
-  return marked;
-}
-
-function scheduleWasHandled(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      (error as Partial<ScheduleHandledError>)[AUTOMATION_SCHEDULE_HANDLED],
-  );
 }
 
 function rejectExtraKeys(body: Record<string, unknown>, allowed: Set<string>): void {
@@ -1471,6 +1081,48 @@ function validateConfigJson(value: unknown): Record<string, unknown> {
   }
   walkConfigJson(value, 1);
   return value as Record<string, unknown>;
+}
+
+/**
+ * Applies Always-on defaults (hourly cron, observe-only) on top of whatever
+ * the caller supplied, then validates through the same `config_json` guard
+ * as every other Automation. `admissionPolicy()` in
+ * `autonomy/automationTarget.ts` separately validates budget completeness at
+ * preflight time when launch mode is requested; this only shapes the input
+ * and defaults, it does not duplicate that validation.
+ */
+function buildAutonomyConfigJson(body: Record<string, unknown>): Record<string, unknown> {
+  const observeOnly = body.observe_only === undefined ? true : requiredBoolean(body.observe_only, "observe_only");
+  const budget = body.autonomy_budget;
+  if (budget !== undefined && (budget === null || typeof budget !== "object" || Array.isArray(budget))) {
+    throw new HttpError(422, "autonomy_budget must be an object");
+  }
+  if (!observeOnly && budget === undefined) {
+    throw new HttpError(422, "autonomy_budget is required when observe_only is false");
+  }
+  const projectIds = body.project_ids;
+  if (projectIds !== undefined && !isStringArray(projectIds)) {
+    throw new HttpError(422, "project_ids must be an array of strings");
+  }
+  const runtimeProfileId = optionalString(body.runtime_profile_id, "runtime_profile_id");
+  return validateConfigJson({
+    target_type: AUTOMATION_TARGET_AUTONOMOUS_TICK,
+    observe_only: observeOnly,
+    ...(budget !== undefined ? { autonomy_budget: budget } : {}),
+    ...(projectIds !== undefined ? { project_ids: projectIds } : {}),
+    ...(runtimeProfileId ? { runtime_profile_id: runtimeProfileId } : {}),
+    cron: optionalString(body.cron, "cron") ?? DEFAULT_AUTONOMY_CRON,
+    timezone: optionalString(body.timezone, "timezone") ?? "UTC",
+  });
+}
+
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new HttpError(422, `${field} must be a boolean`);
+  return value;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
 }
 
 function walkConfigJson(value: unknown, depth: number): void {
@@ -1580,61 +1232,6 @@ function policyCheck(action: string, decision: {
     audit_code: decision.audit_code ?? null,
     message: decision.message ?? null,
   };
-}
-
-function automationContract(auto: AutomationRow) {
-  const config = recordValue(auto.config_json);
-  const declared = recordValue(config.contract_json ?? config.contract);
-  const value = (key: string): unknown => declared[key] ?? config[key] ?? null;
-  const definitionOfDone = value("definition_of_done");
-  return {
-    source: { kind: "automation" as const, id: auto.id },
-    project_id: auto.project_id,
-    project_folder_id: auto.project_folder_id,
-    acceptance_criteria_json: value("acceptance_criteria_json"),
-    definition_of_done: typeof definitionOfDone === "string" ? definitionOfDone : null,
-    required_outputs_json: value("required_outputs_json"),
-    risk_level: normalizeRiskLevel(value("risk_level")),
-    max_runs: positiveIntegerOrNull(value("max_runs")),
-    max_attempts: positiveIntegerOrNull(value("max_attempts")),
-    max_cost: nonNegativeNumberOrNull(value("max_cost")),
-    max_duration_seconds: positiveIntegerOrNull(value("max_duration_seconds")),
-    budget_precedence: nonNegativeNumberOrNull(value("budget_precedence")),
-    route_hints_json: contractRouteHints(declared) ?? contractRouteHints(config),
-  };
-}
-
-function automationBudgetSource(auto: AutomationRow): RunBudgetSource {
-  const contract = automationContract(auto);
-  return {
-    source: { kind: "automation", id: auto.id },
-    precedence: contract.budget_precedence,
-    max_runs: contract.max_runs,
-    max_attempts: contract.max_attempts,
-    max_cost: contract.max_cost,
-    max_duration_seconds: contract.max_duration_seconds,
-  };
-}
-
-async function lockAndCheckAutomationBudget(client: PoolClient, auto: AutomationRow): Promise<void> {
-  if (auto.project_id) await lockActiveProjectForMutation(client, auto.space_id, auto.project_id);
-  await client.query(
-    `SELECT id FROM automations WHERE space_id = $1 AND id = $2 FOR UPDATE`,
-    [auto.space_id, auto.id],
-  );
-  const source = automationBudgetSource(auto);
-  if (source.max_runs === null || source.max_runs === undefined) return;
-  await assertBudgetSourcesAvailable(client, auto.space_id, [source]);
-}
-
-function positiveIntegerOrNull(value: unknown): number | null {
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function nonNegativeNumberOrNull(value: unknown): number | null {
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export { automationToOut };

@@ -5,7 +5,7 @@ import type { ProviderCommandStore } from "../../providers/commands/store";
 import { writePolicyAudit } from "../../policy/auditWriter";
 import type { RetrievalEgressPolicy } from "../egress/egressPolicy";
 import { resolveRetrievalQueryRewritePrompt, type ResolvedQueryRewritePrompt } from "../promptRegistry";
-import { DEFAULT_QUERY_REWRITE_MAX_TOKENS, RETRIEVAL_QUERY_REWRITE_TASK } from "./config";
+import { RETRIEVAL_QUERY_REWRITE_TASK } from "./config";
 import { parseQueryRewriteVariants } from "./prompt";
 
 export type QueryRewritePromptResolver = (
@@ -67,7 +67,6 @@ export class ProviderQueryRewriter implements QueryRewriter {
         provider_id: this.providerId ?? "",
         system: prompt.system,
         user: prompt.user,
-        max_tokens: DEFAULT_QUERY_REWRITE_MAX_TOKENS,
         task: RETRIEVAL_QUERY_REWRITE_TASK,
         egressPolicy: this.egressPolicy,
         metering: { subject_user_id: viewerUserId },

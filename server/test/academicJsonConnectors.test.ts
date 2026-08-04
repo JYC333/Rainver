@@ -20,6 +20,11 @@ describe("academic and web JSON source connectors", () => {
     }] });
     expect(handler.parseCursor(raw)).toEqual({ cursor: "next-token" });
     expect(handler.parseResponse(raw)[0]).toMatchObject({ externalId: "W123", title: "Agent Memory", metadata: { doi: "10.1000/example", arxiv_id: "2601.00001", openalex_id: "W123", authors: ["Ada"] } });
+    const monitored = handler.buildScanRequest(
+      { endpoint_url: null, compiled_query: compiled.query },
+      { last_published_at: "2026-01-10T12:00:00.000Z", overlap_hours: 48 },
+    );
+    expect(new URL(monitored.url).searchParams.get("filter")).toContain("from_publication_date:2026-01-08");
     const backfill = handler.buildBackfillRequest({ endpoint_url: null, compiled_query: compiled.query }, { cursor: 2, from: "2024-01-01", to: "2024-12-31" }, {});
     expect(new URL(backfill.url).searchParams.get("page")).toBe("3");
     expect(new URL(backfill.url).searchParams.has("cursor")).toBe(false);
@@ -29,6 +34,11 @@ describe("academic and web JSON source connectors", () => {
     const handler = new SemanticScholarConnectorHandler();
     const compiled = compiler.compileNative("semantic_scholar", { query: { query: "agent-memory", limit: 10 } });
     expect(new URL(handler.buildScanRequest({ endpoint_url: null, compiled_query: compiled.query }, {}).url).searchParams.get("query")).toBe("agent-memory");
+    const monitored = handler.buildScanRequest(
+      { endpoint_url: null, compiled_query: compiled.query },
+      { last_published_at: "2026-01-10T12:00:00.000Z", overlap_hours: 48 },
+    );
+    expect(new URL(monitored.url).searchParams.get("publicationDateOrYear")).toMatch(/^2026-01-08:/);
     const raw = JSON.stringify({ total: 20, next: 10, data: [{ paperId: "s2-1", externalIds: { DOI: "10.1/X", ArXiv: "2601.1" }, url: "https://s2.test/1", title: "Paper", abstract: "Summary", authors: [{ name: "Lin" }], year: 2026, venue: "Conf", publicationTypes: ["Conference"], citationCount: 5, referenceCount: 8 }] });
     expect(handler.parseCursor(raw)).toEqual({ offset: 10 });
     expect(handler.parseResponse(raw)[0]).toMatchObject({ externalId: "s2-1", metadata: { semantic_scholar_id: "s2-1", doi: "10.1/x", paper_type: "conference_paper" } });

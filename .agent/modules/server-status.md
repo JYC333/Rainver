@@ -1,7 +1,10 @@
 # Module: Server Status
 
 ## Status
-**PARTIAL** — `/health` checks PostgreSQL connectivity. Full runtime status model and UI not built.
+**PARTIAL** — `GET /api/v1/status` is implemented for the components the server
+observes from inside its own process (database, scheduler, per-task liveness,
+jobs worker, queue depth). Provider/adapter/capability/sandbox components and
+the `RuntimeStatusBar` UI are not built.
 
 ## Purpose
 Surface the operational health of the agent-space runtime to the user. Users must be able to see at a glance whether the backend, adapters, capabilities, and external integrations are reachable and functioning. This is not monitoring — it is a user-facing status display integrated into the product shell.
@@ -19,40 +22,74 @@ Surface the operational health of the agent-space runtime to the user. Users mus
 
 ## Status Components
 
-| Component | Check | Green | Yellow | Red |
-|---|---|---|---|---|
-| Database | PostgreSQL reachable, schema current | OK | schema lag | unreachable |
-| LLM Provider | Anthropic API key valid, model reachable | OK | rate-limited | no key / unreachable |
-| Claude adapter | active `claude_code` runtime tool found | OK | degraded | not installed |
-| Codex adapter | active `codex_cli` runtime tool found | OK | degraded | not installed |
-| Capabilities | All registered caps loaded without error | OK | some failed | all failed |
-| Sandbox runner | Docker socket reachable (if Docker executor) | OK | partial | unavailable |
+Implemented:
 
-## API Endpoint (Planned)
+| Component | Check | ok | degraded | error |
+|---|---|---|---|---|
+| `database` | `SELECT 1` | reachable | — | unreachable |
+| `scheduler` | worst per-task health | all tasks healthy | some task `failing` | some task `stalled`, or background services not running |
+| `jobs_worker` | live worker id in this process | running | not running, nothing queued | not running while jobs are pending |
+| `jobs_queue` | instance-wide pending/running counts | counted | depth unreadable | pending work with no worker |
+
+Not implemented — deliberately absent rather than reported healthy on no
+evidence: LLM Provider reachability, per-adapter runtime tools
+(`claude_code` / `codex_cli`), capability load results, sandbox runner.
+
+## Scheduled-task liveness
+
+`scheduler_tasks[]` reports each task's `health`, `state`, `last_started_at`,
+`last_success_at`, `last_failure_at`, `last_error`, `consecutive_failures`,
+`timeouts_total`, and `seconds_since_completion`.
+
+`health` is:
+
+- `ok` — completed successfully and is not overdue;
+- `pending` — registered, has not completed a first pass yet;
+- `failing` — the last pass raised, and the loop is still turning;
+- `stalled` — no pass has *completed* for
+  `max(interval × 3, timeout + interval)`.
+
+The distinction matters: `failing` is loud (it raises, alerts, and is visible),
+`stalled` is the silent failure this surface exists for — a task whose `run()`
+never settles stops forever while the process stays healthy.
+
+Each task has a reporting deadline (`DEFAULT_TASK_TIMEOUT_SECONDS`, 600s, or
+its own `timeoutSeconds`). Exceeding it records a timeout, emits the same
+`scheduler_task_failed` operational alert as a thrown error, and blocks further
+passes of that task until the outstanding one settles so hung passes cannot
+pile up. A timed-out pass is **not** cancelled — a bare promise has no
+cancellation — so the deadline reports, it does not abort.
+
+## API Endpoint
 
 ```
-GET /api/v1/status
+GET /api/v1/status          # requires an authenticated space owner/admin
 
 Response:
 {
   "overall": "ok" | "degraded" | "error",
-  "components": [
-    {
-      "name": "database",
-      "status": "ok" | "degraded" | "error",
-      "detail": "string or null"
-    },
-    ...
-  ],
+  "components": [ { "name", "status", "detail" }, ... ],
+  "scheduler_tasks": [ { "name", "health", "last_success_at", ... }, ... ],
   "version": "...",
   "checked_at": "ISO datetime"
 }
 ```
 
-The existing `/health` and `/api/v1/server/health` return 200 with
-`{"status":"ok","service":"server","checks":{"database":"ok"}}` only after a
-successful `SELECT 1`. They return 503 with `database:"error"` when connectivity fails.
-The planned endpoint expands this minimal readiness probe into the full status surface.
+Returns 503 when `overall` is `error`.
+
+**Authorization.** Task names, last-error text, worker id, and instance-wide
+queue depth are operator data, so the route requires an active `owner`/`admin`
+membership — the same audience as instance operational alerts.
+
+Database reachability is checked *before* authorization, so the endpoint still
+answers when PostgreSQL is down (the invariant below) without handing internals
+to a caller who could not be authorized: that path returns 503 with only the
+`database` component and an empty `scheduler_tasks`.
+
+`/health` and `/api/v1/server/health` are unchanged and stay a plain container
+probe: 200 with `{"status":"ok","service":"server","checks":{"database":"ok"}}`
+after a successful `SELECT 1`, 503 otherwise. They intentionally stay 200 while
+a scheduled task is stalled — that is why `/api/v1/status` exists.
 
 ## UI: RuntimeStatusBar
 
@@ -77,12 +114,17 @@ The planned endpoint expands this minimal readiness probe into the full status s
 - Status endpoint must respond even when DB is unreachable (check DB as a component, don't depend on it to respond)
 - Status must never expose secrets (API keys must not appear in response)
 - `overall` is the worst component status — if any component is `error`, overall is `error`
+- A component the server has no evidence about is omitted, never reported `ok`
+- Absence of a background component is a condition of its own: no jobs worker
+  is `degraded` when nothing is queued and `error` when work is waiting
 - RuntimeStatusBar is always visible; cannot be hidden by user (collapses to dot icon on mobile)
 
 ## Related Files
-- `server/src/server.ts` — `/health` endpoint
+- `server/src/modules/system/routes.ts` — `/health`, `/api/v1/status`, features
+- `server/src/modules/system/statusService.ts` — component status computation
+- `server/src/modules/scheduler/registry.ts` — per-task deadline and liveness
+- `server/src/modules/scheduler/runtimeStatus.ts` — process-local handle the status route reads
 - `server/src/config.ts` — settings and diagnostics
-- `server/src/modules/system/` — status/feature routes
 - `apps/web/src/components/` — TODO: RuntimeStatusBar, StatusDetailModal
 
 ## Related Modules

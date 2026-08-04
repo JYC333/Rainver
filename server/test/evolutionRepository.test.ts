@@ -176,6 +176,42 @@ describe("EvolutionRepository core", () => {
     }
   });
 
+  it("requires an explicit Agent instead of creating a system evolver fallback", async (ctx) => {
+    if (!available || !pool || !container) return ctx.skip();
+    const identity = await seedIdentity();
+    const targetId = await seedTarget(identity, {
+      agentId: null,
+      maxStrategyRisk: "medium",
+    });
+    __setAuthIdentityForTests({ spaceId: identity.spaceId, userId: identity.userId });
+    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
+    let app: FastifyInstance | undefined;
+    try {
+      app = buildServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), {
+        logger: false,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/evolution/targets/${targetId}/run`,
+        payload: { mode: "dry_run" },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toMatchObject({
+        detail: "agent_id is required in the request or target metadata",
+      });
+      const agents = await pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM agents WHERE space_id = $1",
+        [identity.spaceId],
+      );
+      expect(agents.rows[0]?.count).toBe("0");
+    } finally {
+      await app?.close();
+      poolSpy.mockRestore();
+      __setAuthIdentityForTests(null);
+    }
+  });
+
   it("returns deterministic validation results from target metadata", async (ctx) => {
     if (!available || !pool) return ctx.skip();
     const identity = await seedIdentity();

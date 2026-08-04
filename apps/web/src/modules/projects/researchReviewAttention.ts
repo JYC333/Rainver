@@ -11,3 +11,14 @@ export function isResearchHumanReviewCheckpoint(
 export function researchCheckpointLabel(checkpoint: Pick<ProjectResearchCheckpoint, 'checkpoint_type'>): string {
   return checkpoint.checkpoint_type === 'idea_review' ? 'Idea candidates' : 'Screening results'
 }
+
+export function researchReviewToastId(projectId: string, checkpointId: string): string {
+  return `research-review:${projectId}:${checkpointId}`
+}
+
+export function researchCheckpointOperationId(
+  checkpoint: Pick<ProjectResearchCheckpoint, 'machine_result_json'>,
+): string | null {
+  const value = checkpoint.machine_result_json?.operation_id
+  return typeof value === 'string' && value.trim() ? value : null
+}

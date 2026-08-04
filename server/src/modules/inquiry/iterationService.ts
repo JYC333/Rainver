@@ -15,6 +15,7 @@ import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService";
 import { RetrievalProjectionService } from "../retrieval";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter";
 import { recordThreadRevision } from "./threadRevisionService";
+import { tryQueueAdviceForFocusedThread } from "./adviceJob";
 
 // Protected cognitive fields. Only `recordIteration` may write these — the
 // generic project PATCH route does not exist for Threads at all, and this
@@ -70,7 +71,7 @@ export class InquiryIterationService {
     }
     const now = new Date().toISOString();
 
-    return withQueryableTransaction(this.db, async (db) => {
+    const result = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const threadRow = await db.query<ThreadRow>(
         `SELECT ${THREAD_COLUMNS} FROM inquiry_threads WHERE id = $1 AND space_id = $2 AND project_id = $3 FOR UPDATE`,
@@ -224,6 +225,18 @@ export class InquiryIterationService {
       await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", threadId);
       return { ...inserted.rows[0], thread: threadToOut(finalThread) };
     });
+
+    // Queued after commit so a rolled-back Iteration never leaves advice work
+    // behind, and never inside the transaction so the provider call cannot
+    // hold the Project lock.
+    await tryQueueAdviceForFocusedThread(this.db, {
+      spaceId: identity.spaceId,
+      userId: identity.userId,
+      projectId,
+      threadId,
+      triggerKind: "iteration_recorded",
+    });
+    return result;
   }
 
   async listIterations(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
@@ -233,6 +246,22 @@ export class InquiryIterationService {
          JOIN inquiry_threads t ON t.id = i.thread_id AND t.space_id = i.space_id
         WHERE i.space_id = $1 AND i.project_id = $2 AND i.thread_id = $3
         ORDER BY i.created_at DESC`,
+      [identity.spaceId, projectId, threadId],
+    );
+    return rows.rows;
+  }
+
+  async listRevisions(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
+    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    const rows = await this.db.query(
+      `SELECT r.id, r.thread_id, r.version, r.kind, r.statement, r.answer_state,
+              r.evaluation_state, r.confidence, r.state_snapshot_json,
+              r.change_significance, r.created_by_user_id, r.created_at
+         FROM inquiry_thread_revisions r
+         JOIN inquiry_threads t
+           ON t.id=r.thread_id AND t.project_id=r.project_id AND t.space_id=r.space_id
+        WHERE r.space_id=$1 AND r.project_id=$2 AND r.thread_id=$3
+        ORDER BY r.version DESC`,
       [identity.spaceId, projectId, threadId],
     );
     return rows.rows;

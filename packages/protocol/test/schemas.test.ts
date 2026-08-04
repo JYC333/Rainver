@@ -19,6 +19,24 @@ import {
 } from "../src/common";
 
 describe("DTO schema validation", () => {
+  it("accepts autonomous as a first-class Run trigger origin", () => {
+    const parsed = RunDTOSchema.parse({
+      id: "run-autonomous",
+      space_id: "space-1",
+      agent_id: "agent-1",
+      agent_version_id: "version-1",
+      run_role: "execution",
+      status: "queued",
+      run_type: "system",
+      trigger_origin: "autonomous",
+      mode: "live",
+      required_sandbox_level: "read_only",
+      visibility: "private",
+      created_at: "2026-07-26T12:00:00.000Z",
+    });
+    expect(parsed.trigger_origin).toBe("autonomous");
+  });
+
   it("parses a representative ActivityDTO (snake_case public API)", () => {
     const parsed = ActivityDTOSchema.parse({
       id: "a1",

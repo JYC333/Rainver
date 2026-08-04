@@ -42,6 +42,8 @@ function fallbackReview(checkpoint: ProjectResearchCheckpoint): ProjectResearchC
           failed_items: numberValue(machine.failed_items),
           processing_status: empty ? 'empty' : undefined,
           partial: machine.partial === true,
+          coverage_degraded: machine.coverage_degraded === true,
+          deferred_source_count: Array.isArray(machine.deferred_sources) ? machine.deferred_sources.length : 0,
         }
       : { total: numberValue(machine.idea_count) },
     items: [],
@@ -142,7 +144,17 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
         <span>{summary.evidence_count ?? 0} evidence records</span>
         {(summary.failed_items ?? 0) > 0 && <span className="text-destructive">{summary.failed_items} failed</span>}
         {summary.partial === true && <Badge variant="warning">Partial intake</Badge>}
+        {summary.coverage_degraded === true && (
+          <Badge variant="warning">
+            {summary.deferred_source_count ?? 1} source{summary.deferred_source_count === 1 ? '' : 's'} retrying
+          </Badge>
+        )}
       </div>
+      {summary.coverage_degraded === true && (
+        <div role="status" className="rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
+          Some source history is temporarily unavailable and is retrying in the background. You can continue with the papers already collected; recovered papers will be added to screening or a later monitoring update.
+        </div>
+      )}
       {summary.processing_status === 'incomplete' && (
         <div className="flex items-center justify-between gap-3 rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
           <span>AI screening is still in progress. Approval will be enabled after all {summary.total ?? review.item_count} papers have a classification.</span>

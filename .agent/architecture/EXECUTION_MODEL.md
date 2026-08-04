@@ -793,9 +793,11 @@ implemented. No proposal type auto-applies without user acceptance.
 
 ### Future Work
 
-- Runtime session checkpoint/fork/resume semantics remain open under A3.1;
-  the current Run Detail Resume action only resumes a `waiting_for_review` Run
-  through the existing server endpoint and is not a runtime-session checkpoint.
+- Runtime session checkpoint/fork/resume semantics are delivered through the
+  CLI-conversation path; see the "Runtime session" section of ADR 0007 and
+  [../modules/rooms.md](../modules/rooms.md). The Run Detail Resume action is a
+  different thing: it resumes a `waiting_for_review` Run through the existing
+  server endpoint and is not a runtime-session checkpoint.
 - Apply handlers for `project_folder_execution_config_update`, `validation_recipe_update`, `capability_update`, `policy_update`.
 
 ## What Is Intentionally Not Modeled Yet

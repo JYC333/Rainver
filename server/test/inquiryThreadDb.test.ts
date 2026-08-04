@@ -179,6 +179,11 @@ describe("Inquiry Core (real Postgres)", () => {
     });
     expect((revised.thread as Record<string, unknown>).statement).toBe("Original statement, rephrased");
     expect(revised.superseded_by_thread_id).toBeNull();
+    const revisions = await iterationSvc.listRevisions(identity, PROJECT, question.id as string);
+    expect(revisions).toMatchObject([
+      { version: 2, statement: "Original statement, rephrased", change_significance: "trivial" },
+      { version: 1, statement: "Original statement", change_significance: "material" },
+    ]);
   });
 
   it("a wording_only revision cannot smuggle a substantive definition field change", async () => {
@@ -272,6 +277,21 @@ describe("Inquiry Core (real Postgres)", () => {
       blocked_reason: "waiting on a source",
     });
     expect(focused.attention_state).toBe("focused");
+  });
+
+  it("lists the personal Focus of the calling user only", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const identity = ownerIdentity();
+    const focused = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "In focus" });
+    await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Not in focus" });
+    await threadSvc.setPersonalFocus(identity, PROJECT, focused.id as string, true);
+
+    const list = await threadSvc.listPersonalFocus(identity, PROJECT);
+    expect(list.map((row) => row.id)).toEqual([focused.id]);
+
+    await threadSvc.setPersonalFocus(identity, PROJECT, focused.id as string, false);
+    expect(await threadSvc.listPersonalFocus(identity, PROJECT)).toEqual([]);
   });
 
   it("flags a soft WIP-limit breach without blocking the transition", async () => {

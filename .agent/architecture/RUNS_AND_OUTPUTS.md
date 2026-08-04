@@ -371,13 +371,31 @@ Task/Automation/Workflow contract fields such as `acceptance_criteria_json`,
 `definition_of_done`, `required_outputs_json`, `risk_level`, `max_runs`,
 `max_cost`, and `max_duration_seconds` are declared in the task schema but
 are snapshotted into the Run contract. A run contract may additionally declare
-`max_attempts`; `max_runs` is resolved from budget-source precedence and limits
-logical executions for the selected Task, Automation, or Workflow/plan
+`max_attempts`; budget dimensions are resolved from immutable Space, Task,
+Automation, Workflow, and Plan sources. Explicit precedence selects the
+highest tier per dimension and the strictest cap wins within a tier; without
+precedence the strictest cap wins across all sources. The Run snapshot and
+PlanVersion `budget_json` retain the effective values, selected source,
+declared precedence, and server-owned authority trace. Agent tool input can
+narrow its Plan declaration but cannot manufacture an inherited authority.
+`max_runs` limits
+logical executions for the selected Space, Task, Automation, or Workflow/plan
 coordinator source. Plan children carry `root_run_id`, so one workflow fire
 is not multiplied by its child count. `max_attempts` limits physical
 executions of one Run. A1 carries the applicable project/route context
 forward; A2 owns verification of acceptance and required outputs; A3 enforces
 both limits at their respective boundaries.
+
+`trigger_origin='autonomous'` is an Automation-authorized execution subtype,
+not a credential-policy bypass. Its separate Space/owner/UTC-day pool uses a
+transaction-scoped advisory lock, root execution Run count, optional measured
+cost, and fresh subscription-utilization telemetry. Missing, stale, or
+over-ceiling quota refuses admission. The decision callback, domain-budget
+check, Run/link creation, and audit persistence share one transaction.
+Autonomous execution permission snapshots remove `authorization.request` and
+all side-effecting system actions, so unattended work cannot park itself for a
+new interactive grant. A scheduled recovery task cancels any legacy/unexpected
+autonomous Run that nevertheless remains `waiting_for_review` beyond one hour.
 
 ## Run model config (resolved_model)
 

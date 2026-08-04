@@ -385,4 +385,62 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     expect(deferred.status).toBe("deferred");
     expect((await service.reopenCandidate(identity(), PROJECT, signal.candidate_id as string)).status).toBe("pending");
   });
+
+  it("a Delta Brief covers only its window, so the next one reports what is genuinely new", async () => {
+    if (!available || !pool) return;
+    const service = new InquirySignalService(pool);
+
+    await service.createSignal(identity(), PROJECT, THREAD, {
+      corpus_item_id: await createCorpusItem(),
+      classification: "supports",
+    });
+    const first = await service.generateDeltaBrief(identity(), PROJECT, {});
+    const firstContent = first.content as Record<string, unknown>;
+    expect((firstContent.reinforced_positions as unknown[]).length).toBe(1);
+
+    // Everything after the first Brief's coverage end is what "new" means.
+    await service.createSignal(identity(), PROJECT, THREAD, {
+      corpus_item_id: await createCorpusItem(),
+      classification: "contradicts",
+    });
+    const second = await service.generateDeltaBrief(identity(), PROJECT, {
+      coverage_start: first.coverage_end as string,
+    });
+    const secondContent = second.content as Record<string, unknown>;
+    expect((secondContent.challenged_positions as unknown[]).length).toBe(1);
+    expect((secondContent.reinforced_positions as unknown[]).length).toBe(0);
+    expect((secondContent.input_and_coverage_window as Record<string, unknown>).signal_count).toBe(1);
+  });
+
+  it("exposes the most recent Brief so a caller can continue from its coverage end", async () => {
+    if (!available || !pool) return;
+    const service = new InquirySignalService(pool);
+    expect(await service.latestDeltaBrief(identity(), PROJECT)).toBeNull();
+
+    await service.generateDeltaBrief(identity(), PROJECT, {});
+    const newest = await service.generateDeltaBrief(identity(), PROJECT, {});
+
+    const latest = await service.latestDeltaBrief(identity(), PROJECT);
+    expect(latest?.id).toBe(newest.id);
+    expect(latest?.coverage_end).toBe(newest.coverage_end);
+  });
+
+  it("keeps a Delta Brief inside its own Project and refuses a non-member", async () => {
+    if (!available || !pool) return;
+    const service = new InquirySignalService(pool);
+    await service.generateDeltaBrief(identity(), PROJECT, {});
+
+    const otherProject = await new PgProjectRepository(pool).create(identity(), { name: "Unrelated Project" });
+    expect(await service.latestDeltaBrief(identity(), otherProject.id as string)).toBeNull();
+
+    const stranger = randomUUID();
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Stranger', 'active', $2, $2)`,
+      [stranger, now],
+    );
+    await expect(
+      service.latestDeltaBrief({ spaceId: SPACE, userId: stranger }, PROJECT),
+    ).rejects.toMatchObject({ statusCode: expect.any(Number) });
+  });
 });

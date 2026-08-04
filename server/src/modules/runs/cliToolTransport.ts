@@ -3,6 +3,7 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
+  RunTriggerOrigin,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { AgentToolGateway, type AgentToolGatewayDeps } from "../systemActions/agentToolGateway";
@@ -164,7 +165,7 @@ function transportRequest(run: RunRecord): RuntimeHostExecuteRequest {
     agent_id: run.agent_id,
     project_id: run.project_id,
     project_folder_id: run.project_folder_id,
-    trigger_origin: run.trigger_origin,
+    trigger_origin: run.trigger_origin as RunTriggerOrigin,
     capability_id: run.capability_id ?? null,
     context_snapshot_id: run.context_snapshot_id ?? null,
     output_format: null,

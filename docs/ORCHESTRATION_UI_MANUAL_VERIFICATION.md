@@ -1,4 +1,4 @@
-# Orchestration and Self-Evolution UI Manual Verification
+# Orchestration and Evolution UI Manual Verification
 
 This checklist verifies the current clickable UI paths. It uses the shared
 operational space selected in the shell and never requires direct database edits.

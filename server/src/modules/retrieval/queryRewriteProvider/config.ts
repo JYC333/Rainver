@@ -10,9 +10,6 @@
 /** Provider task policy used to route query rewriting (ADR 0008 channel). */
 export const RETRIEVAL_QUERY_REWRITE_TASK = "retrieval_query_rewrite";
 
-/** Max tokens for the rewrite model's JSON variant list. */
-export const DEFAULT_QUERY_REWRITE_MAX_TOKENS = 200;
-
 /** Max variants requested from / accepted out of the model (bounds fan-out). */
 export const QUERY_REWRITE_MAX_VARIANTS = 3;
 

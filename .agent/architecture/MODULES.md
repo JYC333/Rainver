@@ -27,7 +27,7 @@ Current server ownership is summarized in
 |---|---|
 | `kernel` | Identity, isolation, governance, execution spine. |
 | `infra` | Cross-cutting infrastructure and runtime/host integration. |
-| `capability` | Code-defined agent skills and self-evolution surfaces. |
+| `capability` | Code-defined agent skills and reviewable evolution surfaces. |
 | `product` | User-facing domain feature surface. |
 | `frontend-support` | Backend read models and aggregation endpoints for UI views. |
 | `support-package` | Import-only package with no HTTP module registration. |
@@ -48,7 +48,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 
 | Module | Kind | Routes | Public facade | Main ownership / notes |
 |---|---|---|---|---|
-| `system` | infra | `/health`, `/server/health`, `/server/features`, `/features` | empty | Server health and feature descriptors. |
+| `system` | infra | `/health`, `/server/health`, `/status`, `/server/features`, `/features` | empty | Server health, component-level runtime status, and feature descriptors. `/health` is a container probe; `/status` reports database, per-scheduled-task liveness, jobs-worker presence, and queue depth, and requires a space owner/admin. |
 | `auth` | kernel | `/auth/*`, `/me`, `/me/spaces` | yes | Users, auth accounts, sessions, feature-gated API keys, Google auth. |
 | `spaces` | kernel | `/spaces`, `/invitations` | hook registry | Spaces, memberships, invitations, space-created hook dispatch. |
 | `catalog` | capability | `/server/catalog*`, `/capabilities*` | yes | Read-only on-disk catalog. Owns legacy catalog-backed capability/template manifest surfaces. |
@@ -87,14 +87,15 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `relations` | product | `/relations*` | yes | People, organizations, identities, affiliations, relation notes, and relation provenance links over shared `space_objects` / `object_relations`. |
 | `academic` | product | `/academic*` | yes | Academic paper object extension, paper authorship links, and citation links for Project Templates and graph lenses. |
 | `graph` | frontend-support | `/graph*` | empty | Read-only `GraphProjection` routes and per-user graph view-state persistence over visible `space_objects` / `object_relations`. |
-| `evolution` | capability | `/evolution*` | empty | Evolution targets/signals, strategy assets, selector decisions, experiences, review prompts, validation reads, review artifacts, and D3 proposal bundles with partial approval and guarded version-set rollback. |
+| `evolution` | capability | `/evolution*` | empty | Evolution targets/signals, strategy assets, selector decisions, experiences, review prompts, validation reads, review artifacts, D3 proposal bundles with partial approval and guarded version-set rollback, and the domain-owned `evolution_review` autonomy candidate handler. |
 | `tasks` | product | `/tasks*`, `/boards*`, `/me/tasks` | empty | Boards, tasks, task-run links, task evaluation, and run-finalized hook. Registers the Delivery Overview/Attention projection over Project Tasks; there is no parallel Delivery aggregate. |
 | `plans` | product | `/plans*` | empty | Durable plan/version execution read and command surface: approval-gated materialization, structured list/detail views, execution, reconciliation, and revision. |
 | `projectFolderExecutionConfigs` | product | `/projects/{projectId}/folders/{folderId}/execution-config*` | empty | Project Folder execution config read/create/update. |
 | `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/git diff) read routes. There is no separate console route module. |
 | `jobs` | infra | `/jobs*` | yes | Durable job queue, worker, and registry-dispatched handlers. Re-exports scheduler types for compatibility only; new scheduler code imports `scheduler`. |
 | `scheduler` | infra | none | yes | In-process periodic task registry, background service startup composition, and scheduler-owned `scheduler_tasks` cursor/state store. |
-| `automations` | product | `/spaces/{spaceId}/automations*` | empty | Server-owned automations, schedule/manual fire, credential preflight, scheduler state in `scheduler_tasks`, fixed WorkflowExecution DAG scheduling, bounded per-node attempts, registered deterministic Action handlers, and a terminal-outcome registry that lets owning domains project results without Automations writing their tables. Registers the Operations Overview/Attention projection over Project Automations, visible Runs, and operational alerts; there is no parallel Operations aggregate. |
+| `autonomy` | infra | none | empty | Owns the `autonomous_tick` native Automation target, exact-coverage domain candidate registry, durable candidate/tick audit, deterministic ranking, per-candidate bounded launch, private report provenance, successful-review cursors/signal links, and stale-review recovery. `periodic_digest` and `evolution_review` share the observe/launch queue and safety invariants. Automations never imports this module. |
+| `automations` | product | `/spaces/{spaceId}/automations*` | empty | Server-owned automations, schedule/manual fire, credential preflight, scheduler state in `scheduler_tasks`, fixed WorkflowExecution DAG scheduling, bounded per-node attempts, and protocol-declared native target dispatch through an exact-coverage handler registry. Target-owning domains register their own handlers; unknown or handlerless targets fail closed. Also owns registered deterministic Workflow Action handlers and a terminal-outcome registry that lets owning domains project results without Automations writing their tables. Registers the Operations Overview/Attention projection over Project Automations, visible Runs, and operational alerts; there is no parallel Operations aggregate. |
 | `dailyReports` | product | `/daily-capture-report*` | empty | Daily capture report user settings, manual run, scheduler scan, scheduler state in `scheduler_tasks`, durable job handler. |
 | `backups` | infra | `/system/backups*` | empty | Server-owned full-system backup service and scheduled backup ticks. |
 | `deployment` | infra | `/deployments/jobs*` | empty | Deployer client edge; create/detail currently fail closed with 501. |

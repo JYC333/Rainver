@@ -32,6 +32,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../../server/src:/app/server/src:ro
+      - ../../server/scripts:/app/server/scripts:ro
       - ../../server/migrations:/app/server/migrations:ro
       - ../../server/tsconfig.json:/app/server/tsconfig.json:ro
       - ../../packages/protocol/src:/app/packages/protocol/src:ro
@@ -42,7 +43,6 @@ services:
     environment:
       - AGENT_SPACE_HOME=/aspace
       - AGENT_SPACE_ENV=test
-      - TSC_WATCHFILE=${TSC_WATCHFILE:-PriorityPollingInterval}
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-agent_space}:${POSTGRES_PASSWORD:-agent_space_dev_password}@postgres:5432/${POSTGRES_DB:-agent_space}}
     depends_on:
       postgres:
@@ -55,9 +55,7 @@ services:
       timeout: 5s
       retries: 3
     command: >
-      sh -c "npm --prefix /app/packages/protocol run build -- --watch --preserveWatchOutput &
-             node scripts/build-official-plugins.mjs --watch &
-             npm run build -- --watch --preserveWatchOutput &
+      sh -c "node scripts/watch-typescript.mjs &
              node --watch dist/index.js"
     restart: unless-stopped
 

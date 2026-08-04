@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry";
 import {
   dbPool,
+  HttpError,
   jsonBody,
   objectValue,
   optionalString,
@@ -11,7 +12,6 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common";
-import { PgAgentRepository } from "../agents/repository";
 import { PgRunRepository } from "../runs/repository";
 import { RunOrchestrationService } from "../runs/orchestrationService";
 import { RunMaterializationService } from "../runs/materializationService";
@@ -222,14 +222,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
       const bodyAgentId = optionalString(body.agent_id);
       const targetAgentId = optionalString(objectValue(target.metadata_json).agent_id);
-      let agentId = bodyAgentId ?? targetAgentId ?? null;
-      let isFallback = false;
-
+      const agentId = bodyAgentId ?? targetAgentId;
       if (!agentId) {
-        const agentRepo = PgAgentRepository.fromConfig(context.config);
-        const evolver = await agentRepo.ensureSystemEvolver(identity.spaceId, identity.userId);
-        agentId = evolver.id;
-        isFallback = true;
+        throw new HttpError(
+          422,
+          "agent_id is required in the request or target metadata",
+        );
       }
 
       const setup = await repo.recordRunSetup(identity, targetId, agentId, body);
@@ -255,7 +253,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         selected_strategy_key: setup.selectedStrategyKey,
         run_status: finalRun?.status ?? "queued",
         proposal_ids: [],
-        is_fallback_agent: isFallback,
       });
     } catch (error) {
       return sendRouteError(reply, error);

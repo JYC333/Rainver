@@ -4,7 +4,7 @@ import { researchFailurePresentation, researchResultState, savedSetupDiffersFrom
 
 const workflow = (state: Record<string, unknown> = {}): ProjectResearchWorkflow => ({
   id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'complete', status: 'active', mode: 'agent_assisted',
-  state_json: { research_question: 'Old question', monitoring: { active: true }, ...state }, started_by_user_id: null, started_run_id: null,
+  state_json: { research_question: 'Old question', monitoring: { active: true }, ...state }, primary_thread_id: null, started_by_user_id: null, started_run_id: null,
   created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-18T08:00:00Z',
 })
 
@@ -50,6 +50,19 @@ describe('researchResultState', () => {
     const result = state({ checkpoints: [checkpoint()], operations: [operation('failed', '2026-07-18T08:00:00Z'), operation('active', '2026-07-18T10:00:00Z')] })
     expect(result.kind).toBe('checkpoint')
     expect(result.primaryAction?.key).toBe('review_results')
+  })
+
+  it('keeps research usable while a source history window retries in the background', () => {
+    const result = state({
+      operations: [operation('active', '2026-07-18T10:00:00Z', {
+        current_stage: 'screening',
+        backfill_progress: {
+          deferred_sources: [{ provider_key: 'arxiv', next_retry_at: '2026-07-18T10:05:00Z' }],
+        },
+      })],
+    })
+    expect(result.kind).toBe('running')
+    expect(result.notices).toContain('arxiv history (1 window) is temporarily unavailable and retrying in the background; collected papers can continue through research.')
   })
 
   it('puts any failed auxiliary operation before a newer running operation', () => {
@@ -188,5 +201,70 @@ describe('researchResultState', () => {
     expect(presentation.conclusion).toContain('unusable structured research result')
     expect(presentation.suggestion).toContain('strict JSON')
     expect(presentation.technical).toContain('$.findings')
+  })
+
+  it('explains exhausted source backfill retries and preserves the actionable diagnostics', () => {
+    const failed = operation('failed', '2026-07-30T20:25:55Z', {
+      failed_stage: 'backfill',
+      error: {
+        code: 'source_history_backfill_failed',
+        message: 'History import from arXiv failed after 2 automatic attempts because the provider returned HTTP 500.',
+        diagnostics: {
+          retryable: true,
+          failed_sources: [{
+            provider_key: 'arxiv',
+            provider_display_name: 'arXiv',
+            upstream_status: 500,
+            automatic_attempts: 2,
+          }],
+        },
+      },
+    })
+    const presentation = researchFailurePresentation(failed)
+    expect(presentation.conclusion).toBe('History import from arXiv did not complete.')
+    expect(presentation.suggestion).toContain('already retried automatically')
+    expect(presentation.suggestion).toContain('completed papers and results will be kept')
+    expect(presentation.technical).toContain('"upstream_status": 500')
+  })
+
+  it('treats a legacy source 429 as transient even when its stored retryable flag is false', () => {
+    const failed = operation('failed', '2026-08-03T10:00:00Z', {
+      failed_stage: 'backfill',
+      error: {
+        code: 'source_history_backfill_failed',
+        message: 'History import from Semantic Scholar failed because the provider returned HTTP 429.',
+        diagnostics: {
+          retryable: false,
+          failed_sources: [{ provider_display_name: 'Semantic Scholar', upstream_status: 429 }],
+        },
+      },
+    })
+
+    const presentation = researchFailurePresentation(failed)
+    expect(presentation.conclusion).toBe('History import from Semantic Scholar did not complete.')
+    expect(presentation.suggestion).toContain('background backoff')
+    expect(presentation.suggestion).not.toContain('correct the source setup')
+  })
+
+  it('explains exhausted model-provider retries without hiding the underlying run diagnostics', () => {
+    const failed = operation('failed', '2026-07-30T21:28:13Z', {
+      failed_stage: 'synthesis',
+      error: {
+        code: 'provider_network_error',
+        message: 'MiniMax request failed: Connect Timeout Error',
+        diagnostics: {
+          execution_id: 'execution-1',
+          run_id: 'run-1',
+          stage: 'synthesis_critique',
+          retryable: true,
+          automatic_retry_exhausted: true,
+        },
+      },
+    })
+    const presentation = researchFailurePresentation(failed)
+    expect(presentation.conclusion).toContain('automatic retries were exhausted')
+    expect(presentation.suggestion).toContain('completed research data was kept')
+    expect(presentation.technical).toContain('"stage": "synthesis_critique"')
+    expect(presentation.technical).toContain('"run_id": "run-1"')
   })
 })

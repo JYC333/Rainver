@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ServerConfig } from "../../config";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 import { lockActiveProjectForMutation } from "../projects/access";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common";
@@ -39,6 +40,8 @@ export interface WorkflowExecutionStartInput {
 
 export class WorkflowExecutionService {
   private readonly scheduler = new ExecutionGraphScheduler();
+
+  constructor(private readonly config: ServerConfig) {}
 
   async start(input: WorkflowExecutionStartInput): Promise<{
     workflowExecutionId: string;
@@ -454,6 +457,7 @@ export class WorkflowExecutionService {
       const result = await handler({
         db: input.db,
         identity: input.identity,
+        config: this.config,
         executionId: context.executionId,
         nodeId: node.id,
         nodeKey: node.node_key,

@@ -39,7 +39,7 @@ export function validateRunCreateInput(input: RunCreateInput): void {
     ["agent", "planning", "system", "workflow", "validation", "reflection", "export", "evolution"],
     "run_type",
   );
-  assertOneOf(input.trigger_origin, ["manual", "automation", "job", "system"], "trigger_origin");
+  assertOneOf(input.trigger_origin, ["manual", "automation", "autonomous", "job", "system"], "trigger_origin");
 }
 
 export function requiredSandboxLevelForRun(

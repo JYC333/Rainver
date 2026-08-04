@@ -7,55 +7,13 @@ import { projects } from "./projects";
 import { spaces } from "./spaces";
 import { claims } from "./knowledge";
 import { projectOperations } from "./projectOperations";
+import { inquiryThreads } from "./inquiry";
+import { projectResearchContextVersions } from "./projectResearchContext";
 
 // Project-owned Academic Research workflow foundation. Runs/Artifacts/
 // Proposals keep their existing authority boundaries — these tables only
 // track workflow state, human checkpoints, and which Artifacts belong to
 // which workflow stage.
-
-export const projectResearchProfiles = pgTable("project_research_profiles", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	projectId: varchar("project_id", { length: 36 }).notNull(),
-	presetKey: varchar("preset_key", { length: 64 }).default('academic_research').notNull(),
-	researchQuestion: text("research_question"),
-	workingTitle: varchar("working_title", { length: 512 }),
-	domain: varchar({ length: 128 }),
-	outputType: varchar("output_type", { length: 32 }),
-	paperType: varchar("paper_type", { length: 32 }),
-	citationStyle: varchar("citation_style", { length: 32 }),
-	targetVenue: varchar("target_venue", { length: 256 }),
-	language: varchar({ length: 16 }).default('en').notNull(),
-	experimentIntakeDeclaration: varchar("experiment_intake_declaration", { length: 32 }).default('undecided').notNull(),
-	status: varchar({ length: 16 }).default('draft').notNull(),
-	approvedByUserId: varchar("approved_by_user_id", { length: 36 }),
-	approvedAt: timestamp("approved_at", { withTimezone: true, mode: 'string' }),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_project_research_profiles_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	uniqueIndex("uq_project_research_profiles_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
-	foreignKey({
-			columns: [table.projectId, table.spaceId],
-			foreignColumns: [projects.id, projects.spaceId],
-			name: "project_research_profiles_project_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "project_research_profiles_space_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.approvedByUserId],
-			foreignColumns: [users.id],
-			name: "project_research_profiles_approved_by_user_id_fkey"
-		}).onDelete("set null"),
-	check("ck_project_research_profiles_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])`),
-	check("ck_project_research_profiles_output_type", sql`(output_type IS NULL) OR ((output_type)::text = ANY (ARRAY[('paper'::character varying)::text, ('thesis'::character varying)::text, ('report'::character varying)::text, ('review'::character varying)::text, ('proposal'::character varying)::text, ('other'::character varying)::text]))`),
-	check("ck_project_research_profiles_paper_type", sql`(paper_type IS NULL) OR ((paper_type)::text = ANY (ARRAY[('empirical'::character varying)::text, ('theory'::character varying)::text, ('survey'::character varying)::text, ('review'::character varying)::text, ('position'::character varying)::text, ('case_study'::character varying)::text, ('other'::character varying)::text]))`),
-	check("ck_project_research_profiles_citation_style", sql`(citation_style IS NULL) OR ((citation_style)::text = ANY (ARRAY[('apa'::character varying)::text, ('mla'::character varying)::text, ('chicago'::character varying)::text, ('ieee'::character varying)::text, ('acm'::character varying)::text, ('vancouver'::character varying)::text, ('other'::character varying)::text]))`),
-	check("ck_project_research_profiles_experiment_intake", sql`(experiment_intake_declaration)::text = ANY (ARRAY[('none'::character varying)::text, ('code_experiments'::character varying)::text, ('human_study'::character varying)::text, ('both'::character varying)::text, ('undecided'::character varying)::text])`),
-]);
 
 export const projectResearchWorkflows = pgTable("project_research_workflows", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -68,17 +26,35 @@ export const projectResearchWorkflows = pgTable("project_research_workflows", {
 	stateJson: jsonb("state_json").default({}).notNull(),
 	startedByUserId: varchar("started_by_user_id", { length: 36 }),
 	startedRunId: varchar("started_run_id", { length: 36 }),
+	// Canonical, indexed, FK-enforced Inquiry ownership. state_json may carry
+	// an execution snapshot of the Thread wording/version, but it is never used
+	// to resolve Workflow ownership. Mirrors experiment_definitions.primary_hypothesis_thread_id
+	// (B12C: the owning domain holds the FK to Inquiry, not the reverse).
+	// Nullable for Workflow types that are not scoped to an Inquiry Thread.
+	primaryThreadId: varchar("primary_thread_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_project_research_workflows_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_project_research_workflows_project_status").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.status.asc().nullsLast()),
+	index("ix_project_research_workflows_thread_id").using("btree", table.primaryThreadId.asc().nullsLast()),
+	uniqueIndex("uq_project_research_workflows_active_thread").using(
+		"btree",
+		table.spaceId.asc().nullsLast(),
+		table.projectId.asc().nullsLast(),
+		table.primaryThreadId.asc().nullsLast(),
+	).where(sql`${table.primaryThreadId} IS NOT NULL AND ${table.status} <> 'archived'`),
 	unique("uq_project_research_workflows_id_space_id").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.projectId, table.spaceId],
 			foreignColumns: [projects.id, projects.spaceId],
 			name: "project_research_workflows_project_id_fkey"
 		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.primaryThreadId, table.projectId, table.spaceId],
+			foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+			name: "project_research_workflows_thread_fkey"
+		}),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
@@ -103,6 +79,81 @@ export const projectResearchWorkflows = pgTable("project_research_workflows", {
 	check("ck_project_research_workflows_status", sql`(status)::text = ANY (ARRAY[('not_started'::character varying)::text, ('active'::character varying)::text, ('paused'::character varying)::text, ('completed'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_project_research_workflows_mode", sql`(mode)::text = ANY (ARRAY[('manual'::character varying)::text, ('agent_assisted'::character varying)::text, ('autonomous'::character varying)::text])`),
 	check("ck_project_research_workflows_state_object", sql`jsonb_typeof(state_json) = 'object'::text`),
+]);
+
+// Durable, Thread-scoped conversation behind the dedicated research-question
+// assessment workspace. The browser is only a projection of these rows:
+// successful and failed user turns remain available across devices, while the
+// latest structured framework is stored on the session for fast restoration.
+export const projectResearchQuestionAssessmentSessions = pgTable("project_research_question_assessment_sessions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	threadId: varchar("thread_id", { length: 36 }).notNull(),
+	recommendedQuestion: text("recommended_question"),
+	latestRefinementJson: jsonb("latest_refinement_json"),
+	assessmentBaselineJson: jsonb("assessment_baseline_json"),
+	researchContextVersionId: varchar("research_context_version_id", { length: 36 }),
+	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	unique("uq_project_research_question_assessment_sessions_id_space").on(table.id, table.spaceId),
+	uniqueIndex("uq_project_research_question_assessment_sessions_thread").using("btree", table.spaceId.asc().nullsLast(), table.threadId.asc().nullsLast()),
+	index("ix_project_research_question_assessment_sessions_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.updatedAt.desc().nullsLast()),
+	foreignKey({
+		columns: [table.threadId, table.projectId, table.spaceId],
+		foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+		name: "project_research_question_assessment_sessions_thread_fkey"
+	}).onDelete("cascade"),
+	foreignKey({
+		columns: [table.projectId, table.spaceId],
+		foreignColumns: [projects.id, projects.spaceId],
+		name: "project_research_question_assessment_sessions_project_fkey"
+	}).onDelete("cascade"),
+	foreignKey({
+		columns: [table.researchContextVersionId, table.projectId, table.spaceId],
+		foreignColumns: [projectResearchContextVersions.id, projectResearchContextVersions.projectId, projectResearchContextVersions.spaceId],
+		name: "project_research_question_assessment_sessions_context_fkey"
+	}),
+	foreignKey({
+		columns: [table.createdByUserId],
+		foreignColumns: [users.id],
+		name: "project_research_question_assessment_sessions_created_by_fkey"
+	}),
+	check("ck_project_research_question_assessment_sessions_refinement_object", sql`latest_refinement_json IS NULL OR jsonb_typeof(latest_refinement_json) = 'object'::text`),
+	check("ck_project_research_question_assessment_sessions_baseline_object", sql`assessment_baseline_json IS NULL OR jsonb_typeof(assessment_baseline_json) = 'object'::text`),
+]);
+
+export const projectResearchQuestionAssessmentMessages = pgTable("project_research_question_assessment_messages", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	sessionId: varchar("session_id", { length: 36 }).notNull(),
+	turnIndex: integer("turn_index").notNull(),
+	role: varchar({ length: 16 }).notNull(),
+	content: text().notNull(),
+	status: varchar({ length: 16 }).default('complete').notNull(),
+	structuredOutputJson: jsonb("structured_output_json"),
+	createdByUserId: varchar("created_by_user_id", { length: 36 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_project_research_question_assessment_messages_turn_role").using("btree", table.sessionId.asc().nullsLast(), table.turnIndex.asc().nullsLast(), table.role.asc().nullsLast()),
+	index("ix_project_research_question_assessment_messages_session").using("btree", table.spaceId.asc().nullsLast(), table.sessionId.asc().nullsLast(), table.turnIndex.asc().nullsLast()),
+	foreignKey({
+		columns: [table.sessionId, table.spaceId],
+		foreignColumns: [projectResearchQuestionAssessmentSessions.id, projectResearchQuestionAssessmentSessions.spaceId],
+		name: "project_research_question_assessment_messages_session_fkey"
+	}).onDelete("cascade"),
+	foreignKey({
+		columns: [table.createdByUserId],
+		foreignColumns: [users.id],
+		name: "project_research_question_assessment_messages_created_by_fkey"
+	}).onDelete("set null"),
+	check("ck_project_research_question_assessment_messages_turn", sql`turn_index >= 1`),
+	check("ck_project_research_question_assessment_messages_role", sql`role IN ('user', 'assistant')`),
+	check("ck_project_research_question_assessment_messages_status", sql`status IN ('pending', 'complete', 'failed')`),
+	check("ck_project_research_question_assessment_messages_content", sql`char_length(content) BETWEEN 1 AND 20000`),
+	check("ck_project_research_question_assessment_messages_structured_object", sql`structured_output_json IS NULL OR jsonb_typeof(structured_output_json) = 'object'::text`),
 ]);
 
 // Immutable outcomes of completed monitoring scans. Keeping this separate
@@ -197,7 +248,7 @@ export const projectResearchCheckpoints = pgTable("project_research_checkpoints"
 			foreignColumns: [users.id],
 			name: "project_research_checkpoints_decided_by_user_id_fkey"
 		}).onDelete("set null"),
-	check("ck_project_research_checkpoints_checkpoint_type", sql`(checkpoint_type)::text = ANY (ARRAY[('profile_approval'::character varying)::text, ('screening_gate'::character varying)::text, ('idea_review'::character varying)::text, ('integrity_gate'::character varying)::text, ('manuscript_gate'::character varying)::text, ('review_gate'::character varying)::text, ('other'::character varying)::text])`),
+	check("ck_project_research_checkpoints_checkpoint_type", sql`(checkpoint_type)::text = ANY (ARRAY[('screening_gate'::character varying)::text, ('idea_review'::character varying)::text, ('integrity_gate'::character varying)::text, ('manuscript_gate'::character varying)::text, ('review_gate'::character varying)::text, ('other'::character varying)::text])`),
 	check("ck_project_research_checkpoints_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('approved'::character varying)::text, ('rejected'::character varying)::text, ('waived'::character varying)::text])`),
 	check("ck_project_research_checkpoints_user_decision", sql`(user_decision IS NULL) OR ((user_decision)::text = ANY (ARRAY[('approved'::character varying)::text, ('rejected'::character varying)::text, ('waived'::character varying)::text]))`),
 ]);

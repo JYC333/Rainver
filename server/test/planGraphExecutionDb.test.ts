@@ -17,6 +17,7 @@ import { withQueryableTransaction, type SpaceUserIdentity } from "../src/modules
 import type { RunBudgetSource } from "../src/modules/runs/contractSnapshot";
 
 const MIGRATIONS_DIR = `${process.cwd()}/migrations`;
+const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
 const AGENT = "33333333-3333-4333-8333-333333333333";
@@ -165,6 +166,17 @@ async function createApprovedPlanWithBudget(
     agent_id: AGENT,
     prompt: "Plan this source task.",
   }) as { id: string };
+  await pool!.query(
+    `UPDATE runs
+        SET contract_snapshot_json = jsonb_set(
+          contract_snapshot_json,
+          '{policy_context_json}',
+          jsonb_build_object('plan_budget_sources', $3::jsonb),
+          true
+        )
+      WHERE space_id = $1 AND id = $2`,
+    [SPACE, planningRun.id, JSON.stringify(budgetSources)],
+  );
   const plans = new PgPlanRepository(pool!);
   const created = await plans.createPlanFromAgent(identity, {
     sourceTaskId: TASK,
@@ -173,7 +185,6 @@ async function createApprovedPlanWithBudget(
     agentId: AGENT,
     definitionJson: agentPlanDefinition(),
     budgetCap: 100,
-    budgetSources,
   });
   const version = created.current_version as { id: string; approval_proposal_id: string };
   const apply = PgProposalApplyService.fromConfig(loadConfig({
@@ -511,7 +522,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
        ) VALUES ($1, $2, $3, $4, 'Fixed workflow automation', 'manual', 'active', $5::jsonb, $6, $6)`,
       [AUTOMATION, SPACE, USER, AGENT, JSON.stringify({ target_type: "workflow" }), now],
     );
-    const service = new WorkflowExecutionService();
+    const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
       db: pool,
       identity,
@@ -698,7 +709,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
       created_at: now, updated_at: now,
     };
-    const service = new WorkflowExecutionService();
+    const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
       db: pool,
       identity,
@@ -785,7 +796,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
       created_at: now, updated_at: now,
     };
-    const service = new WorkflowExecutionService();
+    const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
       db: pool,
       identity,
@@ -929,7 +940,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
       created_at: now, updated_at: now,
     };
-    const service = new WorkflowExecutionService();
+    const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
       db: pool,
       identity,
@@ -1067,7 +1078,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
       created_at: now, updated_at: now,
     };
-    const service = new WorkflowExecutionService();
+    const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
       db: pool,
       identity,

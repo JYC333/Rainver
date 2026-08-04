@@ -845,12 +845,15 @@ describe("RunOrchestrationService", () => {
 
   it("maps orchestration-level adapter timeout to a terminal failed run", async () => {
     const repo = new FakeRepo();
+    let adapterAborted = false;
     const service = new RunOrchestrationService(config(), repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
-        executeRuntimeHost: async () =>
+        executeRuntimeHost: async (_config, _request, options) =>
           new Promise(() => {
-            // Intentionally never resolves; the orchestration timeout owns the result.
+            options?.signal?.addEventListener("abort", () => {
+              adapterAborted = true;
+            }, { once: true });
           }),
       },
     });
@@ -874,6 +877,7 @@ describe("RunOrchestrationService", () => {
       },
     });
     expect(repo.calls).toContain("unlock:run-1");
+    expect(adapterAborted).toBe(true);
   });
 
   it("routes CLI runs through the vendor CLI adapter and supports cancellation", async () => {

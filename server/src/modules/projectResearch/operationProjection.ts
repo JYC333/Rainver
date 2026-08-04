@@ -165,6 +165,7 @@ export interface ResearchOperationState {
   matrix_artifact_id?: string;
   failed_stage?: string;
   partial: boolean;
+  coverage_degraded?: boolean;
   monitoring_active: boolean;
   awaiting_source_scan?: boolean;
   pending_incremental_source_item_ids?: string[];
@@ -193,6 +194,8 @@ export interface ResearchOperationState {
     total_batches: number;
     completed_batches: number;
     active_batches: number;
+    queued_batches: number;
+    running_batches: number;
     failed_batches: number;
     started_at: string | null;
     updated_at: string;
@@ -219,9 +222,18 @@ export interface ResearchOperationState {
     total_segments: number;
     completed_segments: number;
     failed_segments: number;
+    deferred_segments?: number;
     running_segments: number;
     pending_segments: number;
     items_ingested: number;
+    next_retry_at?: string | null;
+    deferred_sources?: Array<{
+      provider_key: string | null;
+      provider_display_name: string | null;
+      upstream_status: number | null;
+      automatic_attempts: number;
+      next_retry_at: string | null;
+    }>;
     plans: Array<{
       id: string;
       status: string;
@@ -532,6 +544,7 @@ export function researchState(value: unknown): ResearchOperationState {
     comparison_source_item_ids: stringArray(source.comparison_source_item_ids),
     artifact_ids: stringArray(source.artifact_ids),
     partial: source.partial === true,
+    coverage_degraded: source.coverage_degraded === true,
     monitoring_active: source.monitoring_active === true,
     idempotency: {
       key: optionalString(idempotency.key) ?? "",

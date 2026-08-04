@@ -366,12 +366,12 @@ const ruleUseCredential: Rule = (ctx) => {
     });
   }
 
-  if (triggerOrigin === "automation") {
+  if (triggerOrigin === "automation" || triggerOrigin === "autonomous") {
     if (ctx.automation_pre_authorized === true) {
       return makeDecision({
         decision: "allow",
         message:
-          "Automation-origin credential use allowed by standing pre-authorization.",
+          "Automation-authorized credential use allowed by standing pre-authorization.",
         risk_level: "high",
         reason_code: "credential_automation_preauthorized",
         policy_rule_id: "credential_automation_preauthorized_allow",
@@ -380,7 +380,7 @@ const ruleUseCredential: Rule = (ctx) => {
     }
     return makeDecision({
       decision: "require_approval",
-      message: "Automation-origin credential use requires explicit approval.",
+      message: "Automation-authorized credential use requires explicit approval.",
       risk_level: "high",
       reason_code: "credential_automation_origin",
       required_approver_role: "owner",
@@ -479,6 +479,22 @@ const ruleAutomation: Rule = (ctx) => {
       reason_code: "automation_project_writer_allow",
       policy_rule_id: "automation_project_writer_allow",
       audit_code: "automation_project_writer_allowed",
+    });
+  }
+  // autonomous_tick is a per-user self-service control-plane target: any
+  // active member may enable, reconfigure, or (un)fire their own tick, scoped
+  // to their own identity and whatever Agent they can already reach. It is
+  // never a "manage this Space's automations" authority — actor_is_owner
+  // requires the caller to be the automation's own owner_user_id, so this
+  // carve-out cannot reach another member's tick, unlike the admin branch.
+  if (ctx.target_type === "autonomous_tick" && ctx.actor_is_owner === true && hasRoleAtLeast(role, "member")) {
+    return makeDecision({
+      decision: "allow",
+      message: `${action} allowed for the tick's own owner (role=${role})`,
+      risk_level: "high",
+      reason_code: "automation_autonomy_self_service_allow",
+      policy_rule_id: "automation_autonomy_self_service_allow",
+      audit_code: "automation_autonomy_self_service_allowed",
     });
   }
   return makeDecision({

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ServerConfig } from "../../config";
 import { HttpError, objectValue, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
 import { lockActiveProjectForMutation } from "../projects/access";
 import { ProjectOperationRepository } from "../projects/projectOperationRepository";
@@ -29,6 +30,7 @@ const SYNTHESIS_ONLY_WORKFLOW_ID = "academic_literature_review.synthesis_only";
 export async function startSynthesisOnlyExecution(
   db: Queryable,
   identity: SpaceUserIdentity,
+  config: ServerConfig,
   projectId: string,
   workflow: { id: string; state_json: unknown },
   state: ResearchOperationState,
@@ -54,7 +56,7 @@ export async function startSynthesisOnlyExecution(
 
     const automation = await findOrCreateResearchAutomation(tx, identity, projectId, state.agent_id);
     const versionId = await findOrCreateSynthesisOnlyTemplateVersion(tx, identity);
-    const executionService = new WorkflowExecutionService();
+    const executionService = new WorkflowExecutionService(config);
     await executionService.start({
       db: tx,
       identity,

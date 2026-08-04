@@ -14,11 +14,11 @@ import { SourcePostProcessingService } from "../sources/postProcessing/service";
 import { SourcePostProcessingRecoveryService } from "../sources/postProcessing/recoveryService";
 import { SourceChannelService } from "../sources/channels/sourceChannelService";
 import { upsertSourceChannelScanTask } from "../sources/sourceConnectionScheduler";
+import { computeNextCheckAt } from "../sources/sourceScanCadence";
 import { ProjectResearchRepository } from "./repository";
 import { ProjectResearchAreaService } from "./areaService";
 import { ProjectResearchReportStatusService } from "./reportStatusService";
 import { rejectLegacyResearchRuntimeFields } from "./inputValidation";
-import { researchQuestionDrift } from "./questionDrift";
 import {
   normalizeResearchScope,
   researchScopeFromRefinement,
@@ -54,12 +54,27 @@ import {
 } from "./pipeline/synthesisCoordinator";
 import { startSynthesisOnlyExecution } from "./synthesisOnlyExecution";
 import { startResearchReconcilePass } from "./researchPassExecution";
-import { resolveResearchThreadScope, type ResearchThreadScopeRef } from "./threadScope";
-import { InquiryIterationService } from "../inquiry/iterationService";
+import {
+  summarizeBackfillFailures,
+  backfillCanProceed,
+  isDeferredBackfillPlan,
+  type FailedBackfillRow,
+} from "./backfillFailureDiagnostics";
+import {
+  resolveResearchThreadScope,
+  normalizeThreadScope,
+  checkPinnedThreadDrift,
+  type ResearchThreadScopeRef,
+} from "./threadScope";
+import {
+  PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS,
+  latestPublicationWatermarkForItems,
+} from "./monitoringWindow";
+import { tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob";
 
 const MONITORING_FIELDS = new Set(["submittedDate", "lastUpdatedDate"]);
 const MAX_ITEMS_DEFAULT = 10_000;
-const OVERLAP_HOURS = 48;
+const OVERLAP_HOURS = PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS;
 
 interface ResearchInput {
   workflowId: string | null;
@@ -128,7 +143,7 @@ export class ProjectResearchOrchestrator {
 
   constructor(
     private readonly db: Queryable,
-    private readonly config?: ServerConfig,
+    private readonly config: ServerConfig,
   ) {}
 
   /** Records a successful zero-item source scan and closes an explicit
@@ -139,6 +154,7 @@ export class ProjectResearchOrchestrator {
     scanJobId: string;
     scannedAt: string;
     scanWindowStart: string | null;
+    scanWindowEnd: string | null;
     newItemCount: number;
   }): Promise<void> {
     return this.monitoringCoordinator().onSourceScanCompleted(input);
@@ -151,6 +167,7 @@ export class ProjectResearchOrchestrator {
       scanJobId: string;
       scannedAt: string;
       scanWindowStart: string | null;
+      scanWindowEnd: string | null;
       newItemCount: number;
     },
     operationId: string,
@@ -162,6 +179,7 @@ export class ProjectResearchOrchestrator {
     await startResearchReconcilePass(
       this.db,
       { spaceId: input.spaceId, userId },
+      this.config,
       operation,
       "empty_scan",
       {
@@ -170,6 +188,7 @@ export class ProjectResearchOrchestrator {
         scanJobId: input.scanJobId,
         scannedAt: input.scannedAt,
         scanWindowStart: input.scanWindowStart,
+        scanWindowEnd: input.scanWindowEnd,
         newItemCount: input.newItemCount,
       },
     );
@@ -182,6 +201,7 @@ export class ProjectResearchOrchestrator {
       scanJobId: string;
       scannedAt: string;
       scanWindowStart: string | null;
+      scanWindowEnd: string | null;
       newItemCount: number;
     },
     operationId: string,
@@ -197,11 +217,11 @@ export class ProjectResearchOrchestrator {
 
   async startInitialIntake(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const profile = await this.db.query<{ research_question: string | null }>(
-      `SELECT research_question FROM project_research_profiles WHERE space_id=$1 AND project_id=$2 LIMIT 1`,
+    const project = await this.db.query<{ current_focus: string | null }>(
+      `SELECT current_focus FROM projects WHERE space_id=$1 AND id=$2`,
       [identity.spaceId, projectId],
     );
-    const input = normalizeInitialIntakeInput(body, profile.rows[0]?.research_question ?? null);
+    const input = normalizeInitialIntakeInput(body, project.rows[0]?.current_focus ?? null);
     if (!this.config) throw new HttpError(503, "Auto research requires server configuration");
     const execution = await new ProjectResearchExecutionProfileService(this.db, this.config)
       .resolve(identity, input.execution);
@@ -215,11 +235,11 @@ export class ProjectResearchOrchestrator {
 
   async saveInitialIntakeDraft(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const profile = await this.db.query<{ research_question: string | null }>(
-      `SELECT research_question FROM project_research_profiles WHERE space_id=$1 AND project_id=$2 LIMIT 1`,
+    const project = await this.db.query<{ current_focus: string | null }>(
+      `SELECT current_focus FROM projects WHERE space_id=$1 AND id=$2`,
       [identity.spaceId, projectId],
     );
-    const draft = normalizeInitialIntakeDraft(body, profile.rows[0]?.research_question ?? null);
+    const draft = normalizeInitialIntakeDraft(body, project.rows[0]?.current_focus ?? null);
     const workflowId = optionalString(body.workflow_id);
     return withQueryableTransaction(this.db, (db) =>
       new ProjectResearchOrchestrator(db, this.config).saveInitialIntakeDraftLocked(identity, projectId, draft, workflowId),
@@ -233,26 +253,41 @@ export class ProjectResearchOrchestrator {
     requestedWorkflowId: string | null,
   ) {
     await lockActiveProjectForMutation(this.db, identity.spaceId, projectId);
-    const existing = await this.db.query<WorkflowRow>(
-      `SELECT * FROM project_research_workflows
-        WHERE space_id=$1 AND project_id=$2 AND id=$3
-        LIMIT 1 FOR UPDATE`,
-      [identity.spaceId, projectId, requestedWorkflowId],
-    );
+    if (!draft.requestedThreadId) throw new HttpError(422, "thread_id is required for an initial literature intake draft");
+    const existing = requestedWorkflowId
+      ? await this.db.query<WorkflowRow>(
+        `SELECT * FROM project_research_workflows
+          WHERE space_id=$1 AND project_id=$2 AND id=$3
+          LIMIT 1 FOR UPDATE`,
+        [identity.spaceId, projectId, requestedWorkflowId],
+      )
+      : await this.db.query<WorkflowRow>(
+          `SELECT * FROM project_research_workflows
+            WHERE space_id=$1 AND project_id=$2
+              AND status<>'archived'
+              AND primary_thread_id=$3
+            LIMIT 1 FOR UPDATE`,
+          [identity.spaceId, projectId, draft.requestedThreadId],
+        );
     if (requestedWorkflowId && !existing.rows[0]) throw new HttpError(404, "Research workflow not found");
+    const existingThreadId = existing.rows[0]?.primary_thread_id ?? null;
+    if (existing.rows[0] && existingThreadId !== draft.requestedThreadId) {
+      throw new HttpError(409, "The selected research workflow belongs to a different Inquiry Thread");
+    }
     if (existing.rows[0]?.status === "active") {
       throw new HttpError(409, "An active research workflow cannot be edited after initial literature intake has started");
     }
     if (existing.rows[0] && !["not_started", "paused"].includes(existing.rows[0].status)) {
       throw new HttpError(409, "This research workflow can no longer be edited");
     }
+    const workflowId = existing.rows[0]?.id ?? randomUUID();
     const startedBaseline = await this.db.query<{ id: string }>(
       `SELECT id FROM project_operations
         WHERE space_id=$1 AND project_id=$2 AND kind='research'
           AND progress_json->>'workflow_id'=$3
           AND progress_json->>'run_kind'='baseline'
         ORDER BY created_at DESC LIMIT 1`,
-      [identity.spaceId, projectId, requestedWorkflowId],
+      [identity.spaceId, projectId, workflowId],
     );
     if (startedBaseline.rows[0]) {
       const latestBaseline = await this.db.query<{ status: string; progress_json: unknown }>(
@@ -261,7 +296,7 @@ export class ProjectResearchOrchestrator {
             AND progress_json->>'workflow_id'=$3
             AND progress_json->>'run_kind'='baseline'
           ORDER BY created_at DESC LIMIT 1`,
-        [identity.spaceId, projectId, requestedWorkflowId],
+        [identity.spaceId, projectId, workflowId],
       );
       const latestProgress = objectValue(latestBaseline.rows[0]?.progress_json);
       const emptyResult = objectValue(latestProgress.empty_result);
@@ -274,20 +309,20 @@ export class ProjectResearchOrchestrator {
 
     const now = new Date().toISOString();
     const state = initialIntakeDraftState(draft, now);
-    const workflowId = existing.rows[0]?.id ?? randomUUID();
     if (existing.rows[0]) {
       await this.db.query(
         `UPDATE project_research_workflows
-            SET status='not_started', current_stage='initial_intake_setup', mode='autonomous', state_json=$4::jsonb, updated_at=$5
+            SET status='not_started', current_stage='initial_intake_setup', mode='autonomous',
+                state_json=$4::jsonb, primary_thread_id=$5, updated_at=$6
           WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-        [identity.spaceId, projectId, workflowId, JSON.stringify(state), now],
+        [identity.spaceId, projectId, workflowId, JSON.stringify(state), draft.requestedThreadId, now],
       );
     } else {
       await this.db.query(
         `INSERT INTO project_research_workflows
-          (id,space_id,project_id,workflow_type,status,mode,current_stage,state_json,started_by_user_id,created_at,updated_at)
-         VALUES ($1,$2,$3,'literature_review','not_started','autonomous','initial_intake_setup',$4::jsonb,$5,$6,$6)`,
-        [workflowId, identity.spaceId, projectId, JSON.stringify(state), identity.userId, now],
+          (id,space_id,project_id,workflow_type,status,mode,current_stage,state_json,started_by_user_id,primary_thread_id,created_at,updated_at)
+         VALUES ($1,$2,$3,'literature_review','not_started','autonomous','initial_intake_setup',$4::jsonb,$5,$6,$7,$7)`,
+        [workflowId, identity.spaceId, projectId, JSON.stringify(state), identity.userId, draft.requestedThreadId, now],
       );
     }
     const workflow = await this.workflow(identity.spaceId, projectId, workflowId, true);
@@ -333,19 +368,9 @@ export class ProjectResearchOrchestrator {
         [identity.spaceId, projectId, workflow.id],
       ),
     ]);
-    let currentQuestion = await this.projectResearchQuestion(identity.spaceId, projectId);
-    if (pinned) {
-      const currentThread = await this.db.query<{ version: number; statement: string }>(
-        `SELECT version,statement FROM inquiry_threads
-          WHERE id=$1 AND space_id=$2 AND project_id=$3
-            AND kind='question' AND lifecycle_status='active'`,
-        [pinned.thread_id, identity.spaceId, projectId],
-      );
-      const row = currentThread.rows[0];
-      if (row && (row.version !== pinned.version || row.statement !== pinned.statement)) {
-        currentQuestion = row.statement;
-      }
-    }
+    const currentQuestion = pinned
+      ? (await checkPinnedThreadDrift(this.db, identity.spaceId, projectId, pinned)).current?.statement ?? null
+      : null;
     return {
       workflow_id: workflow.id,
       previous_question: optionalString(state.research_question),
@@ -396,7 +421,7 @@ export class ProjectResearchOrchestrator {
       state.stage_state = "running";
       // A report snapshot is an immutable execution-per-pass
       // WorkflowExecution, just like every other Project Research run kind.
-      const operation = await startSynthesisOnlyExecution(db, identity, projectId, workflow, state);
+      const operation = await startSynthesisOnlyExecution(db, identity, this.config, projectId, workflow, state);
       return service.readOperation(identity, projectId, operation.id);
     });
   }
@@ -417,25 +442,12 @@ export class ProjectResearchOrchestrator {
     const currentThreadScope = normalizeThreadScope(workflowState.thread_scope);
     const scopedThread = currentThreadScope[0];
     if (!scopedThread) throw new HttpError(409, "The research workflow has no Inquiry Thread scope");
-    const currentThreadResult = await this.db.query<{ id: string; version: number; statement: string }>(
-      `SELECT id,version,statement FROM inquiry_threads
-        WHERE id=$1 AND space_id=$2 AND project_id=$3
-          AND kind='question' AND lifecycle_status='active'
-        FOR UPDATE`,
-      [scopedThread.thread_id, identity.spaceId, projectId],
+    const { drifted, current: currentThread } = await checkPinnedThreadDrift(
+      this.db, identity.spaceId, projectId, scopedThread, { forUpdate: true },
     );
-    const currentThread = currentThreadResult.rows[0];
     if (!currentThread) throw new HttpError(409, "The scoped Inquiry Thread is no longer active");
-    const threadChanged = currentThread.version !== scopedThread.version
-      || currentThread.statement !== scopedThread.statement;
-    const project = await this.db.query<{ current_focus: string | null }>(
-      `SELECT current_focus FROM projects WHERE space_id=$1 AND id=$2`,
-      [identity.spaceId, projectId],
-    );
-    const projectQuestion = optionalString(project.rows[0]?.current_focus);
-    const currentQuestion = threadChanged ? currentThread.statement : projectQuestion;
-    if (!currentQuestion) throw new HttpError(422, "Set a current research question before applying it to future runs");
-    if (!threadChanged && !researchQuestionDrift(currentQuestion, workflowQuestion)) return workflowOutput(workflow);
+    if (!drifted) return workflowOutput(workflow);
+    const currentQuestion = currentThread.statement;
 
     const active = await this.activeResearchOperation(identity.spaceId, projectId, workflow.id);
     if (active) throw new HttpError(409, "Wait for the active research operation to finish before applying a new research question");
@@ -461,38 +473,15 @@ export class ProjectResearchOrchestrator {
     const now = new Date().toISOString();
     const previousVersion = questionVersion(workflowState);
     const nextVersion = previousVersion + 1;
-    let revisedThreadId = currentThread.id;
-    let revisedStatement = currentThread.statement;
-    let revisedVersion = currentThread.version;
-    if (!threadChanged) {
-      const revision = await new InquiryIterationService(this.db).reviseDefinition(
-        identity,
-        projectId,
-        scopedThread.thread_id,
-        {
-          revision_kind: "semantic_change",
-          structure_action: "narrow",
-          new_statement: currentQuestion,
-          impact_note: `Applied to Auto Research with strategy: ${strategy}`,
-        },
-      );
-      const revisedThread = objectValue(revision.thread);
-      revisedThreadId = optionalString(revisedThread.id) ?? "";
-      revisedStatement = optionalString(revisedThread.statement) ?? "";
-      revisedVersion = typeof revisedThread.version === "number" ? revisedThread.version : 0;
-      if (!revisedThreadId || !revisedStatement || revisedVersion < 1) {
-        throw new HttpError(500, "Failed to snapshot the revised Inquiry Thread");
-      }
-    }
     const nextState = {
       ...workflowState,
       research_question: currentQuestion,
       research_question_version: nextVersion,
       thread_scope: [{
-        thread_id: revisedThreadId,
-        version: revisedVersion,
+        thread_id: currentThread.id,
+        version: currentThread.version,
         kind: "question",
-        statement: revisedStatement,
+        statement: currentThread.statement,
       }],
       research_scope: { sub_questions: [], in: [], out: [] },
       question_refinement: null,
@@ -505,15 +494,8 @@ export class ProjectResearchOrchestrator {
       ],
     };
     await this.db.query(
-      `UPDATE project_research_workflows SET state_json=$4::jsonb, updated_at=$5 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [identity.spaceId, projectId, workflow.id, JSON.stringify(nextState), now],
-    );
-
-    await this.db.query(
-      `UPDATE project_research_profiles
-          SET research_question=$3, status='draft', approved_by_user_id=NULL, approved_at=NULL, updated_at=$4
-        WHERE space_id=$1 AND project_id=$2`,
-      [identity.spaceId, projectId, currentQuestion, now],
+      `UPDATE project_research_workflows SET state_json=$4::jsonb, primary_thread_id=$5, updated_at=$6 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+      [identity.spaceId, projectId, workflow.id, JSON.stringify(nextState), currentThread.id, now],
     );
 
     if (ruleIds.length > 0) {
@@ -600,6 +582,7 @@ export class ProjectResearchOrchestrator {
     await startResearchReconcilePass(
       this.db,
       identity,
+      this.config,
       operation,
       "question_change_synthesis",
     );
@@ -839,6 +822,7 @@ export class ProjectResearchOrchestrator {
     await startResearchReconcilePass(
       this.db,
       { spaceId, userId },
+      this.config,
       operation,
       "reconcile",
     );
@@ -893,9 +877,12 @@ export class ProjectResearchOrchestrator {
         segments_completed: number | null;
         segments_failed: number | null;
         items_ingested: number | null;
+        next_eligible_at: string | null;
+        error_json: unknown;
         updated_at: string | null;
       }>(
-        `SELECT id, status, segments_total, segments_completed, segments_failed, items_ingested, updated_at
+        `SELECT id, status, segments_total, segments_completed, segments_failed, items_ingested,
+                next_eligible_at, error_json, updated_at
            FROM source_backfill_plans
           WHERE id=ANY($1::text[]) AND space_id=$2`,
         [backfillPlanIds, spaceId],
@@ -906,13 +893,24 @@ export class ProjectResearchOrchestrator {
         failed_segments: number;
         running_segments: number;
         pending_segments: number;
+        deferred_segments: number;
+        next_retry_at: string | null;
       }>(
         `SELECT
             count(*)::int AS total_segments,
             count(*) FILTER (WHERE status IN ('succeeded', 'skipped'))::int AS completed_segments,
             count(*) FILTER (WHERE status='failed')::int AS failed_segments,
             count(*) FILTER (WHERE status='running')::int AS running_segments,
-            count(*) FILTER (WHERE status='pending')::int AS pending_segments
+            count(*) FILTER (WHERE status='pending')::int AS pending_segments,
+            count(*) FILTER (
+              WHERE status='pending'
+                AND error_json->>'deferred_retry'='true'
+                AND next_eligible_at IS NOT NULL
+            )::int AS deferred_segments,
+            min(next_eligible_at) FILTER (
+              WHERE status='pending'
+                AND error_json->>'deferred_retry'='true'
+            ) AS next_retry_at
            FROM source_backfill_segments
           WHERE plan_id=ANY($1::text[]) AND space_id=$2`,
         [backfillPlanIds, spaceId],
@@ -924,14 +922,31 @@ export class ProjectResearchOrchestrator {
         failed_segments: 0,
         running_segments: 0,
         pending_segments: 0,
+        deferred_segments: 0,
+        next_retry_at: null,
       };
+      const deferredPlans = plans.rows.filter(isDeferredBackfillPlan);
+      const deferredSources = deferredPlans.map((plan) => {
+        const error = objectValue(plan.error_json);
+        const diagnostics = objectValue(error.diagnostics);
+        return {
+          provider_key: optionalString(diagnostics.provider_key),
+          provider_display_name: optionalString(diagnostics.provider_display_name),
+          upstream_status: typeof diagnostics.upstream_status === "number" ? diagnostics.upstream_status : null,
+          automatic_attempts: typeof diagnostics.attempts === "number" ? diagnostics.attempts : 0,
+          next_retry_at: optionalString(error.next_retry_at) ?? plan.next_eligible_at,
+        };
+      });
       state.backfill_progress = {
         total_segments: Number(segmentTotals.total_segments ?? 0),
         completed_segments: Number(segmentTotals.completed_segments ?? 0),
         failed_segments: Number(segmentTotals.failed_segments ?? 0),
+        deferred_segments: Number(segmentTotals.deferred_segments ?? 0),
         running_segments: Number(segmentTotals.running_segments ?? 0),
         pending_segments: Number(segmentTotals.pending_segments ?? 0),
         items_ingested: plans.rows.reduce((sum, plan) => sum + Number(plan.items_ingested ?? 0), 0),
+        next_retry_at: segmentTotals.next_retry_at,
+        deferred_sources: deferredSources,
         plans: plans.rows.map((plan) => ({
           id: plan.id,
           status: plan.status,
@@ -943,7 +958,7 @@ export class ProjectResearchOrchestrator {
         })),
         updated_at: now,
       };
-      const backfillDone = plans.rows.length === backfillPlanIds.length && plans.rows.every((plan) => ["completed", "failed"].includes(plan.status));
+      const backfillDone = backfillCanProceed(plans.rows, backfillPlanIds.length);
       // Once the workflow has advanced past screening (synthesis, idea_review,
       // complete, failed, ...), this whole backfill->screening transition must
       // stay inert. Without this guard, backfillDone stays true forever (plans
@@ -956,6 +971,7 @@ export class ProjectResearchOrchestrator {
       // refresh" looks like from the outside.
       const stillAtOrBeforeScreening = state.current_stage === "backfill" || state.current_stage === "screening";
       if (backfillDone && stillAtOrBeforeScreening && !plans.rows.some((plan) => plan.status === "failed")) {
+        state.coverage_degraded = deferredPlans.length > 0;
         // Keep the items-in-scope list and screening progress fresh on every
         // reconcile tick, independent of whether classification batches are
         // still running. isSourcePipelineDrained below only gates the stage
@@ -975,7 +991,27 @@ export class ProjectResearchOrchestrator {
       await this.setState(row, state, deriveStepStates(state));
       if (backfillDone && stillAtOrBeforeScreening) {
         if (plans.rows.some((plan) => plan.status === "failed")) {
-          await this.failOperation(row, "Source history backfill failed");
+          const failures = await this.db.query<FailedBackfillRow>(
+            `SELECT p.id AS plan_id, s.id AS segment_id, p.source_channel_id,
+                    COALESCE(ss.provider_key, provider.provider_key) AS provider_key,
+                    provider.display_name AS provider_display_name,
+                    s.attempt_count, s.error_json
+               FROM source_backfill_segments s
+               JOIN source_backfill_plans p ON p.id=s.plan_id AND p.space_id=s.space_id
+               JOIN source_channels ch ON ch.id=p.source_channel_id AND ch.space_id=p.space_id
+               JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+               JOIN source_provider_connectors spc ON spc.id=sc.provider_connector_id
+               JOIN source_providers provider ON provider.id=spc.provider_id
+               LEFT JOIN source_search_specs ss ON ss.source_channel_id=ch.id AND ss.space_id=ch.space_id
+              WHERE s.plan_id=ANY($1::text[]) AND s.space_id=$2 AND s.status='failed'
+              ORDER BY p.id, s.seq`,
+            [backfillPlanIds, spaceId],
+          );
+          const failure = summarizeBackfillFailures(failures.rows);
+          await this.failOperation(row, failure.message, {
+            code: failure.code,
+            diagnostics: failure.diagnostics,
+          });
           return;
         }
         if (!(await this.isSourcePipelineDrained(spaceId, state))) return;
@@ -989,7 +1025,10 @@ export class ProjectResearchOrchestrator {
         const sourceRecovery = new SourcePostProcessingRecoveryService(this.db);
         state.watermark = {
           ...state.watermark,
-          after: state.watermark.after ?? new Date().toISOString(),
+          after: await latestPublicationWatermarkForItems(this.db, {
+            spaceId,
+            sourceItemIds: state.source_item_ids,
+          }),
         };
         state.current_stage = "screening";
         state.stage_state = "running";
@@ -1203,6 +1242,7 @@ export class ProjectResearchOrchestrator {
     await startResearchReconcilePass(
       this.db,
       { spaceId, userId },
+      this.config,
       owner,
       "run_terminal",
       { kind: "run_terminal", runId },
@@ -1321,6 +1361,7 @@ export class ProjectResearchOrchestrator {
     await startResearchReconcilePass(
       this.db,
       { spaceId, userId },
+      this.config,
       operation,
       "checkpoint_resume",
       { kind: "checkpoint_resume", userId, projectId, workflowId, checkpointId },
@@ -1403,6 +1444,11 @@ export class ProjectResearchOrchestrator {
         await this.completeWorkflowCoverage(spaceId, projectId, workflowId, operation.id, state.partial ? "partial" : "completed");
         await this.flushPendingIncremental(spaceId, projectId, workflowId);
       }
+      // A finished search changes what the pinned Thread should do next even
+      // when it produced no material Signal of its own.
+      await tryQueueAdviceForWorkflowThread(this.db, {
+        spaceId, userId, projectId, workflowId, triggerKind: "search_completed",
+      });
     }
   }
 
@@ -1418,6 +1464,7 @@ export class ProjectResearchOrchestrator {
     await startResearchReconcilePass(
       this.db,
       identity,
+      this.config,
       operation,
       "retry",
       { kind: "retry", userId: identity.userId, projectId },
@@ -1760,6 +1807,10 @@ export class ProjectResearchOrchestrator {
       input.requestedThreadId,
     );
     input = { ...input, researchQuestion: threadScope.statement, threadScope: [threadScope] };
+    // Serialize the idempotency lookup and Thread-owned Workflow resolution.
+    // Without the Project row lock, two concurrent starts can both observe no
+    // matching Workflow before either inserts one.
+    await lockActiveProjectForMutation(this.db, identity.spaceId, projectId);
     const existing = await this.db.query<{ id: string; progress_json: unknown }>(
       `SELECT id, progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research' AND progress_json->'idempotency'->>'key'=$3 ORDER BY created_at LIMIT 1`,
       [identity.spaceId, projectId, input.idempotencyKey],
@@ -1943,8 +1994,7 @@ export class ProjectResearchOrchestrator {
       if (!["active", "paused", "not_started"].includes(workflow.status)) {
         throw new HttpError(409, "This research workflow can no longer be started");
       }
-      const selectedThreadId = normalizeThreadScope(objectValue(workflow.state_json).thread_scope)[0]?.thread_id;
-      if (selectedThreadId && selectedThreadId !== primaryThreadId) {
+      if (workflow.primary_thread_id !== primaryThreadId) {
         throw new HttpError(409, "The selected research workflow belongs to a different Inquiry Thread");
       }
       return workflow;
@@ -1952,13 +2002,14 @@ export class ProjectResearchOrchestrator {
     const existingResult = await this.db.query<WorkflowRow>(
       `SELECT * FROM project_research_workflows
         WHERE space_id=$1 AND project_id=$2
-          AND status IN ('active','paused','not_started')
-          AND state_json->'thread_scope'->0->>'thread_id'=$3
-        ORDER BY updated_at DESC LIMIT 1`,
+          AND status<>'archived'
+          AND primary_thread_id=$3
+        LIMIT 1`,
       [spaceId, projectId, primaryThreadId],
     );
     const existing = existingResult.rows[0] ?? null;
     if (existing && ["active", "paused", "not_started"].includes(existing.status)) return existing;
+    if (existing) throw new HttpError(409, "This Inquiry Thread already has a completed research workflow; open its operation or rescan it instead");
     const id = randomUUID();
     const now = new Date().toISOString();
     const state = {
@@ -1977,9 +2028,9 @@ export class ProjectResearchOrchestrator {
       monitoring: { field: input.monitoringField, schedule: input.schedule, overlap_hours: OVERLAP_HOURS, active: false },
     };
     await this.db.query(
-      `INSERT INTO project_research_workflows (id,space_id,project_id,workflow_type,status,mode,state_json,started_by_user_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'literature_review','active','autonomous',$4::jsonb,$5,$6,$6)`,
-      [id, spaceId, projectId, JSON.stringify(state), userId, now],
+      `INSERT INTO project_research_workflows (id,space_id,project_id,workflow_type,status,mode,state_json,started_by_user_id,primary_thread_id,created_at,updated_at)
+       VALUES ($1,$2,$3,'literature_review','active','autonomous',$4::jsonb,$5,$6,$7,$7)`,
+      [id, spaceId, projectId, JSON.stringify(state), userId, primaryThreadId, now],
     );
     const workflow = await this.workflow(spaceId, projectId, id);
     if (!workflow) throw new HttpError(500, "Failed to create research workflow");
@@ -2147,15 +2198,55 @@ export class ProjectResearchOrchestrator {
               ),
               updated_at=$6
         WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [spaceId, projectId, workflowId, JSON.stringify(state.channel_ids), JSON.stringify(new Date().toISOString()), new Date().toISOString()],
+      [
+        spaceId,
+        projectId,
+        workflowId,
+        JSON.stringify(state.channel_ids),
+        JSON.stringify(state.watermark.after),
+        new Date().toISOString(),
+      ],
     );
     for (const channelId of state.channel_ids ?? []) {
-      const channel = await this.db.query<{ id: string; space_id: string; owner_user_id: string; status: string; fetch_frequency: string }>(
+      const now = new Date().toISOString();
+      const channel = await this.db.query<{
+        id: string;
+        space_id: string;
+        owner_user_id: string;
+        status: string;
+        fetch_frequency: string;
+        schedule_rule_json: unknown;
+      }>(
         `UPDATE source_channels SET status='active', fetch_frequency='daily', schedule_rule_json=COALESCE(schedule_rule_json, '{"frequency":"daily","hour":0,"minute":0}'::jsonb), updated_at=$3
-          WHERE space_id=$1 AND id=$2 RETURNING id, space_id, (SELECT owner_user_id FROM source_connections WHERE id=source_channels.source_connection_id) AS owner_user_id, status, fetch_frequency`,
-        [spaceId, channelId, new Date().toISOString()],
+          WHERE space_id=$1 AND id=$2
+          RETURNING id, space_id,
+            (SELECT owner_user_id FROM source_connections WHERE id=source_channels.source_connection_id) AS owner_user_id,
+            status, fetch_frequency, schedule_rule_json`,
+        [spaceId, channelId, now],
       );
-      if (channel.rows[0]) await upsertSourceChannelScanTask(this.db, { channel: channel.rows[0], nextRunAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      const target = channel.rows[0];
+      if (!target) continue;
+      const channelWatermark = await latestPublicationWatermarkForItems(this.db, {
+        spaceId,
+        sourceItemIds: state.source_item_ids,
+        sourceChannelId: channelId,
+      }) ?? state.watermark.after;
+      await upsertSourceChannelScanTask(this.db, {
+        channel: target,
+        nextRunAt: computeNextCheckAt(target.fetch_frequency, now, {
+          scheduleRule: target.schedule_rule_json,
+        }),
+        ...(channelWatermark
+          ? {
+              cursor: {
+                last_published_at: channelWatermark,
+                overlap_hours: state.watermark.overlap_hours,
+              },
+              watermark: { value: channelWatermark },
+            }
+          : {}),
+        updatedAt: now,
+      });
     }
     for (const ruleId of state.source_post_processing_rule_ids ?? []) {
       await this.db.query(
@@ -2360,21 +2451,8 @@ export class ProjectResearchOrchestrator {
       { spaceId, userId: actorUserId },
       projectId,
       workflowId,
-      { source_item_ids: pending, idempotency_key: `historical-backfill-flush:${workflowId}:${pending.join(",")}` },
+      { source_item_ids: pending, idempotency_key: `deferred-source-flush:${workflowId}:${pending.join(",")}` },
     );
-  }
-
-  private async projectResearchQuestion(spaceId: string, projectId: string): Promise<string | null> {
-    const result = await this.db.query<{ current_focus: string | null; research_question: string | null }>(
-      `SELECT p.current_focus, pr.research_question
-         FROM projects p
-         LEFT JOIN project_research_profiles pr ON pr.space_id=p.space_id AND pr.project_id=p.id
-        WHERE p.space_id=$1 AND p.id=$2
-        LIMIT 1`,
-      [spaceId, projectId],
-    );
-    const row = result.rows[0];
-    return optionalString(row?.current_focus) ?? optionalString(row?.research_question);
   }
 
   private async hasResearchQuestionDrift(spaceId: string, projectId: string, workflowValue: unknown): Promise<boolean> {
@@ -2382,20 +2460,11 @@ export class ProjectResearchOrchestrator {
     const scope = normalizeThreadScope(workflow.thread_scope);
     const pinned = scope[0];
     if (!pinned) return true;
-    const current = await this.db.query<{ version: number; statement: string }>(
-      `SELECT version, statement FROM inquiry_threads
-        WHERE id=$1 AND space_id=$2 AND project_id=$3
-          AND kind='question' AND lifecycle_status='active'`,
-      [pinned.thread_id, spaceId, projectId],
-    );
-    const row = current.rows[0];
-    if (!row || row.version !== pinned.version || row.statement !== pinned.statement) return true;
-
     // The pinned Inquiry Thread is the sole Question authority for this
     // Workflow. Project.current_focus and the legacy research profile are
     // presentation/setup state; comparing either here would let selecting a
     // different Workflow incorrectly stall this one.
-    return false;
+    return (await checkPinnedThreadDrift(this.db, spaceId, projectId, pinned)).drifted;
   }
 
   private async assertResearchQuestionAligned(spaceId: string, projectId: string, workflowValue: unknown): Promise<void> {
@@ -2755,6 +2824,7 @@ function workflowOutput(row: WorkflowRow): Record<string, unknown> {
     status: row.status,
     mode: row.mode,
     state_json: objectValue(row.state_json),
+    primary_thread_id: row.primary_thread_id ?? null,
     started_by_user_id: row.started_by_user_id ?? null,
     started_run_id: row.started_run_id ?? null,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
@@ -2849,18 +2919,6 @@ export function incrementalStateFromWorkflow(
     monitoring_active: true,
     idempotency: { key: idempotencyKey, fingerprint: fingerprintOf({ workflowId, sourceItemIds, idempotencyKey }) },
   };
-}
-
-function normalizeThreadScope(value: unknown): ResearchThreadScopeRef[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    const row = objectValue(item);
-    const threadId = optionalString(row.thread_id);
-    const statement = optionalString(row.statement);
-    const version = row.version;
-    if (!threadId || !statement || typeof version !== "number" || !Number.isInteger(version) || version < 1) return [];
-    return [{ thread_id: threadId, version, kind: "question" as const, statement }];
-  });
 }
 
 function historicalBackfillStateFromWorkflow(

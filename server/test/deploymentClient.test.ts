@@ -26,22 +26,16 @@ describe("DeployerSocketClient", () => {
     });
   });
 
-  it("keeps self-evolution and code-patch jobs out of the privileged deployer", () => {
+  it("keeps the privileged deployer limited to its three operator scripts", () => {
     const protocol = readFileSync(join(repoRoot, "deployer", "protocol.py"), "utf8");
     const deployer = readFileSync(join(repoRoot, "deployer", "deployer.py"), "utf8");
-    for (const forbidden of [
-      "init_agent_space_worktree",
-      "create_system_worktree",
-      "collect_system_diff",
-      "run_system_tests",
-      "run_test_deploy",
-      "merge_approved_system_patch",
-      "run_prod_deploy",
-      "cleanup_system_worktree",
-    ]) {
-      expect(protocol).not.toContain(`"${forbidden}"`);
-      expect(deployer).not.toContain(`"${forbidden}"`);
-    }
+    expect(
+      readdirSync(join(repoRoot, "deployer", "scripts"))
+        .filter((name) => name.endsWith(".sh"))
+        .sort(),
+    ).toEqual(["health_check.sh", "rebuild.sh", "restart.sh"]);
+    expect(protocol).not.toContain("code_patch");
+    expect(deployer).not.toContain("code_patch");
     const allowedReferences = new Set([
       join(repoRoot, "server", "src", "modules", "deployment", "client.ts"),
       join(repoRoot, "server", "src", "modules", "deployment", "index.ts"),

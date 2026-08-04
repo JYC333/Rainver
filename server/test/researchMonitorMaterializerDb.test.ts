@@ -180,6 +180,25 @@ describe("research monitor materialization (real Postgres)", () => {
     }, score: 0.75, decision: "accept" });
     await queries.selectAttempt(SPACE, replacementPlan.id, replacementAttempt.id, { terminalDecision: "accept" });
     await queries.finalizeStrategy(SPACE, replacement.id);
+    const liveOperationId = randomUUID();
+    await pool.query(
+      `INSERT INTO project_operations (
+         id,space_id,project_id,kind,title,status,created_by_user_id,progress_json,created_at,updated_at
+       ) VALUES ($1,$2,$3,'research','Active intake','active',$4,$5::jsonb,$6,$6)`,
+      [liveOperationId, SPACE, PROJECT, USER, JSON.stringify({
+        workflow_id: randomUUID(),
+        channel_ids: [first.sources[0]!.source_channel_id],
+        query: { source_channel_ids: [first.sources[0]!.source_channel_id] },
+      }), new Date().toISOString()],
+    );
+    await expect(materializer.materialize(identity, replacement.id, {
+      providerKeys: ["openalex"], activationReason: "monitoring_feedback",
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      message: "Wait for the active research operation to finish before activating a replacement query strategy",
+    });
+
+    await pool.query(`UPDATE project_operations SET status='completed',updated_at=$2 WHERE id=$1`, [liveOperationId, new Date().toISOString()]);
     const replacementMaterialized = await materializer.materialize(identity, replacement.id, {
       providerKeys: ["openalex"], activationReason: "monitoring_feedback",
     });

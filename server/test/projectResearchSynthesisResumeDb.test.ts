@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
@@ -19,6 +20,7 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // touching current_stage, so nothing visibly happens and the checkpoint
 // keeps coming back on the next reconcile tick.
 
+const CONFIG = loadConfig({});
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -136,7 +138,7 @@ describe("ProjectResearchOrchestrator.decideCheckpoint resuming a stuck synthesi
     await seedStuckOperation();
     const checkpointId = await seedPendingScreeningCheckpoint();
 
-    const result = await new ProjectResearchOrchestrator(pool!).decideCheckpoint(identity, PROJECT, WORKFLOW, checkpointId, { decision: "approved" });
+    const result = await new ProjectResearchOrchestrator(pool!, CONFIG).decideCheckpoint(identity, PROJECT, WORKFLOW, checkpointId, { decision: "approved" });
     expect(result.user_decision).toBe("approved");
 
     const operation = await pool!.query<{ status: string; progress_json: { current_stage?: string; synthesis_run_id?: string } }>(

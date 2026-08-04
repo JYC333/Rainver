@@ -4,12 +4,16 @@ export type {
   InquiryCandidate,
   InquiryCandidateDecision,
   InquiryCandidateStatus,
+  InquiryDeltaBriefContent,
+  InquiryDeltaGapChange,
+  InquiryDeltaPositionChange,
   InquiryEvidenceSignal,
   InquiryIteration,
   InquiryLifecycleStatus,
   InquiryNextFocusKind,
   InquiryReviewPacket,
   InquiryThread,
+  InquiryThreadAdvice,
   InquiryThreadKind,
 } from '@agent-space/protocol'
 import type {
@@ -1174,6 +1178,10 @@ export interface MaterializedResearchStrategy {
 
 export interface ProjectResearchQuestionRefinement {
   research_context_version_id: string
+  /** Natural-language turn shown in the assessment conversation. */
+  reply?: string
+  /** The framework's current recommended wording after this turn. */
+  recommended_question?: string
   assessment: {
     answerable: boolean
     finer: { feasible: number; interesting: number; novel: number; ethical: number; relevant: number }
@@ -1183,6 +1191,53 @@ export interface ProjectResearchQuestionRefinement {
   sub_questions: string[]
   scope: { in: string[]; out: string[] }
   clarifying_questions: Array<{ question: string; options: string[]; allow_multiple: boolean }>
+}
+
+export interface ProjectResearchQuestionAssessmentMessage {
+  id: string
+  turn_index: number
+  role: 'user' | 'assistant'
+  content: string
+  status: 'pending' | 'complete' | 'failed'
+  processing_events?: Array<{
+    stage: 'subquestion_repair'
+    status: 'detected' | 'running' | 'completed' | 'failed'
+    message: string
+    created_at: string
+  }>
+  created_by_user_id: string | null
+  created_at: string
+}
+
+export interface ProjectResearchQuestionAssessmentSession {
+  id: string
+  thread_id: string
+  recommended_question: string | null
+  latest_refinement: ProjectResearchQuestionRefinement | null
+  assessment_baseline: ProjectResearchQuestionRefinement | null
+  research_context_version_id: string | null
+  messages: ProjectResearchQuestionAssessmentMessage[]
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectResearchQuestionRefinementResponse extends ProjectResearchQuestionRefinement {
+  assessment_session: ProjectResearchQuestionAssessmentSession
+}
+
+export interface ProjectResearchQuestionAssessmentConfirmation {
+  id: string
+  version: number
+  question: string
+  assessment: ProjectResearchQuestionRefinement['assessment']
+  scope: { in: string[]; out: string[] }
+  sub_questions: string[]
+  manually_adjusted: boolean
+  created_at: string
+}
+
+export interface ProjectResearchQuestionAssessmentConfirmationResponse extends ProjectResearchQuestionRefinement {
+  confirmation: ProjectResearchQuestionAssessmentConfirmation
 }
 
 export type SourceCapturePolicy =
@@ -3505,7 +3560,6 @@ export interface EvolutionRunResult {
   selected_strategy_key: string | null
   run_status: string
   proposal_ids: string[]
-  is_fallback_agent: boolean
 }
 
 export interface EvolutionProposal {
@@ -4370,6 +4424,21 @@ export interface InquiryThreadDetail extends InquiryThread {
   in_personal_focus: boolean
 }
 
+export interface InquiryThreadRevision {
+  id: string
+  thread_id: string
+  version: number
+  kind: 'question' | 'hypothesis'
+  statement: string
+  answer_state: InquiryQuestionState['answer_state'] | null
+  evaluation_state: InquiryHypothesisState['evaluation_state'] | null
+  confidence: number | null
+  state_snapshot_json: Record<string, unknown>
+  change_significance: 'trivial' | 'material'
+  created_by_user_id: string | null
+  created_at: string
+}
+
 export type ExperimentExecutorType = 'manual' | 'managed_code_comparison'
 export type ExperimentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -4470,6 +4539,7 @@ export interface ProjectResearchWorkflow {
   status: string
   mode: string
   state_json: Record<string, unknown>
+  primary_thread_id: string | null
   started_by_user_id: string | null
   started_run_id: string | null
   created_at: string
@@ -4549,6 +4619,8 @@ export interface ProjectResearchCheckpointReview {
     failed_items?: number
     processing_status?: 'complete' | 'incomplete' | 'empty'
     partial?: boolean
+    coverage_degraded?: boolean
+    deferred_source_count?: number
   }
   usage?: {
     agent_run_count: number
@@ -5924,6 +5996,21 @@ export interface ProjectUpdate {
   current_focus?: string | null
   status?: ProjectStatus | null
   settings_json?: Record<string, unknown> | null
+}
+
+export interface ProjectBriefVersion {
+  id: string
+  space_id: string
+  project_id: string
+  version: string
+  goal: string | null
+  scope_included: string | null
+  scope_excluded: string | null
+  success_definition: string | null
+  constraints: string | null
+  assumptions: string | null
+  created_by_user_id: string | null
+  created_at: string
 }
 
 export interface ProjectSummary {

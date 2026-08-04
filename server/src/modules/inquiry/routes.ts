@@ -18,6 +18,7 @@ import { InquiryIterationService } from "./iterationService";
 import { InquirySignalService } from "./signalService";
 import { registerInquiryProjectIntegration } from "./projectIntegration";
 import { InquiryGraphService } from "./graphService";
+import { InquiryAdviceService } from "./adviceService";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter";
 import { RetrievalSearchService } from "../retrieval";
 
@@ -27,6 +28,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const iterations = () => InquiryIterationService.fromConfig(context.config);
   const signals = () => InquirySignalService.fromConfig(context.config);
   const graphs = () => InquiryGraphService.fromConfig(context.config);
+  const advice = () => InquiryAdviceService.fromConfig(context.config);
 
   app.get("/api/v1/projects/:projectId/inquiry/threads", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -84,6 +86,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const projectId = requiredString(p.projectId, "project_id");
       const threadId = requiredString(p.threadId, "thread_id");
       return reply.send(await iterations().listIterations(identity, projectId, threadId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/revisions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const threadId = requiredString(p.threadId, "thread_id");
+      return reply.send(await iterations().listRevisions(identity, projectId, threadId));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -365,6 +380,83 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const projectId = requiredString(p.projectId, "project_id");
       const packetId = requiredString(p.packetId, "packet_id");
       return reply.send(await signals().closeReviewPacket(identity, projectId, packetId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const threadId = requiredString(p.threadId, "thread_id");
+      return reply.send(await advice().getAdvice(identity, projectId, threadId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const threadId = requiredString(p.threadId, "thread_id");
+      return reply.code(201).send(await advice().generateAdvice(identity, projectId, threadId, "user_request"));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // Adoption is orchestrated here rather than inside the advice service so
+  // the work-state command stays the single Next Focus write authority (and
+  // keeps enforcing the focused-Thread invariant and its work events).
+  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice/adopt", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const threadId = requiredString(p.threadId, "thread_id");
+      const adviceService = advice();
+      const current = await adviceService.getAdvice(identity, projectId, threadId);
+      if (!current) throw new HttpError(404, "No advice to adopt for this Thread");
+      const thread = await iterations().updateWork(identity, projectId, threadId, {
+        next_focus_kind: current.recommended_focus_kind,
+        blocked_reason: null,
+      });
+      await adviceService.markAdopted(identity, projectId, threadId);
+      return reply.send({
+        thread,
+        advice: await adviceService.getAdvice(identity, projectId, threadId),
+      });
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice/dismiss", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const threadId = requiredString(p.threadId, "thread_id");
+      return reply.send(await advice().dismissAdvice(identity, projectId, threadId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/inquiry/delta-briefs/latest", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await signals().latestDeltaBrief(identity, projectId));
     } catch (error) {
       return sendRouteError(reply, error);
     }

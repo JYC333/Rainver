@@ -19,11 +19,7 @@ import {
   BUILTIN_RUNTIME_ADAPTER_SPECS,
   type RuntimeAdapterType,
 } from "../runtimeAdapters/specs";
-import {
-  AGENT_SYSTEM_EVOLVER_SYSTEM_PROMPT_KEY,
-  resolveAgentSystemPrompt,
-} from "./promptRegistry";
-import { promptProvenanceOf, type PromptProvenance } from "../prompts/provenance";
+import type { PromptProvenance } from "../prompts/provenance";
 import {
   contentOwnerFilterSql,
   contentReadSql,
@@ -33,7 +29,6 @@ import { isContentVisibility } from "../access/contentAccessTypes";
 import { contentOwnerFromDb } from "../access/contentAccessQuery";
 import {
   DEFAULT_MEMORY_POLICY,
-  DEFAULT_MODEL_CONFIG,
   defaultModelConfigFor,
   DEFAULT_RUNTIME_CONFIG,
   agentOut,
@@ -832,7 +827,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   async publishSystemManagedPrompt(input: {
     spaceId: string;
     agentId: string;
-    agentKind: "system_assistant" | "system_evolver" | "system_source_post_processor" | "system_research";
+    agentKind: "system_assistant" | "system_source_post_processor" | "system_research";
     systemPrompt: string;
     promptProvenanceJson?: PromptProvenance | null;
   }): Promise<{ changed: boolean; versionId: string }> {
@@ -965,75 +960,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       [spaceId],
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
-  }
-
-  async getSystemEvolver(spaceId: string): Promise<AgentOut | null> {
-    const result = await this.pool.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
-         FROM agents a
-         LEFT JOIN agent_versions av ON av.id = a.current_version_id
-${DEFAULT_RUNTIME_PROFILE_JOIN}
-         LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
-        WHERE a.space_id = $1
-          AND a.agent_kind = 'system_evolver'
-          AND a.status = 'active'
-        ORDER BY a.created_at ASC
-        LIMIT 1`,
-      [spaceId],
-    );
-    return result.rows[0] ? agentOut(result.rows[0]) : null;
-  }
-
-  async ensureSystemEvolver(spaceId: string, userId: string): Promise<AgentOut> {
-    const existing = await this.getSystemEvolver(spaceId);
-    if (existing) return existing;
-    const resolvedPrompt = await resolveAgentSystemPrompt(this.pool, {
-      spaceId,
-      userId,
-      assetKey: AGENT_SYSTEM_EVOLVER_SYSTEM_PROMPT_KEY,
-    });
-    if (!resolvedPrompt) throw new HttpError(500, "System evolver prompt is not resolvable");
-    return withTransaction(this.pool, async (client) => {
-      const current = await client.query<AgentRecord>(
-        `SELECT ${AGENT_COLUMNS}
-           FROM agents a
-           LEFT JOIN agent_versions av ON av.id = a.current_version_id
-${DEFAULT_RUNTIME_PROFILE_JOIN}
-           LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
-          WHERE a.space_id = $1
-            AND a.agent_kind = 'system_evolver'
-            AND a.status = 'active'
-          ORDER BY a.created_at ASC
-          LIMIT 1`,
-        [spaceId],
-      );
-      if (current.rows[0]) return agentOut(current.rows[0]);
-      return this.createAgentWithVersion(client, {
-        spaceId,
-        ownerUserId: null,
-        name: "System Evolver",
-        description: "System-managed evolution agent for this space.",
-        visibility: "space_shared",
-        roleInstruction: null,
-        status: "active",
-        agentKind: "system_evolver",
-        systemPrompt: resolvedPrompt.system,
-        promptProvenanceJson: promptProvenanceOf(resolvedPrompt.resolveResult),
-        modelProviderId: null,
-        modelName: null,
-        modelConfigJson: DEFAULT_MODEL_CONFIG,
-        runtimeConfigJson: DEFAULT_RUNTIME_CONFIG,
-        contextPolicyJson: {},
-        memoryPolicyJson: DEFAULT_MEMORY_POLICY,
-        capabilitiesJson: [],
-        toolPermissionsJson: {},
-        runtimePolicyJson: buildRuntimePolicy("model_api", null),
-        toolPolicyJson: {},
-        outputPolicyJson: {},
-        scheduleConfigJson: {},
-        outputSchemaJson: {},
-      });
-    });
   }
 
   async getAssistantSettings(spaceId: string): Promise<AssistantSettingsRecord> {
@@ -1175,7 +1101,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     db: Queryable,
     spaceId: string,
     agentId: string,
-    agentKind?: "system_assistant" | "system_evolver" | "system_source_post_processor" | "system_research",
+    agentKind?: "system_assistant" | "system_source_post_processor" | "system_research",
   ): Promise<AgentVersionRecord | null> {
     const agent = await db.query<{ current_version_id: string | null }>(
       `SELECT current_version_id

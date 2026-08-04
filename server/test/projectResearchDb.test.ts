@@ -4,16 +4,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
 import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 // Real-Postgres coverage for the Academic Research project-scoped research
-// profile/workflow/checkpoint/artifact-link/
-// literature-matrix/integrity API surface backing
-// /api/v1/projects/:projectId/research/*.
+// workflow/checkpoint/artifact-link/literature-matrix/integrity API surface
+// backing /api/v1/projects/:projectId/research/*.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -22,6 +23,7 @@ const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
+const CONFIG = loadConfig({});
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -47,7 +49,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE project_research_reports, project_research_checkpoints, project_research_workflows,
-       project_research_profiles, artifacts, project_members, projects, space_memberships, users, spaces CASCADE`,
+       artifacts, project_members, projects, space_memberships, users, spaces CASCADE`,
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
@@ -82,9 +84,40 @@ function repo(): ProjectResearchRepository {
   return new ProjectResearchRepository(pool!);
 }
 
+async function seedWorkflow(state: Record<string, unknown> = {}, primaryThreadId: string | null = null): Promise<string> {
+  const workflowId = randomUUID();
+  const now = new Date().toISOString();
+  await pool!.query(
+    `INSERT INTO project_research_workflows (
+       id, space_id, project_id, workflow_type, status, mode, state_json, primary_thread_id, created_at, updated_at
+     ) VALUES ($1,$2,$3,'literature_review','active','manual',$4::jsonb,$5,$6,$6)`,
+    [workflowId, SPACE, PROJECT, JSON.stringify(state), primaryThreadId, now],
+  );
+  return workflowId;
+}
+
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 describe("ProjectResearchRepository (real Postgres)", () => {
+  it("projects the canonical Inquiry owner needed by the research setup UI", async () => {
+    if (!available || !pool) return;
+    const thread = await new InquiryThreadService(pool).createThread(
+      identity,
+      PROJECT,
+      { kind: "question", statement: "How should agents remember?" },
+    );
+    const workflowId = await seedWorkflow({
+      question_refine_skipped: false,
+      research_context_version_id: randomUUID(),
+    }, String(thread.id));
+
+    await expect(repo().listWorkflows(identity, PROJECT)).resolves.toContainEqual(expect.objectContaining({
+      id: workflowId,
+      primary_thread_id: String(thread.id),
+      state_json: expect.objectContaining({ question_refine_skipped: false }),
+    }));
+  });
+
   it("materializes and reuses a normal Inquiry Question as the Auto Research scope", async () => {
     if (!available || !pool) return;
     const first = await resolveResearchThreadScope(pool, identity, PROJECT, "Which mechanism explains the effect?", null);
@@ -98,10 +131,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
   it("aggregates persisted monitoring scans into one entry per UTC day without synthesizing missing days", async () => {
     if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, { research_question: "Does X improve Y?" });
-    await repo().approveProfile(identity, PROJECT);
-    const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
-    const workflowId = String(workflow.id);
+    const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
     const older = "2026-07-17T08:00:00.000Z";
     const newerMorning = "2026-07-18T08:00:00.000Z";
     const newerEvening = "2026-07-18T20:00:00.000Z";
@@ -127,10 +157,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
   it("records a successful zero-item scan and completes its waiting incremental operation", async () => {
     if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, { research_question: "Does X improve Y?" });
-    await repo().approveProfile(identity, PROJECT);
-    const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
-    const workflowId = String(workflow.id);
+    const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
     await pool!.query(
       `UPDATE project_research_workflows
           SET state_json=state_json || $3::jsonb
@@ -151,15 +178,23 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         watermark: { before: null, after: "2026-07-17T00:00:00.000Z", overlap_hours: 48 },
       }), now],
     );
-    await new ProjectResearchOrchestrator(pool!).onSourceScanCompleted({
+    await new ProjectResearchOrchestrator(pool!, CONFIG).onSourceScanCompleted({
       spaceId: SPACE, sourceChannelId: "channel-1", scanJobId: "scan-job-1",
-      scannedAt: "2026-07-18T08:00:00.000Z", scanWindowStart: "2026-07-17T00:00:00.000Z", newItemCount: 0,
+      scannedAt: "2026-07-18T08:00:00.000Z", scanWindowStart: "2026-07-17T00:00:00.000Z",
+      scanWindowEnd: "2026-07-18T00:00:00.000Z", newItemCount: 0,
     });
     const operation = await pool!.query<{ status: string; progress_json: Record<string, unknown> }>(
       `SELECT status,progress_json FROM project_operations WHERE id=$1`, [operationId],
     );
     expect(operation.rows[0]?.status).toBe("completed");
-    expect(operation.rows[0]?.progress_json).toMatchObject({ current_stage: "complete", awaiting_source_scan: false });
+    expect(operation.rows[0]?.progress_json).toMatchObject({
+      current_stage: "complete",
+      awaiting_source_scan: false,
+      watermark: {
+        before: "2026-07-17T00:00:00.000Z",
+        after: "2026-07-18T00:00:00.000Z",
+      },
+    });
     const scans = await repo().listScanSummaries(identity, PROJECT);
     expect(scans).toHaveLength(1);
     // scan_date reflects when the scan actually ran (now), not the
@@ -170,10 +205,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
   it("collapses repeated same-day zero-result scans into one refreshed daily row", async () => {
     if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, { research_question: "Does X improve Y?" });
-    await repo().approveProfile(identity, PROJECT);
-    const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
-    const workflowId = String(workflow.id);
+    const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
     await pool!.query(
       `UPDATE project_research_workflows
           SET state_json=state_json || $3::jsonb
@@ -181,9 +213,10 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [SPACE, workflowId, JSON.stringify({ channel_ids: ["channel-1"], monitoring: { active: true } })],
     );
     for (const [jobId, scannedAt] of [["scan-job-a", "2026-07-18T08:00:00.000Z"], ["scan-job-b", "2026-07-18T20:00:00.000Z"]] as const) {
-      await new ProjectResearchOrchestrator(pool!).onSourceScanCompleted({
+      await new ProjectResearchOrchestrator(pool!, CONFIG).onSourceScanCompleted({
         spaceId: SPACE, sourceChannelId: "channel-1", scanJobId: jobId,
-        scannedAt, scanWindowStart: "2026-07-17T00:00:00.000Z", newItemCount: 0,
+        scannedAt, scanWindowStart: "2026-07-17T00:00:00.000Z",
+        scanWindowEnd: "2026-07-18T00:00:00.000Z", newItemCount: 0,
       });
     }
     const rows = await pool!.query<{ scanned_at: string }>(
@@ -196,62 +229,30 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
   it("activates monitoring even when the workflow state has no monitoring object yet", async () => {
     if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, { research_question: "Does X improve Y?" });
-    await repo().approveProfile(identity, PROJECT);
-    const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
-    const workflowId = String(workflow.id);
+    const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
     // Reused workflows created by the draft/item-limit paths carry a minimal
     // state without a `monitoring` key; jsonb_set cannot create it.
     await pool!.query(
       `UPDATE project_research_workflows SET state_json='{"schema_version":"project_research_initial_intake.v1"}'::jsonb WHERE space_id=$1 AND id=$2`,
       [SPACE, workflowId],
     );
-    const orchestrator = new ProjectResearchOrchestrator(pool!) as unknown as {
-      setWorkflowMonitoring(spaceId: string, projectId: string, workflowId: string, state: { channel_ids: string[]; source_post_processing_rule_ids: string[] }): Promise<void>;
+    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG) as unknown as {
+      setWorkflowMonitoring(spaceId: string, projectId: string, workflowId: string, state: {
+        channel_ids: string[];
+        source_post_processing_rule_ids: string[];
+        watermark: { before: string | null; after: string | null; overlap_hours: number };
+      }): Promise<void>;
     };
-    await orchestrator.setWorkflowMonitoring(SPACE, PROJECT, workflowId, { channel_ids: [], source_post_processing_rule_ids: [] });
+    await orchestrator.setWorkflowMonitoring(SPACE, PROJECT, workflowId, {
+      channel_ids: [],
+      source_post_processing_rule_ids: [],
+      watermark: { before: null, after: null, overlap_hours: 48 },
+    });
     const updated = await pool!.query<{ state_json: Record<string, unknown> }>(
       `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND id=$2`,
       [SPACE, workflowId],
     );
     expect(updated.rows[0]?.state_json).toMatchObject({ monitoring: { active: true, channel_ids: [] } });
-  });
-
-  it("upserts a draft profile, then approves it", async () => {
-    if (!available) return;
-    const created = await repo().upsertProfile(identity, PROJECT, {
-      research_question: "Does X improve Y?",
-      output_type: "paper",
-      paper_type: "empirical",
-    });
-    expect(created).toMatchObject({ status: "draft", research_question: "Does X improve Y?" });
-
-    const approved = await repo().approveProfile(identity, PROJECT);
-    expect(approved).toMatchObject({ status: "approved" });
-    expect(approved.approved_by_user_id).toBe(OWNER);
-    expect(approved.approved_at).toBeTruthy();
-  });
-
-  it("returns an approved profile to draft when edited, requiring a fresh approval before workflow start", async () => {
-    if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, { research_question: "Initial question" });
-    await repo().approveProfile(identity, PROJECT);
-
-    const edited = await repo().upsertProfile(identity, PROJECT, { research_question: "Revised question" });
-    expect(edited).toMatchObject({
-      status: "draft",
-      research_question: "Revised question",
-      approved_by_user_id: null,
-      approved_at: null,
-    });
-    await expect(repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" })).rejects.toMatchObject({
-      statusCode: 422,
-    });
-  });
-
-  it("rejects an invalid output_type", async () => {
-    if (!available) return;
-    await expect(repo().upsertProfile(identity, PROJECT, { output_type: "not_a_type" })).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("blocks incremental research until a changed project question is explicitly applied forward", async () => {
@@ -263,7 +264,6 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       PROJECT,
       { kind: "question", statement: "Old research question" },
     );
-    await pool!.query(`UPDATE projects SET current_focus=$2, updated_at=$3 WHERE id=$1 AND space_id=$4`, [PROJECT, "New research question", now, SPACE]);
     await pool!.query(
       `INSERT INTO project_research_workflows (
          id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at
@@ -282,8 +282,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         now,
       ],
     );
+    await new InquiryIterationService(pool!).reviseDefinition(identity, PROJECT, thread.id as string, {
+      revision_kind: "wording_only",
+      new_statement: "New research question",
+    });
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!);
+    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
     await expect(orchestrator.triggerIncremental(identity, PROJECT, workflowId, {})).rejects.toMatchObject({ statusCode: 409 });
 
     const applied = await orchestrator.applyQuestionForward(identity, PROJECT, workflowId);
@@ -312,7 +316,6 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       PROJECT,
       { kind: "question", statement: "Old question" },
     );
-    await pool!.query(`UPDATE projects SET current_focus='New question', updated_at=$3 WHERE id=$1 AND space_id=$2`, [PROJECT, SPACE, now]);
     await pool!.query(
       `INSERT INTO project_research_workflows (
          id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at
@@ -324,6 +327,10 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         source_post_processing_rule_ids: [], monitoring: { active: true },
       }), now],
     );
+    await new InquiryIterationService(pool!).reviseDefinition(identity, PROJECT, thread.id as string, {
+      revision_kind: "wording_only",
+      new_statement: "New question",
+    });
     for (const itemId of [humanItemId, aiItemId]) {
       await pool!.query(
         `INSERT INTO source_items (
@@ -343,7 +350,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [randomUUID(), SPACE, PROJECT, humanItemId, now, randomUUID(), aiItemId],
     );
 
-    const result = await new ProjectResearchOrchestrator(pool!).resolveQuestionChange(identity, PROJECT, workflowId, "rescreen") as {
+    const result = await new ProjectResearchOrchestrator(pool!, CONFIG).resolveQuestionChange(identity, PROJECT, workflowId, "rescreen") as {
       workflow: { state_json: Record<string, unknown> };
       operation: { progress_json: Record<string, unknown> };
     };
@@ -365,43 +372,31 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     expect(ai).toMatchObject({ triage_status: "new", triage_confirmed_by_user: false, relevance: null, confidence: null });
   });
 
-  it("blocks starting a workflow before the profile is approved", async () => {
+  it("runs a stage on a workflow and lists checkpoints via a decided checkpoint", async () => {
     if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, {});
-    await expect(repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" })).rejects.toMatchObject({
-      statusCode: 422,
-    });
-  });
+    const workflowId = await seedWorkflow();
 
-  it("starts a workflow after profile approval, runs a stage, and lists checkpoints via a decided checkpoint", async () => {
-    if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, {});
-    await repo().approveProfile(identity, PROJECT);
-
-    const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
-    expect(workflow).toMatchObject({ workflow_type: "literature_review", status: "active", current_stage: null });
-
-    const afterRun = await repo().runStage(identity, PROJECT, workflow.id as string, "research_setup", { run_id: "run-123" });
+    const afterRun = await repo().runStage(identity, PROJECT, workflowId, "research_setup", { run_id: "run-123" });
     expect(afterRun.current_stage).toBe("research_setup");
     expect((afterRun.state_json as { stages: Record<string, unknown> }).stages.research_setup).toMatchObject({
       status: "running",
       run_id: "run-123",
     });
 
-    const checkpoint = await repo().createCheckpoint(identity, PROJECT, workflow.id as string, {
+    const checkpoint = await repo().createCheckpoint(identity, PROJECT, workflowId, {
       stageKey: "research_setup",
-      checkpointType: "profile_approval",
+      checkpointType: "other",
       machineResult: { ok: true },
     });
     expect(checkpoint.status).toBe("pending");
 
-    const decided = await repo().decideCheckpoint(identity, PROJECT, workflow.id as string, checkpoint.id as string, {
+    const decided = await repo().decideCheckpoint(identity, PROJECT, workflowId, checkpoint.id as string, {
       decision: "approved",
       reason: "looks good",
     });
     expect(decided).toMatchObject({ status: "approved", user_decision: "approved", decision_reason: "looks good" });
 
-    const checkpoints = await repo().listCheckpoints(identity, PROJECT, workflow.id as string);
+    const checkpoints = await repo().listCheckpoints(identity, PROJECT, workflowId);
     expect(checkpoints).toHaveLength(1);
     expect(checkpoints[0]!.id).toBe(checkpoint.id);
   });
@@ -448,14 +443,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
   it("computes a real (non-fabricated) integrity result", async () => {
     if (!available) return;
-    await repo().upsertProfile(identity, PROJECT, {});
-    await repo().approveProfile(identity, PROJECT);
-    const workflow = await repo().startWorkflow(identity, PROJECT, { workflow_type: "literature_review" });
+    const workflowId = await seedWorkflow();
 
     // No claim links yet, so the integrity gate has nothing to check
     // and passes cleanly — see projectResearchIntegrityDb.test.ts for the
     // full citation/evidence/gap-finding coverage.
-    const report = await repo().evaluateWorkflowIntegrity(identity, PROJECT, workflow.id as string);
+    const report = await repo().evaluateWorkflowIntegrity(identity, PROJECT, workflowId);
     expect(report).toMatchObject({ checked_claim_links: 0, blocking: false });
   });
 
@@ -653,7 +646,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [randomUUID(), evidenceCorpusItemId, SPACE, PROJECT, sourceItemId, now],
     );
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!);
+    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
     const countRelevantItems = (orchestrator as unknown as {
       countRelevantItems: (spaceId: string, projectId: string, sourceItemIds: string[]) => Promise<Record<string, number>>;
     }).countRelevantItems.bind(orchestrator);

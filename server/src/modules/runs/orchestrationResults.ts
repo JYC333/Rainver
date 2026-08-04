@@ -235,9 +235,13 @@ export function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   timeoutValue: T,
+  onTimeout?: () => void,
 ): Promise<T> {
   return new Promise((resolveValue, reject) => {
-    const timer = setTimeout(() => resolveValue(timeoutValue), timeoutMs);
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      resolveValue(timeoutValue);
+    }, timeoutMs);
     promise.then(
       (value) => {
         clearTimeout(timer);

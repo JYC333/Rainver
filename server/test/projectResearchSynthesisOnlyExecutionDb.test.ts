@@ -215,7 +215,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: synthesizeRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
 
-    await new WorkflowExecutionService().reconcileForRun(pool, SPACE, synthesizeRun, OWNER);
+    await new WorkflowExecutionService(config).reconcileForRun(pool, SPACE, synthesizeRun, OWNER);
 
     const finalNodes = await pool.query<{ node_key: string; status: string }>(
       `SELECT node_key, status FROM workflow_execution_nodes WHERE execution_id=$1 ORDER BY node_key`,
@@ -254,7 +254,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     // reconcile() call that dispatched it — after that call's own
     // isComplete() check already ran. The next periodic-reconciler tick
     // picks up the now-all-done node graph and finishes the execution.
-    await new WorkflowExecutionService().reconcile(pool, SPACE, executionId!, OWNER);
+    await new WorkflowExecutionService(config).reconcile(pool, SPACE, executionId!, OWNER);
     const finalExecution = await pool.query<{ status: string }>(`SELECT status FROM workflow_executions WHERE id=$1`, [executionId]);
     expect(finalExecution.rows[0]).toEqual({ status: "completed" });
 
@@ -284,7 +284,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     const runs = new PgRunRepository(pool);
     await runs.markRunRunning({ run_id: synthesizeRun, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({ run_id: synthesizeRun, space_id: SPACE, status: "failed", error_json: { error_code: "provider_error" }, completed_at: now });
-    await new WorkflowExecutionService().reconcileForRun(pool, SPACE, synthesizeRun, OWNER);
+    await new WorkflowExecutionService(config).reconcileForRun(pool, SPACE, synthesizeRun, OWNER);
 
     const node = await pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id=$1 AND node_key='synthesize'`,

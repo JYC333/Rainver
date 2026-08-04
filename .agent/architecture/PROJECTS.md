@@ -224,6 +224,13 @@ owns semantic planning, the adaptive ladder, and provider compilation. Preview,
 scheduled scans, and history backfill all execute the selected spec's same
 `compiled_provider_query_json`; no later stage recompiles it or substitutes the
 complete research question.
+Question-assessment confirmation creates an immutable context version carrying
+the confirmed wording, scope, sub-questions, assessment, and Thread/session
+provenance. Repeating confirmation while that same confirmation remains current
+is idempotent and returns the existing context version. The web assessment
+workspace compares its working wording and framework with that durable snapshot,
+so unchanged content is displayed as confirmed rather than generating another
+version.
 Editing an approved research profile returns it to `draft` for general
 workflow consumers. The module dispatches through existing Runs/Artifacts
 rather than a parallel execution system. Its integrity gate writes an
@@ -328,6 +335,10 @@ fingerprint, source binding/rule/plan ids, watermark before/after, current
 stage, checkpoint ids, and idempotency key. Each observation, retry, resume,
 rescan, or terminal-Run event starts a new immutable Workflow Execution pass;
 completed executions are never reopened and their DAGs never cycle.
+Human-review checkpoints are workflow-scoped records whose
+`machine_result_json.operation_id` identifies the one operation projection
+they govern. Operation lists use that operation id, not workflow id alone,
+when rendering review attention.
 Production callers enter through
 the logic-free `pipeline/researchPipelineService.ts` command façade; the
 internal orchestrator is its composition root and delegates stage behavior
@@ -352,12 +363,52 @@ historical, or incremental operations, monitoring comparison run lifecycle and
 materialization, and the handoff into adaptive
 query-performance feedback. Sources owns fetching, pagination,
 post-processing cursors, evidence materialization, and source policy.
+The baseline-to-monitoring transition seeds each Source scheduler cursor from
+the latest publication timestamp actually included in that channel's baseline,
+then schedules the first recurring scan at the next configured cadence
+boundary. It never uses activation time as a publication watermark and never
+queues an immediate scan. Project Research remains the authoritative
+publication-window filter; provider-side date constraints are an optimization.
+If a selected channel contributed no baseline item, it inherits the baseline's
+global publication watermark rather than starting an unbounded live scan.
+`scanned_at` records when a scan ran, while operation `watermark.before/after`
+and `scan_window_start/end` record the publication window.
+Managed Research runs retain fail-fast ownership at the operation boundary, but
+transient Run Supervisor failures (including provider network and rate-limit
+errors) receive the normal bounded automatic physical retry first. Exhaustion
+does not create a separate Supervisor review gate: the terminal run remains
+failed, the Workflow Execution projects the underlying run error and stage into
+the operation diagnostics, and the explicit Research Retry action remains
+available.
+When a Source history import exhausts its immediate automatic fetch retry,
+transient failures enter Sources-owned deferred backoff instead of failing
+Research. If another provider has already collected papers, screening and
+synthesis may continue with an explicit coverage warning; the delayed window
+keeps retrying in the background. Papers recovered before screening closes join
+the current intake, while later papers are queued for the next incremental
+update. With no collected papers, the operation remains active in background
+recovery because there is nothing honest to screen. Permanent failures record
+`source_history_backfill_failed` with safe per-source diagnostics and retain
+the explicit operation Retry action. Research and Operations surfaces never
+expose the provider query or endpoint in technical diagnostics.
+HTTP 429 is transient but bypasses the immediate retry and enters deferred
+backoff directly, so the worker does not hammer the same provider quota window.
 
 Initial literature intake is saved independently as a `not_started` workflow
 draft. Saving a draft persists the context/strategy selection,
 history scope, monitoring field, and execution selection without creating a
 backfill plan or execution operation. Materialized Source Monitors are derived
-from the strategy rather than accepted as client-selected channel ids. The project UI shows a compact intake summary and opens the full setup
+from the strategy rather than accepted as client-selected channel ids. Every
+Inquiry-scoped draft writes the FK-backed `primary_thread_id`; that column is
+the sole Workflow ownership authority. A partial unique index permits at most
+one non-archived Workflow per Project Inquiry. The server reuses that row under
+the Project mutation lock, and the Project start route resumes only its editable
+draft or sends started research to the existing operation. `state_json` keeps
+the versioned wording snapshot used by execution but is never an ownership
+fallback.
+Before discovery, the setup UI asks which providers to evaluate: arXiv and OpenAlex
+start selected, while anonymous Semantic Scholar is opt-in because its traffic
+shares a provider-wide rate-limit pool. The project UI shows a compact intake summary and opens the full setup
 editor only on request. A saved draft keeps explicit Edit setup and Start
 research actions visible. Once the initial intake operation is created, the
 setup summary is removed; runtime progress is shown by the operation, stage
@@ -381,7 +432,18 @@ selected Model Provider/model and
 automatically reuses or provisions the system-managed research Agent/profile;
 Research does not expose runtime adapter, CLI credential, Agent, or profile
 overrides. It reuses or creates the selected monitor's project binding,
-post-processing rule, and history plan. The user's explicit Start action
+post-processing rule, and history plan. Research screening recovery batches
+are high-priority Source jobs. Each managed structured-output execution has a
+two-minute adapter deadline and at most two job attempts. Managed provider
+deadlines abort the underlying HTTP request; CLI deadlines terminate the child
+process group before returning, so retry never overlaps a still-owned execution.
+Operation progress distinguishes
+a queued batch from one actively being processed by the model; exhausted
+attempts become an explicit retryable screening failure.
+The shared Jobs worker retains its conservative ten-minute orphan lease;
+Research latency is bounded by its adapter-owned deadline rather than by
+shortening the global recovery policy for unrelated job families.
+The user's explicit Start action
 authorizes the history import for this Project Research operation; Auto Research
 does not create a second `source_backfill_start` proposal. Generic Source and
 agent-triggered history plans remain proposal-gated. After the history window
@@ -510,7 +572,9 @@ active strategy's stored semantic intent. It never recompiles the long research
 question as a provider query and never edits an active Source Channel in place.
 The evaluated replacement is presented as a
 `research_query_strategy_activation` proposal. Approval materializes its exact
-selected compiled queries and atomically archives the previous version's
+selected compiled queries. Activation is rejected while an active Research
+operation still consumes the previous channels; after those consumers are
+terminal, activation atomically archives the previous version's
 channels/bindings, activates the replacement, updates the workflow projection,
 and appends an activation-history row. Strategy versions and activation history
 remain listable for audit; explicit manual activation of an earlier materialized
@@ -730,13 +794,14 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads |
 | GET | `/project-templates` | List built-in Project Template descriptors |
 | GET | `/projects/{id}/template` | Read the Project's creation-time Template key |
-| GET / PUT | `/projects/{id}/research/profile` | Read / upsert the project's research profile (draft until approved) |
-| POST | `/projects/{id}/research/profile/approve` | Approve the research profile; required before a workflow can start |
 | PUT | `/projects/{id}/research/initial-intake` | Save or update the explicit body `workflow_id`; omitting it creates a new draft Workflow |
 | POST | `/projects/{id}/research/initial-intake/start` | Start or idempotently resume the explicit body `workflow_id`; omitting it creates/reuses by its selected Inquiry Thread |
 | GET | `/projects/{id}/research/workflow` | List research workflows for the project |
 | GET | `/projects/{id}/research/scan-summaries` | List immutable monitoring scan outcomes newest-first; an absent date is not synthesized as a zero-result scan |
-| POST | `/projects/{id}/research/workflow/start` | Start a research workflow (requires an approved profile) |
+| GET | `/projects/{id}/research/question/assessment?thread_id=…` | Restore the Thread's durable assessment session, ordered messages, latest structured framework, and explicit assessment baseline |
+| POST | `/projects/{id}/research/question/refine` | Persist one Thread-scoped user turn, run refinement from server-owned completed history, and return the updated durable session; `establish_assessment_baseline` atomically promotes a successful result to the comparison baseline |
+| GET | `/projects/{id}/research/question/assessment/confirmations?thread_id=…` | List immutable confirmed framework snapshots newest-first |
+| POST | `/projects/{id}/research/question/assessment/confirm` | Confirm the current framework; an unchanged repeat returns the current confirmation without creating another context version |
 | POST | `/projects/{id}/research/workflow/{workflowId}/stages/{stageKey}/run` | Record a workflow stage transition, optionally linking a `run_id` |
 | POST | `/projects/{id}/research/workflow/{workflowId}/trigger` | Trigger an incremental run after baseline monitoring is active |
 | POST | `/projects/{id}/research/workflow/{workflowId}/history-backfill` | Extend a bounded baseline into a non-overlapping earlier arXiv range |
@@ -747,6 +812,9 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | PUT | `/projects/{id}/research/operations/{operationId}/item-limit` | Explicitly raise the active research item limit from Project Settings and resume a partial import if needed |
 | PUT | `/projects/{id}/research/item-limit` | Save the explicit body `workflow_id`'s draft intake limit; omitting it creates a new partial draft |
 | POST | `/projects/{id}/research/question/apply-forward` | Explicitly apply the selected `workflow_id`'s revised Inquiry Thread to future runs; existing decisions and artifacts remain unchanged |
+| GET | `/projects/{id}/research/question/assessment/confirmations` | List immutable confirmed assessment-framework snapshots for one `thread_id` |
+| POST | `/projects/{id}/research/question/assessment/confirm` | Confirm the current model/user-adjusted framework and create a new immutable Research Context version |
+| GET | `/projects/{id}/inquiry/threads/{threadId}/revisions` | List immutable full Thread revisions newest-first for wording/version history |
 | GET | `/projects/{id}/research/question/impact?workflow_id=…` | Count papers screened under one explicit Workflow's previous Question version and its synthesis reports |
 | POST | `/projects/{id}/research/question/resolve` | Resolve one explicit `workflow_id` with `rescreen`, `synthesis_only`, or `apply_forward` |
 | GET | `/projects/{id}/research/reports` | List immutable structured reports, newest first |
@@ -781,6 +849,34 @@ Historical Artifact links and synthesis Artifact list routes do not exist.
 Inquiry is Project-owned but not stored as `space_objects`. Its canonical
 Question/Hypothesis Threads, working relations, Iterations, Signals,
 Candidates, Review Packets, and Delta Briefs live in the Inquiry module.
+The Project Research module owns the narrow assessment relationship from one
+Thread to one durable question-assessment session. Its ordered message rows
+retain successful and failed user turns, assistant replies, and per-turn
+structured output; the session caches the latest recommended wording,
+refinement framework, and immutable Research Context Version. The server
+builds every model turn from completed durable messages rather than accepting
+browser-supplied history. Unsent wording edits and Alternative selections are
+volatile page state; model responses update only the Assessment Session, not a
+Research Workflow draft or the canonical Thread. Explicit Confirm is the sole
+action that revises the Thread and hands the confirmed wording to Research
+Setup. It writes the user turn before the provider call,
+then records the assistant turn and framework in a short post-provider
+transaction; a provider failure marks the already-saved user turn failed.
+The resolved prompt asset is a stable system instruction. Dynamic Project
+context and candidate wording travel in the latest user message, while prior
+turns use their real user/assistant roles and `cache_strategy=conversation`;
+no provider-specific conversation id is an authority. If a model returns a
+sub-question longer than the 200-character refinement contract, the server
+runs one independent, schema-constrained repair request containing only the
+overlong items and their source indexes. The server locally replaces those
+indexes, preserves every valid sub-question byte-for-byte, and reconciles the
+user-visible reply with the actual split; the original wording, FINER
+assessment, scope, and clarification fields remain authoritative. The repaired framework is persisted
+only after the complete contract passes, and a failed repair creates no
+Research Context Version. Detection, repair start, and terminal repair status
+are appended to the durable user turn as processing events; the assessment UI
+polls that turn while the foreground request is active and restores the same
+trace from conversation history afterward.
 `retrieval_objects` and the Inquiry/Combined graph are rebuildable read models:
 every retrieval result is revalidated against the canonical Project ACL, and
 graph responses enforce one bounded node budget across Inquiry and
@@ -951,6 +1047,27 @@ not status labels; Candidate acceptance and its resulting Iteration commit in
 one transaction. The UI closes packets when completed, dismissed from view, or
 unmounted; opening a later checkpoint also closes that user's older open
 packets and releases their pending Candidates, covering interrupted clients.
+
+Inquiry Thread Advice is a model-generated recommendation of a Thread's next
+step. It is a suggestion surface, never a write path: the recommendation is
+stored on its own table and adopting it is routed through the ordinary
+work-state command, so `next_focus_kind` keeps exactly one write authority and
+one enforcement point for the focused-Thread invariant. A recommendation
+outside the defined Next Focus set is rejected rather than stored. Each Thread
+keeps one current recommendation, pinned to the Thread revision it reasoned
+about; a later revision marks it stale rather than silently outdated.
+Generation is on request for any Thread, and additionally queued as a job after
+an Iteration is recorded, a material Candidate consolidates, or a search
+completes — but only for Threads in the shared Focus set, which is what bounds
+automatic spend. Queuing happens after the triggering transaction commits and
+never fails the command that triggered it.
+
+A Delta Brief is a persisted, read-only, deterministic aggregation over
+Evidence Signals in one coverage window — no model call participates. Every
+Brief records the window it covered, and the latest Brief is readable so the
+next generation continues from that `coverage_end`; a Brief generated without a
+`coverage_start` covers the Project's whole history, which is the first-run
+case rather than the steady state.
 
 ## Auto Research Thread scope
 

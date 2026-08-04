@@ -4,6 +4,7 @@ import { dateIso, HttpError, objectValue, optionalString, withQueryableTransacti
 import { lockActiveProjectForMutation } from "../../projects/access";
 import { PgJobQueueRepository } from "../../jobs/repository";
 import { PgRunRepository } from "../../runs/repository";
+import { runOutputResult } from "../../runs/orchestrationResults";
 import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy";
 import { ProjectResearchArtifactService } from "../artifactService";
 import { ProjectResearchReportMaterializer } from "../reportMaterializer";
@@ -523,7 +524,10 @@ export class ProjectResearchSynthesisCoordinator {
       await this.ports.failOperation(input.operation, synthesisResult.message, { code: "synthesis_output_invalid" });
       return;
     }
-    const materialization = objectValue(input.output).materialization;
+    // input.output is the full canonical run-output envelope (schema_version:
+    // "run_output.v1" wrapping the actual result under `.result`); read
+    // through that wrapper or materialization is always undefined.
+    const materialization = runOutputResult(input.output).materialization;
     const artifacts: ResearchArtifactRecord[] = [];
     for (const item of Array.isArray(materialization) ? materialization : []) {
       const artifactId = optionalString(objectValue(item).artifact_id);
@@ -583,7 +587,9 @@ export class ProjectResearchSynthesisCoordinator {
       await this.ports.failOperation(input.operation, "Synthesis critique could not resolve a project writer");
       return;
     }
-    const result = critiqueResult(input.output);
+    // input.output is the full canonical run-output envelope; verdict/issues
+    // live under `.result`, not at the envelope's top level.
+    const result = critiqueResult(runOutputResult(input.output));
     if (!result) {
       await this.ports.failOperation(input.operation, "Synthesis critique output is invalid", {
         code: "synthesis_critique_output_invalid",

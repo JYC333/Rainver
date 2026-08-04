@@ -220,7 +220,7 @@
       "approval_capability": null,
       "audit_code": "credential_automation_origin",
       "resource_type": "credential",
-      "message": "Automation-origin credential use requires explicit approval.",
+      "message": "Automation-authorized credential use requires explicit approval.",
       "action": null
     }
   },
@@ -244,7 +244,7 @@
       "approval_capability": null,
       "audit_code": "credential_automation_preauthorized",
       "resource_type": "credential",
-      "message": "Automation-origin credential use allowed by standing pre-authorization.",
+      "message": "Automation-authorized credential use allowed by standing pre-authorization.",
       "action": null
     }
   },

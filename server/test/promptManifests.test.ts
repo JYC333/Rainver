@@ -10,16 +10,17 @@ const REAL_CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 
 const EXPECTED_ASSET_KEYS = [
   "agent.default_assistant.system",
-  "agent.system_evolver.system",
   "agent_template.coding_reviewer.system",
   "agent_template.activity_reflector.system",
   "agent_template.research_reader.system",
   "agent_template.knowledge_curator.system",
   "agent_template.personal_assistant.system",
   "agent_template.memory_reflector.system",
+  "inquiry.next_step_advice",
   "project_research.paper_card",
   "project_research.monitor_compare",
   "project_research.question_refine",
+  "project_research.question_subquestion_repair",
   "project_research.synthesis",
   "project_research.synthesis_critique",
   "research_engine.query_plan",
@@ -58,7 +59,8 @@ describe("loadPromptManifests (real catalog/prompts)", () => {
     const expectedTopLevelKeys: Record<string, string[]> = {
       "project_research.paper_card": ["schema", "digest_markdown", "item_summaries", "item_decisions", "evidence_candidates", "proposal_markdown"],
       "project_research.monitor_compare": ["comparisons"],
-      "project_research.question_refine": ["assessment", "suggested_questions", "sub_questions", "scope", "clarifying_questions"],
+      "project_research.question_refine": ["reply", "recommended_question", "assessment", "suggested_questions", "sub_questions", "scope", "clarifying_questions"],
+      "project_research.question_subquestion_repair": ["reply", "repairs"],
       "project_research.synthesis": ["status", "artifacts"],
       "project_research.synthesis_critique": ["verdict", "issues"],
       "research_engine.query_plan": ["providers", "filters", "time_window"],
@@ -73,6 +75,19 @@ describe("loadPromptManifests (real catalog/prompts)", () => {
       const example = JSON.parse(template.slice(jsonStart).trim()) as Record<string, unknown>;
       expect(Object.keys(example), `${assetKey} example top-level structure`).toEqual(keys);
     }
+  });
+
+  it("requires question refinement to guide the next conversational turn", async () => {
+    const manifests = await loadPromptManifests(REAL_CATALOG_ROOT);
+    const content = manifests.find((manifest) => manifest.assetKey === "project_research.question_refine")?.content;
+    const template = content?.template ?? "";
+    expect(template).toMatch(/^You facilitate an ongoing research-question assessment conversation/);
+    expect(template).not.toContain("{conversation_history}");
+    expect(template).not.toContain("{project_name}");
+    expect(content?.variables_schema).toMatchObject({ type: "object", properties: {} });
+    expect(template).toContain("end with a concrete next question or choice");
+    expect(template).toContain('placeholder text such as "test question"');
+    expect(template).toContain("user to write a custom answer");
   });
 
   it("returns an empty list when the catalog has no prompts directory", async () => {

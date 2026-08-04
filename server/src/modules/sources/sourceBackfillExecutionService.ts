@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common";
 import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common";
 import { consumeConnectionQuota } from "./sourceQuotaBucket";
+import { nextBackfillRetryAt } from "./sourceBackfillRetry";
 
 interface PlanRow {
   status: string;
@@ -20,12 +21,16 @@ interface SegmentRow {
 }
 
 interface ReconcileJobRow {
-  id: string;
+  segment_id: string;
+  extraction_job_id: string;
   window_json: unknown;
   status: string;
   items_created: number | null;
   items_updated: number | null;
+  error_code: string | null;
   error_message: string | null;
+  metadata_json: unknown;
+  attempt_count: number;
 }
 
 export class SourceBackfillExecutionService {
@@ -227,12 +232,15 @@ export class SourceBackfillExecutionService {
   }
 
   private async reconcileLocked(spaceId: string, planId: string) {
-    const rows = await this.db.query<{ id: string } & ReconcileJobRow>(
-      `SELECT s.id, s.window_json, j.status, j.items_created, j.items_updated, j.error_message
+    const rows = await this.db.query<ReconcileJobRow>(
+      `SELECT s.id AS segment_id, j.id AS extraction_job_id, s.window_json, s.attempt_count,
+              j.status, j.items_created, j.items_updated,
+              j.error_code, j.error_message, j.metadata_json
          FROM source_backfill_segments s JOIN extraction_jobs j ON j.id=s.extraction_job_id
         WHERE s.plan_id=$1 AND s.space_id=$2 AND s.status='running'`,
       [planId, spaceId],
     );
+    const deferredRetries: Array<{ at: string; error: Record<string, unknown> }> = [];
     for (const row of rows.rows) {
       if (row.status === "succeeded") {
         const itemsIngested = Number(row.items_created ?? 0) + Number(row.items_updated ?? 0);
@@ -240,15 +248,48 @@ export class SourceBackfillExecutionService {
           ? row.window_json as Record<string, unknown>
           : {};
         const cumulative = Number.isInteger(Number(window.consumed_items)) ? Number(window.consumed_items) : itemsIngested;
-        await this.db.query(`UPDATE source_backfill_segments SET status='succeeded', items_ingested=$3 WHERE id=$1 AND space_id=$2`, [row.id, spaceId, cumulative]);
+        await this.db.query(`UPDATE source_backfill_segments SET status='succeeded', items_ingested=$3 WHERE id=$1 AND space_id=$2`, [row.segment_id, spaceId, cumulative]);
       } else if (row.status === "failed") {
-        await this.db.query(
-          `UPDATE source_backfill_segments SET status='failed', error_json=$3::jsonb WHERE id=$1 AND space_id=$2`,
-          [row.id, spaceId, JSON.stringify({ message: row.error_message })],
-        );
+        const failureDiagnostics = objectValue(objectValue(row.metadata_json).failure_diagnostics);
+        const errorJson = {
+          code: row.error_code,
+          message: row.error_message,
+          extraction_job_id: row.extraction_job_id,
+          ...(Object.keys(failureDiagnostics).length > 0 ? { diagnostics: failureDiagnostics } : {}),
+        };
+        if (failureDiagnostics.retryable === true) {
+          const nextRetryAt = nextBackfillRetryAt(Number(row.attempt_count ?? 1));
+          const deferredError = { ...errorJson, deferred_retry: true, next_retry_at: nextRetryAt };
+          deferredRetries.push({ at: nextRetryAt, error: deferredError });
+          await this.db.query(
+            `UPDATE source_backfill_segments
+                SET status='pending', extraction_job_id=NULL, next_eligible_at=$3, error_json=$4::jsonb
+              WHERE id=$1 AND space_id=$2`,
+            [row.segment_id, spaceId, nextRetryAt, JSON.stringify(deferredError)],
+          );
+        } else {
+          await this.db.query(
+            `UPDATE source_backfill_segments SET status='failed', error_json=$3::jsonb WHERE id=$1 AND space_id=$2`,
+            [row.segment_id, spaceId, JSON.stringify(errorJson)],
+          );
+        }
       }
     }
     await this.refreshCounters(spaceId, planId);
+    if (deferredRetries.length > 0) {
+      const nextRetry = deferredRetries.map((retry) => retry.at).sort()[0]!;
+      await this.db.query(
+        `UPDATE source_backfill_plans
+            SET status='paused', next_eligible_at=$3, error_json=$4::jsonb, updated_at=now()
+          WHERE id=$1 AND space_id=$2`,
+        [planId, spaceId, nextRetry, JSON.stringify({
+          code: "source_backfill_deferred",
+          message: "A transient source failure is scheduled for background retry.",
+          next_retry_at: nextRetry,
+          diagnostics: objectValue(deferredRetries[0]!.error.diagnostics),
+        })],
+      );
+    }
     return this.executeNextLocked(spaceId, planId);
   }
 

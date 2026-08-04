@@ -14,6 +14,8 @@ export const RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT: StructuredOutputContr
   schema: {
     type: "object",
     properties: {
+      reply: { type: "string", minLength: 1 },
+      recommended_question: { type: "string", minLength: 1 },
       assessment: {
         type: "object",
         properties: {
@@ -63,7 +65,37 @@ export const RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT: StructuredOutputContr
         },
       },
     },
-    required: ["assessment", "suggested_questions", "sub_questions", "scope", "clarifying_questions"],
+    required: ["reply", "recommended_question", "assessment", "suggested_questions", "sub_questions", "scope", "clarifying_questions"],
+    additionalProperties: false,
+  },
+};
+
+export const RESEARCH_QUESTION_SUBQUESTION_REPAIR_OUTPUT_CONTRACT: StructuredOutputContract = {
+  type: "json_schema",
+  schema_id: "project_research.question_subquestion_repair.v1",
+  strict: true,
+  stage: "question_refinement",
+  schema: {
+    type: "object",
+    properties: {
+      reply: { type: "string", minLength: 1 },
+      repairs: {
+        type: "array",
+        maxItems: 10,
+        items: {
+          type: "object",
+          properties: {
+            source_index: { type: "integer", minimum: 0, maximum: 9 },
+            // Length is checked application-side so providers that cannot
+            // satisfy a strict maxLength still get one bounded repair attempt.
+            replacements: { type: "array", maxItems: 10, items: { type: "string", minLength: 1 } },
+          },
+          required: ["source_index", "replacements"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["reply", "repairs"],
     additionalProperties: false,
   },
 };

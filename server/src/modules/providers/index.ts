@@ -97,8 +97,8 @@ export {
   type CodexRpcHandle,
 } from "./cli/codexUsageProbe";
 export {
-  CLI_USAGE_REFRESH_INTERVAL_MS,
-  startCliUsageRefreshScheduler,
+  CLI_USAGE_REFRESH_INTERVAL_SECONDS,
+  createCliUsageRefreshTask,
   type CliUsageRefreshBroker,
-  type CliUsageRefreshScheduler,
+  type CliUsageRefreshTask,
 } from "./cli/usageScheduler";

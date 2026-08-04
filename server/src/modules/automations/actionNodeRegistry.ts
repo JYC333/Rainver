@@ -1,9 +1,11 @@
+import type { ServerConfig } from "../../config";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 import type { ResolvedNodeInputs } from "../execution/nodeInputResolver";
 
 export interface ActionNodeContext {
   db: Queryable;
   identity: SpaceUserIdentity;
+  config: ServerConfig;
   executionId: string;
   nodeId: string;
   nodeKey: string;

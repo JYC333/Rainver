@@ -59,6 +59,14 @@ export interface AutomationRepositoryPort {
       project_id?: string | null;
     },
   ): Promise<AutomationRow>;
+  upsertAutonomyAutomation(input: {
+    spaceId: string;
+    ownerUserId: string;
+    agentId: string;
+    name: string;
+    configJson: Record<string, unknown>;
+    preflightSnapshot: Record<string, unknown>;
+  }): Promise<AutomationRow>;
   listDue(nowIso: string): Promise<AutomationRow[]>;
   advanceSchedule(automation: AutomationRow): Promise<void>;
   recordFire(spaceId: string, automationId: string): Promise<void>;
@@ -327,6 +335,119 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
       status: taskStatus,
       updatedAt: now,
     });
+    return automationWithTask(row, task);
+  }
+
+  /**
+   * Self-service enable/reconfigure for the caller's own `autonomous_tick`
+   * Automation: at most one per (space, owner). Find-then-act would race two
+   * concurrent enable calls into two rows for the same owner, since there is
+   * no unique index on (space_id, owner_user_id, target_type) — a
+   * transaction-scoped advisory lock keyed on the same triple serializes
+   * concurrent callers instead.
+   */
+  async upsertAutonomyAutomation(input: {
+    spaceId: string;
+    ownerUserId: string;
+    agentId: string;
+    name: string;
+    configJson: Record<string, unknown>;
+    preflightSnapshot: Record<string, unknown>;
+  }): Promise<AutomationRow> {
+    return withQueryableTransaction(this.db, (db) =>
+      new PgAutomationRepository(db).upsertAutonomyAutomationInCurrentUnit(input));
+  }
+
+  private async upsertAutonomyAutomationInCurrentUnit(input: {
+    spaceId: string;
+    ownerUserId: string;
+    agentId: string;
+    name: string;
+    configJson: Record<string, unknown>;
+    preflightSnapshot: Record<string, unknown>;
+  }): Promise<AutomationRow> {
+    await this.db.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`autonomy-automation:${input.spaceId}:${input.ownerUserId}`],
+    );
+    const existing = await this.db.query<{ id: string }>(
+      `SELECT id FROM automations
+        WHERE space_id = $1 AND owner_user_id = $2
+          AND config_json->>'target_type' = 'autonomous_tick'
+          AND status != 'archived'
+        LIMIT 1`,
+      [input.spaceId, input.ownerUserId],
+    );
+    const nextRunAt = computeNextRunAt(input.configJson).toISOString();
+    const now = new Date().toISOString();
+    if (existing.rows[0]) {
+      const result = await this.db.query<AutomationRow>(
+        `UPDATE automations
+            SET agent_id = $3, name = $4, status = 'active',
+                config_json = $5::jsonb, preflight_snapshot_json = $6::jsonb,
+                updated_at = $7
+          WHERE space_id = $1 AND id = $2
+          RETURNING ${AUTOMATION_COLUMNS}`,
+        [
+          input.spaceId,
+          existing.rows[0].id,
+          input.agentId,
+          input.name,
+          JSON.stringify(input.configJson),
+          JSON.stringify(input.preflightSnapshot),
+          now,
+        ],
+      );
+      const row = result.rows[0]!;
+      const task = await this.upsertSchedulerTask({
+        automation: row,
+        nextRunAt,
+        status: "active",
+        updatedAt: now,
+      });
+      return automationWithTask(row, task);
+    }
+    const id = randomUUID();
+    const result = await this.db.query<AutomationRow>(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, project_folder_id, project_id, name, description,
+         trigger_type, status, preflight_snapshot_json, config_json,
+         created_at, updated_at
+       ) VALUES (
+         $1, $2, $3, $4, NULL, NULL, $5, NULL,
+         'schedule', 'active', $6::jsonb, $7::jsonb,
+         $8, $8
+       )
+       RETURNING ${AUTOMATION_COLUMNS}`,
+      [
+        id,
+        input.spaceId,
+        input.ownerUserId,
+        input.agentId,
+        input.name,
+        JSON.stringify(input.preflightSnapshot),
+        JSON.stringify(input.configJson),
+        now,
+      ],
+    );
+    const row = result.rows[0]!;
+    const task = await this.upsertSchedulerTask({
+      automation: row,
+      nextRunAt,
+      status: "active",
+      updatedAt: now,
+    });
+    // Matches createInCurrentUnit's rule: creating one's own schedule
+    // Automation is itself the unattended-credential consent, so a brand-new
+    // row grants immediately. A found existing row already has its original
+    // grant (the lookup above excludes archived rows, whose grant would have
+    // been revoked), so only the insert branch grants.
+    await this.db.query(
+      `INSERT INTO automation_credential_grants (
+         id, space_id, automation_id, granted_by_user_id, status, created_at
+       ) VALUES ($1, $2, $3, $4, 'active', $5)`,
+      [randomUUID(), input.spaceId, id, input.ownerUserId, now],
+    );
     return automationWithTask(row, task);
   }
 

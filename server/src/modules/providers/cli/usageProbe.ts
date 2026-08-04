@@ -25,6 +25,13 @@ export interface QuotaResult {
   week_resets: string | null;
   checked_at: string | null;
   error: string | null;
+  /**
+   * How `checked_at` was obtained. Both the scheduled probe and a Run
+   * piggyback write into this same cache, so a consumer (e.g. autonomous
+   * admission's audit trace) must read this rather than guess from runtime
+   * type — a `claude_code` value can come from either path.
+   */
+  source?: "live_probe" | "run_piggyback";
 }
 
 export interface ProbePtyHandle {

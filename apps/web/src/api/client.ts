@@ -42,14 +42,14 @@ import type {
   PromptDeploymentRef, PromptEvaluationRequest, PromptEvaluationResult,
   PromptPromotionRequest, PromptRenderPreviewRequest, PromptRenderPreviewResult,
   PromptRollbackRequest, PromptVersionCreateRequest,
-  Project, ProjectCreate, ProjectUpdate, ProjectSummary, ProjectOverview,
+  Project, ProjectCreate, ProjectUpdate, ProjectSummary, ProjectOverview, ProjectBriefVersion,
   ProjectOperation, ProjectResearchInitialIntakeResponse,
   CapabilityDefinition, CapabilityPackDescriptor, WorkflowTemplate, ProjectWorkflowProfile, WorkflowRunDraftRequest, WorkflowRunDraftResponse,
   ProjectTemplateDescriptor,
-  InquiryThread, InquiryThreadDetail, InquiryIteration, InquiryThreadRelation, InquiryThreadNoteLink,
-  InquiryCandidate, InquiryReviewPacket,
+  InquiryThread, InquiryThreadDetail, InquiryIteration, InquiryThreadRelation, InquiryThreadNoteLink, InquiryThreadRevision,
+  InquiryCandidate, InquiryReviewPacket, InquiryEvidenceSignal, InquiryDeltaBriefContent, InquiryThreadAdvice,
   ExperimentDefinition, ExperimentVersion, ExperimentRun, ExperimentObservation, ExperimentInterpretation,
-  ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchQuestionRefinement, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem, ProjectResearchProfile,
+  ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchQuestionAssessmentSession, ProjectResearchQuestionAssessmentConfirmation, ProjectResearchQuestionAssessmentConfirmationResponse, ProjectResearchQuestionRefinement, ProjectResearchQuestionRefinementResponse, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem,
   ProjectResearchScreeningCriteria, ProjectResearchWorkflow,
   AcademicPaper, AcademicPaperAuthor, AcademicPaperCitation, AcademicPaperCreate, AcademicPaperUpdate,
   SkillImportPreviewResponse, SkillPackage, SkillImportApprovalProposalResponse, SkillConvertToCapabilityResponse,
@@ -1102,13 +1102,13 @@ export const evolutionApi = {
     return get<EvolutionRunListItem[]>('/evolution/runs?' + new URLSearchParams(q))
   },
   runTarget: (targetId: string, body: {
-    agent_id?: string
+    agent_id: string
     mode?: 'dry_run'
     runtime_profile_id?: string | null
     project_folder_id?: string | null
     project_id?: string | null
     context_artifact_ids?: string[]
-  } = {}) =>
+  }) =>
     post<EvolutionRunResult>(`/evolution/targets/${targetId}/run`, body),
   strategies: (params: { status?: string; target_type?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -2162,6 +2162,10 @@ export const projectsApi = {
     post<RetrievalFeedbackResponse>('/projects/public-summaries/feedback', data),
   publicSummaryBrief: (data: RetrievalBriefRequest) =>
     post<RetrievalBriefResponse>('/projects/retrieval/brief', data),
+  getActiveBriefVersion: (id: string) => get<ProjectBriefVersion | null>(`/projects/${id}/brief-versions/active`),
+  createBriefVersion: (id: string, data: Partial<Pick<ProjectBriefVersion,
+    'goal' | 'scope_included' | 'scope_excluded' | 'success_definition' | 'constraints' | 'assumptions'
+  >>) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions`, data),
 }
 
 export const projectTemplatesApi = {
@@ -2184,6 +2188,8 @@ export const inquiryApi = {
     ),
   listIterations: (projectId: string, threadId: string) =>
     get<InquiryIteration[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`),
+  listRevisions: (projectId: string, threadId: string) =>
+    get<InquiryThreadRevision[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/revisions`),
   reviseDefinition: (projectId: string, threadId: string, data: Record<string, unknown>) =>
     post<{ thread: InquiryThread; superseded_by_thread_id: string | null }>(
       `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/definition-revisions`, data,
@@ -2234,11 +2240,48 @@ export const inquiryApi = {
       `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}/reopen`,
       {},
     ),
-  generateDeltaBrief: (projectId: string) =>
-    post<{ id: string; content: Record<string, unknown> }>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/delta-briefs`,
-      {},
+  getAdvice: (projectId: string, threadId: string) =>
+    get<InquiryThreadAdvice | null>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice`,
     ),
+  generateAdvice: (projectId: string, threadId: string) =>
+    post<InquiryThreadAdvice>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice`, {},
+    ),
+  // Adopting applies the recommended Next Focus through the ordinary
+  // work-state command server-side, so the invariant has one enforcement point.
+  adoptAdvice: (projectId: string, threadId: string) =>
+    post<{ thread: InquiryThread; advice: InquiryThreadAdvice | null }>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice/adopt`, {},
+    ),
+  dismissAdvice: (projectId: string, threadId: string) =>
+    post<InquiryThreadAdvice>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice/dismiss`, {},
+    ),
+  listSignals: (projectId: string, threadId?: string) => {
+    const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ''
+    return get<InquiryEvidenceSignal[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/signals${q}`)
+  },
+  graph: (projectId: string, limit = 200) =>
+    get<GraphProjection>(`/projects/${encodeURIComponent(projectId)}/inquiry/graph?limit=${limit}`),
+  latestDeltaBrief: (projectId: string) =>
+    get<InquiryDeltaBrief | null>(`/projects/${encodeURIComponent(projectId)}/inquiry/delta-briefs/latest`),
+  // `coverage_start` is what makes this a delta rather than a re-summary of
+  // the whole Project: callers pass the previous Brief's `coverage_end`.
+  generateDeltaBrief: (projectId: string, coverageStart?: string | null) =>
+    post<InquiryDeltaBrief>(
+      `/projects/${encodeURIComponent(projectId)}/inquiry/delta-briefs`,
+      coverageStart ? { coverage_start: coverageStart } : {},
+    ),
+}
+
+export interface InquiryDeltaBrief {
+  id: string
+  project_id: string
+  coverage_start: string | null
+  coverage_end: string
+  content: InquiryDeltaBriefContent
+  created_at: string
 }
 
 export const experimentsApi = {
@@ -2455,39 +2498,38 @@ export const projectResearchApi = {
   notebookChat: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ session_id: string; run_id: string; ok: boolean; reply?: string; error?: string; notebook_edit?: { note_id: string; version: number; conflict: boolean } | null; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/notebook-chat`, body),
   generateReportSnapshot: (projectId: string) => post<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/research/reports`, {}),
   refineQuestion: (projectId: string, body: {
+    thread_id: string
     research_question: string
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>
+    message: string
+    establish_assessment_baseline?: boolean
     execution: { model_provider_id?: string; model_name?: string }
-  }) => post<ProjectResearchQuestionRefinement>(`/projects/${encodeURIComponent(projectId)}/research/question/refine`, body),
+  }) => post<ProjectResearchQuestionRefinementResponse>(`/projects/${encodeURIComponent(projectId)}/research/question/refine`, body),
+  questionAssessment: (projectId: string, threadId: string) =>
+    get<ProjectResearchQuestionAssessmentSession | null>(
+      `/projects/${encodeURIComponent(projectId)}/research/question/assessment?thread_id=${encodeURIComponent(threadId)}`,
+    ),
+  questionAssessmentConfirmations: (projectId: string, threadId: string) =>
+    get<ProjectResearchQuestionAssessmentConfirmation[]>(
+      `/projects/${encodeURIComponent(projectId)}/research/question/assessment/confirmations?thread_id=${encodeURIComponent(threadId)}`,
+    ),
+  confirmQuestionAssessment: (projectId: string, body: {
+    thread_id: string
+    refinement: ProjectResearchQuestionRefinement
+    manually_adjusted: boolean
+  }) => post<ProjectResearchQuestionAssessmentConfirmationResponse>(
+    `/projects/${encodeURIComponent(projectId)}/research/question/assessment/confirm`,
+    body,
+  ),
   saveInitialIntakeDraft: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
     put<ProjectResearchWorkflow>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake`, body),
   startInitialIntake: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
     post<ProjectResearchInitialIntakeResponse>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake/start`, body),
-  profile: (projectId: string) =>
-    get<ProjectResearchProfile>(`/projects/${encodeURIComponent(projectId)}/research/profile`),
-  upsertProfile: (projectId: string, body: Partial<Pick<
-    ProjectResearchProfile,
-    | 'research_question'
-    | 'working_title'
-    | 'domain'
-    | 'output_type'
-    | 'paper_type'
-    | 'citation_style'
-    | 'target_venue'
-    | 'language'
-    | 'experiment_intake_declaration'
-  >>) =>
-    put<ProjectResearchProfile>(`/projects/${encodeURIComponent(projectId)}/research/profile`, body),
-  approveProfile: (projectId: string) =>
-    post<ProjectResearchProfile>(`/projects/${encodeURIComponent(projectId)}/research/profile/approve`, {}),
   workflows: (projectId: string) =>
     get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(projectId)}/research/workflow`),
   scanSummaries: (projectId: string, limit = 30) =>
     get<import('../types/api').ProjectResearchScanSummary[]>(
       `/projects/${encodeURIComponent(projectId)}/research/scan-summaries?limit=${limit}`,
     ),
-  startWorkflow: (projectId: string, body: { workflow_type: string; mode?: string }) =>
-    post<ProjectResearchWorkflow>(`/projects/${encodeURIComponent(projectId)}/research/workflow/start`, body),
   runStage: (projectId: string, workflowId: string, stageKey: string, body: { run_id?: string } = {}) =>
     post<ProjectResearchWorkflow>(
       `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/stages/${encodeURIComponent(stageKey)}/run`,

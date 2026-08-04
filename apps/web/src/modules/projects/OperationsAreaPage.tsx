@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { ExternalLink, Play, RotateCcw } from 'lucide-react'
-import { automationsApi, projectsApi, runsApi } from '../../api/client'
-import type { AutomationOut, ProjectOperation, ProjectOverview, Run } from '../../types/api'
+import { ExternalLink, Play, Plus, RotateCcw } from 'lucide-react'
+import { automationsApi, inquiryApi, projectResearchApi, projectsApi, runsApi } from '../../api/client'
+import type { AutomationOut, InquiryThread, ProjectOperation, ProjectOverview, ProjectResearchCheckpoint, ProjectResearchWorkflow, Run } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { errMsg } from '../../lib/utils'
+import { ResearchOperationRow } from './ResearchOperationRow'
 import { toast } from 'sonner'
+import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
+import { researchCheckpointOperationId, researchReviewToastId } from './researchReviewAttention'
 
 function runState(run: Run): { label: string; variant: 'outline' | 'warning' | 'destructive' | 'success' } {
   if (run.status === 'waiting_for_review') return { label: 'Waiting for review', variant: 'warning' }
@@ -31,19 +35,37 @@ export default function OperationsAreaPage() {
   const [alerts, setAlerts] = useState<ProjectOverview['attention']>([])
   const [projectStatus, setProjectStatus] = useState<string>('active')
   const [busyAutomationId, setBusyAutomationId] = useState<string | null>(null)
+  const [researchWorkflows, setResearchWorkflows] = useState<ProjectResearchWorkflow[]>([])
+  const [researchCheckpoints, setResearchCheckpoints] = useState<ProjectResearchCheckpoint[]>([])
+  const [inquiryThreads, setInquiryThreads] = useState<InquiryThread[]>([])
+  const [researchBusy, setResearchBusy] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [nextAutomations, nextRuns, nextOperations, overview] = await Promise.all([
+    const [nextAutomations, nextRuns, nextOperations, overview, nextWorkflows, nextThreads] = await Promise.all([
       automationsApi.list({ project_id: projectId }),
       runsApi.list({ project_id: projectId, limit: 100 }),
       projectsApi.operations(projectId),
       projectsApi.getOverview(projectId),
+      projectResearchApi.workflows(projectId).catch(() => [] as ProjectResearchWorkflow[]),
+      inquiryApi.listThreads(projectId).catch(() => [] as InquiryThread[]),
     ])
     setAutomations(nextAutomations)
     setRuns(nextRuns)
     setOperations(nextOperations)
     setAlerts(overview.attention.filter(item => item.source_type === 'operational_alert'))
     setProjectStatus(overview.project.status)
+    setResearchWorkflows(nextWorkflows)
+    setInquiryThreads(nextThreads)
+    // Checkpoints are scoped per Workflow — flatten one fetch per Workflow
+    // that actually has a research operation showing, rather than one call
+    // per Workflow that ever existed.
+    const relevantWorkflowIds = [...new Set(
+      nextOperations.filter(operation => operation.kind === 'research').map(operation => String(operation.progress_json.workflow_id ?? '')).filter(Boolean),
+    )]
+    const checkpointLists = await Promise.all(
+      relevantWorkflowIds.map(workflowId => projectResearchApi.checkpoints(projectId, workflowId).catch(() => [] as ProjectResearchCheckpoint[])),
+    )
+    setResearchCheckpoints(checkpointLists.flat())
   }, [projectId])
   useEffect(() => { load().catch(error => toast.error(String(error))) }, [load])
 
@@ -72,9 +94,58 @@ export default function OperationsAreaPage() {
     }
   }
 
+  async function decideCheckpoint(checkpoint: ProjectResearchCheckpoint, decision: 'approved' | 'rejected') {
+    setResearchBusy(`checkpoint-${checkpoint.id}`)
+    try {
+      await projectResearchApi.decideCheckpoint(projectId, checkpoint.workflow_id, checkpoint.id, { decision })
+      toast.dismiss(researchReviewToastId(projectId, checkpoint.id))
+      toast.success(decision === 'approved' ? 'Checkpoint approved' : 'Checkpoint rejected')
+      await load()
+      notifyReviewAttentionChanged()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setResearchBusy(null)
+    }
+  }
+
+  async function retryOperation(operationId: string) {
+    setResearchBusy('retry-operation')
+    try {
+      await projectResearchApi.retryOperation(projectId, operationId)
+      toast.success('Research operation retry queued')
+      await load()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setResearchBusy(null)
+    }
+  }
+
+  async function reconcileOperation(operationId: string) {
+    setResearchBusy('reconcile-operation')
+    try {
+      await projectResearchApi.reconcileOperation(projectId, operationId)
+      toast.success('Research operation status synchronized')
+      await load()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setResearchBusy(null)
+    }
+  }
+
   const activeRuns = runs.filter(run => ['queued', 'waiting_for_dependency', 'waiting_for_review', 'running'].includes(run.status))
   const failures = runs.filter(run => run.status === 'failed')
   const archived = automations.filter(item => item.status === 'archived')
+  const researchOperations = operations.filter(operation => operation.kind === 'research')
+  const otherOperations = operations.filter(operation => operation.kind !== 'research')
+  const workflowById = new Map(researchWorkflows.map(workflow => [workflow.id, workflow]))
+  const threadById = new Map(inquiryThreads.map(thread => [thread.id, thread]))
+  const checkpointsByWorkflowId = new Map<string, ProjectResearchCheckpoint[]>()
+  for (const checkpoint of researchCheckpoints) {
+    checkpointsByWorkflowId.set(checkpoint.workflow_id, [...(checkpointsByWorkflowId.get(checkpoint.workflow_id) ?? []), checkpoint])
+  }
 
   return <div className="space-y-5 p-6">
     <div><h1 className="text-xl font-semibold">Operations</h1><p className="text-sm text-muted-foreground">Monitor Automations, governed Runs, alerts, and recovery work for this Project.</p></div>
@@ -95,9 +166,45 @@ export default function OperationsAreaPage() {
       </div>)}
     </Card>}
 
-    {operations.length > 0 && <Card className="space-y-2 p-4">
+    <Card className="space-y-3 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="font-medium">Research</h2>
+          <p className="text-xs text-muted-foreground">Every literature search this Project is running, one per Question or Hypothesis Thread — not just the last one you had open.</p>
+        </div>
+        <Button size="sm" variant="outline" asChild>
+          {/* Question/Hypothesis definition lives on the Inquiry page now —
+              this always routes there first so the search-setup dialog only
+              ever opens for a Thread that is already picked. */}
+          <Link to={`/projects/${projectId}/inquiry?research_intent=1`}><Plus className="size-3.5" />New search</Link>
+        </Button>
+      </div>
+      {researchOperations.length === 0 && <p className="text-sm text-muted-foreground">No literature searches yet.</p>}
+      {researchOperations.map(operation => {
+        const workflowId = String(operation.progress_json.workflow_id ?? '')
+        const workflow = workflowById.get(workflowId)
+        const thread = workflow?.primary_thread_id ? threadById.get(workflow.primary_thread_id) : undefined
+        return (
+          <ResearchOperationRow
+            key={operation.id}
+            operation={operation}
+            workflow={workflow}
+            thread={thread}
+            checkpoints={(checkpointsByWorkflowId.get(workflowId) ?? [])
+              .filter(checkpoint => researchCheckpointOperationId(checkpoint) === operation.id)}
+            busyAction={researchBusy}
+            reconciling={researchBusy === 'reconcile-operation'}
+            onDecideCheckpoint={decideCheckpoint}
+            onReconcileOperation={operationId => void reconcileOperation(operationId)}
+            onRetryOperation={operationId => void retryOperation(operationId)}
+          />
+        )
+      })}
+    </Card>
+
+    {otherOperations.length > 0 && <Card className="space-y-2 p-4">
       <h2 className="font-medium">Project operations</h2>
-      {operations.map(operation => <div id={`operation-${operation.id}`} key={operation.id} className={`rounded border p-3 text-sm ${selectedOperationId === operation.id ? 'border-primary bg-primary/5' : ''}`}>
+      {otherOperations.map(operation => <div id={`operation-${operation.id}`} key={operation.id} className={`rounded border p-3 text-sm ${selectedOperationId === operation.id ? 'border-primary bg-primary/5' : ''}`}>
         <div className="flex items-start justify-between gap-3"><div><p className="font-medium">{operation.title}</p><p className="text-xs capitalize text-muted-foreground">{operation.kind.replace(/_/g, ' ')}</p></div><Badge variant={operation.status === 'failed' ? 'destructive' : operation.status === 'waiting_review' ? 'warning' : 'outline'}>{operation.status.replace(/_/g, ' ')}</Badge></div>
         {(operation.steps?.length ?? 0) > 0 && <p className="mt-2 text-xs text-muted-foreground">{operation.steps?.filter(step => step.status === 'done').length}/{operation.steps?.length} steps complete</p>}
       </div>)}

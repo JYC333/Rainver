@@ -5,8 +5,8 @@ agent-space host deployer — Unix domain socket server.
 Runs on the HOST (outside the main app container) and handles deployment
 requests from the server. The server cannot restart itself; this process can.
 
-Only core operator deployment jobs are accepted. Product and self-evolution
-paths do not have access to this socket.
+Only core operator deployment jobs are accepted. Product code does not have
+access to this socket.
 
 Start:
     python deployer/deployer.py

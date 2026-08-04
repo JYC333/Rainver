@@ -22,7 +22,7 @@ deployment control — is hardened and tested.
 - Public launch.
 - SaaS or remote multi-tenant deployment.
 - A test of all future ambitions (Automation, connector marketplace, crawler,
-  self-evolution, marketplace, mobile client).
+  marketplace, mobile client).
 
 **Rule:** Only allowed surfaces may be used for daily dogfood workflows. Disabled surfaces
 must not be relied on. If a disabled surface is required for normal use, dogfooding must
@@ -97,8 +97,7 @@ Do not rely on any of these for daily dogfood workflows.
 | Automation/Trigger engine | Not implemented |
 | Connector marketplace / integration lifecycle | Not implemented |
 | Full capability marketplace or install/discovery UX | Not implemented |
-| Self-evolution behavior changes | Disabled (`ENABLE_SYSTEM_EVOLUTION=false`) |
-| Self-evolution execution | Disabled by default |
+| Automatic system self-evolution | Removed; Evolution runs require an explicit Agent |
 | App-container self-deployment | Blocked by 501 product routes and private deployer socket |
 | Deployment job persistence | 501-gated (`POST /deployments/jobs` → 501) |
 | Arbitrary deployer commands | Blocked; exactly three argument-free core jobs are allowlisted |
@@ -120,7 +119,7 @@ Do not rely on any of these for daily dogfood workflows.
 - `Cards` — registry entry with `planned: true`; displays "soon" badge; non-interactive.
 - `Time` — registry entry with `planned: true`; displays "soon" badge; non-interactive.
 
-No automation, connector marketplace, crawler, or self-evolution controls appear in the frontend.
+No connector marketplace, crawler, or automatic system self-evolution controls appear in the frontend.
 
 ---
 
@@ -148,12 +147,6 @@ Leave it at the default for dogfooding.
 
 `BACKUP_ROOT` defaults to `AGENT_SPACE_HOME/backups/`. Override only if you need a
 non-standard location.
-
-### Required safety config
-
-```env
-ENABLE_SYSTEM_EVOLUTION=false   # default; do not change for dogfooding
-```
 
 `INSTANCE_ADMIN_EMAIL` must be set only for the deployment owner who should manage
 instance-level runtime tools and other server-wide admin surfaces.
@@ -216,9 +209,9 @@ credentials must resolve through the CLI CredentialBroker.
 - `POST /deployments/jobs` returns 501. Deployment job persistence is absent.
 - Deployer `ALLOWED_JOB_TYPES` is exactly `rebuild_agent_space`,
   `restart_agent_space`, and `health_check`; these jobs accept no request arguments.
-- The deployer socket is private to its privileged sidecar; product and self-evolution paths
-  cannot submit jobs.
-- `ENABLE_SYSTEM_EVOLUTION=false` disables self-evolution by default.
+- The deployer socket is private to its privileged sidecar; product paths cannot submit jobs.
+- Evolution runs require an explicitly selected Agent and cannot create a privileged
+  system-evolution Agent.
 
 ---
 
@@ -507,8 +500,8 @@ curl -s "http://localhost:3000/api/v1/deployments/jobs" \
 ```
 
 In the frontend:
-- Navigate to all gallery cards; confirm no automation, connector marketplace, crawler, or
-  self-evolution controls are visible.
+- Navigate to all gallery cards; confirm no connector marketplace, crawler, or automatic
+  system self-evolution controls are visible.
 - Wiki, Cards, and Time cards show "soon" badge and are non-interactive.
 
 ---
@@ -698,8 +691,7 @@ already be corrupted).
 
 Edit `~/.aspace/dev/.env` to disable the problematic surface:
 ```bash
-# Examples:
-ENABLE_SYSTEM_EVOLUTION=false    # if self-evolution implicated
+# Example:
 BACKUP_ENABLED=false             # temporarily if backup itself is problematic
 ```
 
@@ -764,8 +756,8 @@ Resume dogfooding only after the failed gate passes and the incident note is fil
 10. **Deployer accepts arbitrary command** — The deployer accepts and executes a job type
     not in `ALLOWED_JOB_TYPES`.
 
-11. **Self-evolution executes behavior changes** — Any self-evolution code path modifies
-    production code or configuration without explicit approved proposal and deployer gate.
+11. **Evolution bypasses explicit Agent selection** — An Evolution run creates or selects a
+    privileged fallback Agent instead of requiring the target/request to identify an Agent.
 
 12. **Disabled surface required for daily use** — A disabled surface from §C becomes
     necessary for normal dogfood workflows (any disabled surface that must be enabled to

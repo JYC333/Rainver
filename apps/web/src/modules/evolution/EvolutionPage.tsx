@@ -390,12 +390,15 @@ export default function EvolutionPage() {
   }
 
   async function runTarget(targetId: string) {
+    if (!selectedAgentId) {
+      toast.error('创建改进计划需要显式选择 Agent。')
+      return
+    }
     setRunningTargetId(targetId)
     try {
-      const result = await evolutionApi.runTarget(targetId, { agent_id: selectedAgentId ?? undefined, mode: 'dry_run' })
-      const fallbackNote = result.is_fallback_agent ? '（使用系统默认 Evolver）' : ''
+      const result = await evolutionApi.runTarget(targetId, { agent_id: selectedAgentId, mode: 'dry_run' })
       const proposalNote = result.proposal_ids.length > 0 ? `，已创建 ${result.proposal_ids.length} 个提案` : ''
-      toast.success(`运行完成${fallbackNote}${proposalNote}。`)
+      toast.success(`运行完成${proposalNote}。`)
       await load()
       await loadTargetSignals(targetId)
     } catch (e) {

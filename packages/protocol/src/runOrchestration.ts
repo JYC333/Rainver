@@ -11,6 +11,7 @@ import { z } from "zod";
 import {
   IdSchema,
   ISODateTimeSchema,
+  RunTriggerOriginSchema,
   SECRET_RESPONSE_FIELDS,
   SecretResponseGuards,
 } from "./common.js";
@@ -473,7 +474,7 @@ export const RunJobPayloadSchema = z
     simulate_failure: z.boolean().optional(),
     mode: z.string().nullish(),
     run_type: z.string().nullish(),
-    trigger_origin: z.string().nullish(),
+    trigger_origin: RunTriggerOriginSchema.nullish(),
     session_id: IdSchema.nullish(),
     project_folder_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),

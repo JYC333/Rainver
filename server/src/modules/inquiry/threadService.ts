@@ -79,11 +79,16 @@ function threadToOut(row: ThreadRow): Record<string, unknown> {
   };
 }
 
-const THREAD_COLUMNS = `
-  id, space_id, project_id, kind, statement, lifecycle_status, attention_state, priority,
-  primary_parent_id, owner_user_id, next_focus_kind, next_focus_note, blocked_reason,
-  version, created_from, created_by_user_id, created_at, updated_at
-`;
+const THREAD_COLUMN_NAMES = [
+  "id", "space_id", "project_id", "kind", "statement", "lifecycle_status", "attention_state", "priority",
+  "primary_parent_id", "owner_user_id", "next_focus_kind", "next_focus_note", "blocked_reason",
+  "version", "created_from", "created_by_user_id", "created_at", "updated_at",
+];
+
+const THREAD_COLUMNS = THREAD_COLUMN_NAMES.join(", ");
+
+/** Qualified Thread column list, required whenever the query joins another table. */
+const threadColumns = (alias: string): string => THREAD_COLUMN_NAMES.map((name) => `${alias}.${name}`).join(", ");
 
 /**
  * Thread CRUD, working relations, Note links, personal Focus, and Project
@@ -418,7 +423,7 @@ export class InquiryThreadService {
   async listPersonalFocus(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<ThreadRow>(
-      `SELECT ${THREAD_COLUMNS} FROM inquiry_threads t
+      `SELECT ${threadColumns("t")} FROM inquiry_threads t
          JOIN inquiry_thread_personal_focus f ON f.thread_id = t.id
         WHERE t.space_id = $1 AND t.project_id = $2 AND f.user_id = $3
         ORDER BY f.created_at DESC`,

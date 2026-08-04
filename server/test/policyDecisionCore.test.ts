@@ -301,6 +301,24 @@ describe("engine + registry default", () => {
     });
     expect(d.decision).toBe("require_approval");
   });
+  it("runtime.use_credential autonomous uses Automation standing authorization", () => {
+    const denied = engineCheck(registry, {
+      action: "runtime.use_credential",
+      space_id: "s1",
+      resource_space_id: "s1",
+      trigger_origin: "autonomous",
+    });
+    const allowed = engineCheck(registry, {
+      action: "runtime.use_credential",
+      space_id: "s1",
+      resource_space_id: "s1",
+      trigger_origin: "autonomous",
+      automation_pre_authorized: true,
+    });
+    expect(denied.decision).toBe("require_approval");
+    expect(allowed.decision).toBe("allow");
+    expect(allowed.policy_rule_id).toBe("credential_automation_preauthorized_allow");
+  });
   it("runtime.use_credential allows a user-configured source post-processing job", () => {
     const d = engineCheck(registry, {
       action: "runtime.use_credential",

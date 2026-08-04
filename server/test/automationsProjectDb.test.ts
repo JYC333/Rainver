@@ -734,7 +734,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       [SPACE, String(fired.workflow_execution_id)],
     );
     await new PgProjectRepository(pool!).archive({ spaceId: SPACE, userId: OWNER }, PROJECT);
-    await expect(new WorkflowExecutionService().reconcile(
+    await expect(new WorkflowExecutionService(config).reconcile(
       pool!, SPACE, String(fired.workflow_execution_id), OWNER,
     )).rejects.toMatchObject({ statusCode: 409 });
     const stopped = await pool!.query<{ execution_status: string; linked_runs: number }>(

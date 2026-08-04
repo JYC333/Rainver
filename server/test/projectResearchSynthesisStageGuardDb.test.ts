@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 
 // Real-Postgres coverage for a regression where reconcileOperation's
@@ -17,6 +18,7 @@ import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orch
 // exactly what an "Approve screening did nothing, the checkpoint came back
 // after refresh" report looks like from the outside.
 
+const CONFIG = loadConfig({});
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -198,7 +200,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation stage guard after synth
     if (!available || !pool) return;
     const checkpointId = await seedApprovedScreeningCheckpoint();
 
-    await new ProjectResearchOrchestrator(pool!).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await pool!.query<{ progress_json: { current_stage?: string; synthesis_run_id?: string } }>(
       `SELECT progress_json FROM project_operations WHERE id=$1`,
