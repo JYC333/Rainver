@@ -21,6 +21,7 @@ import { CliCredentialBroker } from "../providers/cli/credentialBroker";
 import { createCliUsageRefreshTask } from "../providers/cli/usageScheduler";
 import { setBackgroundServicesStatusSource } from "./runtimeStatus";
 import { AutonomyRecoveryService } from "../autonomy/recoveryService";
+import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -75,6 +76,17 @@ export function startBackgroundServices(
   ];
 
   if (config.databaseUrl) {
+    tasks.push({
+      name: "information_digest_automation_provisioning",
+      intervalSeconds: 3600,
+      runOnStart: true,
+      awaitRunOnStart: false,
+      run: async () => {
+        const created = await reconcileInformationDigestAutomations(getDbPool(config.databaseUrl!));
+        if (created > 0) log?.info(`[scheduler] information digest provisioned ${created} automation(s)`);
+      },
+    });
+
     tasks.push({
       name: "autonomous_review_timeout_recovery",
       intervalSeconds: 300,
@@ -162,13 +174,13 @@ export function startBackgroundServices(
     });
   }
 
-  if (config.memoryAccessLogRetentionEnabled && config.databaseUrl) {
+  if (config.contentAccessLogRetentionEnabled && config.databaseUrl) {
     tasks.push({
-      name: "memory_access_log_retention",
-      intervalSeconds: config.memoryAccessLogPruneIntervalSeconds,
+      name: "content_access_log_retention",
+      intervalSeconds: config.contentAccessLogPruneIntervalSeconds,
       run: async () => {
-        const deleted = await pruneMemoryAccessLogs(config);
-        if (deleted > 0) log?.info(`[scheduler] memory_access_log pruned ${deleted} row(s)`);
+        const deleted = await pruneContentAccessLogs(config);
+        if (deleted > 0) log?.info(`[scheduler] content_access_log pruned ${deleted} row(s)`);
       },
       runOnStart: false,
     });
@@ -277,14 +289,14 @@ export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>,
   for (const row of spaces.rows) await orchestrator.reconcileAll(row.space_id);
 }
 
-export async function pruneMemoryAccessLogs(config: ServerConfig): Promise<number> {
+export async function pruneContentAccessLogs(config: ServerConfig): Promise<number> {
   if (!config.databaseUrl) return 0;
   const db = getDbPool(config.databaseUrl);
   const cutoff = new Date(
-    Date.now() - config.memoryAccessLogRetentionDays * 24 * 60 * 60 * 1000,
+    Date.now() - config.contentAccessLogRetentionDays * 24 * 60 * 60 * 1000,
   ).toISOString();
   const result = await db.query(
-    `DELETE FROM memory_access_logs WHERE accessed_at < $1`,
+    `DELETE FROM content_access_logs WHERE accessed_at < $1`,
     [cutoff],
   );
   return result.rowCount ?? 0;

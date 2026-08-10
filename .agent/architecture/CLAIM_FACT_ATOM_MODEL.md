@@ -35,7 +35,7 @@ Current Knowledge-adjacent tables:
 
 | Table | Current role |
 |---|---|
-| `space_objects` | Common identity/status/visibility root for Knowledge items, Notes, Sources, and future core objects. |
+| `space_objects` | Common identity/visibility/provenance root for Knowledge items, Notes, Sources, and future core objects. Domain status belongs to the extension tables (B12D). |
 | `knowledge_items` | Proposal-gated canonical Wiki page extension. Uses `knowledge_kind`; `claim` is not a valid kind. |
 | `knowledge_item_sources` | Wiki item-to-source evidence links. |
 | `notes` | Direct-CRUD working knowledge extension attached to `space_objects`, intentionally separate from governed Wiki items. |
@@ -120,8 +120,8 @@ representing governed Wiki content.
 
 Future People, Assets, Events, Tasks, Documents, and similar durable domain
 objects should not be modeled as KnowledgeItem subtypes. They should share a
-common identity/permission/status layer and then attach domain-specific
-extension tables.
+common identity/permission layer and then attach domain-specific
+extension tables, each owning its own status (ADR 0012).
 
 ### 3. Claims must be global, not `knowledge_claims`
 
@@ -170,13 +170,18 @@ Implemented fields:
 
 - `object_id` (the claim id; PK/FK to `space_objects(id, space_id)`)
 - `space_id`
-- `object_type`: fixed enum such as `knowledge_item`, `note`, `source`,
-  `project`, `person`, `relationship`, `asset`, `event`, `task`, `document`,
-  `claim`
-- `title`
+- `object_type`: fixed enum. The implemented `ck_space_objects_object_type`
+  values are `knowledge_item`, `note`, `source`, `person`, `organization`,
+  `claim`, `inquiry_thread`, `decision_case`, and `experiment`. The CHECK and
+  the entity registry are asserted to agree by `test/ontologyRegistry.test.ts`
+  — `relationship` was dropped when that test was added, because it had no
+  extension table, no entity, and no writer. Domains discussed elsewhere in
+  this document as future work (`project`, `asset`, `event`, `task`,
+  `document`) are **not** in the enum; `project` and `project_folder` are
+  registered *entities* without being `space_objects` rows (B12G).
+- `title` (a projection of the domain's own label, truncated by the writer)
 - `summary` or `excerpt`
-- `status`
-- `visibility`
+- `visibility`, `access_level`
 - `owner_user_id`
 - `primary_project_id`
 - `project_folder_id`
@@ -188,11 +193,32 @@ Implemented fields:
 Keep the taxonomy small. Aliases, subtypes, or metadata can live on extension
 tables until a repeated product need justifies promotion.
 
-`space_objects.status` is a shared column, not a shared lifecycle. The database
-keeps a broad status enum for common storage but also constrains valid values by
-`object_type`: KnowledgeItem uses `draft|active|superseded|archived|deleted`,
-Note uses `active|archived|deleted`, and Source uses
-`raw|processing|processed|archived|error`.
+Domain status is **not** on `space_objects` (ADR 0012 / B12D, B12E). Each
+extension table owns its own `status` column and constraint; the former shared
+column, its index, and its `object_type`-branching CHECK are gone. The six
+extension tables that own a status are `knowledge_items`
+(`draft|active|superseded|archived|deleted`), `notes`
+(`active|archived|deleted`), `sources`
+(`raw|processing|processed|archived|error`), `claims`
+(`active|disputed|superseded|rejected|archived`), and `relation_people` /
+`relation_organizations` (`active|archived|deleted`).
+
+A reader that knows its object type reads the extension column directly. A
+polymorphic reader uses `db/objectStatusSql.ts`, whose table/column list is
+**generated from the `domainStatus` declaration on the entity registry** rather
+than hardcoded — a hardcoded list is how Inquiry Threads silently dropped out
+of every cross-type query when they joined the ontology, since a LEFT JOIN to a
+table nobody listed yields NULL and `NULL NOT IN (...)` is never true. The
+registry test resolves each declaration against the schema source, so a
+misspelled table or column fails instead of degrading.
+
+Substituting timestamps for status is **not** valid: `status NOT IN
+('archived','deleted')` is not `archived_at IS NULL AND deleted_at IS NULL`,
+because a Source can be archived without `archived_at` and `superseded`
+deliberately writes no timestamp. The one sanctioned substitution is
+`CONTENT_RESOURCE_DEFINITIONS.activePredicate` for `space_object`, which uses
+`deleted_at IS NULL` — valid only because `deleted` is reachable for Notes and
+Knowledge items alone, and both write the timestamp.
 
 ### `knowledge_items`
 
@@ -243,7 +269,7 @@ Implemented fields:
 - `confidence_method`: `human_confirmed`, `source_extracted`,
   `llm_extracted`, `inferred`, `imported`
 - `status`: `active`, `disputed`, `superseded`, `rejected`, `archived`
-  stored on the shared `space_objects.status` row for the claim object
+  stored on `claims.status`
 - `resolution_state`: `unreviewed`, `confirmed`, `contradicted`, `stale`,
   `needs_source`
 - `valid_from`, `valid_until`, `observed_at`
@@ -318,7 +344,7 @@ Implemented fields:
 - `space_id`
 - `from_object_id`
 - `to_object_id`
-- `relation_type`
+- `link_type`
 - `confidence`
 - `status`: `candidate`, `active`, `rejected`, `archived`
 - `source_claim_id`
@@ -410,7 +436,7 @@ Context Brief findings map to claim work as follows:
   holder/perspective, validity/observation time, and source refs for reviewer
   confirmation.
 - `contradictions`: proposed `object_relations` with
-  `relation_type=contradicts` only when the brief identifies two canonical
+  `link_type=contradicts` only when the brief identifies two canonical
   claim ids; otherwise a review note asking the reviewer to inspect the
   conflicting sources first.
 - `missing_topics`: reviewer tasks, not claims, unless a concrete assertion is
@@ -459,7 +485,7 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 
 ### Phase 2: introduce `space_objects`
 
-- Implemented: added `space_objects` as the common identity/status/visibility table.
+- Implemented: added `space_objects` as the common identity/visibility table; status later moved to the extension tables (ADR 0012).
 - Implemented: attached `knowledge_items` to it with `object_id` as PK/FK.
 - Implemented: attached `notes` and `sources`,
   because retrieval and citations already treat them as object-like rows.
@@ -475,7 +501,8 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   Knowledge provenance fields in `knowledge_items`.
 - Implemented: updated repositories, DTOs, tests, and retrieval adapters in one coordinated
   change.
-- Implemented: constrained `space_objects.status` by concrete object type and kept
+- Superseded by ADR 0012: status moved to the extension tables and the root's
+  type-branching constraint was removed. Kept
   note collection parent/member links same-space through composite foreign keys.
 
 ### Phase 4: add global claims
@@ -514,8 +541,9 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 ## Deferred Follow-Up Work
 
 - Full dynamic schema packs remain rejected as the runtime model.
-- Object Schema Registry foundations for per-space `object_kind` definitions and
-  field schemas are implemented in the Knowledge-owned object-kind registry and
+- Object Schema Registry foundations for per-space `object_profile` definitions and
+  field schemas are implemented in the `ontology`-owned object profile registry
+  (served under the Knowledge paths) and
   summarized in [`CONTEXT_AND_RETRIEVAL_LAYER.md`](CONTEXT_AND_RETRIEVAL_LAYER.md).
   Claim subtype validation can build on those registry facts, but canonical
   claim writes still stay proposal-gated.

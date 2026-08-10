@@ -30,15 +30,6 @@ class FakeApplyDb {
       });
       return { rows: [], rowCount: 1 };
     }
-    if (norm.startsWith("UPDATE context_digests")) {
-      const kind = norm.includes("digest_type = 'policy_bundle'")
-        ? "policy_bundle"
-        : norm.includes("digest_type = 'project_folder'")
-          ? "project_folder"
-          : "agent";
-      this.dirtyUpdates.push({ kind, params });
-      return { rows: [], rowCount: 1 };
-    }
     if (norm.startsWith("INSERT INTO jobs")) {
       this.jobs.push({
         job_type: String(params[5]),
@@ -170,10 +161,10 @@ describe("proposal applier registry", () => {
   it("registers object kind registry proposal appliers", () => {
     const registered = Array.from(createDefaultProposalApplierRegistry().registeredTypes());
     expect(registered).toEqual(expect.arrayContaining([
-      "object_kind_create",
-      "object_kind_update",
-      "object_kind_deprecate",
-      "object_kind_archive",
+      "object_profile_create",
+      "object_profile_update",
+      "object_profile_deprecate",
+      "object_profile_archive",
     ]));
   });
 
@@ -191,7 +182,7 @@ describe("proposal applier registry", () => {
     );
   });
 
-  it("refreshes only the policy_bundle digest, ignoring policy applies_to scopes", async () => {
+  it("applies policy changes without scheduling retired context digests", async () => {
     const db = new FakeApplyDb();
 
     const result = await createDefaultProposalApplierRegistry().apply({
@@ -214,16 +205,8 @@ describe("proposal applier registry", () => {
         agents: [{ id: "agent-1" }],
       }),
     });
-    // Policies live only in the space-level policy_bundle. Even though this
-    // policy's applies_to references ws-1 and agent-1, their memory-only digests
-    // must NOT be invalidated (it would be a no-op refresh). Scoped policies are
-    // surfaced per-run at consumption time, not folded into workspace/agent digests.
-    expect(db.dirtyUpdates.map((u) => u.kind)).toEqual(["policy_bundle"]);
-    expect(db.jobs.map((j) => j.payload)).toEqual([
-      { space_id: "space-1", digest_type: "policy_bundle" },
-    ]);
-    expect(db.jobs.filter((j) => j.payload.digest_type === "project_folder")).toHaveLength(0);
-    expect(db.jobs.filter((j) => j.payload.digest_type === "agent")).toHaveLength(0);
+    expect(db.dirtyUpdates).toEqual([]);
+    expect(db.jobs).toEqual([]);
   });
 
   it("rejects a capability_enable proposal whose version belongs to another capability", async () => {

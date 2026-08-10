@@ -8,10 +8,68 @@
  */
 
 import { z } from "zod";
+import { LinkStatusSchema, LinkTypeSchema } from "./linkTypes.js";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const DateLikeSchema = ISODateTimeSchema.nullish();
+
+/**
+ * The system-reserved roles a Note can hold in its Project's notebook.
+ *
+ * Lives in the protocol because both ends need the same list and each had its
+ * own before: the server resolved the research baseline by matching note
+ * titles, so a rename silently emptied it, and the editor's target list was a
+ * hand-maintained copy that drifted from the backend's. One vocabulary, two
+ * consumers.
+ *
+ * The server registry (`modules/knowledge/noteProjectRoles.ts`) owns membership
+ * for validation; `notes.project_role` carries only a format constraint (B12F).
+ */
+export const NOTE_PROJECT_ROLE_VALUES = [
+  "understanding",
+  "questions",
+  "ideas",
+  "experiments",
+  /** The Project's capture target; not one of the research baseline's four. */
+  "inbox",
+] as const;
+export const NoteProjectRoleSchema = z.enum(NOTE_PROJECT_ROLE_VALUES);
+export type NoteProjectRole = z.infer<typeof NoteProjectRoleSchema>;
+
+/**
+ * Object types the note editor can offer as a link target.
+ *
+ * Two constraints intersect here, and the plan's gap-3 note anticipated only
+ * one of them:
+ *
+ * - `createNoteLink` resolves both endpoints against `space_objects`, so the
+ *   reachable set is that table's subtypes, *not* the wider
+ *   `retrieval_object_type` the storage column is typed as. `source_item`,
+ *   `extracted_evidence` and `memory_entry` are in that enum but have no root
+ *   row, so a link to one is rejected at write time.
+ * - The picker finds candidates through `POST /knowledge/search`, so a target
+ *   also has to be `Retrievable`. `decision_case`, `experiment`, `person` and
+ *   `organization` are linkable but not searchable; offering them would give
+ *   the user an entry whose candidate list is always empty.
+ *
+ * The intersection is these five. Reaching the other four is a picker problem,
+ * not a vocabulary problem — NC's cross-type picker is where that belongs.
+ *
+ * The editor's dropdown is built from this list rather than its own literals.
+ * A hand-maintained copy of a backend vocabulary is the defect gap 3 *was*, so
+ * the server asserts this against its entity registry instead of trusting that
+ * someone will remember to update both.
+ */
+export const NOTE_LINK_TARGET_TYPE_VALUES = [
+  "note",
+  "knowledge_item",
+  "source",
+  "claim",
+  "inquiry_thread",
+] as const;
+export const NoteLinkTargetTypeSchema = z.enum(NOTE_LINK_TARGET_TYPE_VALUES);
+export type NoteLinkTargetType = z.infer<typeof NoteLinkTargetTypeSchema>;
 
 export const CLAIM_KIND_VALUES = [
   "fact",
@@ -79,26 +137,6 @@ export const CLAIM_RELATION_TYPE_VALUES = [
   "depends_on",
   "derived_from",
 ] as const;
-export const OBJECT_RELATION_TYPE_VALUES = [
-  "related_to",
-  "references",
-  "depends_on",
-  "part_of",
-  "source_for",
-  "derived_from",
-  "about",
-  "supports",
-  "contradicts",
-  "supersedes",
-  "refines",
-  "same_as",
-] as const;
-export const OBJECT_RELATION_STATUS_VALUES = [
-  "candidate",
-  "active",
-  "rejected",
-  "archived",
-] as const;
 
 const ClaimKindSchema = z.enum(CLAIM_KIND_VALUES);
 const ClaimStatusSchema = z.enum(CLAIM_STATUS_VALUES);
@@ -108,8 +146,8 @@ const ClaimResolutionStateSchema = z.enum(CLAIM_RESOLUTION_STATE_VALUES);
 const ClaimEvidenceRoleSchema = z.enum(CLAIM_EVIDENCE_ROLE_VALUES);
 const ClaimSourceRefTypeSchema = z.enum(CLAIM_SOURCE_REF_TYPE_VALUES);
 const ClaimSourceTrustSchema = z.enum(CLAIM_SOURCE_TRUST_VALUES);
-const ObjectRelationTypeSchema = z.enum(OBJECT_RELATION_TYPE_VALUES);
-const ObjectRelationStatusSchema = z.enum(OBJECT_RELATION_STATUS_VALUES);
+const ObjectLinkTypeSchema = LinkTypeSchema;
+const ObjectRelationStatusSchema = LinkStatusSchema;
 const RelationCreateStatusSchema = z.enum(["candidate", "active"]);
 
 const ConfidenceSchema = z.number().min(0).max(1).nullable();
@@ -187,7 +225,7 @@ export const ClaimRelationOutSchema = z
     space_id: IdSchema,
     from_claim_id: IdSchema,
     to_claim_id: IdSchema,
-    relation_type: z.string(),
+    link_type: z.string(),
     status: ObjectRelationStatusSchema,
     confidence: ConfidenceSchema,
     evidence_summary: z.string().nullish(),
@@ -207,7 +245,7 @@ export const ObjectRelationOutSchema = z
     space_id: IdSchema,
     from_object_id: IdSchema,
     to_object_id: IdSchema,
-    relation_type: z.string(),
+    link_type: z.string(),
     status: ObjectRelationStatusSchema,
     confidence: ConfidenceSchema,
     evidence_summary: z.string().nullish(),
@@ -360,7 +398,7 @@ export const ObjectRelationCreateProposalPayloadSchema = PacketSystemFieldsSchem
   operation: z.literal("object_relation_create"),
   from_object_id: IdSchema,
   to_object_id: IdSchema,
-  relation_type: ObjectRelationTypeSchema,
+  link_type: ObjectLinkTypeSchema,
   status: RelationCreateStatusSchema.optional(),
   confidence: z.number().min(0).max(1).optional(),
   evidence_summary: z.string().optional(),

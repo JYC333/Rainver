@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { AcademicRepository } from "../src/modules/academic/repository";
 import { AcademicService } from "../src/modules/academic/service";
@@ -28,6 +28,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[academic-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -61,12 +62,30 @@ beforeEach(async () => {
   }
 });
 
+class PrivateCreationAcademicService extends AcademicService {
+  override createPaper(
+    identity: Parameters<AcademicService["createPaper"]>[0],
+    body: Parameters<AcademicService["createPaper"]>[1],
+  ) {
+    return super.createPaper(identity, { visibility: "private", ...body });
+  }
+}
+
+class PrivateCreationRelationsService extends RelationsService {
+  override createPerson(
+    identity: Parameters<RelationsService["createPerson"]>[0],
+    body: Parameters<RelationsService["createPerson"]>[1],
+  ) {
+    return super.createPerson(identity, { visibility: "private", ...body });
+  }
+}
+
 function service(): AcademicService {
-  return new AcademicService(pool as Pool, new AcademicRepository(pool as Pool));
+  return new PrivateCreationAcademicService(pool as Pool, new AcademicRepository(pool as Pool));
 }
 
 function relationsService(): RelationsService {
-  return new RelationsService(pool as Pool, new RelationsRepository(pool as Pool));
+  return new PrivateCreationRelationsService(pool as Pool, new RelationsRepository(pool as Pool));
 }
 
 const identity = { spaceId: SPACE, userId: USER };
@@ -125,12 +144,12 @@ describe("academic module (real Postgres)", () => {
       [proposal.id],
     );
     expect(stored.rows[0]!.payload_json).toMatchObject({
-      relation_type: "authored_by",
+      link_type: "authored_by",
       metadata: { author_position: 1, is_corresponding: false },
     });
 
     const edgeResult = await pool!.query(
-      `SELECT relation_type FROM object_relations WHERE from_object_id = $1 AND to_object_id = $2`,
+      `SELECT link_type FROM object_relations WHERE from_object_id = $1 AND to_object_id = $2`,
       [paper.object_id, person.object_id],
     );
     expect(edgeResult.rows).toHaveLength(0);
@@ -143,7 +162,7 @@ describe("academic module (real Postgres)", () => {
 
     await pool!.query(
       `INSERT INTO object_relations (
-         id, space_id, from_object_id, to_object_id, relation_type, status, metadata_json, created_by_user_id, created_at, updated_at
+         id, space_id, from_object_id, to_object_id, link_type, status, metadata_json, created_by_user_id, created_at, updated_at
        ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'authored_by','active',$4::jsonb,$5,now(),now())`,
       [SPACE, paper.object_id, person.object_id, JSON.stringify({ author_position: 1, is_corresponding: true }), USER],
     );
@@ -172,7 +191,7 @@ describe("academic module (real Postgres)", () => {
       `SELECT payload_json FROM proposals WHERE id=$1`,
       [proposal.id],
     );
-    expect(stored.rows[0]!.payload_json).toMatchObject({ relation_type: "cites" });
+    expect(stored.rows[0]!.payload_json).toMatchObject({ link_type: "cites" });
     expect((await pool!.query(`SELECT id FROM object_relations WHERE from_object_id=$1`, [citing.object_id])).rows).toHaveLength(0);
   });
 
@@ -183,7 +202,7 @@ describe("academic module (real Postgres)", () => {
 
     await pool!.query(
       `INSERT INTO object_relations (
-         id, space_id, from_object_id, to_object_id, relation_type, status, metadata_json, created_by_user_id, created_at, updated_at
+         id, space_id, from_object_id, to_object_id, link_type, status, metadata_json, created_by_user_id, created_at, updated_at
        ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'cites','active','{}'::jsonb,$4,now(),now())`,
       [SPACE, citing.object_id, cited.object_id, USER],
     );

@@ -177,6 +177,7 @@ function existingConnection(overrides: Partial<SourceConnectionRow> = {}): Sourc
   return {
     id: "conn-1",
     space_id: "space-1",
+    project_id: null,
     connector_type: "external_feed",
     owner_user_id: "user-1",
     credential_id: null,

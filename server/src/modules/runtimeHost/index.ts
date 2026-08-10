@@ -15,3 +15,5 @@ export const runtimeHostModule: ServerModule = {
 };
 
 export { executeRuntimeHost, type RuntimeHostLogger } from "./service";
+export { __setRuntimeHostDeliveryAuthorizerForTests } from "./routes";
+export { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "./deliveryAuthorizer";

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { PromptRepository } from "../src/modules/prompts/repository";
@@ -33,6 +33,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[prompt-registry-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -117,16 +118,16 @@ describe("Prompt registry facade (real Postgres)", () => {
 
   it("lists prompt-registry assets and filters by prompt_type", async () => {
     if (!available) return;
-    await createPromptAsset("session.condenser.adaptive", "condenser");
+    await createPromptAsset("custom.text", "text");
     await createPromptAsset("retrieval.query_rewrite", "retrieval_query");
 
     const all = await repo().listAssets(identity, {});
     expect(all.map((a) => a.asset_key)).toEqual(
-      expect.arrayContaining(["session.condenser.adaptive", "retrieval.query_rewrite"]),
+      expect.arrayContaining(["custom.text", "retrieval.query_rewrite"]),
     );
 
-    const filtered = await repo().listAssets(identity, { promptType: "condenser" });
-    expect(filtered.map((a) => a.asset_key)).toEqual(["session.condenser.adaptive"]);
+    const filtered = await repo().listAssets(identity, { promptType: "retrieval_query" });
+    expect(filtered.map((a) => a.asset_key)).toEqual(["retrieval.query_rewrite"]);
   });
 
   it("rejects an invalid prompt_type filter", async () => {
@@ -136,30 +137,30 @@ describe("Prompt registry facade (real Postgres)", () => {
 
   it("returns asset detail with metadata_json and projects version content", async () => {
     if (!available) return;
-    const asset = await createPromptAsset("session.condenser.general", "condenser");
+    const asset = await createPromptAsset("custom.general", "text");
     await approvedVersion(asset.id as string, {
       schema_version: "prompt_asset.v1",
-      prompt_type: "condenser",
-      messages: [{ role: "system", content: "You condense sessions." }],
+      prompt_type: "text",
+      template: "Hello {{name}}",
     });
 
-    const detail = await repo().getAsset(identity, "session.condenser.general");
-    expect(detail).toMatchObject({ asset_key: "session.condenser.general", prompt_type: "condenser" });
-    expect(detail.metadata_json).toEqual({ prompt_type: "condenser" });
+    const detail = await repo().getAsset(identity, "custom.general");
+    expect(detail).toMatchObject({ asset_key: "custom.general", prompt_type: "text" });
+    expect(detail.metadata_json).toEqual({ prompt_type: "text" });
 
-    const versions = await repo().listVersions(identity, "session.condenser.general");
+    const versions = await repo().listVersions(identity, "custom.general");
     expect(versions).toHaveLength(1);
     expect(versions[0]).toMatchObject({ status: "approved", source: "user_authored" });
-    expect((versions[0].content as Record<string, unknown>).prompt_type).toBe("condenser");
+    expect((versions[0].content as Record<string, unknown>).prompt_type).toBe("text");
   });
 
   it("rejects unknown asset keys and cross-space asset keys with 404", async () => {
     if (!available) return;
     await expect(repo().getAsset(identity, "does.not.exist")).rejects.toMatchObject({ statusCode: 404 });
 
-    await createPromptAsset("session.condenser.coding", "condenser");
+    await createPromptAsset("custom.private", "text");
     const otherIdentity: SpaceUserIdentity = { spaceId: OTHER_SPACE, userId: OWNER };
-    await expect(repo().getAsset(otherIdentity, "session.condenser.coding")).rejects.toMatchObject({ statusCode: 404 });
+    await expect(repo().getAsset(otherIdentity, "custom.private")).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("does not expose user-owned prompt assets to other users in the same space", async () => {

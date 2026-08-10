@@ -187,10 +187,6 @@ export const RunInputEnvelopeSchema = z
       workflow: SecretFreeJsonSchema.nullish(),
       upstream: SecretFreeJsonSchema.nullish(),
     }).strict(),
-    context: z.object({
-      context_snapshot_id: IdSchema.nullish(),
-      context_package_ref: z.string().trim().min(1).nullish(),
-    }).strict(),
     attachments: z.array(RunInputAttachmentSchema).default([]),
     project_folder_access: RunInputProjectFolderAccessSchema.nullish(),
     output_contract: RunOutputContractSchema,
@@ -225,6 +221,7 @@ export const RUNTIME_SEMANTIC_EVENT_TYPE_VALUES = [
   "approval_resolved",
   "artifact_produced",
   "output_validation_completed",
+  "provider_compacted",
   "warning",
   "error",
   "state_transition",

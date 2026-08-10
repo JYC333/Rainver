@@ -32,7 +32,6 @@ CREATE TABLE public.memory_entries (
     sensitivity_level character varying(32) NOT NULL DEFAULT 'normal',
     access_level character varying(16) NOT NULL DEFAULT 'full',
     last_confirmed_at timestamp with time zone,
-    project_folder_id character varying(36),
     project_id character varying(36),
     agent_id character varying(36),
     namespace character varying(255),
@@ -53,7 +52,12 @@ CREATE TABLE public.memory_entries (
     root_memory_id character varying(36),
     supersedes_memory_id character varying(36),
     source_trust character varying(64),
-    CONSTRAINT memory_entries_pkey PRIMARY KEY (id)
+    CONSTRAINT memory_entries_pkey PRIMARY KEY (id),
+    CONSTRAINT ck_memory_entries_scope_type CHECK (scope_type IN ('user', 'project')),
+    CONSTRAINT ck_memory_entries_scope_placement CHECK (
+      (scope_type = 'user' AND project_id IS NULL)
+      OR (scope_type = 'project' AND project_id IS NOT NULL)
+    )
 );
 
 CREATE TABLE public.provenance_links (
@@ -136,7 +140,7 @@ CREATE TABLE public.retrieval_objects (
     status character varying(32) NOT NULL,
     title character varying(512) NOT NULL,
     slug character varying(512),
-    object_kind character varying(64),
+    object_profile character varying(64),
     content_hash character varying(64) NOT NULL,
     source_connection_ids_json jsonb DEFAULT '[]'::jsonb NOT NULL,
     indexed_at timestamp with time zone NOT NULL,

@@ -99,7 +99,7 @@ class FakeJobDb implements Queryable {
       return { rows: [{ id: params[0] }] as Row[], rowCount: 1 };
     }
 
-    if (normalized.startsWith("INSERT INTO memory_access_logs")) {
+    if (normalized.startsWith("INSERT INTO content_access_logs")) {
       return { rows: [], rowCount: 1 };
     }
 
@@ -175,7 +175,6 @@ function memoryRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     space_id: "space-1",
     subject_user_id: null,
     owner_user_id: "user-1",
-    project_folder_id: null,
     scope_type: "user",
     namespace: "user.default",
     memory_type: "fact",
@@ -263,7 +262,7 @@ describe("Memory maintenance jobs", () => {
     });
     expect(db.calls.some((call) => call.sql.includes("INSERT INTO artifacts"))).toBe(true);
     expect(db.calls.some((call) => call.sql.includes("INSERT INTO proposals"))).toBe(true);
-    expect(db.calls.some((call) => call.sql.includes("INSERT INTO memory_access_logs"))).toBe(true);
+    expect(db.calls.some((call) => call.sql.includes("INSERT INTO content_access_logs"))).toBe(true);
   });
 
   it("marks a job failed and returns report null when the page run fails", async () => {

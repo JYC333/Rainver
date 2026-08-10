@@ -8,7 +8,9 @@ import {
   type ProviderProxyRoute,
 } from "../providers/proxy/lease";
 import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
+import { subscriptionEgressLeases, type SubscriptionRuntime } from "../providers/proxy/subscriptionEgress";
 import type { RunRecord } from "./repository";
+import type { InvocationAuditRefs } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import {
   CodexProviderConfigError,
   materializeRunCodexHome,
@@ -37,6 +39,13 @@ export interface RuntimeProviderBinding {
   cleanup?: () => Promise<void>;
 }
 
+interface RuntimeProviderBindingInput {
+  run: RunRecord;
+  model: string | null;
+  sandbox_cwd?: string | null;
+  invocation_audit_refs?: InvocationAuditRefs | null;
+}
+
 export class RuntimeProviderBindingError extends Error {
   constructor(
     readonly code: string,
@@ -49,11 +58,7 @@ export class RuntimeProviderBindingError extends Error {
 
 export async function buildRuntimeProviderBinding(
   config: ServerConfig,
-  input: {
-    run: RunRecord;
-    model: string | null;
-    sandbox_cwd?: string | null;
-  },
+  input: RuntimeProviderBindingInput,
   spec: LocalCliRuntimeAdapterSpec,
   deps: {
     credential: CredentialGrant;
@@ -68,9 +73,28 @@ export async function buildRuntimeProviderBinding(
   }
   const providerId = input.run.model_provider_id;
   if (!providerId) {
-    return spec.adapter_type === "codex_cli"
+    const base = spec.adapter_type === "codex_cli"
       ? await codexHomeOnlyBinding(deps.credential)
       : emptyRuntimeProviderBinding();
+    if (!deps.credential.profile_id) return base;
+    const lease = subscriptionEgressLeases.create(
+      spec.adapter_type as SubscriptionRuntime,
+      Math.max(deps.ttlSeconds, 1) * 1000,
+    );
+    return {
+      ...base,
+      env: {
+        ...base.env,
+        HTTP_PROXY: lease.proxy_url,
+        HTTPS_PROXY: lease.proxy_url,
+        http_proxy: lease.proxy_url,
+        https_proxy: lease.proxy_url,
+      },
+      cleanup: async () => {
+        subscriptionEgressLeases.revoke(lease.id);
+        await base.cleanup?.();
+      },
+    };
   }
 
   const provider = await resolveRuntimeProvider(config, input.run, providerId, deps.providerResolver);
@@ -112,10 +136,7 @@ async function resolveRuntimeProvider(
 }
 
 function buildClaudeProviderBinding(
-  input: {
-    run: RunRecord;
-    model: string | null;
-  },
+  input: RuntimeProviderBindingInput,
   providerId: string,
   provider: Record<string, unknown>,
   deps: {
@@ -158,6 +179,7 @@ function buildClaudeProviderBinding(
     project_id: input.run.project_id,
     project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
+    invocation_audit_refs: input.invocation_audit_refs ?? null,
     ttl_ms: Math.max(deps.ttlSeconds, 1) * 1000,
   });
   const env: Record<string, string> = {
@@ -181,10 +203,7 @@ function buildClaudeProviderBinding(
 }
 
 async function buildCodexProviderBinding(
-  input: {
-    run: RunRecord;
-    model: string | null;
-  },
+  input: RuntimeProviderBindingInput,
   providerId: string,
   provider: Record<string, unknown>,
   deps: {
@@ -234,6 +253,7 @@ async function buildCodexProviderBinding(
     project_id: input.run.project_id,
     project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
+    invocation_audit_refs: input.invocation_audit_refs ?? null,
     ttl_ms: Math.max(deps.ttlSeconds, 1) * 1000,
   });
   let codexHome: string;
@@ -265,7 +285,7 @@ async function buildCodexProviderBinding(
 }
 
 async function buildOpenCodeProviderBinding(
-  input: { run: RunRecord; model: string | null; sandbox_cwd?: string | null },
+  input: RuntimeProviderBindingInput,
   providerId: string,
   provider: Record<string, unknown>,
   deps: {
@@ -315,6 +335,7 @@ async function buildOpenCodeProviderBinding(
     project_id: input.run.project_id,
     project_folder_id: input.run.project_folder_id,
     trigger_origin: input.run.trigger_origin ?? null,
+    invocation_audit_refs: input.invocation_audit_refs ?? null,
     ttl_ms: Math.max(deps.ttlSeconds, 1) * 1000,
   });
   try {

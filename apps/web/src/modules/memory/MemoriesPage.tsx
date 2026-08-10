@@ -1,16 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { Activity, ChevronLeft, ChevronRight, FileText, FolderKanban, Loader2, PackageCheck, RefreshCw, Search, Wrench, X } from 'lucide-react'
+import { Activity, ChevronRight, FileText, FolderKanban, Loader2, PackageCheck, Search, Wrench, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { knowledgeApi, memoryApi, spacesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
 import type {
   Memory,
-  MemoryAccessLogEntry,
   MemoryMaintenanceReport,
-  MemoryScope,
   MemoryType,
   ClaimCandidatePacketCreateResponse,
   RetrievalSearchResult,
@@ -25,33 +23,20 @@ import { Select } from '../../components/ui/select'
 import { Badge } from '../../components/ui/badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { ScopeBadge } from '../../components/ScopeBadge'
-import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 
 const TYPES:  MemoryType[]  = ['preference', 'semantic', 'episodic', 'procedural', 'project']
-const SCOPES: MemoryScope[] = ['user', 'project_folder', 'capability', 'agent', 'system']
-
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
 
 interface MemoryForm {
   title: string
   content: string
   type: MemoryType
-  scope: MemoryScope
   namespace: string
 }
 
 const EMPTY_FORM: MemoryForm = {
-  title: '', content: '', type: 'semantic', scope: 'user', namespace: 'user.default',
+  title: '', content: '', type: 'semantic', namespace: 'user.default',
 }
-
-const ACCESS_TYPE_OPTIONS = [
-  { value: '', label: 'All access types' },
-  { value: 'context_injection', label: 'context_injection' },
-  { value: 'maintenance_scan', label: 'maintenance_scan' },
-  { value: 'search_hit', label: 'search_hit' },
-  { value: 'explicit_read', label: 'explicit_read' },
-  { value: 'create_safety_hit', label: 'create_safety_hit' },
-]
 
 export default function MemoriesPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
@@ -79,13 +64,6 @@ export default function MemoriesPage() {
   const [claimPacketCreating, setClaimPacketCreating] = useState(false)
   const [claimPacketResult, setClaimPacketResult] = useState<ClaimCandidatePacketCreateResponse | null>(null)
   const [retrievalSettings, setRetrievalSettings] = useState<SpaceRetrievalSettings | null>(null)
-  const [accessLogLimit, setAccessLogLimit] = useState('50')
-  const [accessLogOffset, setAccessLogOffset] = useState(0)
-  const [accessLogHasMore, setAccessLogHasMore] = useState(false)
-  const [accessTypeFilter, setAccessTypeFilter] = useState('')
-  const [accessLogFolderId, setAccessLogFolderId] = useState('')
-  const [accessLogs, setAccessLogs] = useState<MemoryAccessLogEntry[]>([])
-  const [accessLogsLoading, setAccessLogsLoading] = useState(false)
 
   const load = useCallback(async () => {
     if (!activeSpaceId) {
@@ -130,38 +108,6 @@ export default function MemoriesPage() {
     }
   }, [maintenanceReviewScope, spaceOpsReviewAllowed])
 
-  useEffect(() => {
-    setAccessLogOffset(0)
-  }, [accessLogLimit, accessTypeFilter, accessLogFolderId, projectFilter])
-
-  const loadAccessLogs = useCallback(async () => {
-    if (!activeSpaceId) {
-      setAccessLogs([])
-      setAccessLogHasMore(false)
-      return
-    }
-    setAccessLogsLoading(true)
-    try {
-      const limit = positiveInt(accessLogLimit, 50)
-      const page = await memoryApi.accessLogs({
-        limit,
-        offset: accessLogOffset,
-        access_type: accessTypeFilter || undefined,
-        project_folder_id: accessLogFolderId.trim() || undefined,
-        project_id: projectFilter || undefined,
-      })
-      setAccessLogs(page.items)
-      setAccessLogHasMore(page.has_more)
-    } catch (e) {
-      toast.error(errMsg(e))
-      setAccessLogs([])
-      setAccessLogHasMore(false)
-    } finally {
-      setAccessLogsLoading(false)
-    }
-  }, [activeSpaceId, accessLogLimit, accessLogOffset, accessTypeFilter, accessLogFolderId, projectFilter])
-
-  useEffect(() => { void loadAccessLogs() }, [loadAccessLogs])
 
   const showingSearch = searchResults !== null
 
@@ -221,7 +167,10 @@ export default function MemoriesPage() {
       toast.error('Title and content required'); return
     }
     try {
-      await memoryApi.create(form)
+      await memoryApi.create({
+        ...form,
+        project_id: projectFilter || null,
+      })
       setForm(EMPTY_FORM)
       toast.success('Memory proposal submitted')
       await load()
@@ -262,7 +211,6 @@ export default function MemoriesPage() {
       setMaintenanceReportReviewScope(maintenanceReviewScope)
       setClaimPacketResult(null)
       toast.success(report.proposal_id ? 'Memory maintenance report and packet created' : 'Memory maintenance report created')
-      await loadAccessLogs()
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -290,21 +238,11 @@ export default function MemoriesPage() {
     }
   }
 
-  function nextAccessLogPage() {
-    setAccessLogOffset(offset => offset + positiveInt(accessLogLimit, 50))
-  }
-
-  function previousAccessLogPage() {
-    setAccessLogOffset(offset => Math.max(0, offset - positiveInt(accessLogLimit, 50)))
-  }
-
   function resetMaintenanceCursor() {
     setMaintenanceCursor('')
     setMaintenanceNextCursor(null)
   }
 
-  const accessLogRangeStart = accessLogs.length > 0 ? accessLogOffset + 1 : accessLogOffset
-  const accessLogRangeEnd = accessLogOffset + accessLogs.length
 
   return (
     <div className="p-6 space-y-6">
@@ -321,7 +259,7 @@ export default function MemoriesPage() {
         </div>
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Memories</h1>
-          <p className="text-sm text-muted-foreground">Review-gated long-term memories across scopes and namespaces.</p>
+          <p className="text-sm text-muted-foreground">Review-gated personal and project memories.</p>
           <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
           {projectFilter && (
             <span className="inline-flex items-center gap-1 mt-0.5 px-2 py-0.5 rounded-full bg-accent/40 text-xs text-accent-foreground">
@@ -348,14 +286,6 @@ export default function MemoriesPage() {
               value={form.type}
               options={TYPES.map(t => ({ value: t, label: t }))}
               onChange={v => setField('type', v as MemoryType)}
-            />
-          </div>
-          <div>
-            <Label>Scope</Label>
-            <Select
-              value={form.scope}
-              options={SCOPES.map(s => ({ value: s, label: s }))}
-              onChange={v => setField('scope', v as MemoryScope)}
             />
           </div>
           <div>
@@ -538,108 +468,6 @@ export default function MemoriesPage() {
       </Card>
 
       <Card>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-md border border-border bg-muted/30 p-2">
-              <Activity className="size-4 text-accent-foreground" />
-            </div>
-            <div>
-              <CardTitle>Access Log Inspector</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">Recent read traces for memories you can currently read.</p>
-              {projectFilter && <p className="mt-1 text-xs text-muted-foreground">Project filter active: {projectFilter}</p>}
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-[90px_180px_minmax(360px,1fr)_auto]">
-            <NumberField label="limit" value={accessLogLimit} onChange={setAccessLogLimit} />
-            <div className="space-y-1">
-              <Label className="text-xs">access_type</Label>
-              <Select value={accessTypeFilter} options={ACCESS_TYPE_OPTIONS} onChange={setAccessTypeFilter} />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <ProjectFolderSelectors
-                projectId={projectFilter}
-                folderId={accessLogFolderId}
-                onProjectChange={value => setSearchParams(params => {
-                  if (value) params.set('project_id', value)
-                  else params.delete('project_id')
-                  return params
-                })}
-                onFolderChange={setAccessLogFolderId}
-                projectLabel="Project"
-                folderLabel="Project Folder"
-              />
-            </div>
-            <Button size="sm" variant="outline" onClick={() => void loadAccessLogs()} disabled={accessLogsLoading || !activeSpaceId} className="self-end">
-              <RefreshCw className={`size-3.5 ${accessLogsLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-          </div>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span>
-            {accessLogs.length > 0
-              ? `Showing ${accessLogRangeStart}-${accessLogRangeEnd}`
-              : `Offset ${accessLogOffset}`}
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={previousAccessLogPage}
-              disabled={accessLogsLoading || accessLogOffset === 0}
-            >
-              <ChevronLeft className="size-3.5" />
-              Previous
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={nextAccessLogPage}
-              disabled={accessLogsLoading || !accessLogHasMore}
-            >
-              Next
-              <ChevronRight className="size-3.5" />
-            </Button>
-          </div>
-        </div>
-        <div className="mt-4">
-          {accessLogs.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              {activeSpaceId ? 'No visible memory access logs in the current window.' : 'Select an operational space to inspect access logs.'}
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Memory</TableHead><TableHead>Access</TableHead>
-                  <TableHead>Reason</TableHead><TableHead>Actor</TableHead><TableHead>When</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {accessLogs.map(log => (
-                  <TableRow key={log.id}>
-                    <TableCell className="max-w-[260px]">
-                      <Link to={`/memory/${log.memory_id}`} className="font-medium text-accent-foreground hover:underline">
-                        {log.memory_title || 'Untitled memory'}
-                      </Link>
-                      <div className="mt-0.5 flex flex-wrap gap-1 text-xs text-muted-foreground">
-                        <span>{log.memory_scope ?? 'memory'}</span>
-                        <span>{log.memory_visibility ?? 'visible'}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell><Badge variant="secondary">{log.access_type}</Badge></TableCell>
-                    <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground">{log.reason ?? '—'}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{log.agent_id ? `agent ${log.agent_id.slice(0, 8)}` : log.user_id ? `user ${log.user_id.slice(0, 8)}` : '—'}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{fmt(log.accessed_at)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </div>
-      </Card>
-
-      <Card>
         <div className="flex flex-col gap-3 mb-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <CardTitle>{showingSearch ? 'Search Results' : 'Active Memories'} ({showingSearch ? searchResults.length : memories.length})</CardTitle>
@@ -692,9 +520,9 @@ export default function MemoriesPage() {
                       >
                         {result.title || 'Untitled memory'}
                       </Link>
-                      {result.object_kind_label && (
+                      {result.object_profile_label && (
                         <div className="mt-1">
-                          <Badge variant="secondary">{result.object_kind_label}</Badge>
+                          <Badge variant="secondary">{result.object_profile_label}</Badge>
                         </div>
                       )}
                       {result.snippet && <p className="text-xs text-muted-foreground truncate mt-0.5">{result.snippet}</p>}

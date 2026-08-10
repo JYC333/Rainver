@@ -46,6 +46,8 @@ Proposals activate into memory / knowledge / cards
 
 ## Invariants
 - Capture always creates an ActivityRecord first — never writes directly to memory
+- Context-free capture always lands in the user's Personal Space; browsing a team Space does not
+  change the destination and there is no persisted write-target mode.
 - Voice notes must be transcribed before being stored as raw_content
 - Browser extension must not store captured data locally — always POST to server
 - Captured chat transcripts are treated as ActivityRecord(type=chat_capture), not as memories

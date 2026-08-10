@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { DecisionCaseService } from "../src/modules/decisions/caseService";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -30,6 +30,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[decisions-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -43,7 +44,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE decision_option_scores, decision_commitments, decision_criteria, decision_options,
-       decision_case_sources, decision_cases, tasks, inquiry_threads, projects, space_memberships,
+       decision_cases, tasks, inquiry_threads, projects, space_memberships,
        users, spaces CASCADE`,
   );
   const now = new Date().toISOString();

@@ -26,6 +26,7 @@ import {
 } from "../access/contentAccessSql";
 import { contentResourceDefinition } from "../access/contentAccessRegistry";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
+import { contentDecisionFromDb } from "../access/contentAccessQuery";
 import {
   buildSummary,
   evidenceLinkOut,
@@ -272,6 +273,7 @@ export class PgSourcesRepository {
     if (connectionId) await this.assertConnectionSubscribed(identity, connectionId, false);
     const retention = body.queue_content === true ? "full_text" : "metadata_only";
     if (connection) enforceSourceRetentionPolicy(normalizeSourceConnectionReadGovernance(connection).policy, retention);
+    const projectId = connection?.project_id ?? optionalString(body.project_id);
     const existing = await this.db.query<SourceItemRow>(
       `SELECT ${itemColumnsWithCurrentUserState("si")}
          FROM source_items si
@@ -281,29 +283,31 @@ export class PgSourcesRepository {
           AND suis.user_id = $3
         WHERE si.space_id = $1
           AND si.deleted_at IS NULL
+          AND si.project_id IS NOT DISTINCT FROM $4
           AND (si.canonical_uri = $2 OR si.source_uri = $2)
           AND ${sourceItemReadableClause("si", "$3", false)}
         LIMIT 1`,
-      [identity.spaceId, canonical, identity.userId],
+      [identity.spaceId, canonical, identity.userId, projectId],
     );
     const now = new Date().toISOString();
     let row = existing.rows[0];
     if (!row) {
       const inserted = await this.db.query<SourceItemRow>(
         `INSERT INTO source_items (
-           id, space_id, connection_id, item_type, title, source_uri, canonical_uri,
+           id, space_id, project_id, connection_id, item_type, title, source_uri, canonical_uri,
            source_domain, created_by_user_id, content_state, retention_policy,
            metadata_json, first_seen_at, last_seen_at, created_at, updated_at,
            owner_user_id, visibility, access_level
          ) VALUES (
-           $1, $2, $3, 'external_url', $4, $5, $6,
-           $7, $8, $9, $10,
-           $11::jsonb, $12, $12, $12, $12,
-           $13, $14, $15
+           $1, $2, $3, $4, 'external_url', $5, $6, $7,
+           $8, $9, $10, $11,
+           $12::jsonb, $13, $13, $13, $13,
+           $14, $15, $16
          ) RETURNING ${ITEM_COLUMNS}`,
         [
           randomUUID(),
           identity.spaceId,
+          projectId,
           connectionId,
           optionalString(body.title) ?? canonical,
           url,
@@ -315,7 +319,7 @@ export class PgSourcesRepository {
           JSON.stringify({ created_by: "manual_url" }),
           now,
           connection?.owner_user_id ?? identity.userId,
-          connection?.visibility ?? "private",
+          connection?.visibility ?? optionalString(body.visibility) ?? "private",
           connection?.access_level ?? "full",
         ],
       );
@@ -579,20 +583,43 @@ export class PgSourcesRepository {
     const item = sourceItemId ? await this.getItemRow(identity, sourceItemId, true) : null;
     if (sourceItemId && !item) throw new HttpError(404, "Source item not found");
     const artifactId = optionalString(body.artifact_id);
+    let artifact: {
+      id: string;
+      project_id: string | null;
+      owner_user_id: string | null;
+      visibility: string;
+      access_level: string;
+    } | null = null;
     if (artifactId) {
-      const artifact = await this.db.query<{ id: string }>(
-        `SELECT id FROM artifacts WHERE space_id = $1 AND id = $2`,
+      if ((await contentDecisionFromDb(this.db, identity, "artifact", artifactId)) !== "full") {
+        throw new HttpError(404, "Artifact not found");
+      }
+      const artifactResult = await this.db.query<{
+        id: string;
+        project_id: string | null;
+        owner_user_id: string | null;
+        visibility: string;
+        access_level: string;
+      }>(
+        `SELECT id, project_id, owner_user_id, visibility, access_level
+           FROM artifacts
+          WHERE space_id = $1 AND id = $2`,
         [identity.spaceId, artifactId],
       );
-      if (!artifact.rows[0]) throw new HttpError(404, "Artifact not found");
+      artifact = artifactResult.rows[0] ?? null;
+      if (!artifact) throw new HttpError(404, "Artifact not found");
+      if (item && artifact.project_id !== item.project_id) {
+        throw new HttpError(422, "Evidence sources must use the same Project context");
+      }
     }
     const content = optionalString(body.content_excerpt);
     const now = new Date().toISOString();
     const evidenceId = await upsertCanonicalEvidence(this.db, {
       spaceId: identity.spaceId,
-      ownerUserId: item?.owner_user_id ?? identity.userId,
-      visibility: item?.visibility ?? "private",
-      accessLevel: item?.access_level ?? "full",
+      projectId: item?.project_id ?? artifact?.project_id ?? null,
+      ownerUserId: item?.owner_user_id ?? artifact?.owner_user_id ?? identity.userId,
+      visibility: item?.visibility ?? artifact?.visibility ?? "private",
+      accessLevel: item?.access_level ?? artifact?.access_level ?? "full",
       sourceItemId,
       sourceObjectType: optionalString(body.source_object_type) ?? item?.source_object_type ?? null,
       sourceObjectId: optionalString(body.source_object_id) ?? item?.source_object_id ?? null,
@@ -623,6 +650,15 @@ export class PgSourcesRepository {
         spaceId: identity.spaceId,
         sourceResourceType: "source_item",
         sourceResourceId: item.id,
+        targetResourceType: "extracted_evidence",
+        targetResourceId: row.id,
+        inheritedAt: now,
+      });
+    } else if (artifact?.visibility === "selected_users") {
+      await inheritContentAccessGrants(this.db, {
+        spaceId: identity.spaceId,
+        sourceResourceType: "artifact",
+        sourceResourceId: artifact.id,
         targetResourceType: "extracted_evidence",
         targetResourceId: row.id,
         inheritedAt: now,

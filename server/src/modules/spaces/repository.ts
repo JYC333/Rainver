@@ -32,6 +32,7 @@ export interface SpaceResult {
   type: string;
   created_by_user_id: string | null;
   oversight_mode: string;
+  egress_notifications_enabled: boolean;
   created_at: string;
   updated_at: string;
   role?: string | null;
@@ -108,6 +109,7 @@ type SpaceRow = {
   type: string;
   created_by_user_id: string | null;
   oversight_mode: string;
+  egress_notifications_enabled: boolean;
   created_at: Date | string;
   updated_at: Date | string;
   role?: string | null;
@@ -158,6 +160,7 @@ function spaceOut(row: SpaceRow): SpaceResult {
     type: row.type,
     created_by_user_id: row.created_by_user_id,
     oversight_mode: row.oversight_mode,
+    egress_notifications_enabled: row.egress_notifications_enabled,
     created_at: asIso(row.created_at),
     updated_at: asIso(row.updated_at),
     ...(row.role !== undefined ? { role: row.role } : {}),
@@ -187,9 +190,11 @@ export class PgSpaceRepository implements SpaceRepository {
     return withTransaction(this.pool, async (client) => {
       const spaceId = randomUUID();
       await client.query(
-        `INSERT INTO spaces (id, name, type, created_by_user_id, oversight_mode, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, now(), now())`,
-        [spaceId, input.name, type, userId, oversightMode],
+        `INSERT INTO spaces
+           (id, name, type, created_by_user_id, oversight_mode,
+            egress_notifications_enabled, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
+        [spaceId, input.name, type, userId, oversightMode, type === "team"],
       );
       await client.query(
         `INSERT INTO space_memberships
@@ -197,7 +202,7 @@ export class PgSpaceRepository implements SpaceRepository {
          VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
         [randomUUID(), spaceId, userId],
       );
-      await seedSpaceDefaults(client, spaceId);
+      await seedSpaceDefaults(client, spaceId, userId);
       const row = await this.getSpaceRow(spaceId, userId, client);
       return spaceOut({ ...row!, role: "owner" });
     });
@@ -411,6 +416,7 @@ export class PgSpaceRepository implements SpaceRepository {
   ): Promise<SpaceRow | null> {
     const res = await client.query<SpaceRow>(
       `SELECT s.id, s.name, s.type, s.created_by_user_id, s.oversight_mode,
+              s.egress_notifications_enabled,
               s.created_at, s.updated_at, m.role
          FROM spaces s
          LEFT JOIN space_memberships m

@@ -1,5 +1,6 @@
 import type { Queryable } from "../routeUtils/common";
 import { contentReadSql } from "../access/contentAccessSql";
+import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql";
 import {
   RetrievalRegistry,
   type CanonicalObject,
@@ -126,7 +127,7 @@ interface ObjectRelationProjectionRow {
   from_object_type: RetrievalObjectType;
   to_object_id: string;
   to_object_type: RetrievalObjectType;
-  relation_type: string;
+  link_type: string;
   confidence: number | null;
   evidence_summary: string | null;
   source_claim_id: string | null;
@@ -140,6 +141,7 @@ interface ClaimSourceConnectionRow {
 interface ItemSourceProjectionRow {
   knowledge_item_id: string;
   source_id: string;
+  // Citation lineage keeps `relation_type` (B12A) — it is not an ontology edge.
   relation_type: string;
   confidence: number | null;
 }
@@ -191,7 +193,7 @@ export const knowledgeRetrievalAdapter: RetrievalDomainAdapter = {
          JOIN space_objects so ON so.id = ki.object_id AND so.space_id = ki.space_id
         WHERE ki.space_id = $1
           AND so.object_type = 'knowledge_item'
-          AND so.status = 'active'`,
+          AND ki.status = 'active'`,
       [spaceId],
     );
     for (const row of items.rows) refs.push({ objectType: "knowledge_item", objectId: row.id });
@@ -202,7 +204,7 @@ export const knowledgeRetrievalAdapter: RetrievalDomainAdapter = {
          JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
         WHERE n.space_id = $1
           AND so.object_type = 'note'
-          AND so.status = 'active'`,
+          AND n.status = 'active'`,
       [spaceId],
     );
     for (const row of notes.rows) refs.push({ objectType: "note", objectId: row.id });
@@ -213,7 +215,7 @@ export const knowledgeRetrievalAdapter: RetrievalDomainAdapter = {
          JOIN space_objects so ON so.id = s.object_id AND so.space_id = s.space_id
         WHERE s.space_id = $1
           AND so.object_type = 'source'
-          AND so.status = 'processed'`,
+          AND s.status = 'processed'`,
       [spaceId],
     );
     for (const row of sources.rows) refs.push({ objectType: "source", objectId: row.id });
@@ -224,7 +226,7 @@ export const knowledgeRetrievalAdapter: RetrievalDomainAdapter = {
          JOIN space_objects so ON so.id = c.object_id AND so.space_id = c.space_id
         WHERE c.space_id = $1
           AND so.object_type = 'claim'
-          AND so.status = 'active'`,
+          AND c.status = 'active'`,
       [spaceId],
     );
     for (const row of claims.rows) refs.push({ objectType: "claim", objectId: row.id });
@@ -255,7 +257,7 @@ async function revalidateKnowledgeMany(
         WHERE ki.space_id = $1
           AND ki.object_id = ANY($2::varchar[])
           AND so.object_type = 'knowledge_item'
-          AND so.status = 'active'
+          AND ki.status = 'active'
           AND ${contentReadSql("space_object", "so", "$3")}`,
       [spaceId, ids, viewerUserId],
     );
@@ -275,7 +277,7 @@ async function revalidateKnowledgeMany(
         WHERE n.space_id = $1
           AND n.object_id = ANY($2::varchar[])
           AND so.object_type = 'note'
-          AND so.status = 'active'
+          AND n.status = 'active'
           AND ${contentReadSql("space_object", "so", "$3")}`,
       [spaceId, ids, viewerUserId],
     );
@@ -295,7 +297,7 @@ async function revalidateKnowledgeMany(
         WHERE c.space_id = $1
           AND c.object_id = ANY($2::varchar[])
           AND so.object_type = 'claim'
-          AND so.status = 'active'
+          AND c.status = 'active'
           AND ${contentReadSql("space_object", "so", "$3")}`,
       [spaceId, ids, viewerUserId],
     );
@@ -314,7 +316,7 @@ async function revalidateKnowledgeMany(
       WHERE s.space_id = $1
         AND s.object_id = ANY($2::varchar[])
         AND so.object_type = 'source'
-        AND so.status = 'processed'
+        AND s.status = 'processed'
         AND ${contentReadSql("space_object", "so", "$3")}`,
     [spaceId, ids, viewerUserId],
   );
@@ -328,7 +330,7 @@ async function revalidateKnowledgeMany(
 async function loadKnowledgeItem(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<KnowledgeProjectionRow>(
     `SELECT ki.object_id AS id, so.project_folder_id, so.owner_user_id,
-            so.created_by_user_id, so.visibility, so.status,
+            so.created_by_user_id, so.visibility, ki.status,
             ki.knowledge_kind, so.title, ki.slug, ki.aliases_json, ki.content,
             ki.plain_text, so.summary AS excerpt, so.updated_at
        FROM knowledge_items ki
@@ -351,7 +353,7 @@ async function loadKnowledgeItem(db: Queryable, spaceId: string, objectId: strin
     ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility,
     status: row.status,
-    objectKind: row.knowledge_kind,
+    objectProfile: row.knowledge_kind,
     aliases: stringArray(row.aliases_json),
     text,
     sourceConnectionIds,
@@ -362,7 +364,7 @@ async function loadKnowledgeItem(db: Queryable, spaceId: string, objectId: strin
 async function loadNote(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<NoteProjectionRow>(
     `SELECT n.object_id AS id, so.title, n.plain_text, so.summary AS excerpt,
-            so.status, so.visibility, so.created_by_user_id, so.updated_at
+            n.status, so.visibility, so.created_by_user_id, so.updated_at
        FROM notes n
        JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
       WHERE n.space_id = $1
@@ -382,7 +384,7 @@ async function loadNote(db: Queryable, spaceId: string, objectId: string): Promi
     ownerUserId: row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
-    objectKind: "note",
+    objectProfile: "note",
     aliases: [],
     text: joinText([row.title, row.excerpt, row.plain_text]),
     sourceConnectionIds,
@@ -393,7 +395,7 @@ async function loadNote(db: Queryable, spaceId: string, objectId: string): Promi
 async function loadSource(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<SourceProjectionRow>(
     `SELECT s.object_id AS id, s.source_type, so.title, s.uri, s.raw_text,
-            s.summary, s.metadata_json, so.status, so.visibility,
+            s.summary, s.metadata_json, s.status, so.visibility,
             so.created_by_user_id, so.updated_at
        FROM sources s
        JOIN space_objects so ON so.id = s.object_id AND so.space_id = s.space_id
@@ -413,7 +415,7 @@ async function loadSource(db: Queryable, spaceId: string, objectId: string): Pro
     ownerUserId: row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
-    objectKind: row.source_type,
+    objectProfile: row.source_type,
     aliases: row.uri ? [row.uri] : [],
     text: joinText([row.title, row.uri, row.summary, row.raw_text]),
     sourceConnectionIds: sourceConnectionIdsFromMetadata(row.metadata_json),
@@ -424,7 +426,7 @@ async function loadSource(db: Queryable, spaceId: string, objectId: string): Pro
 async function loadClaim(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<ClaimProjectionRow>(
     `SELECT c.object_id AS id, so.project_folder_id, so.owner_user_id,
-            so.created_by_user_id, so.visibility, so.status, c.claim_kind,
+            so.created_by_user_id, so.visibility, c.status, c.claim_kind,
             so.title, c.subject_text, c.claim_text, c.resolution_state,
             so.updated_at
        FROM claims c
@@ -446,7 +448,7 @@ async function loadClaim(db: Queryable, spaceId: string, objectId: string): Prom
     ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility,
     status: row.status,
-    objectKind: row.claim_kind,
+    objectProfile: row.claim_kind,
     aliases: [],
     text: joinText([row.title, row.subject_text, row.claim_text]),
     sourceConnectionIds,
@@ -492,7 +494,7 @@ async function itemSourceEdges(db: Queryable, spaceId: string, object: Canonical
   return rows.rows.map((row) => ({
     from: { objectType: "knowledge_item", objectId: row.knowledge_item_id },
     to: { objectType: "source", objectId: row.source_id },
-    relationType: row.relation_type,
+    linkType: row.relation_type,
     edgeOrigin: "source_link_projection",
     edgeStatus: "derived",
     confidence: row.confidence ?? 0.9,
@@ -510,17 +512,18 @@ async function claimSourceEdges(db: Queryable, spaceId: string, object: Canonica
        JOIN space_objects so
          ON so.id = cs.source_object_id
         AND so.space_id = cs.space_id
+       ${objectStatusJoinSql("so")}
       WHERE cs.space_id = $1
         AND ${clause}
         AND cs.source_object_id IS NOT NULL
         AND so.object_type = ANY($3::varchar[])
-        AND so.status NOT IN ('archived', 'deleted')`,
+        AND ${objectStatusSql()} NOT IN ('archived', 'deleted')`,
     [spaceId, object.objectId, KNOWLEDGE_RETRIEVAL_OBJECT_TYPES],
   );
   return rows.rows.map((row) => ({
     from: { objectType: "claim", objectId: row.claim_id },
     to: { objectType: row.source_object_type, objectId: row.source_object_id },
-    relationType: row.evidence_role,
+    linkType: row.evidence_role,
     edgeOrigin: "claim_source_projection",
     edgeStatus: "derived",
     confidence: row.confidence ?? 0.9,
@@ -532,7 +535,7 @@ async function objectRelationEdges(db: Queryable, spaceId: string, object: Canon
   const rows = await db.query<ObjectRelationProjectionRow>(
     `SELECT r.from_object_id, from_so.object_type AS from_object_type,
             r.to_object_id, to_so.object_type AS to_object_type,
-            r.relation_type, r.confidence, r.evidence_summary,
+            r.link_type, r.confidence, r.evidence_summary,
             r.source_claim_id
        FROM object_relations r
        JOIN space_objects from_so
@@ -554,7 +557,7 @@ async function objectRelationEdges(db: Queryable, spaceId: string, object: Canon
   return rows.rows.map((row) => ({
     from: { objectType: row.from_object_type, objectId: row.from_object_id },
     to: { objectType: row.to_object_type, objectId: row.to_object_id },
-    relationType: row.relation_type,
+    linkType: row.link_type,
     edgeOrigin: "object_relation_projection",
     edgeStatus: "derived",
     confidence: row.confidence ?? 0.9,

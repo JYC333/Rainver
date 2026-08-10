@@ -17,6 +17,19 @@ ENV NPM_CONFIG_FETCH_RETRIES=5 \
     NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 
+# The web package depends on @agent-space/protocol through a local file link.
+# Build that package inside the image before installing the web dependencies so
+# npm does not create a dangling /repo/packages/protocol symlink. Type-only
+# imports can hide a missing link, but runtime value imports need dist/index.js.
+WORKDIR /repo/packages/protocol
+
+COPY packages/protocol/package.json packages/protocol/package-lock.json ./
+RUN npm ci
+
+COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./
+COPY packages/protocol/src ./src
+RUN npm run build
+
 WORKDIR /repo/apps/web
 
 COPY apps/web/package.json apps/web/package-lock.json ./

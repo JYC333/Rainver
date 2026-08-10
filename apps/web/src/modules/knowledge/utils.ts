@@ -3,7 +3,7 @@ import type {
   KnowledgeItemKind,
   KnowledgeItemStatus,
   KnowledgeRelationStatus,
-  KnowledgeRelationType,
+  KnowledgeLinkType,
   KnowledgeVisibility,
 } from '../../types/api'
 
@@ -21,7 +21,7 @@ export const KNOWLEDGE_STATUSES: KnowledgeItemStatus[] = ['draft', 'active', 'su
 export const KNOWLEDGE_VISIBILITIES: KnowledgeVisibility[] = ['private', 'space_shared', 'selected_users']
 export const KNOWLEDGE_FORMATS: KnowledgeContentFormat[] = ['markdown', 'plain']
 
-export const KNOWLEDGE_RELATION_TYPES: KnowledgeRelationType[] = [
+export const KNOWLEDGE_LINK_TYPES: KnowledgeLinkType[] = [
   'related_to',
   'explains',
   'depends_on',

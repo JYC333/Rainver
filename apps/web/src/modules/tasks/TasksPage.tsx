@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
+import { useNavigate } from 'react-router-dom'
 import { ListTodo, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, boardsApi, tasksApi } from '../../api/client'
@@ -13,7 +13,6 @@ import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
 import { ScopeBadge } from '../../components/ScopeBadge'
-import { WriteTargetPicker, useWriteTarget } from '../../components/WriteTargetPicker'
 import {
   Dialog,
   DialogContent,
@@ -22,6 +21,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import TaskCreateForm from './TaskCreateForm'
+import { spacePath } from '../../core/navigation'
 
 const OPEN_STATUSES = new Set(['inbox', 'ready', 'in_progress', 'blocked'])
 
@@ -42,8 +42,7 @@ function acPreview(task: Task): string | null {
 
 export default function TasksPage() {
   const navigate = useNavigate()
-  const { activeSpaceId, activeSpaceName } = useSpace()
-  const { writeTargetSpaceId, hasWriteTarget } = useWriteTarget()
+  const { activeSpaceId, activeSpaceName, personalSpaceId } = useSpace()
   const [boards, setBoards] = useState<Board[]>([])
   const [agents, setAgents] = useState<AgentOut[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -127,12 +126,12 @@ export default function TasksPage() {
   }, [tasks])
 
   async function createTask(body: Record<string, unknown>) {
-    if (!hasWriteTarget) { toast.error('Select a write target'); return }
+    if (!personalSpaceId) { toast.error('Personal Space is unavailable'); return }
     try {
-      const t = await tasksApi.create(body, { spaceId: writeTargetSpaceId ?? undefined })
+      const t = await tasksApi.create(body, { spaceId: personalSpaceId })
       toast.success('Task created')
       setCreateOpen(false)
-      navigate(`/tasks/${t.id}`)
+      navigate(spacePath(t.space_id, `/tasks/${t.id}`))
       await loadTasks()
     } catch (e) {
       toast.error(errMsg(e))
@@ -266,9 +265,8 @@ export default function TasksPage() {
         <DialogContent className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>New task</DialogTitle>
-            <DialogDescription>Start with the goal. The Agent can clarify and structure the contract when you ask it to plan.</DialogDescription>
+            <DialogDescription>Start with the goal. This context-free task is private in your Personal Space; create from a Project to share it there.</DialogDescription>
           </DialogHeader>
-          <WriteTargetPicker />
           <TaskCreateForm boards={boards} agents={agents} submitLabel="Create task" onSubmit={createTask} onCancel={() => setCreateOpen(false)} />
         </DialogContent>
       </Dialog>

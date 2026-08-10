@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository";
 
 // Real-Postgres coverage for the run_delegations idempotency guarantee added
@@ -28,6 +28,7 @@ beforeAll(async () => {
     pool = new Pool({ connectionString: container.getConnectionUri() });
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[run-delegation-idempotency] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 120_000);

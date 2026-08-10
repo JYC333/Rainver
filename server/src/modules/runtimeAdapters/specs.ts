@@ -11,7 +11,6 @@ export type RuntimeAdapterType =
 export type RuntimeKind = "native" | "local_cli" | "managed_api" | "custom";
 export type RuntimeExecutorFamily = "native" | "local_cli" | "managed_api" | "custom";
 export type ImplementationStatus = "implemented" | "planned" | "disabled";
-export type ContextFileType = "CLAUDE.md" | "AGENTS.md" | "prompt.md" | "custom";
 export type CredentialMode = "none" | "cli_profile" | "cli_profile_or_model_provider" | "model_provider_api_key";
 export type CredentialReleaseChannel = "server_runtime_host";
 type RuntimeConfigValue = string | number | boolean | Record<string, string>;
@@ -53,11 +52,6 @@ export interface RuntimeAdapterSpec {
     interactive_command_template?: string[];
     argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
     protocol?: "codex_app_server" | "acp";
-  };
-  context: {
-    context_file_type: ContextFileType;
-    context_target_format: string;
-    writes_vendor_context_file: boolean;
   };
   credentials: {
     credential_mode: CredentialMode;
@@ -154,11 +148,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     side_effect_level: "none",
     data_exposure: "none",
     baseline_trust_level: "low",
-    context: {
-      context_file_type: "custom",
-      context_target_format: "generic",
-      writes_vendor_context_file: false,
-    },
     credentials: { credential_mode: "none" },
     sandbox: noFiles,
     model: {
@@ -196,11 +185,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     side_effect_level: "external",
     data_exposure: "provider",
     baseline_trust_level: "high",
-    context: {
-      context_file_type: "custom",
-      context_target_format: "generic",
-      writes_vendor_context_file: false,
-    },
     credentials: { credential_mode: "model_provider_api_key" },
     sandbox: noFiles,
     model: {
@@ -238,11 +222,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     side_effect_level: "external",
     data_exposure: "provider",
     baseline_trust_level: "high",
-    context: {
-      context_file_type: "custom",
-      context_target_format: "host_request",
-      writes_vendor_context_file: false,
-    },
     credentials: {
       credential_mode: "model_provider_api_key",
       credential_release_channel: "server_runtime_host",
@@ -316,11 +295,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       interactive_command_template: ["{executable}"],
       argument_rendering_strategy: "argv_template",
     },
-    context: {
-      context_file_type: "CLAUDE.md",
-      context_target_format: "claude",
-      writes_vendor_context_file: true,
-    },
     credentials: {
       credential_mode: "cli_profile",
       credential_runtime_name: "claude_code",
@@ -381,11 +355,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       ],
       argument_rendering_strategy: "ndjson_rpc",
       protocol: "codex_app_server",
-    },
-    context: {
-      context_file_type: "AGENTS.md",
-      context_target_format: "codex_cli",
-      writes_vendor_context_file: true,
     },
     credentials: {
       credential_mode: "cli_profile",
@@ -453,11 +422,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       argument_rendering_strategy: "ndjson_rpc",
       protocol: "acp",
     },
-    context: {
-      context_file_type: "AGENTS.md",
-      context_target_format: "generic",
-      writes_vendor_context_file: false,
-    },
     credentials: {
       credential_mode: "cli_profile_or_model_provider",
       credential_runtime_name: "opencode",
@@ -506,11 +470,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       headless_command_template: [],
       argument_rendering_strategy: "argv_template",
     },
-    context: {
-      context_file_type: "AGENTS.md",
-      context_target_format: "generic",
-      writes_vendor_context_file: false,
-    },
     credentials: {
       credential_mode: "cli_profile",
       credential_runtime_name: "gemini_cli",
@@ -551,11 +510,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     side_effect_level: "external",
     data_exposure: "unknown",
     baseline_trust_level: "low",
-    context: {
-      context_file_type: "custom",
-      context_target_format: "custom",
-      writes_vendor_context_file: false,
-    },
     credentials: { credential_mode: "none" },
     sandbox: {
       requires_file_access: true,
@@ -612,8 +566,4 @@ export function getLocalCliRuntimeAdapterSpec(
 export function isVendorCliAdapter(adapterType: string | null | undefined): boolean {
   const spec = getRuntimeAdapterSpec(adapterType);
   return spec?.runtime_kind === "local_cli" && spec.implementation_status === "implemented";
-}
-
-export function targetFormatForAdapter(adapterType: string | null | undefined): string | null {
-  return getRuntimeAdapterSpec(adapterType)?.context.context_target_format ?? null;
 }

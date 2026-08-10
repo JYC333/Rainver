@@ -17,10 +17,18 @@ export const relationPeople = pgTable("relation_people", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	pronouns: varchar({ length: 32 }),
 	headline: varchar({ length: 256 }),
+	// Domain lifecycle state, moved off `space_objects` (B12D). Person and
+	// Organization fell in the unconstrained ELSE arm of the former
+	// `ck_space_objects_status_by_type`, so this vocabulary is stated here for
+	// the first time; it matches observed usage in `relations/repository.ts`
+	// (created active, archived on delete, filtered against deleted).
+	status: varchar({ length: 32 }).default('active').notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_relation_people_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	index("ix_relation_people_status").using("btree", table.status.asc().nullsLast()),
+	check("ck_relation_people_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
@@ -40,10 +48,14 @@ export const relationOrganizations = pgTable("relation_organizations", {
 	orgType: varchar("org_type", { length: 32 }).default('other').notNull(),
 	homepageUrl: text("homepage_url"),
 	parentOrganizationObjectId: varchar("parent_organization_object_id", { length: 36 }),
+	// See the note on `relation_people.status`.
+	status: varchar({ length: 32 }).default('active').notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_relation_organizations_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	index("ix_relation_organizations_status").using("btree", table.status.asc().nullsLast()),
+	check("ck_relation_organizations_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
 	index("ix_relation_organizations_parent").using("btree", table.parentOrganizationObjectId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.spaceId],

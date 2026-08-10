@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import {
   RetrievalProjectionService,
@@ -81,6 +81,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[retrieval-bench-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -157,12 +158,12 @@ async function seed(doc: SeedDoc): Promise<void> {
   });
 }
 
-async function relate(fromId: string, toId: string, relationType = "related_to"): Promise<void> {
+async function relate(fromId: string, toId: string, linkType = "related_to"): Promise<void> {
   await pool!.query(
     `INSERT INTO object_relations (
-       id, space_id, from_object_id, to_object_id, relation_type, status, confidence, created_at, updated_at
+       id, space_id, from_object_id, to_object_id, link_type, status, confidence, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, $5, 'active', 0.9, now(), now())`,
-    [randomUUID(), SPACE, fromId, toId, relationType],
+    [randomUUID(), SPACE, fromId, toId, linkType],
   );
 }
 

@@ -23,7 +23,6 @@ export interface RunRecord {
   runtime_profile_id?: string | null;
   runtime_profile_selection_source?: RuntimeProfileSelectionSource | null;
   system_prompt?: string | null;
-  context_snapshot_id?: string | null;
   run_type?: string;
   status: string;
   mode: string;
@@ -63,6 +62,8 @@ export interface RunRecord {
   owner_user_id?: string | null;
   visibility?: string;
   access_level?: string;
+  has_context_taint?: boolean;
+  context_taint_json?: unknown;
 }
 
 export type RuntimeProfileSelectionSource = "explicit" | "default";
@@ -91,40 +92,6 @@ export interface ModelProviderSummaryRecord {
   credential_id?: string | null;
 }
 
-export interface ContextSnapshotRecord {
-  id: string;
-  space_id: string;
-  run_id: string | null;
-  agent_id: string | null;
-  session_id: string | null;
-  source_refs_json: unknown;
-  compiled_summary: string | null;
-  token_estimate: number | null;
-  relevant_period_start: string | null;
-  relevant_period_end: string | null;
-  compiled_prefix_text: string | null;
-  compiled_tail_text: string | null;
-  compiled_prefix_ref: string | null;
-  compiled_tail_ref: string | null;
-  prefix_hash: string | null;
-  tail_hash: string | null;
-  compiler_version: string | null;
-  retrieval_trace_json: unknown;
-  token_budget_json: unknown;
-  policy_bundle_version: string | null;
-  memory_digest_version: string | null;
-  project_folder_digest_version: string | null;
-  included_memory_refs_json: unknown;
-  included_evidence_refs_json: unknown;
-  included_file_refs_json: unknown;
-  included_doc_refs_json: unknown;
-  redactions_json: unknown;
-  data_exposure_level: string | null;
-  rendered_context_uri: string | null;
-  rendered_context_text: string | null;
-  request_json: unknown;
-  created_at: string;
-}
 
 export interface RunEvaluationRecord {
   id: string;
@@ -272,7 +239,6 @@ export interface RunCreateInput {
   capability_id?: string | null;
   capabilities_json?: unknown[] | null;
   model_override_json?: Record<string, unknown> | null;
-  context_artifact_ids?: string[] | null;
   contract_snapshot?: import("./contractSnapshot").RunContractSnapshotInput;
   workflow_version_id?: string | null;
   visibility?: "private" | "space_shared" | "selected_users";
@@ -299,7 +265,6 @@ export interface DelegatedChildRunCreateInput {
   capability_id?: string | null;
   capabilities_json?: unknown[] | null;
   model_override_json?: Record<string, unknown> | null;
-  context_artifact_ids?: string[] | null;
   budget_json?: Record<string, unknown> | null;
   context_policy_json?: Record<string, unknown> | null;
   visibility?: "private" | "space_shared" | "selected_users";

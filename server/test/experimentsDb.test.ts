@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
 import { ExperimentRunService } from "../src/modules/experiments/runService";
@@ -38,6 +38,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[experiments-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -90,8 +91,8 @@ async function createCorpusItem(): Promise<string> {
   const corpusItemId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, created_at, updated_at)
-     VALUES ($1, $2, 'source', 'A source', 'processed', 'private', $3, $4, $4)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
+     VALUES ($1, $2, 'source', 'A source', 'private', $3, $4, $4)`,
     [objectId, SPACE, OWNER, now],
   );
   await pool!.query(

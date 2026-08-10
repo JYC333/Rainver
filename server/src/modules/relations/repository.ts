@@ -1,3 +1,5 @@
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { objectStatusScalarSql } from "../../db/objectStatusSql";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "../../db/pool";
 import { countFromRow, HttpError, type Queryable } from "../routeUtils/common";
@@ -87,12 +89,12 @@ export interface RelationSourceLinkRow {
 }
 
 const PERSON_COLUMNS = `
-  so.id AS object_id, so.space_id, so.title, so.summary, so.status,
+  so.id AS object_id, so.space_id, so.title, so.summary, rp.status,
   rp.pronouns, rp.headline, rp.created_at, rp.updated_at
 `;
 
 const ORGANIZATION_COLUMNS = `
-  so.id AS object_id, so.space_id, so.title, so.summary, so.status,
+  so.id AS object_id, so.space_id, so.title, so.summary, ro.status,
   ro.org_type, ro.homepage_url, ro.parent_organization_object_id,
   ro.created_at, ro.updated_at
 `;
@@ -117,6 +119,8 @@ export class RelationsRepository {
     client: PoolClient,
     input: {
       spaceId: string;
+      projectId: string | null;
+      visibility: string;
       title: string;
       summary: string | null;
       pronouns: string | null;
@@ -126,16 +130,22 @@ export class RelationsRepository {
   ): Promise<RelationPersonRow> {
     const objectId = randomUUID();
     const now = new Date().toISOString();
+    const object = buildSpaceObjectInsert({
+      id: objectId,
+      spaceId: input.spaceId,
+      objectType: "person",
+      title: input.title,
+      summary: input.summary,
+      visibility: input.visibility,
+      ownerUserId: input.createdByUserId,
+      primaryProjectId: input.projectId,
+      createdByUserId: input.createdByUserId,
+      createdAt: now,
+    });
+    await client.query(object.sql, object.params);
     await client.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility, access_level,
-         owner_user_id, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, 'person', $3, $4, 'active', 'space_shared', 'full', $5, $5, $6, $6)`,
-      [objectId, input.spaceId, input.title, input.summary, input.createdByUserId, now],
-    );
-    await client.query(
-      `INSERT INTO relation_people (object_id, space_id, pronouns, headline, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $5)`,
+      `INSERT INTO relation_people (object_id, space_id, status, pronouns, headline, created_at, updated_at)
+       VALUES ($1, $2, 'active', $3, $4, $5, $5)`,
       [objectId, input.spaceId, input.pronouns, input.headline, now],
     );
     const created = await this.getPerson(client, input.spaceId, objectId, input.createdByUserId ?? "");
@@ -148,7 +158,7 @@ export class RelationsRepository {
       `SELECT ${PERSON_COLUMNS}
          FROM space_objects so
          JOIN relation_people rp ON rp.object_id = so.id AND rp.space_id = so.space_id
-        WHERE so.id = $1 AND so.space_id = $2 AND so.status <> 'deleted'
+        WHERE so.id = $1 AND so.space_id = $2 AND rp.status <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$3")}
         LIMIT 1`,
       [objectId, spaceId, userId],
@@ -162,7 +172,7 @@ export class RelationsRepository {
     filters: { q: string | null; limit: number; offset: number },
   ): Promise<{ rows: RelationPersonRow[]; total: number }> {
     const params: unknown[] = [spaceId, userId];
-    const clauses = ["so.space_id = $1", "so.status <> 'deleted'", contentReadSql("space_object", "so", "$2")];
+    const clauses = ["so.space_id = $1", "rp.status <> 'deleted'", contentReadSql("space_object", "so", "$2")];
     if (filters.q) {
       params.push(`%${filters.q}%`);
       clauses.push(`so.title ILIKE $${params.length}`);
@@ -233,9 +243,19 @@ export class RelationsRepository {
   }
 
   async archivePerson(spaceId: string, objectId: string): Promise<void> {
+    const now = new Date().toISOString();
+    // Domain status lives on the extension table (B12D) and the root keeps the
+    // archive timestamp, but they must move together — this was one statement
+    // before status left the root, and splitting it into two unsynchronised
+    // writes would allow "archived in the extension, not archived at the root".
     await this.db.query(
-      `UPDATE space_objects SET status = 'archived', archived_at = $3, updated_at = $3 WHERE id = $1 AND space_id = $2`,
-      [objectId, spaceId, new Date().toISOString()],
+      `WITH person AS (
+         UPDATE relation_people SET status = 'archived', updated_at = $3
+          WHERE object_id = $1 AND space_id = $2
+       )
+       UPDATE space_objects SET archived_at = $3, updated_at = $3
+        WHERE id = $1 AND space_id = $2`,
+      [objectId, spaceId, now],
     );
   }
 
@@ -243,6 +263,8 @@ export class RelationsRepository {
     client: PoolClient,
     input: {
       spaceId: string;
+      projectId: string | null;
+      visibility: string;
       title: string;
       summary: string | null;
       orgType: string;
@@ -253,17 +275,23 @@ export class RelationsRepository {
   ): Promise<RelationOrganizationRow> {
     const objectId = randomUUID();
     const now = new Date().toISOString();
-    await client.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility, access_level,
-         owner_user_id, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, 'organization', $3, $4, 'active', 'space_shared', 'full', $5, $5, $6, $6)`,
-      [objectId, input.spaceId, input.title, input.summary, input.createdByUserId, now],
-    );
+    const object = buildSpaceObjectInsert({
+      id: objectId,
+      spaceId: input.spaceId,
+      objectType: "organization",
+      title: input.title,
+      summary: input.summary,
+      visibility: input.visibility,
+      ownerUserId: input.createdByUserId,
+      primaryProjectId: input.projectId,
+      createdByUserId: input.createdByUserId,
+      createdAt: now,
+    });
+    await client.query(object.sql, object.params);
     await client.query(
       `INSERT INTO relation_organizations (
-         object_id, space_id, org_type, homepage_url, parent_organization_object_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+         object_id, space_id, status, org_type, homepage_url, parent_organization_object_id, created_at, updated_at
+       ) VALUES ($1, $2, 'active', $3, $4, $5, $6, $6)`,
       [objectId, input.spaceId, input.orgType, input.homepageUrl, input.parentOrganizationObjectId, now],
     );
     const created = await this.getOrganization(client, input.spaceId, objectId, input.createdByUserId ?? "");
@@ -276,7 +304,7 @@ export class RelationsRepository {
       `SELECT ${ORGANIZATION_COLUMNS}
          FROM space_objects so
          JOIN relation_organizations ro ON ro.object_id = so.id AND ro.space_id = so.space_id
-        WHERE so.id = $1 AND so.space_id = $2 AND so.status <> 'deleted'
+        WHERE so.id = $1 AND so.space_id = $2 AND ro.status <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$3")}
         LIMIT 1`,
       [objectId, spaceId, userId],
@@ -290,7 +318,7 @@ export class RelationsRepository {
     filters: { q: string | null; limit: number; offset: number },
   ): Promise<{ rows: RelationOrganizationRow[]; total: number }> {
     const params: unknown[] = [spaceId, userId];
-    const clauses = ["so.space_id = $1", "so.status <> 'deleted'", contentReadSql("space_object", "so", "$2")];
+    const clauses = ["so.space_id = $1", "ro.status <> 'deleted'", contentReadSql("space_object", "so", "$2")];
     if (filters.q) {
       params.push(`%${filters.q}%`);
       clauses.push(`so.title ILIKE $${params.length}`);
@@ -374,7 +402,7 @@ export class RelationsRepository {
     const params: unknown[] = [spaceId, userId];
     const clauses = [
       "orl.space_id = $1",
-      "orl.relation_type = 'affiliated_with'",
+      "orl.link_type = 'affiliated_with'",
       "orl.status = 'active'",
       contentReadSql("space_object", "person_so", "$2"),
       contentReadSql("space_object", "organization_so", "$2"),
@@ -421,7 +449,7 @@ export class RelationsRepository {
       `SELECT from_object_id AS person_object_id
          FROM object_relations
         WHERE id = $1 AND space_id = $2
-          AND relation_type = 'affiliated_with'
+          AND link_type = 'affiliated_with'
           AND status = 'active'
         LIMIT 1`,
       [affiliationId, spaceId],
@@ -580,7 +608,7 @@ export class RelationsRepository {
     const result = await this.db.query(
       `SELECT 1
          FROM space_objects so
-        WHERE so.id = $1 AND so.space_id = $2 AND so.object_type IN ('person', 'organization') AND so.status <> 'deleted'
+        WHERE so.id = $1 AND so.space_id = $2 AND so.object_type IN ('person', 'organization') AND ${objectStatusScalarSql("so")} <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$3")}
         LIMIT 1`,
       [objectId, spaceId, userId],
@@ -617,7 +645,7 @@ export class RelationsRepository {
          FROM space_objects so
         WHERE so.space_id = $1
           AND so.object_type IN ('person', 'organization')
-          AND so.status <> 'deleted'
+          AND ${objectStatusScalarSql("so")} <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$2")}
           AND so.title ILIKE $3
         ORDER BY so.title ASC

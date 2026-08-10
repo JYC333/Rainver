@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { enqueueDueSourceChannelScans } from "../src/modules/sources/scanSchedule";
 import {
@@ -22,7 +21,6 @@ import { PgSourcesRepository } from "../src/modules/sources/repository";
 // external provider — a loopback server this test controls) integration
 // tests for the "first scan job integration" scheduler/worker pair.
 
-const SCHEMA = readFileSync(join(process.cwd(), "test/fixtures/sourceCustomSourceCreateFlowSchema.sql"), "utf8");
 
 const SPACE_A = "space-a";
 const CUSTOM_SOURCE_INSTANCE_RUNNER_SETTINGS_KEY = "source.custom_source.runner";
@@ -37,11 +35,11 @@ let available = false;
 
 beforeAll(async () => {
   try {
-    container = await getTestPostgres(__filename, { empty: true });
+    container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[source-custom-source-scan-schedule] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -72,9 +70,22 @@ beforeEach(async () => {
   await pool.query(
     `TRUNCATE jobs, retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects,
               source_handler_runs, source_handler_versions, source_recipe_versions, source_channel_item_links,
-              source_channel_user_subscriptions, source_channels, source_connections, source_connectors,
+              source_channel_user_subscriptions, source_channels, source_connections, source_provider_connectors, source_providers, source_connectors,
               scheduler_tasks, settings, artifacts, extraction_jobs, source_items,
-              source_snapshots, extracted_evidence, space_memberships`,
+              source_snapshots, extracted_evidence, space_memberships, users, spaces CASCADE`,
+  );
+  // The real schema enforces space_memberships -> spaces -> users. The
+  // hand-maintained schema copy this suite used to load carried neither the
+  // foreign keys nor several columns the code selects, so it passed while the
+  // production shape would have rejected the same rows.
+  await pool.query(
+    `INSERT INTO users (id, display_name, status, created_at, updated_at)
+     VALUES ('user-1', 'User', 'active', now(), now())`,
+  );
+  await pool.query(
+    `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
+     VALUES ($1, 'Space A', 'team', 'user-1', now(), now())`,
+    [SPACE_A],
   );
   await pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
@@ -88,6 +99,21 @@ beforeEach(async () => {
      ) VALUES
        ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now()),
        ('connector-rss', 'rss', 'RSS Feed', 'external_feed', 'pull', 'active', '{}'::jsonb, now(), now())`,
+  );
+  await pool.query(
+    `INSERT INTO source_providers (
+       id, provider_key, display_name, provider_kind, category, status,
+       capabilities_json, created_at, updated_at
+     ) VALUES
+       ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now()),
+       ('provider-rss', 'rss', 'RSS Feed', 'named', 'general', 'active', '{}'::jsonb, now(), now())`,
+  );
+  await pool.query(
+    `INSERT INTO source_provider_connectors (
+       id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at
+     ) VALUES
+       ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now()),
+       ('mapping-rss', 'provider-rss', 'connector-rss', 'active', 0, '{}'::jsonb, now(), now())`,
   );
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-scan-schedule-artifacts-"));
   config = {

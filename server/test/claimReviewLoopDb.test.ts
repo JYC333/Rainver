@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { buildClaimTrajectory, scanClaimContradictions } from "../src/modules/knowledge/claimReviewLoop";
 
@@ -26,6 +26,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[claim-review-loop-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -60,10 +61,7 @@ beforeEach(async () => {
   // Subject the seeded claims point at (claims.subject_object_id has an FK to
   // space_objects).
   await pool.query(
-    `INSERT INTO space_objects (
-       id, space_id, object_type, title, summary, status, visibility,
-       owner_user_id, created_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, 'knowledge_item', 'Subject', 'Subject', 'active', 'space_shared', $3, $3, now(), now())`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'knowledge_item', 'Subject', 'Subject', 'space_shared', $3, $3, now(), now())`,
     [SUBJECT, SPACE, VIEWER],
   );
 });
@@ -86,18 +84,15 @@ async function insertClaim(input: InsertClaimInput): Promise<void> {
   const createdAt = input.createdAt ?? "2026-01-01T00:00:00.000Z";
   const owner = input.ownerUserId === undefined ? VIEWER : input.ownerUserId;
   await pool!.query(
-    `INSERT INTO space_objects (
-       id, space_id, object_type, title, summary, status, visibility,
-       owner_user_id, created_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, 'claim', $3, left($4, 200), $5, $6, $7, $7, $8::timestamptz, $8::timestamptz)`,
-    [input.id, SPACE, input.claimText.slice(0, 60), input.claimText, input.status ?? "active", input.visibility ?? "space_shared", owner, createdAt],
+    `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'claim', $3, left($4, 200), $5, $6, $6, $7::timestamptz, $7::timestamptz)`,
+    [input.id, SPACE, input.claimText.slice(0, 60), input.claimText, input.visibility ?? "space_shared", owner, createdAt],
   );
   await pool!.query(
     `INSERT INTO claims (
-       object_id, space_id, subject_object_id, subject_text, claim_kind,
+       object_id, space_id, status, subject_object_id, subject_text, claim_kind,
        claim_text, normalized_claim_hash, confidence, confidence_method,
        resolution_state, valid_from, metadata_json
-     ) VALUES ($1, $2, $3, $4, $5, $6, md5($6), $7, 'human_confirmed', $8, $9::timestamptz, '{}'::jsonb)`,
+     ) VALUES ($1, $2, $10, $3, $4, $5, $6, md5($6), $7, 'human_confirmed', $8, $9::timestamptz, '{}'::jsonb)`,
     [
       input.id,
       SPACE,
@@ -108,6 +103,7 @@ async function insertClaim(input: InsertClaimInput): Promise<void> {
       input.confidence ?? 0.5,
       input.resolutionState ?? "unreviewed",
       createdAt,
+      input.status ?? "active",
     ],
   );
 }
@@ -210,6 +206,6 @@ describe("Slice E claim review loop (real Postgres)", () => {
     expect(report.candidates_examined).toBe(2);
     expect(report.findings).toHaveLength(1);
     expect(report.findings[0]!.signal).toBe("negation");
-    expect(report.findings[0]!.proposed_action).toMatchObject({ relation_type: "contradicts" });
+    expect(report.findings[0]!.proposed_action).toMatchObject({ link_type: "contradicts" });
   });
 });

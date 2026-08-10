@@ -86,6 +86,7 @@ accepted into Memory or Knowledge.
 |---|---|
 | `source_trust` | Dominant trust level from accepted provenance_entries. |
 | `created_from_proposal_id` | Links MemoryEntry back to accepted Proposal. |
+| `agent_id` | Producing Agent provenance. Never used to select or authorize Memory. |
 | `last_verified_at` | Last time this memory claim was explicitly verified. |
 
 Activity, Artifact, Run, and evidence provenance for accepted Memory is stored
@@ -147,17 +148,47 @@ Approved proposal apply uses proposal-validated writer methods. Ordinary callers
 
 ## Sources/Evidence — Candidate-Only Rule
 
-Sources and extracted evidence content is **candidate-only**. It may be cited in a runtime context snapshot, but it must not become active Memory without a proposal/review cycle.
+Sources and extracted evidence content is **candidate-only**. Runtime Context may
+acquire it as revalidated reference data, but it must not become active Memory
+without a proposal/review cycle.
 
 Current enforcement:
 - External and internal source material enters `SourceItem`, `SourceSnapshot`, `ExtractionJob`, and `ExtractedEvidence` rows.
-- `EvidenceLink` controls which candidate/active evidence can be selected into a `ContextSnapshot`;
-  Sources-created evidence remains candidate-only, but active relevance links can make it citable in runtime context.
+- `EvidenceLink` controls which candidate/active evidence can be selected by its
+  owning domain; Sources-created evidence remains candidate-only, but active
+  relevance links can make it citable in Runtime Context.
   Selector input link types are limited to `context_candidate`, `supports`,
   `contradicts`, `derived_from`, and `mentions`. Accepted source lineage belongs
   in `provenance_links`, not `evidence_links`.
 - `used_in_context` links are audit-only records of prior context use. They are
   not selector inputs.
+- `provenance_links.source_type` membership is a **`provenanceSourceable`
+  declaration on the entity registry** (B12F/B12G); the database CHECK is a
+  format constraint, and `isProvenanceSourceType` is the check. Validation runs
+  in `writeProvenanceLinks` — the entrance — rather than at each caller, and an
+  unknown value is an error rather than a dropped row.
+
+  The list existed **four** times before: that CHECK plus three separate `Set`s
+  (`knowledge/proposalApplier.ts`, `memory/sourceMonitoring.ts`, and
+  `proposals/repository.ts`), two of which *silently dropped* what they did not
+  recognize, so a divergence lost provenance without an error. Two of the three
+  disagreed with the other by five values.
+
+  Auditing it on 2026-08-06 by asking what writes each member and what
+  `source_id` holds changed the vocabulary:
+
+  | value | outcome |
+  |---|---|
+  | `run_step` | renamed `run` — it was written from `payload.source_run_id` and read back as a run id |
+  | `user_confirmation` | kept as the stored token, now declared on a registered `user` entity |
+  | `run_event` | dropped: no writer, no reader, and a run's internal structure is not an entity (B12C) |
+  | `source_snapshot` | kept: no writer, but `retrieval/sourcePolicy.ts` resolves it |
+  | `external_source` | kept as the one provenance **sentinel** — outside material with no row; runtime context items, by contrast, must resolve to typed product objects |
+
+  `note` is a member: promoting a Note passage to a Knowledge Item records the
+  originating Note here rather than widening `knowledge_item_sources.source_id`'s
+  FK, which points at `sources(object_id)` and describes a curated citation path
+  (B12A). `target_type` remains unconstrained and is a known follow-up.
 - Internal run/activity/artifact records are valid source references via
   `source_object_type`/`source_object_id`, not fake internal URLs.
 - `source_uri` remains external HTTP/HTTPS only.

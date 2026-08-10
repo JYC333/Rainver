@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectOverviewService } from "../src/modules/projects/overviewService";
@@ -16,7 +16,7 @@ import { registerLearningProjectIntegration } from "../src/modules/learning/proj
 
 // Proves the Decision/Learning <-> Project Kernel integration, mirroring
 // inquiryProjectIntegrationDb.test.ts: the Project Overview's Decision and
-// Learning workspace_summaries reflect real data through the registries
+// Learning entity_summaries reflect real data through the registries
 // (ADR 0011 decision 5), not the "no Overview adapter yet" fallback —
 // the invariant that each Mode has a real progress model.
 
@@ -35,6 +35,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[decision-learning-project-integration-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -53,7 +54,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE learning_item_mastery, learning_items, learning_objectives, decision_option_scores, decision_commitments,
-       decision_criteria, decision_options, decision_case_sources, decision_cases, knowledge_items, space_objects,
+       decision_criteria, decision_options, decision_cases, knowledge_items, space_objects,
        projects, space_memberships, users, spaces CASCADE`,
   );
   const now = new Date().toISOString();
@@ -74,8 +75,8 @@ async function seedKnowledgeItem(projectId: string): Promise<string> {
   const objectId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
-     VALUES ($1,$2,'knowledge_item','Anchor concept','active','space_shared',$3,$4,$3,$5,$5)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
+     VALUES ($1,$2,'knowledge_item','Anchor concept','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, projectId, now],
   );
   await pool!.query(
@@ -86,8 +87,14 @@ async function seedKnowledgeItem(projectId: string): Promise<string> {
   return objectId;
 }
 
+/** Find an entity summary row the Overview composed for this Project. */
+function entityRow(overview: Record<string, unknown>, entityType: string) {
+  return (overview.entity_summaries as Array<{ entity_type: string; count: number; status: string }>)
+    .find((row) => row.entity_type === entityType);
+}
+
 describe("Decision/Learning <-> Project Kernel integration (real Postgres)", () => {
-  it("a Decision Case ready to decide surfaces in workspace_summaries and as a cross-workspace Attention item", async () => {
+  it("a Decision Case ready to decide surfaces in entity_summaries and as a Project Attention item", async () => {
     if (!available || !pool) return;
     const project = await new PgProjectRepository(pool).create(identity(), { name: "Decision Integration Project" });
     const cases = new DecisionCaseService(pool);
@@ -99,9 +106,9 @@ describe("Decision/Learning <-> Project Kernel integration (real Postgres)", () 
     await cases.scoreOption(identity(), project.id as string, decisionCase.id as string, { option_id: optionB.id, criterion_id: criterion.id, score: 3 });
 
     const overview = await new ProjectOverviewService(pool).getOverview(identity(), project.id as string);
-    const decisionSummary = (overview.area_summaries as Array<{ mode: string; summary: { count: number; status: string } }>)
-      .find((w) => w.mode === "decision");
-    expect(decisionSummary).toMatchObject({ summary: { count: 1, status: "attention" } });
+    // Decision is no longer a Primary Mode; it reports an entity summary row
+    // that a Project of any Mode can carry.
+    expect(entityRow(overview, "decision_case")).toMatchObject({ count: 1, status: "attention" });
 
     const items = await new ProjectAttentionService(pool).listAttentionItems(identity(), project.id as string);
     const attentionItem = items.find((i) => i.source_type === "decision_case" && i.source_id === decisionCase.id);
@@ -111,7 +118,7 @@ describe("Decision/Learning <-> Project Kernel integration (real Postgres)", () 
     });
   });
 
-  it("Learning mastery progress surfaces in workspace_summaries, not the fallback placeholder", async () => {
+  it("Learning mastery progress surfaces in entity_summaries, not the fallback placeholder", async () => {
     if (!available || !pool) return;
     const project = await new PgProjectRepository(pool).create(identity(), { name: "Learning Integration Project" });
     const knowledgeItemId = await seedKnowledgeItem(project.id as string);
@@ -122,8 +129,6 @@ describe("Decision/Learning <-> Project Kernel integration (real Postgres)", () 
     await learning.recordReview(identity(), item.id as string, { outcome: "correct" });
 
     const overview = await new ProjectOverviewService(pool).getOverview(identity(), project.id as string);
-    const learningSummary = (overview.area_summaries as Array<{ mode: string; summary: { count: number; status: string } }>)
-      .find((w) => w.mode === "learning");
-    expect(learningSummary).toMatchObject({ summary: { count: 1 } });
+    expect(entityRow(overview, "learning_item")).toMatchObject({ count: 1 });
   });
 });

@@ -39,6 +39,7 @@ function auth(role: "owner" | "admin" | "reviewer" | "member" | "guest" = "admin
         type: "team",
         role,
         oversight_mode: "none",
+        egress_notifications_enabled: true,
         created_by_user_id: "owner-1",
         created_at: "2026-06-18T00:00:00.000Z",
         updated_at: "2026-06-18T00:00:00.000Z",
@@ -165,7 +166,7 @@ describe("contradiction-scan route", () => {
   it("scans visible active claims and persists a report (admin)", async () => {
     __setAuthRepositoryForTests(auth("admin"));
     mockPool((sql) => {
-      if (/so\.status = 'active'/.test(sql)) {
+      if (/c\.status = 'active'/.test(sql)) {
         return {
           rows: [
             claimRow({ id: "a", claim_text: "The backup job runs every night.", title: "Job" }),

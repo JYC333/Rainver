@@ -26,7 +26,7 @@ interface ThreadProjectionRow {
 
 /**
  * Inquiry Domain adapter for the shared zero-LLM retrieval engine (plan
- * unified read plane). `inquiry_threads` are never `space_objects`
+ * unified read plane). Threads are `space_objects` rows (ADR 0011 decision 1),
  * rows (ADR 0011), so this adapter reads the Inquiry tables directly instead
  * of joining `space_objects` the way Knowledge/Notes do. Visibility is
  * Project-membership-gated, not per-object — `revalidate` is the actual
@@ -48,7 +48,7 @@ export const inquiryRetrievalAdapter: RetrievalDomainAdapter = {
       ownerUserId: null,
       visibility: "space_shared",
       status: row.lifecycle_status,
-      objectKind: row.kind,
+      objectProfile: row.kind,
       aliases: [],
       text: joinText([row.statement, row.current_answer_summary, row.known_gaps, row.proposed_claim, row.predictions]),
       sourceConnectionIds: [],
@@ -70,12 +70,13 @@ export const inquiryRetrievalAdapter: RetrievalDomainAdapter = {
     const ids = uniqueIds(threadIds);
     if (ids.length === 0) return new Map();
     const rows = await db.query<ThreadProjectionRow>(
-      `SELECT t.id, t.project_id, t.kind, t.statement, t.lifecycle_status, t.updated_at,
+      `SELECT t.object_id AS id, t.project_id, t.kind, t.statement, t.lifecycle_status, so.updated_at,
               qs.current_answer_summary, qs.known_gaps, hs.proposed_claim, hs.predictions
          FROM inquiry_threads t
-         LEFT JOIN inquiry_question_states qs ON qs.thread_id = t.id
-         LEFT JOIN inquiry_hypothesis_states hs ON hs.thread_id = t.id
-        WHERE t.space_id = $1 AND t.id = ANY($2::varchar[]) AND t.lifecycle_status <> 'superseded'`,
+         JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+         LEFT JOIN inquiry_question_states qs ON qs.thread_id = t.object_id
+         LEFT JOIN inquiry_hypothesis_states hs ON hs.thread_id = t.object_id
+        WHERE t.space_id = $1 AND t.object_id = ANY($2::varchar[]) AND t.lifecycle_status <> 'superseded'`,
       [spaceId, ids],
     );
     const projectIds = [...new Set(rows.rows.map((row) => row.project_id))];
@@ -98,7 +99,7 @@ export const inquiryRetrievalAdapter: RetrievalDomainAdapter = {
 
   async listObjectIds(db, spaceId): Promise<RetrievalObjectRef[]> {
     const result = await db.query<{ id: string }>(
-      `SELECT id FROM inquiry_threads WHERE space_id = $1 AND lifecycle_status <> 'superseded'`,
+      `SELECT object_id AS id FROM inquiry_threads WHERE space_id = $1 AND lifecycle_status <> 'superseded'`,
       [spaceId],
     );
     return result.rows.map((row) => ({ objectType: "inquiry_thread" as RetrievalObjectType, objectId: row.id }));
@@ -110,12 +111,13 @@ inquiryRetrievalRegistry.register(inquiryRetrievalAdapter);
 
 async function loadThreadRow(db: Queryable, spaceId: string, threadId: string): Promise<ThreadProjectionRow | null> {
   const result = await db.query<ThreadProjectionRow>(
-    `SELECT t.id, t.project_id, t.kind, t.statement, t.lifecycle_status, t.updated_at,
+    `SELECT t.object_id AS id, t.project_id, t.kind, t.statement, t.lifecycle_status, so.updated_at,
             qs.current_answer_summary, qs.known_gaps, hs.proposed_claim, hs.predictions
        FROM inquiry_threads t
-       LEFT JOIN inquiry_question_states qs ON qs.thread_id = t.id
-       LEFT JOIN inquiry_hypothesis_states hs ON hs.thread_id = t.id
-      WHERE t.space_id = $1 AND t.id = $2
+       JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+       LEFT JOIN inquiry_question_states qs ON qs.thread_id = t.object_id
+       LEFT JOIN inquiry_hypothesis_states hs ON hs.thread_id = t.object_id
+      WHERE t.space_id = $1 AND t.object_id = $2
       LIMIT 1`,
     [spaceId, threadId],
   );

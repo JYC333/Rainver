@@ -41,7 +41,7 @@ vi.mock('../../../api/client', () => ({
   capabilitiesFrameworkApi: {
     listWorkflowTemplates: vi.fn().mockResolvedValue([
       {
-        id: 'research.technical_survey',
+        id: 'test.research_workflow',
         name: 'Technical Survey',
         description: 'Survey technical sources.',
         category: 'research',
@@ -51,7 +51,7 @@ vi.mock('../../../api/client', () => ({
         output_artifact_types: ['research_report.archive.v1'],
         proposal_policy: {},
         recommended_runtime_adapters: ['model_api'],
-        prompt_asset_keys: ['workflow.research.technical_survey.run'],
+        prompt_asset_keys: ['test.research_workflow.run'],
       },
     ]),
   },
@@ -61,7 +61,7 @@ vi.mock('../../../api/client', () => ({
         id: 'profile-1',
         space_id: 'space-1',
         project_id: 'project-1',
-        workflow_template_id: 'research.technical_survey',
+        workflow_template_id: 'test.research_workflow',
         name: 'Existing profile',
         enabled: true,
         config_json: {
@@ -78,7 +78,7 @@ vi.mock('../../../api/client', () => ({
     update: vi.fn(),
     buildTemplateRunDraft: vi.fn().mockResolvedValue({
       workflow_template: {
-        id: 'research.technical_survey',
+        id: 'test.research_workflow',
         name: 'Technical Survey',
         description: 'Survey technical sources.',
         category: 'research',
@@ -88,7 +88,7 @@ vi.mock('../../../api/client', () => ({
         output_artifact_types: ['research_report.archive.v1'],
         proposal_policy: {},
         recommended_runtime_adapters: ['model_api'],
-        prompt_asset_keys: ['workflow.research.technical_survey.run'],
+        prompt_asset_keys: ['test.research_workflow.run'],
       },
       workflow_profile: null,
       capability_ids: ['research.source_collect'],
@@ -109,7 +109,7 @@ vi.mock('../../../api/client', () => ({
     }),
     buildRunDraft: vi.fn().mockResolvedValue({
       workflow_template: {
-        id: 'research.technical_survey',
+        id: 'test.research_workflow',
         name: 'Technical Survey',
         description: 'Survey technical sources.',
         category: 'research',
@@ -119,13 +119,13 @@ vi.mock('../../../api/client', () => ({
         output_artifact_types: ['research_report.archive.v1'],
         proposal_policy: {},
         recommended_runtime_adapters: ['model_api'],
-        prompt_asset_keys: ['workflow.research.technical_survey.run'],
+        prompt_asset_keys: ['test.research_workflow.run'],
       },
       workflow_profile: {
         id: 'profile-1',
         space_id: 'space-1',
         project_id: 'project-1',
-        workflow_template_id: 'research.technical_survey',
+        workflow_template_id: 'test.research_workflow',
         name: 'Existing profile',
         enabled: true,
         config_json: {},

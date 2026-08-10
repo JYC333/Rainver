@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { migrate } from "../src/db/migrator";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const USER = "tenant-integrity-user";
@@ -31,6 +31,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(
       `[tenant-reference-integrity-db] skipped — Docker/Postgres unavailable: ${
         error instanceof Error ? error.message : String(error)
@@ -198,15 +199,12 @@ describe("tenant reference integrity", () => {
     // projects.id, space_id) that scopes every other space-owned object is
     // what keeps Project Chat's note candidates from ever crossing spaces.
     await expect(pool.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, status, visibility, primary_project_id,
-         created_at, updated_at
-       ) VALUES ('cross-space-note', $1, 'note', 'Cross-space note', 'active',
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, primary_project_id, created_at, updated_at) VALUES ('cross-space-note', $1, 'note', 'Cross-space note',
                  'space_shared', $2, $3, $3)`,
       [SPACE_A, PROJECT_B, now],
     )).rejects.toMatchObject({ code: "23503" });
     await expect(pool.query(
-      `INSERT INTO research_paper_cards (
+      `INSERT INTO research_evidence_cards (
          id, space_id, project_id, source_item_id, created_at, updated_at
        ) VALUES ('cross-space-card', $1, $2, $3, $4, $4)`,
       [SPACE_A, PROJECT_A, SOURCE_B, now],
@@ -262,10 +260,7 @@ describe("tenant reference integrity", () => {
     if (!available || !pool) return ctx.skip();
     const now = new Date().toISOString();
     await pool.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, status, visibility, primary_project_id,
-         created_at, updated_at
-       ) VALUES ('run-delete-note', $1, 'note', 'Run-authored note', 'active',
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, primary_project_id, created_at, updated_at) VALUES ('run-delete-note', $1, 'note', 'Run-authored note',
                  'space_shared', $2, $3, $3)`,
       [SPACE_A, PROJECT_A, now],
     );

@@ -96,8 +96,8 @@ interface StructuredDailyReport {
 
 const DEFAULT_MODEL_CONFIG = { model: "claude-sonnet-4-6" };
 const DEFAULT_MEMORY_POLICY = {
-  readable_scopes: ["system", "space", "user", "project_folder", "capability", "agent"],
-  writable_scopes: ["agent"],
+  readable_scopes: ["user", "project"],
+  writable_scopes: ["user", "project"],
   readable_types: ["preference", "semantic", "episodic", "procedural", "project"],
 };
 const DEFAULT_RUNTIME_POLICY = {

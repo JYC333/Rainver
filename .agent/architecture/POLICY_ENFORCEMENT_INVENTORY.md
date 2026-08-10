@@ -278,10 +278,10 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 
 | Action | File | Gate |
 |--------|------|------|
-| `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Uses `enforce()` before credentials, context snapshot, and adapter execution. Decision fields are in `context`; safe duplicates are in `metadata_json`. |
+| `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Uses `enforce()` before credentials, Runtime Context Delivery, and adapter execution. Decision fields are in `context`; safe duplicates are in `metadata_json`. |
 | `runtime.use_credential` | `server/src/modules/providers/providerCommandStore.ts`, provider invocation, and run orchestration | Uses `enforce()` before ModelProvider API-key secret fetch; `resource_space_id` comes from the credential row. Same-space manual/api/delegation origins allow; automation requires approval. CLI-profile runtimes use the CLI CredentialBroker path. **fail_closed**. |
-| `context.inject_memory` | `server/src/modules/context/` and `server/src/modules/runs/` | Uses `enforce()` before context assembly/persistence; cross-space access hard denies. |
-| `context.render_for_runtime` | `server/src/modules/runs/` | Before adapter execution — cross-space hard DENY. `has_personal_grant_context` in `context`. |
+| `context.inject_memory` | execution-control preflight and `server/src/modules/runtimeContext/` | Memory acquisition is bounded by the immutable control snapshot and live same-Space/user authorization. |
+| `context.render_for_runtime` | `server/src/modules/runtimeContext/` and `server/src/modules/runs/` | Accepted Delivery is authorized before adapter execution; cross-space drift fails closed. |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers | Uses `enforce()` before Project Folder file writes. **fail_closed**. |
 | `project_folder.read` | `server/src/modules/projectFolders/repository.ts` | Uses `enforce()` before Project Folder tree/file/status/diff reads. Uses actual `ProjectFolder.space_id` as `resource_space_id`. Normal project reads default allow; protected-Folder, external-root, protected/restricted, full diff, and secret-like path reads use `force_record=True`. PathPolicy still blocks traversal and secret-like paths before content is returned. Full diff is bounded and secret-like diff values are redacted; secret-like diff paths are denied. |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` | Uses `enforce()` before persistence. Blocked decisions are audited once and write no file or row. **fail_closed**. |
@@ -299,12 +299,8 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 ### Non-PolicyGateway revalidation guards
 
 These guards are policy-relevant but are not separate action-registry entries.
-They enforce object visibility/type boundaries before data is attached or
-rendered.
-
-| Guard | File | Boundary |
-|-------|------|----------|
-| Context artifact attachment | `server/src/modules/agents/routes.ts`, `server/src/modules/context/routes.ts`, `server/src/modules/context/repository.ts`, `server/src/modules/context/prepareService.ts` | `context_artifact_ids` are capped at 8, de-duplicated, restricted to attachable artifact types, checked against artifact visibility and project access, rendered as `bounded_summary` packs with `raw_artifact_content_included=false`, and revalidated at prepare time before runtime context injection. Unsupported/hidden/project-inaccessible artifacts become blocked attachment refs, not silent context content. |
+Runtime Context live-revalidates every canonical direct/retrieval source before
+Delivery persistence; there is no manual context-artifact attachment guard.
 
 ### WIRED_VIA_PROPOSAL action inventory
 
@@ -332,21 +328,6 @@ is the actual fail_closed audit and approval boundary for all of these actions.
 | `memory_maintenance_packet` | `proposal.apply` gate | Private packets remain creator-only. Explicit `visibility = space_shared` + `review_scope = space_ops` packets are reviewable only when the `retrieval.space.settings` `context_ops_review_mode` field permits the reviewer role. No canonical Memory writes and no direct PolicyGateway call site. |
 | `retrieval_maintenance_packet` | `proposal.apply` gate | Private packets remain creator-only. Explicit `visibility = space_shared` + `review_scope = space_ops` packets are reviewable only when the `retrieval.space.settings` `context_ops_review_mode` field permits the reviewer role. May create child ObjectRelation proposals for supported findings. No direct PolicyGateway call site. |
 | `retrieval_diagnostics_packet` | `proposal.apply` gate | Private packets remain creator-only. Explicit `visibility = space_shared` + `review_scope = space_ops` packets are reviewable only when the `retrieval.space.settings` `context_ops_review_mode` field permits the reviewer role. No canonical Knowledge or Memory writes and no direct PolicyGateway call site. |
-
-### Context artifact attachment structural guard
-
-`context_artifact_ids` are not a PolicyGateway action. They are structurally
-guarded by `server/src/modules/context/repository.ts` and prevalidated at
-managed-run creation:
-
-- attachable type allowlist: `retrieval_brief`, `retrieval_eval_report`,
-  `retrieval_explain_report`, `retrieval_maintenance_report`,
-  `memory_maintenance_report`;
-- visibility and grants: canonical content access predicate; project_folder/project
-  scope is checked independently;
-- project gate: project-scoped artifacts require project visibility;
-- content mode: bounded summary only, with raw artifact content excluded from
-  the runtime context pack.
 
 ### Token usage disclosure guard
 
@@ -389,7 +370,7 @@ Knowledge source monitoring is not complete. The apply service has an explicit
 Knowledge branch in source monitoring to document the boundary, but external or
 untrusted Activity/Artifact-derived Knowledge still needs a future evaluator.
 
-Knowledge must not automatically enter Memory or ContextBuilder. Promotion to
+Knowledge must not automatically enter Memory or Runtime Context. Promotion to
 Memory requires a separate future proposal flow.
 
 Run creation, agent run preflight, standalone preflight, and automation policy
@@ -421,7 +402,7 @@ instead of silently using `model_provider_mode=none`.
 | `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` PolicyGateway (decision fields in `context`; audit duplicates in `metadata_json`) | PolicyDecisionRecord |
 | `runtime.use_credential` | provider credential resolver + run orchestration PolicyGateway for ModelProvider API-key runtimes (`trigger_origin` in `context`; credential space from DB) | PolicyDecisionRecord |
 | `context.inject_memory` | context/runs PolicyGateway (`trigger_origin` in `context`) | PolicyDecisionRecord on DENY |
-| `context.render_for_runtime` | runs PolicyGateway (`has_personal_grant_context` in `context`) | PolicyDecisionRecord on DENY |
+| `context.render_for_runtime` | runs PolicyGateway (`has_context_taint` in `context`) | PolicyDecisionRecord on DENY |
 | `project_folder.read` | projectFolders PolicyGateway (`read_kind`, `relative_path`, Folder posture in `context`) | PolicyDecisionRecord on DENY/REQUIRE_APPROVAL and forced audit for protected-Folder/external-root/restricted/full-diff/secret-like reads |
 | `artifact.persist` | run materialization PolicyGateway (`artifact_type`, `visibility`, project_folder/project IDs, storage shape in `context`) | PolicyDecisionRecord (audit_required=True) |
 | `proposal.create` | proposals + target modules (`target_visibility`, `target_scope` in `context` for memory proposals) | PolicyDecisionRecord (force_record=True for code_patch) |
@@ -469,25 +450,26 @@ Malformed effects on security-sensitive domains fail safe → **deny** (`get_act
 ### Resolver and ephemeral context (`server/src/modules/personalMemoryGrants/`)
 
 - Grant lifecycle enforced via atomic conditional UPDATE (`active → consuming`).
-- `personal_context_block` is ephemeral — built in memory, injected into the adapter prompt only, never persisted.
-- `ContextSnapshot.source_refs_json` stores only safe grant metadata; raw memory, generated summaries, and memory IDs are not stored.
-- `Run.personal_grant_context_json` stores only safe metadata: grant ID, space IDs, memory count, boolean safety flags.
+- Personal-grant content is acquired ephemerally through Runtime Context and never becomes canonical Memory or a normal trace body.
+- Safe Invocation Snapshot source refs store only attribution metadata; raw Memory and generated summaries are not stored.
+- `Run.context_taint_json` stores only safe attribution metadata: narrowest
+  visibility, contributing owner IDs, non-instructing owner IDs, and personal
+  memory grant IDs. It does not store memory content or summaries.
 
 ### Egress status
 
-Automatic grant-derived output blocking is **not implemented** in the run materialization
-path. The system records safe grant context metadata and exposes explicit
-`egress_granting_user` approval rows, but it does not yet route grant-derived artifacts,
-memory proposals, or code patches through a unified review flow.
-
-Future implementation must be proposal/review based and must not rely on payload flags as
-proof of approval.
+Run materialization consumes the durable context taint summary. Cross-owner
+outputs default to selected-user access, and direct Artifact widening is
+blocked. Space-wide publication is routed through `egress_review`; its applier
+re-loads the target taint and requires database-backed, unrevoked
+`egress_granting_user` approvals from every contributing owner. Payload flags
+are declarations, never proof of approval.
 
 ### Remaining deferred items
 
 See `docs/FUTURE_ROADMAP.md` for the full deferred list. Key items:
 - Semantic leakage detection (paraphrased personal-memory meaning requires manual review).
-- Full shared-content pipeline from approved egress_review.
+- Publication types beyond tainted Artifacts.
 - Long-lived, agent-level, space-level, and multi-user grants.
 - `GET /api/v1/spaces/{space_id}/grant-stats` admin endpoint.
 - Consuming-only sub-limit (separate cap of 3 deferred).
@@ -497,7 +479,7 @@ See `docs/FUTURE_ROADMAP.md` for the full deferred list. Key items:
 ## Remaining deferred items
 
 1. Semantic leakage detection for grant-derived output.
-2. Shared persistence pipeline from approved egress review. Future phase required for full shared-content apply.
+2. Publication targets beyond the registered tainted-Artifact egress flow.
 3. Cross-instance publication delivery and redaction policy.
 4. Federation remote fetch (see `docs/FEDERATED_ACCESS_MODEL.md`).
 5. `GET /api/v1/spaces/{space_id}/grant-stats`: space admin aggregate grant statistics endpoint. Deferred. Must return safe aggregate counts only.

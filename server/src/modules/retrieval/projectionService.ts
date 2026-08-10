@@ -168,7 +168,7 @@ export class RetrievalProjectionService {
     const inserted = await this.db.query<RetrievalObjectRow>(
       `INSERT INTO retrieval_objects (
          id, space_id, object_type, object_id, project_folder_id, owner_user_id,
-         visibility, status, title, slug, object_kind, content_hash,
+         visibility, status, title, slug, object_profile, content_hash,
          source_connection_ids_json, indexed_at, updated_at, source_updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
@@ -187,7 +187,7 @@ export class RetrievalProjectionService {
         object.status,
         object.title,
         object.slug,
-        object.objectKind,
+        object.objectProfile,
         contentHash,
         JSON.stringify([...new Set(object.sourceConnectionIds)].sort()),
         now,
@@ -298,7 +298,7 @@ export class RetrievalProjectionService {
       await this.insertEdge(spaceId, {
         from: { objectType: object.objectType, objectId: object.objectId },
         to: { objectType: resolved.object_type, objectId: resolved.object_id },
-        relationType: link.origin === "source_ref" ? "references" : "related_to",
+        linkType: link.origin === "source_ref" ? "references" : "related_to",
         edgeOrigin: link.origin,
         edgeStatus: "suggested",
         confidence: link.origin === "source_ref" ? 0.95 : 0.85,
@@ -332,7 +332,7 @@ export class RetrievalProjectionService {
     await this.db.query(
       `INSERT INTO retrieval_edges (
          id, space_id, from_object_type, from_object_id, to_object_type, to_object_id,
-         relation_type, edge_origin, edge_status, confidence, evidence_json,
+         link_type, edge_origin, edge_status, confidence, evidence_json,
          created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
@@ -341,7 +341,7 @@ export class RetrievalProjectionService {
        )
        ON CONFLICT (
          space_id, from_object_type, from_object_id, to_object_type,
-         to_object_id, relation_type, edge_origin
+         to_object_id, link_type, edge_origin
        )
        DO UPDATE SET
          edge_status = EXCLUDED.edge_status,
@@ -355,7 +355,7 @@ export class RetrievalProjectionService {
         edge.from.objectId,
         edge.to.objectType,
         edge.to.objectId,
-        edge.relationType,
+        edge.linkType,
         edge.edgeOrigin,
         edge.edgeStatus,
         edge.confidence,

@@ -4,7 +4,7 @@ import {
   metadataBoostsAllowed,
   rankingBoost,
   DEFAULT_RANKING_SIGNALS,
-  relationTypeForCandidate,
+  linkTypeForCandidate,
 } from "../src/modules/retrieval/ranking";
 import type { ScoredCandidate } from "../src/modules/retrieval/types";
 
@@ -115,7 +115,7 @@ describe("retrieval ranking signals", () => {
       ...DEFAULT_RANKING_SIGNALS,
       recencyMaxBoost: 1,
       sourceTier: {},
-      relationTypeBoost: {},
+      linkTypeBoost: {},
       nameMatchBoost: 1,
       titlePhraseBoost: 1,
     };
@@ -146,7 +146,7 @@ describe("retrieval ranking signals", () => {
 
     expect(ranked.map((c) => c.objectId)).toEqual(["support", "related"]);
     expect(ranked[0]!.matchedFields).toContain("relation_weight:supports");
-    expect(relationTypeForCandidate(ranked[0]!)).toBe("supports");
+    expect(linkTypeForCandidate(ranked[0]!)).toBe("supports");
   });
 
   it("metadata boosts are floor-gated so weak candidates cannot win on metadata alone", () => {

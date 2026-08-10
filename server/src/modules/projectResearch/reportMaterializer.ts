@@ -7,7 +7,7 @@ import { ProjectResearchAreaService } from "./areaService";
 export interface MaterializeResearchReportInput {
   spaceId: string; projectId: string; workflowId: string; operationId: string; synthesisRunId: string;
   runKind: string; researchQuestion: string; researchQuestionVersion: number;
-  report: Record<string, unknown>; archiveArtifactId: string; literatureMatrixArtifactId: string | null;
+  report: Record<string, unknown>; archiveArtifactId: string; evidenceMatrixArtifactId: string | null;
 }
 
 export class ProjectResearchReportMaterializer {
@@ -37,19 +37,19 @@ export class ProjectResearchReportMaterializer {
         WHERE id=$1 AND space_id=$2 AND project_id=$5`,
       [input.archiveArtifactId, input.spaceId, now, JSON.stringify({ research_report_id: id, research_question: input.researchQuestion, research_question_version: input.researchQuestionVersion }), input.projectId],
     );
-    if (input.literatureMatrixArtifactId) await this.db.query(
+    if (input.evidenceMatrixArtifactId) await this.db.query(
       `UPDATE artifacts SET surface_role='operational', updated_at=$3 WHERE id=$1 AND space_id=$2`,
-      [input.literatureMatrixArtifactId, input.spaceId, now],
+      [input.evidenceMatrixArtifactId, input.spaceId, now],
     );
     await this.db.query(
       `INSERT INTO project_research_reports (
          id,space_id,project_id,workflow_id,operation_id,synthesis_run_id,run_kind,research_question,
          research_question_version,status,content_json,reader_document_json,normalized_text,content_hash,
-         archive_artifact_id,literature_matrix_artifact_id,created_at,updated_at
+         archive_artifact_id,evidence_matrix_artifact_id,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'awaiting_review',$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$16)`,
       [id, input.spaceId, input.projectId, input.workflowId, input.operationId, input.synthesisRunId, input.runKind,
         input.researchQuestion, input.researchQuestionVersion, JSON.stringify(report), JSON.stringify(projection.readerDocument),
-        projection.normalizedText, projection.contentHash, input.archiveArtifactId, input.literatureMatrixArtifactId, now],
+        projection.normalizedText, projection.contentHash, input.archiveArtifactId, input.evidenceMatrixArtifactId, now],
     );
     await new ProjectResearchAreaService(this.db).seedFromReport({
       spaceId: input.spaceId, projectId: input.projectId, runId: input.synthesisRunId, report,

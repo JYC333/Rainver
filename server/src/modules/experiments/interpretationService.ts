@@ -16,7 +16,7 @@ import { stringArray } from "./common";
 
 const VERDICTS = new Set(["supports", "contradicts", "inconclusive"]);
 
-// An Experiment's verdict is not one of Signal's literature-classification
+// An Experiment's verdict is not one of Signal's material-classification
 // values (supports/contradicts/adds_context/adds_method/fills_gap/
 // raises_gap/unrelated); "inconclusive" maps to adds_context (a genuinely
 // inconclusive result is still relevant context for the Hypothesis, not
@@ -82,7 +82,7 @@ export class ExperimentInterpretationService {
     if (!VERDICTS.has(verdict)) throw new HttpError(422, `verdict must be one of ${[...VERDICTS].join(", ")}`);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, db);
+      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       const runIds = [...new Set(stringArray(body.run_ids))];
       if (runIds.length === 0) throw new HttpError(422, "run_ids must contain at least one Experiment Run");
       const referencedRuns = await db.query<{ id: string }>(
@@ -114,7 +114,7 @@ export class ExperimentInterpretationService {
 
   async listInterpretations(identity: SpaceUserIdentity, projectId: string, definitionId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await new ExperimentDefinitionService(this.db).requireDefinition(identity.spaceId, projectId, definitionId);
+    await new ExperimentDefinitionService(this.db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId);
     const rows = await this.db.query<InterpretationRow>(
       `SELECT * FROM experiment_interpretations WHERE space_id=$1 AND project_id=$2 AND definition_id=$3 ORDER BY created_at DESC`,
       [identity.spaceId, projectId, definitionId],
@@ -151,7 +151,7 @@ export class ExperimentInterpretationService {
       const row = await this.row(db, identity.spaceId, projectId, interpretationId, true);
       if (!row) throw new HttpError(404, "Experiment Interpretation not found");
       if (row.status !== "reviewed") throw new HttpError(409, "Only a reviewed Interpretation can be converted to an Evidence Signal");
-      const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, row.definition_id, db);
+      const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, row.definition_id, identity.userId, db);
       const threadId = definition.primary_hypothesis_thread_id;
       if (!threadId) throw new HttpError(409, "This Experiment has no primary Hypothesis Thread to attach a Signal to");
       const signal = await new InquirySignalService(db).createSignalFromReviewedExperiment(identity, projectId, threadId, interpretationId, {

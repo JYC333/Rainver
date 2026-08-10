@@ -16,6 +16,7 @@ import {
 import { PgAgentRepository } from "../agents";
 import { agentTemplateSystemPromptKey, resolveAgentSystemPrompt, type ResolvedAgentSystemPrompt } from "../agents/promptRegistry";
 import { promptProvenanceOf } from "../prompts/provenance";
+import { resolveContentCreationContext } from "../access/creationContext";
 
 interface TemplateSpec {
   id: string;
@@ -104,6 +105,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         return reply.code(404).send({ detail: "Agent template not found" });
       }
       const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
       const version = templateVersionToOut(template);
       const requestedVersion = optionalString(body.template_version_id);
       if (requestedVersion && requestedVersion !== version.id && requestedVersion !== version.version) {
@@ -113,7 +119,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         ...version.model_config_json,
         ...objectValue(body.model_config_json),
       };
-      const provider = await defaultProviderForSpace(context, identity.spaceId);
+      const provider = await defaultProviderForSpace(context, creation.spaceId);
       const providerId = optionalString(body.default_model_provider_id) ?? provider?.id ?? null;
       const model = optionalString(body.default_model) ??
         optionalString(modelConfig.model) ??
@@ -128,17 +134,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const requestSystemPrompt = optionalString(body.system_prompt);
       const resolvedSystemPrompt = requestSystemPrompt
         ? null
-        : await resolveTemplateSystemPrompt(context, identity, template.key);
+        : await resolveTemplateSystemPrompt(
+            context,
+            { spaceId: creation.spaceId, userId: identity.userId },
+            template.key,
+          );
       const systemPrompt = requestSystemPrompt ?? resolvedSystemPrompt?.system ?? null;
       if (!systemPrompt) throw new HttpError(500, "Agent template system prompt is not resolvable");
       const agent = await PgAgentRepository.fromConfig(context.config).create({
-        spaceId: identity.spaceId,
+        spaceId: creation.spaceId,
+        projectId: creation.projectId,
         userId: identity.userId,
         name: optionalString(body.name) ?? template.name,
         description: body.description === undefined
           ? template.description
           : optionalString(body.description),
-        visibility: "private",
+        visibility: creation.visibility,
         systemPrompt,
         promptProvenanceJson: resolvedSystemPrompt
           ? promptProvenanceOf(resolvedSystemPrompt.resolveResult)

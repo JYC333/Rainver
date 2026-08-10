@@ -86,6 +86,33 @@ export function retrievalProviderEgressDestination(provider: {
   return "external_provider";
 }
 
+/** Classify the actual upstream used by a provider-bound runtime adapter. */
+export function runtimeProviderEgressDestination(
+  adapterType: string | null | undefined,
+  provider: { provider_type: string; base_url?: string | null; config_json?: unknown },
+): RetrievalEgressDestination {
+  const compatibleUrlKey = adapterType === "claude_code"
+    ? "claude_compatible_base_url"
+    : adapterType === "codex_cli" || adapterType === "opencode"
+      ? "openai_compatible_base_url"
+      : null;
+  if (!compatibleUrlKey) return retrievalProviderEgressDestination(provider);
+  const config = provider.config_json !== null
+    && typeof provider.config_json === "object"
+    && !Array.isArray(provider.config_json)
+    ? provider.config_json as Record<string, unknown>
+    : {};
+  const compatibleUrl = typeof config[compatibleUrlKey] === "string"
+    ? config[compatibleUrlKey].trim()
+    : "";
+  // Missing or malformed compatible endpoints fail conservatively as external;
+  // the runtime binding will independently reject them before invocation.
+  return retrievalProviderEgressDestination({
+    provider_type: "compatible_upstream",
+    base_url: compatibleUrl || null,
+  });
+}
+
 function isLocalProviderUrl(value: string | null | undefined): boolean {
   if (!value) return false;
   try {

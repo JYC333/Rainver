@@ -7,6 +7,7 @@ import { enforceSources } from "../sources/enforceSources";
 import { ProjectResearchReportRepository } from "./reportRepository";
 import { ProjectResearchQuestionRefineService } from "./questionRefineService";
 import { registerProjectResearchAreaRoutes } from "./areaRoutes";
+import { ProjectResearchStandingComparisonService } from "./standingComparisonService";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => ProjectResearchRepository) | null = null;
 let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchPipelineService) | null = null;
@@ -42,7 +43,51 @@ function requireParam(request: Parameters<typeof params>[0], name: string): stri
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const base = "/api/v1/projects/:projectId/research";
   const reports = () => new ProjectResearchReportRepository(dbPool(context.config));
-  registerProjectResearchAreaRoutes(app, context, base);
+  registerProjectResearchAreaRoutes(app, context, base, "/api/v1/projects/:projectId");
+
+  app.get(`${base}/standing`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
+        .status(identity, requireParam(request, "projectId")));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post(`${base}/standing/advice/:adviceId/dismiss`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
+        .dismissAdvice(identity, requireParam(request, "projectId"), requireParam(request, "adviceId")));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post(`${base}/standing/advice/:adviceId/action`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
+        .actionAdvice(identity, requireParam(request, "projectId"), requireParam(request, "adviceId")));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post(`${base}/standing/batches/:batchId/retry`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
+        .retryBatch(identity, requireParam(request, "projectId"), requireParam(request, "batchId")));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
 
   // Assessment routes are server-owned and rebuilt with this module by the dev polling watcher.
   app.get(`${base}/question/assessment`, async (request, reply) => {
@@ -445,21 +490,21 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get(`${base}/literature-matrix`, async (request, reply) => {
+  app.get(`${base}/evidence-matrix`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await repository(context).getLiteratureMatrix(identity, requireParam(request, "projectId")));
+      return reply.send(await repository(context).getEvidenceMatrix(identity, requireParam(request, "projectId")));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.post(`${base}/literature-matrix/rebuild`, async (request, reply) => {
+  app.post(`${base}/evidence-matrix/rebuild`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await repository(context).rebuildLiteratureMatrix(identity, requireParam(request, "projectId")));
+      return reply.send(await repository(context).rebuildEvidenceMatrix(identity, requireParam(request, "projectId")));
     } catch (error) {
       return sendRouteError(reply, error);
     }

@@ -7,8 +7,6 @@ import {
   ModelProviderModelsResponseSchema,
   ModelProviderUpdateRequestSchema,
   ProviderCatalogInfoSchema,
-  ProviderChatRequestSchema,
-  ProviderChatResponseSchema,
   ProviderConnectionTestResultSchema,
   ProviderFromPresetCreateRequestSchema,
   ProviderPresetDTOSchema,
@@ -120,30 +118,6 @@ describe("provider contracts", () => {
         model: "gpt-4o",
       }).success,
     ).toBe(true);
-    expect(
-      ProviderChatRequestSchema.parse({
-        provider_id: "mp1",
-        messages: [{ role: "user", content: "hi" }],
-        max_tokens: 128,
-      }).messages,
-    ).toHaveLength(1);
-    expect(
-      ProviderChatResponseSchema.parse({
-        content: "hello",
-        provider: "openai",
-        model: "gpt-4o",
-        usage: { total_tokens: 8 },
-      }).usage.total_tokens,
-    ).toBe(8);
-    expect(
-      ProviderChatResponseSchema.safeParse({
-        content: "hello",
-        provider: "openai",
-        model: "gpt-4o",
-        usage: {},
-        api_key: "sk-leak",
-      }).success,
-    ).toBe(false);
   });
 
   it("parses the static catalog and litellm-providers read shapes", () => {

@@ -48,14 +48,15 @@ Proposal has explicit temporal fields: `created_at`, `decided_at`, `deadline` (s
 `expired` (computed from deadline + pending status). `urgency` field affects sort order:
 `low | normal | high | critical`.
 
-**Context Builder**
-Assembles a `ContextPackage` from MemoryStore for a space/user/Project Folder. Enforces space isolation. Resolves ContextAttachments. Logs all memory access.
+**Runtime Context Gateway**
+Sole entry point that reacquires typed canonical inputs, plans one model-aware
+window, reauthorizes mutable authority, and persists an ordered Invocation
+Delivery for managed or CLI execution.
 
-**Context Compiler**
-Translates a ContextPackage into a vendor instruction file (CLAUDE.md, AGENTS.md, prompt.md, plus adapter sidecars such as the Agent Persona Prompt `SOUL.md`) written to the sandbox. Runs security scanning, enforces token budgets, and loads `.agent/` docs progressively.
-
-**Context Snapshot**
-Frozen ContextPackage captured at run-start. Immutable — memory writes during the run do not mutate it. Stored in `context_snapshots` for audit.
+**Invocation Snapshot**
+Immutable safe record of one actual Delivery attempt. It stores source refs,
+hashes, budget decisions, acknowledgements, and continuity cursors, never raw
+rendered context.
 
 **Memory Provider**
 Abstract interface for memory storage backends. `LocalMemoryProvider` (DB-backed) is the only enabled provider in MVP.
@@ -80,3 +81,65 @@ Agent run tracked, sandboxed, and logged by agent-space. Proposals and artifacts
 
 **IDE Assist Mode**
 Direct CLI use (Claude Code, Codex) without agent-space orchestration. Not fully tracked.
+
+---
+
+## Ontology Vocabulary
+
+Agent-space's object model is compared against the Palantir Foundry Ontology's
+Language / Engine / Toolchain decomposition in
+[ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md).
+Vocabulary was aligned **only where the semantics genuinely match**. This
+section records both the alignment and the deliberate non-equivalences, so
+that borrowed terms are not read as borrowed capabilities.
+
+**Object Type**
+The closed, code-declared kind of a `space_objects` row (`knowledge_item`,
+`note`, `source`, `claim`, `inquiry_thread`, …). Determines ownership, read
+gating, and which interfaces apply. Declared in the ontology registry, not in
+per-space data.
+
+**Object Profile** (was `object_kind`)
+A per-space, governed configuration layer *under* one Object Type: label,
+field schema, extraction/retrieval policy, and UI config. Renamed from "kind"
+because `type` and `kind` are near-synonyms in English while these are
+different layers. A profile changes presentation and defaults; it can never
+create a new Object Type or move a row across domain ownership.
+
+**Link Type** (was `relation_type`)
+A code-declared edge type on `object_relations`, carrying its legal endpoint
+Object Types and its governance level (direct write or proposal-gated). The
+term became accurate only once endpoints were declared and constrained; before
+that the column was an unconstrained string.
+
+**Interface**
+A declared capability of an Object Type: `ContentAccessible`, `Retrievable`,
+`Graphable`, `Evidenceable`, `Governed`. Declared in the ontology registry; a
+declaration must be backed by an implementation. Replaces the previously
+parallel per-mechanism type lists.
+
+**Aggregate Root**
+A domain table with independent identity, cross-domain references, or its own
+visibility requirement. Only aggregate roots become `space_objects` rows.
+
+### Deliberate non-equivalences
+
+Terms *not* adopted, and capabilities *not* implied by the terms that were:
+
+- **`SYSTEM_ACTION_REGISTRY` is not renamed to "Action Type."** It also carries
+  actions that operate on no single object (connection creation, backfill
+  start, `authorization.request`), which a Foundry Action Type never does. Its
+  entries with a non-empty `applies_to` are the object-bound subset.
+- **Proposal is not "Submission Criteria."** In Foundry, review conditions are
+  embedded in an action definition. Here a Proposal is a first-class entity
+  with its own table, lifecycle, applier registry, and policy gate — a heavier
+  concept that the borrowed term would understate.
+- **There is no Object Set query language and no typed client SDK.** Reads go
+  through owning module services and the content read gate.
+- **There is no Workshop equivalent.** Applications are built as frontend
+  modules, not composed from the ontology at runtime.
+- **There is no ontology branching, release, or staged rollout.** Definition
+  changes are code changes; schema cutover is a full database reset.
+- **Object Types are code, not data.** There is no user-facing self-service
+  modelling surface. Third-party extension happens through plugin modules that
+  register into the ontology registry and ship their own migrations.

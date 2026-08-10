@@ -272,6 +272,49 @@ class FakeCodexRpc implements CodexRpcHandle {
 }
 
 describe("probeCodexQuota", () => {
+  it("routes the production quota RPC through the scoped Runner executor", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "aspace-codex-runner-probe-"));
+    const home = join(tempDir, "home");
+    const workspace = join(tempDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const calls: Array<Record<string, unknown>> = [];
+    const result = await probeCodexQuota(home, home, codexResolver, FAST_RPC, {
+      run_id: "usage-probe-1",
+      workspace_cwd: workspace,
+      executor: {
+        async runCommand(input) {
+          calls.push(input as unknown as Record<string, unknown>);
+          let closed = false;
+          const send = (message: Record<string, unknown>) => {
+            if (message.method === "initialize") {
+              input.stdio_controller?.receive({ id: 1, result: {} }, send, () => { closed = true; });
+            } else if (message.method === "account/rateLimits/read") {
+              input.stdio_controller?.receive({
+                id: 2,
+                result: {
+                  rateLimits: {
+                    primary: { usedPercent: 12, windowDurationMins: 300 },
+                    secondary: { usedPercent: 34, windowDurationMins: 10_080 },
+                  },
+                },
+              }, send, () => { closed = true; });
+            }
+          };
+          input.stdio_controller?.start(send);
+          expect(closed).toBe(true);
+          return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+        },
+      },
+    });
+    expect(result).toMatchObject({ available: true, session_pct: 12, week_pct: 34 });
+    expect(calls[0]).toMatchObject({
+      cwd: workspace,
+      run_id: "usage-probe-1",
+      egress_profile: "provider",
+      command: ["codex", "-s", "read-only", "-a", "untrusted", "app-server"],
+    });
+  });
+
   it("reads Codex app-server rate limits and maps them to session/week quota", async () => {
     const rpc = new FakeCodexRpc();
     const spawned: Array<{ command: string; args: string[]; env: Record<string, string> }> = [];

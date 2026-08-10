@@ -6,6 +6,16 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import InquiryAreaPage from '../InquiryAreaPage'
 import { inquiryApi, notesApi, projectsApi, projectResearchApi, spacesApi } from '../../../api/client'
 
+const BRIEF_AGGREGATE = {
+  project_status: 'active',
+  current_focus: null,
+  confirmed_decisions: [] as string[],
+  primary_mode: 'research' as const,
+  workspace_identity: {},
+  workspace_boundary: {},
+  source_refs: [] as Array<Record<string, unknown>>,
+}
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
@@ -17,7 +27,10 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 
 vi.mock('../../../contexts/SpaceContext', () => ({
-  useSpace: () => ({ activeSpaceId: 'space-1' }),
+  useSpace: () => ({
+    activeSpaceId: 'space-1', userId: 'user-1',
+    spaces: [{ id: 'space-1', role: 'member' }],
+  }),
 }))
 
 vi.mock('../../../contexts/ThemeContext', () => ({
@@ -34,7 +47,10 @@ vi.mock('../../../api/client', () => ({
   projectsApi: {
     get: vi.fn(),
     getActiveBriefVersion: vi.fn(),
+    listBriefVersions: vi.fn(),
     createBriefVersion: vi.fn(),
+    submitBriefForReview: vi.fn(),
+    publishBrief: vi.fn(),
     corpus: vi.fn(),
   },
   inquiryApi: {
@@ -82,8 +98,7 @@ const PROJECT = {
   status: 'active' as const,
   current_focus: null,
   settings_json: null,
-  template_key: 'blank',
-  primary_mode: 'inquiry' as const,
+  primary_mode: 'research' as const,
   active_brief_version_id: null,
   created_at: '2026-07-23T00:00:00.000Z',
   updated_at: '2026-07-23T00:00:00.000Z',
@@ -137,6 +152,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(projectsApi.get).mockResolvedValue(PROJECT)
   vi.mocked(projectsApi.getActiveBriefVersion).mockResolvedValue(null)
+  vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([])
   vi.mocked(projectsApi.corpus).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
   vi.mocked(inquiryApi.listThreads).mockResolvedValue([QUESTION])
   vi.mocked(inquiryApi.getThread).mockResolvedValue(QUESTION_DETAIL)
@@ -199,16 +215,16 @@ describe('InquiryAreaPage', () => {
     })
     renderPage()
 
-    const cta = await screen.findByRole('link', { name: /Start literature search/ })
-    expect(cta).toHaveAttribute('href', '/projects/project-1?research=new&thread=thread-1')
+    const cta = await screen.findByRole('link', { name: /Start evidence search/ })
+    expect(cta).toHaveAttribute('href', '/projects/project-1/research?research=new&thread=thread-1')
     expect(screen.getByText('“Start with 2020+ reviews”')).toBeInTheDocument()
   })
 
   it('sends search_acquisition to Operations once a search is actually running', async () => {
     vi.mocked(inquiryApi.getThread).mockResolvedValue({ ...QUESTION_DETAIL, next_focus_kind: 'search_acquisition' })
     vi.mocked(projectResearchApi.workflows).mockResolvedValue([{
-      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'screening',
-      status: 'active', mode: 'autonomous', state_json: {}, primary_thread_id: 'thread-1',
+      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
+      status: 'active', state_json: {}, primary_thread_id: 'thread-1',
       started_by_user_id: null, started_run_id: null,
       created_at: '2026-07-23T00:00:00.000Z', updated_at: '2026-07-23T00:00:00.000Z',
     }])
@@ -216,7 +232,7 @@ describe('InquiryAreaPage', () => {
 
     expect(await screen.findByRole('link', { name: /Watch the running search/ }))
       .toHaveAttribute('href', '/projects/project-1/operations')
-    expect(screen.queryByRole('link', { name: /Start literature search/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Start evidence search/ })).not.toBeInTheDocument()
   })
 
   it('offers state-derived suggestions when no Next Focus has been decided', async () => {
@@ -443,13 +459,35 @@ describe('InquiryAreaPage', () => {
       id: 'brief-1', space_id: 'space-1', project_id: 'project-1', version: 'v1',
       goal: 'Ship a reliable coding agent', scope_included: 'Coding tasks', scope_excluded: null,
       success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'published', reviewed_by_user_id: 'user-1', reviewed_at: '2026-07-23T00:00:00.000Z',
+      published_by_user_id: 'user-1', published_at: '2026-07-23T00:00:00.000Z',
       created_by_user_id: 'user-1', created_at: '2026-07-23T00:00:00.000Z',
     })
     vi.mocked(projectsApi.createBriefVersion).mockResolvedValue({
       id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
       goal: 'Ship a reliable, fast coding agent', scope_included: 'Coding tasks', scope_excluded: null,
       success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'draft', reviewed_by_user_id: null, reviewed_at: null,
+      published_by_user_id: null, published_at: null,
       created_by_user_id: 'user-1', created_at: '2026-07-23T00:05:00.000Z',
+    })
+    vi.mocked(projectsApi.submitBriefForReview).mockResolvedValue({
+      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
+      goal: 'Ship a reliable, fast coding agent', scope_included: 'Coding tasks', scope_excluded: null,
+      success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'in_review', reviewed_by_user_id: 'user-1', reviewed_at: '2026-07-23T00:06:00.000Z',
+      published_by_user_id: null, published_at: null, created_by_user_id: 'user-1', created_at: '2026-07-23T00:05:00.000Z',
+    })
+    vi.mocked(projectsApi.publishBrief).mockResolvedValue({
+      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
+      goal: 'Ship a reliable, fast coding agent', scope_included: 'Coding tasks', scope_excluded: null,
+      success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'published', reviewed_by_user_id: 'user-1', reviewed_at: '2026-07-23T00:06:00.000Z',
+      published_by_user_id: 'user-1', published_at: '2026-07-23T00:07:00.000Z', created_by_user_id: 'user-1', created_at: '2026-07-23T00:05:00.000Z',
     })
     renderPage('/spaces/space-1/projects/project-1/inquiry?setup=goal')
 
@@ -465,7 +503,44 @@ describe('InquiryAreaPage', () => {
       success_definition: 'Agent completes tasks unattended',
       constraints: null,
       assumptions: null,
+      confirmed_decisions: [],
+      workspace_identity: {},
+      workspace_boundary: {},
+      source_refs: [],
     }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit for review' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }))
+    await waitFor(() => expect(projectsApi.publishBrief).toHaveBeenCalledWith('project-1', 'brief-2'))
+  })
+
+  it('lets an active Project co-owner publish a submitted Brief from Setup', async () => {
+    const submitted = {
+      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
+      goal: 'Ready for co-owner review', scope_included: null, scope_excluded: null,
+      success_definition: null, constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'in_review' as const, reviewed_by_user_id: 'user-2',
+      reviewed_at: '2026-07-23T00:05:00.000Z', published_by_user_id: null,
+      published_at: null, created_by_user_id: 'user-2', created_at: '2026-07-23T00:00:00.000Z',
+    }
+    vi.mocked(projectsApi.get).mockResolvedValue({
+      ...PROJECT,
+      owner_user_id: 'user-2',
+      current_user_can_approve_context: true,
+    })
+    vi.mocked(projectsApi.listBriefVersions).mockResolvedValueOnce([submitted])
+    vi.mocked(projectsApi.publishBrief).mockResolvedValueOnce({
+      ...submitted,
+      status: 'published',
+      published_by_user_id: 'user-1',
+      published_at: '2026-07-23T00:06:00.000Z',
+    })
+    renderPage('/spaces/space-1/projects/project-1/inquiry?setup=goal')
+
+    expect(await screen.findByDisplayValue('Ready for co-owner review')).toBeDisabled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }))
+
+    await waitFor(() => expect(projectsApi.publishBrief).toHaveBeenCalledWith('project-1', 'brief-2'))
   })
 
   it('can relate a root Thread to its own descendants, which the parent picker excludes', async () => {
@@ -516,6 +591,24 @@ describe('InquiryAreaPage', () => {
     await waitFor(() => expect(inquiryApi.adoptAdvice).toHaveBeenCalledWith('project-1', 'thread-1'))
     // Adoption never writes Next Focus from the client.
     expect(inquiryApi.updateWork).not.toHaveBeenCalled()
+  })
+
+  // The advice used to arrive with an href built on the server, which pointed
+  // at four routes the app does not have. The entry point is resolved from the
+  // client's own destination map instead, so it can only name a real route.
+  it('offers the entry point for the suggested step without adopting it first', async () => {
+    vi.mocked(inquiryApi.getAdvice).mockResolvedValue({
+      id: 'advice-1', project_id: 'project-1', thread_id: 'thread-1',
+      recommended_focus_kind: 'create_decision_case',
+      rationale: 'The options are on the table and the evidence has stopped moving.',
+      cited_refs: [], thread_version: 1, status: 'open',
+      trigger_kind: 'iteration_recorded', model_version: 'test-model', stale: false,
+      created_at: '2026-07-23T00:00:00.000Z', updated_at: '2026-07-23T00:00:00.000Z',
+    })
+    renderPage()
+
+    const cta = await screen.findByRole('link', { name: /Go to Decisions/ })
+    expect(cta).toHaveAttribute('href', '/projects/project-1/decisions')
   })
 
   it('marks advice stale once the Thread has moved past the revision it reasoned about', async () => {

@@ -41,8 +41,8 @@ export async function checkPinnedThreadDrift(
   options?: { forUpdate?: boolean },
 ): Promise<ResearchThreadDriftResult> {
   const result = await db.query<{ id: string; version: number; statement: string }>(
-    `SELECT id, version, statement FROM inquiry_threads
-      WHERE id=$1 AND space_id=$2 AND project_id=$3
+    `SELECT object_id AS id, version, statement FROM inquiry_threads
+      WHERE object_id=$1 AND space_id=$2 AND project_id=$3
         AND kind='question' AND lifecycle_status='active'${options?.forUpdate ? " FOR UPDATE" : ""}`,
     [pinned.thread_id, spaceId, projectId],
   );
@@ -77,11 +77,12 @@ export async function resolveResearchThreadScope(
   }
 
   const matching = await db.query<ThreadRow>(
-    `SELECT id, version, kind, statement
-       FROM inquiry_threads
-      WHERE space_id=$1 AND project_id=$2 AND kind='question'
-        AND lifecycle_status='active' AND statement=$3
-      ORDER BY updated_at DESC, id ASC
+    `SELECT t.object_id AS id, t.version, t.kind, t.statement
+       FROM inquiry_threads t
+       JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+      WHERE t.space_id=$1 AND t.project_id=$2 AND t.kind='question'
+        AND t.lifecycle_status='active' AND t.statement=$3
+      ORDER BY so.updated_at DESC, t.object_id ASC
       LIMIT 1`,
     [identity.spaceId, projectId, researchQuestion],
   );
@@ -113,9 +114,9 @@ async function loadQuestion(
   threadId: string,
 ): Promise<ResearchThreadScopeRef | null> {
   const row = await db.query<ThreadRow>(
-    `SELECT id, version, kind, statement
+    `SELECT object_id AS id, version, kind, statement
        FROM inquiry_threads
-      WHERE id=$1 AND space_id=$2 AND project_id=$3
+      WHERE object_id=$1 AND space_id=$2 AND project_id=$3
         AND kind='question' AND lifecycle_status='active'`,
     [threadId, spaceId, projectId],
   );

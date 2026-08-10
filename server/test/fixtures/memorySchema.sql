@@ -10,7 +10,6 @@ CREATE TABLE public.memory_entries (
     space_id character varying(36) NOT NULL,
     subject_user_id character varying(36),
     owner_user_id character varying(36),
-    project_folder_id character varying(36),
     scope_type character varying(32) NOT NULL,
     namespace character varying(255),
     memory_type character varying(64) NOT NULL,
@@ -39,7 +38,12 @@ CREATE TABLE public.memory_entries (
     access_count integer NOT NULL DEFAULT 0,
     last_accessed_at timestamp with time zone,
     last_retrieved_at timestamp with time zone,
-    CONSTRAINT memory_entries_pkey PRIMARY KEY (id)
+    CONSTRAINT memory_entries_pkey PRIMARY KEY (id),
+    CONSTRAINT ck_memory_entries_scope_type CHECK (scope_type IN ('user', 'project')),
+    CONSTRAINT ck_memory_entries_scope_placement CHECK (
+      (scope_type = 'user' AND project_id IS NULL)
+      OR (scope_type = 'project' AND project_id IS NOT NULL)
+    )
 );
 
 CREATE TABLE public.projects (
@@ -100,19 +104,22 @@ CREATE TABLE public.project_members (
     CONSTRAINT project_members_pkey PRIMARY KEY (id)
 );
 
--- Read-access audit (slice 7a). SOURCE OF TRUTH: models.py MemoryReadTrace.
--- Cross-table FOREIGN KEYs are stripped so the fixture loads into an empty DB.
-CREATE TABLE public.memory_access_logs (
+-- Cross-person content access audit. Cross-table FOREIGN KEYs are stripped so
+-- the fixture loads into an empty DB.
+CREATE TABLE public.content_access_logs (
     id character varying(36) NOT NULL,
     space_id character varying(36) NOT NULL,
-    memory_id character varying(36) NOT NULL,
-    user_id character varying(36),
+    resource_type character varying(64) NOT NULL,
+    resource_id character varying(36) NOT NULL,
+    owner_user_id character varying(36) NOT NULL,
+    viewer_user_id character varying(36) NOT NULL,
     agent_id character varying(36),
     run_id character varying(36),
     access_type character varying(64) NOT NULL,
-    reason text,
+    reason character varying(512),
     accessed_at timestamp with time zone NOT NULL,
-    CONSTRAINT memory_access_logs_pkey PRIMARY KEY (id)
+    CONSTRAINT content_access_logs_pkey PRIMARY KEY (id),
+    CONSTRAINT content_access_logs_cross_person_check CHECK (viewer_user_id <> owner_user_id)
 );
 
 CREATE TABLE public.proposals (
@@ -196,7 +203,7 @@ CREATE TABLE public.retrieval_objects (
     status character varying(32) NOT NULL,
     title character varying(512) NOT NULL,
     slug character varying(512),
-    object_kind character varying(64),
+    object_profile character varying(64),
     content_hash character varying(64) NOT NULL,
     source_connection_ids_json jsonb DEFAULT '[]'::jsonb NOT NULL,
     indexed_at timestamp with time zone NOT NULL,

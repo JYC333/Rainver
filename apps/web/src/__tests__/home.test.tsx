@@ -27,7 +27,6 @@ vi.mock('../contexts/SpaceContext', () => ({
       { id: 'team-1', name: 'Acme Team', type: 'team', role: 'member', created_at: '', updated_at: '' },
     ],
     personalSpaceId: 'personal-1',
-    writeTargetSpaceId: 'personal-1',
     activeSpaceId: 'personal-1',
     preferredSpaceId: 'personal-1',
   }),

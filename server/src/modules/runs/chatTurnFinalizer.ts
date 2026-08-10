@@ -5,8 +5,11 @@ import type {
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews";
-import { enqueueSessionCondense } from "../sessions/condenseJob";
 import { PgSessionRepository } from "../sessions/repository";
+import {
+  ManagedSemanticCheckpointProvider,
+  RuntimeContextContinuityService,
+} from "../runtimeContext";
 import { runOutputResult } from "./orchestrationResults";
 import {
   PgRunRepository,
@@ -31,11 +34,11 @@ interface ChatTurnMetadata {
   project_id: string | null;
 }
 
-interface ChatTurnFinalizerDeps {
+export interface ChatTurnFinalizerDeps {
   sessions?: Pick<PgSessionRepository, "addAssistantMessageForRun">
     & Partial<Pick<PgSessionRepository, "addRoomAgentMessageForRun">>;
   loadActionPreviews?: typeof loadProjectChatActionPreviews;
-  enqueueCondense?: typeof enqueueSessionCondense;
+  continuity?: Pick<RuntimeContextContinuityService, "finalizeChatTurn">;
 }
 
 export async function finalizeChatTurn(
@@ -67,6 +70,7 @@ export async function finalizeChatTurn(
       )
     : [];
   let assistantMessage: AssistantMessage | null = null;
+  let terminalMessageId: string | null = null;
 
   if (outcome.ok) {
     const artifactRefs = artifactReferences(run.output_json);
@@ -114,20 +118,7 @@ export async function finalizeChatTurn(
         preview.tool_call_id ? [preview.tool_call_id] : []),
       created_at: stored.created_at,
     };
-
-    try {
-      await (deps.enqueueCondense ?? enqueueSessionCondense)(config, {
-        space_id: run.space_id,
-        user_id: metadata.user_id,
-        session_id: metadata.session_id,
-        source_run_id: run.id,
-        agent_id: metadata.agent_id,
-        agent_version_id: metadata.agent_version_id,
-      });
-    } catch {
-      // Session summaries are regenerable derived context. A condense enqueue
-      // failure must not make an already durable chat turn fail.
-    }
+    terminalMessageId = stored.id;
   } else if (isRoomConversationRun(run)) {
     const sessions = deps.sessions ?? PgSessionRepository.fromConfig(config);
     const stored = await requiredRoomMessageWriter(sessions)({
@@ -150,21 +141,15 @@ export async function finalizeChatTurn(
         `Room session '${metadata.session_id}' is unavailable during Run finalization`,
       );
     }
-    try {
-      await (deps.enqueueCondense ?? enqueueSessionCondense)(config, {
-        space_id: run.space_id,
-        user_id: metadata.user_id,
-        session_id: metadata.session_id,
-        source_run_id: run.id,
-        agent_id: metadata.agent_id,
-        agent_version_id: metadata.agent_version_id,
-      });
-    } catch {
-      // Failure messages are conversation history too; summary refresh remains
-      // best-effort and must not reopen a terminal Run.
-    }
+    terminalMessageId = stored.id;
   }
 
+  const continuity = deps.continuity ?? productionContinuity(config);
+  await continuity.finalizeChatTurn({
+    invocationId: run.id,
+    messageId: terminalMessageId,
+    failedRun: !outcome.ok,
+  });
   const completion: ChatTurnCompletion = {
     schema_version: "chat_turn_completion.v1",
     session_id: metadata.session_id,
@@ -194,6 +179,12 @@ export async function finalizeChatTurn(
     },
   });
   return completion;
+}
+
+function productionContinuity(config: ServerConfig): RuntimeContextContinuityService {
+  if (!config.databaseUrl) throw new Error("Runtime Context continuity requires the database");
+  const db = getDbPool(config.databaseUrl);
+  return new RuntimeContextContinuityService(db, new ManagedSemanticCheckpointProvider(db, config));
 }
 
 function requiredRoomMessageWriter(

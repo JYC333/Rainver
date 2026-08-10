@@ -217,8 +217,8 @@ export function resultFromCandidate(
   return {
     object_type: candidate.objectType,
     object_id: candidate.objectId,
-    object_kind: candidate.objectKind ?? null,
-    object_kind_label: candidate.objectKindLabel ?? null,
+    object_profile: candidate.objectProfile ?? null,
+    object_profile_label: candidate.objectProfileLabel ?? null,
     title,
     snippet,
     score: Number(candidate.score ?? (1 / (RRF_K + candidate.rank)).toFixed(6)),

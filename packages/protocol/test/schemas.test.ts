@@ -163,11 +163,11 @@ describe("DTO schema validation", () => {
   });
 
   it("parses references", () => {
-    expect(SpaceRefSchema.parse({ id: "s1", name: "Home", type: "personal" }).type).toBe(
+    expect(SpaceRefSchema.parse({ id: "s1", name: "Home", type: "personal", egress_notifications_enabled: false }).type).toBe(
       "personal",
     );
-    expect(SpaceRefSchema.parse({ id: "s1", name: "Home", type: "team" }).oversight_mode).toBe("none");
-    expect(SpaceRefSchema.parse({ id: "s1", name: "Home", type: "team", oversight_mode: "full" }).oversight_mode).toBe("full");
+    expect(SpaceRefSchema.parse({ id: "s1", name: "Home", type: "team", egress_notifications_enabled: true }).oversight_mode).toBe("none");
+    expect(SpaceRefSchema.parse({ id: "s1", name: "Home", type: "team", oversight_mode: "full", egress_notifications_enabled: true }).oversight_mode).toBe("full");
     expect(SpaceOversightModeSchema.safeParse("summary").success).toBe(true);
     expect(isSpaceOversightMode("invalid")).toBe(false);
     expect(UserRefSchema.parse({ id: "u1", display_name: "Ann" }).display_name).toBe("Ann");

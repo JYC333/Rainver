@@ -6,7 +6,7 @@ import { errMsg } from '../../lib/utils'
 import type {
   KnowledgeItemSummary,
   KnowledgeRelationStatus,
-  KnowledgeRelationType,
+  KnowledgeLinkType,
   Proposal,
 } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
@@ -19,13 +19,13 @@ import { Textarea } from '../../components/ui/textarea'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import {
   KNOWLEDGE_RELATION_STATUSES,
-  KNOWLEDGE_RELATION_TYPES,
+  KNOWLEDGE_LINK_TYPES,
   parseOptionalConfidence,
   validateConfidence,
 } from './utils'
 
 interface RelationForm {
-  relation_type: KnowledgeRelationType
+  link_type: KnowledgeLinkType
   status: Extract<KnowledgeRelationStatus, 'candidate' | 'active'>
   confidence: string
   evidence_summary: string
@@ -39,7 +39,7 @@ interface KnowledgeRelationProposalFormProps {
 
 export default function KnowledgeRelationProposalForm({ currentItemId, onProposalCreated }: KnowledgeRelationProposalFormProps) {
   const [form, setForm] = useState<RelationForm>({
-    relation_type: 'related_to',
+    link_type: 'related_to',
     status: 'active',
     confidence: '',
     evidence_summary: '',
@@ -100,7 +100,7 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
       const p = await knowledgeApi.proposeRelation({
         from_object_id: currentItemId,
         to_object_id: targetId,
-        relation_type: form.relation_type,
+        link_type: form.link_type,
         status: form.status,
         confidence,
         evidence_summary: form.evidence_summary.trim() || null,
@@ -108,7 +108,7 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
       })
       onProposalCreated(p)
       setForm({
-        relation_type: 'related_to',
+        link_type: 'related_to',
         status: 'active',
         confidence: '',
         evidence_summary: '',
@@ -176,8 +176,8 @@ export default function KnowledgeRelationProposalForm({ currentItemId, onProposa
 
         <div className="grid gap-3 md:grid-cols-2">
           <div>
-            <Label>relation_type</Label>
-            <Select value={form.relation_type} onChange={v => setField('relation_type', v as KnowledgeRelationType)} options={KNOWLEDGE_RELATION_TYPES.map(t => ({ value: t, label: t }))} />
+            <Label>link_type</Label>
+            <Select value={form.link_type} onChange={v => setField('link_type', v as KnowledgeLinkType)} options={KNOWLEDGE_LINK_TYPES.map(t => ({ value: t, label: t }))} />
           </div>
           <div>
             <Label>status</Label>

@@ -139,7 +139,7 @@ class FakeDb {
     if (/FROM retrieval_feedback_events/.test(norm) && /GROUP BY surface/.test(norm)) {
       return { rows: [{ key: "knowledge_brief", total: 3 }] as Row[], rowCount: 1 };
     }
-    if (/FROM memory_access_logs/.test(norm)) {
+    if (/FROM content_access_logs/.test(norm)) {
       return {
         rows: [
           {

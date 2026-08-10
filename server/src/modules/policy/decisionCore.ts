@@ -497,6 +497,25 @@ const ruleAutomation: Rule = (ctx) => {
       audit_code: "automation_autonomy_self_service_allowed",
     });
   }
+  // The digest target is provisioned by the system, not through the generic
+  // Automation editor. It performs deterministic reads and writes only its
+  // own delivery snapshot, so the schedule's owner may fire the personal
+  // form; the Project form additionally proves Project writer authority.
+  if (
+    ctx.target_type === "information_digest"
+    && ctx.actor_is_owner === true
+    && hasRoleAtLeast(role, "member")
+    && (!str(ctx.project_id) || ctx.project_writer === true)
+  ) {
+    return makeDecision({
+      decision: "allow",
+      message: `${action} allowed for the digest schedule owner (role=${role})`,
+      risk_level: "low",
+      reason_code: "automation_information_digest_owner_allow",
+      policy_rule_id: "automation_information_digest_owner_allow",
+      audit_code: "automation_information_digest_allowed",
+    });
+  }
   return makeDecision({
     decision: "deny",
     message: `${action} requires admin or owner authority; role=${role}`,

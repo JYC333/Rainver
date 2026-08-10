@@ -171,9 +171,61 @@ policy-gated. Each Room Run declares a `conversation_capture` Run Exchange
 output as a closing backstop; its structured changes become pending proposals
 through the same proposal creation policy path and never apply directly.
 
+## Object-bound actions
+
+`SystemActionDefinition.applies_to` names the ontology object types an action
+operates on. Most of the registry is not object-bound — connection creation,
+backfill start, `authorization.request` — so the field is optional and its
+absence is meaningful rather than an omission (ADR 0012 decision 8).
+
+The first three are Note actions: `note.promote_to_knowledge`,
+`note.raise_as_question`, and `note.link_to_evidence`. A surface rendering an
+object asks `systemActionsForObjectType()` what it can offer instead of
+hard-coding a menu; the note editor's selection bar is the first caller and
+derives both which items exist and their order from the registry. Only the
+wording stays in the client — the registry's `title` is descriptive prose for
+audit and policy surfaces, not a toolbar label — and its label map is typed on
+`NoteSystemActionId`, so registering a fourth Note action fails the web build
+until it has one.
+
+All three are **`public_api` only, `allowed_actor_types: ["user"]`**. ADR 0012
+decision 8 deferred the binding half partly because registering object actions
+would mean "widening the agent's callable surface" — that does not happen here,
+because the agent tool gateway admits a definition only when it is `agent_tool`
+visible *and* lists `agent` as an actor. Making any of them agent-callable is a
+separate product decision; `server/test/noteObjectActions.test.ts` fails if one
+silently becomes so.
+
+Their side effects follow the governance each target already has:
+`note.promote_to_knowledge` is `proposal` (promotion changes nothing about the
+knowledge review gate), while the other two are `durable` direct writes —
+Thread structure stays direct and a `note_link` is navigational with no graph
+authority (B12A).
+
+Two of the policy actions they name — `inquiry.thread.create` and
+`note.link.create` — are **`reserved`**, meaning declared and not evaluated by
+any code path. They were introduced alongside the actions and first marked
+`wired_direct` on the grounds that they made the operation auditable. They do
+not: enforcement is the route's own Project ACL and note read gate, and who
+performed the write is already on the canonical row
+(`space_objects.created_by_user_id`, `note_links.created_by_user_id`), so a
+policy audit record would restate it. Wiring them is a decision still to be
+made; `reserved` is what the registry's own vocabulary calls that state.
+Reserved declarations default to `deny`; descriptive registration never grants
+authority before an enforcement point is deliberately wired.
+
+Standing Project Research adds one Source action,
+`source.raise_as_question`. A `new_direction` comparison stores this action id
+and its typed input on a non-executing advice card. The browser invokes the
+ordinary `InquiryThreadService.createThread` path only after a user clicks;
+the engine never creates a Thread itself. The input carries a producer
+idempotency key, persisted under the Project on `inquiry_threads`, so browser
+retries return the same Thread and a conflicting replay fails closed.
+
 ## Invariants
 
 - Registry absence, policy-adapter absence, or unknown action means deny.
+- An `applies_to` entry must name a registered ontology entity.
 - Visibility metadata is an exposure ceiling, never authorization by itself.
 - Agents create proposals; they do not apply them directly.
 - A grant never changes the proposal payload or bypasses apply-time checks.

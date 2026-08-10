@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
@@ -7,8 +7,17 @@ import {
   __setMemoryServicesFactoryForTests,
 } from "../src/modules/memory";
 import { MemoryReadValidationError } from "../src/modules/memory/repository";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
 
 let app: FastifyInstance;
+
+beforeEach(() => {
+  __setContentCreationContextResolverForTests(async (_db, input) => ({
+    spaceId: input.requestSpaceId,
+    projectId: input.projectId ?? null,
+    visibility: input.projectId ? "space_shared" : "private",
+  }));
+});
 
 type MemoryServicesFactory = NonNullable<
   Parameters<typeof __setMemoryServicesFactoryForTests>[0]
@@ -22,6 +31,7 @@ type CreateMemoryProposalArgs = Parameters<MemoryRepository["createMemoryProposa
 afterEach(async () => {
   __setMemoryIdentityForTests(null);
   __setMemoryServicesFactoryForTests(null);
+  __setContentCreationContextResolverForTests(null);
   await app?.close();
 });
 
@@ -54,7 +64,6 @@ function proposalOut(over: Record<string, unknown> = {}) {
     id: "proposal-1",
     space_id: "space-1",
     user_id: "user-1",
-    project_folder_id: null,
     source_session_id: null,
     source_task_id: null,
     source_run_id: null,
@@ -118,7 +127,7 @@ describe("memory read routes", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/memory?type=fact&status=active&limit=10&offset=5&project_folder_id=ws-1",
+      url: "/api/v1/memory?type=fact&status=active&limit=10&offset=5",
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
@@ -316,13 +325,11 @@ describe("memory read routes", () => {
           _spaceId: string,
           _userId: string,
           memoryId: string,
-          projectFolderId: string | null,
           command: { content?: string | null },
         ) {
           return proposalOut({
             id: "proposal-update",
             proposal_type: "memory_update",
-            project_folder_id: projectFolderId,
             proposed_content: command.content,
             resulting_memory_id: memoryId,
           });
@@ -331,12 +338,10 @@ describe("memory read routes", () => {
           _spaceId: string,
           _userId: string,
           memoryId: string,
-          projectFolderId: string | null,
         ) {
           return proposalOut({
             id: "proposal-archive",
             proposal_type: "memory_archive",
-            project_folder_id: projectFolderId,
             resulting_memory_id: memoryId,
           });
         },
@@ -346,19 +351,18 @@ describe("memory read routes", () => {
 
     const patch = await app.inject({
       method: "PATCH",
-      url: "/api/v1/memory/memory-1?project_folder_id=ws-1",
+      url: "/api/v1/memory/memory-1",
       payload: { content: "new content" },
     });
     const del = await app.inject({
       method: "DELETE",
-      url: "/api/v1/memory/memory-1?project_folder_id=ws-1",
+      url: "/api/v1/memory/memory-1",
     });
 
     expect(patch.statusCode).toBe(202);
     expect(patch.json()).toMatchObject({
       id: "proposal-update",
       proposal_type: "memory_update",
-      project_folder_id: "ws-1",
       proposed_content: "new content",
       resulting_memory_id: "memory-1",
     });
@@ -366,7 +370,6 @@ describe("memory read routes", () => {
     expect(del.json()).toMatchObject({
       id: "proposal-archive",
       proposal_type: "memory_archive",
-      project_folder_id: "ws-1",
       resulting_memory_id: "memory-1",
     });
   });

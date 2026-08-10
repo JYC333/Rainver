@@ -56,6 +56,7 @@ export function normalizeVendorEvents(
       .find((block) => block.type === "tool_use" || block.type === "tool_result");
     const semanticType = [
       type,
+      stringValue(event.subtype)?.toLowerCase() ?? "",
       stringValue(item.type)?.toLowerCase() ?? "",
       stringValue(toolBlock?.type)?.toLowerCase() ?? "",
     ].filter(Boolean).join(".");
@@ -74,6 +75,12 @@ export function normalizeVendorEvents(
       toolBlock?.name ??
       recordValue(event.tool).name,
     ));
+    if (semanticType.includes("compact")) {
+      normalized.push(runtimeEvent("provider_compacted", completedAt, null, "Provider compacted its session context.", {
+        adapter_type: adapterType,
+      }));
+      continue;
+    }
     const started =
       semanticType.includes("tool_use") ||
       (semanticType.includes("command_execution") && type.includes("started")) ||
@@ -115,9 +122,19 @@ function normalizeNativeProtocolEvent(
 ): RuntimeSemanticEvent | null {
   if (adapterType === "codex_cli") {
     const method = stringValue(event.method);
+    if (method === "thread/compacted") {
+      return runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
+        adapter_type: adapterType,
+      });
+    }
     if (method !== "item/started" && method !== "item/completed") return null;
     const item = recordValue(recordValue(event.params).item);
     const itemType = stringValue(item.type);
+    if (method === "item/completed" && itemType?.toLowerCase().includes("compact")) {
+      return runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
+        adapter_type: adapterType,
+      });
+    }
     if (!itemType || !["commandExecution", "fileChange", "mcpToolCall"].includes(itemType)) {
       return null;
     }
@@ -146,6 +163,11 @@ function normalizeNativeProtocolEvent(
     const update = recordValue(recordValue(event.params).update);
     const updateType = stringValue(update.sessionUpdate);
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);
+    if (updateType?.toLowerCase().includes("compact")) {
+      return runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
+        adapter_type: adapterType,
+      });
+    }
     if (updateType === "tool_call") {
       return runtimeEvent(
         "tool_call_started",

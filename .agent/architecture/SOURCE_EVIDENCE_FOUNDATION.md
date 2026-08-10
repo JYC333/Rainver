@@ -157,24 +157,13 @@ and links. They must not directly create active Memory, Knowledge, policy,
 tasks, files, or capabilities. Durable changes still go through proposals and
 their existing apply gates.
 
-Run context selection reads only explicitly linked active evidence through the
-evidence selector. Runs do not read directly from the whole source pool. Selector
-inputs are relevance/context candidate links only: `context_candidate`,
-`supports`, and `mentions`. Selected evidence references are frozen in
-`ContextSnapshot.included_evidence_refs_json` and in `source_refs_json`.
-
-When selected evidence is used in a run context, the original relevance link
-(`context_candidate`, `supports`, or `mentions`) remains unchanged, and an
-additional active `EvidenceLink` is recorded:
-
-- `target_type="run"`
-- `target_id=<run_id>`
-- `link_type="used_in_context"`
-- `created_by_run_id=<run_id>`
-
-This makes context use auditable without broadening the evidence selector.
-`used_in_context` is audit-only. It must not cause evidence to be selected into
-future contexts merely because it was used before.
+Evidence links are candidate/relevance metadata only. Runtime Context may
+acquire explicitly linked active evidence through its Retrieval authority, but
+must revalidate the canonical evidence, source connection, instructing user,
+Project scope, and execution-control snapshot before Delivery persistence.
+Runs never read directly from the whole source pool. Safe Invocation Snapshot
+source refs audit accepted use; `used_in_context` remains a historical/audit
+link type and never makes evidence eligible for a future invocation by itself.
 
 ## Provenance
 
@@ -212,7 +201,7 @@ merged into one generic "evidence" table.
 | Audience | agent-facing (context selection) | human-facing (curated wiki evidence) |
 | State | **candidate** material | **curated/approved** evidence |
 | Write path | source scan / extraction (candidate, no review) | `/api/v1/knowledge/sources` direct CRUD + knowledge proposal apply |
-| Runtime use | `EvidenceLink` selects candidates into a `ContextSnapshot` | never selected into run context |
+| Runtime use | `EvidenceLink` marks candidates; Runtime Context remains the selection/Delivery authority | never auto-selected into a Delivery |
 | Trust vocab | `trusted` / `normal` / `untrusted` | knowledge visibility/verification rules |
 
 ### Hard separation rules

@@ -13,7 +13,7 @@ import {
 } from "../src/modules/capabilities";
 
 describe("capability framework built-ins", () => {
-  it("registers the built-in research pack and templates with valid references", () => {
+  it("registers the built-in research pack without label-only workflow presets", () => {
     const capabilities = listBuiltInCapabilityDefinitions();
     const workflows = listBuiltInWorkflowTemplates();
     const packs = listBuiltInCapabilityPacks();
@@ -29,12 +29,7 @@ describe("capability framework built-ins", () => {
       "research.source_collect",
       "research.source_summarize",
     ]);
-    expect(workflows.map((workflow) => workflow.id).sort()).toEqual([
-      "research.academic_literature_review",
-      "research.market_research",
-      "research.news_scan",
-      "research.technical_survey",
-    ]);
+    expect(workflows).toEqual([]);
 
     expect(() => assertUniqueCapabilityIds(capabilities)).not.toThrow();
     expect(() => assertUniqueWorkflowTemplateIds(workflows)).not.toThrow();

@@ -1,3 +1,5 @@
+import { assertLinkTypeAllowed } from "../ontology/validation";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import {
@@ -208,8 +210,8 @@ export class InquirySignalService {
     const created = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const thread = await db.query<{ id: string; lifecycle_status: string }>(
-        `SELECT id, lifecycle_status FROM inquiry_threads
-          WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+        `SELECT object_id AS id, lifecycle_status FROM inquiry_threads
+          WHERE object_id = $1 AND space_id = $2 AND project_id = $3`,
         [threadId, identity.spaceId, projectId],
       );
       if (!thread.rows[0]) throw new HttpError(422, "Thread not found in this Project");
@@ -224,7 +226,7 @@ export class InquirySignalService {
         const interpretation = await db.query<{ id: string }>(
           `SELECT i.id FROM experiment_interpretations i
              JOIN experiment_definitions d
-               ON d.id=i.definition_id AND d.space_id=i.space_id AND d.project_id=i.project_id
+               ON d.object_id=i.definition_id AND d.space_id=i.space_id AND d.project_id=i.project_id
             WHERE i.id=$1 AND i.project_id=$2 AND i.space_id=$3
               AND i.status='reviewed'
               AND d.primary_hypothesis_thread_id=$4
@@ -521,21 +523,38 @@ export class InquirySignalService {
           await this.assertActiveThread(db, identity.spaceId, projectId, candidate.thread_id);
           const gapStatement = requiredString(body.gap_statement, "gap_statement");
           const threadId = randomUUID();
+          const gapObject = buildSpaceObjectInsert({
+            id: threadId,
+            spaceId: identity.spaceId,
+            objectType: "inquiry_thread",
+            title: gapStatement,
+            ownerUserId: identity.userId,
+            primaryProjectId: projectId,
+            createdByUserId: identity.userId,
+            createdAt: now,
+          });
+          await db.query(gapObject.sql, gapObject.params);
           await db.query(
             `INSERT INTO inquiry_threads
-              (id,space_id,project_id,kind,statement,lifecycle_status,attention_state,priority,primary_parent_id,created_from,created_by_user_id,created_at,updated_at)
-             VALUES ($1,$2,$3,'question',$4,'active','backlog',0,$5,'ai_candidate',$6,$7,$7)`,
-            [threadId, identity.spaceId, projectId, gapStatement, candidate.thread_id, identity.userId, now],
+              (object_id,space_id,project_id,kind,statement,lifecycle_status,attention_state,priority,primary_parent_id,created_from)
+             VALUES ($1,$2,$3,'question',$4,'active','backlog',0,$5,'ai_candidate')`,
+            [threadId, identity.spaceId, projectId, gapStatement, candidate.thread_id],
           );
           await db.query(
             `INSERT INTO inquiry_question_states (thread_id,space_id,answer_state) VALUES ($1,$2,'open')`,
             [threadId, identity.spaceId],
           );
+          assertLinkTypeAllowed({
+            linkType: "decomposes_into",
+            fromObjectType: "inquiry_thread",
+            toObjectType: "inquiry_thread",
+            via: "direct",
+          });
           await db.query(
-            `INSERT INTO inquiry_thread_relations
-              (id,space_id,project_id,from_thread_id,to_thread_id,relation_kind,created_by_user_id,created_at)
-             VALUES ($1,$2,$3,$4,$5,'decomposes_into',$6,$7)`,
-            [randomUUID(), identity.spaceId, projectId, candidate.thread_id, threadId, identity.userId, now],
+            `INSERT INTO object_relations
+              (id,space_id,from_object_id,to_object_id,link_type,status,created_by_user_id,created_at,updated_at)
+             VALUES ($1,$2,$3,$4,'decomposes_into','active',$5,$6,$6)`,
+            [randomUUID(), identity.spaceId, candidate.thread_id, threadId, identity.userId, now],
           );
           await db.query(
             `INSERT INTO inquiry_thread_structure_events
@@ -746,7 +765,7 @@ export class InquirySignalService {
     const rawSignals = await this.db.query<SignalRow & { thread_statement: string }>(
       `SELECT s.*, t.statement AS thread_statement
          FROM inquiry_evidence_signals s
-         JOIN inquiry_threads t ON t.id = s.thread_id AND t.space_id = s.space_id
+         JOIN inquiry_threads t ON t.object_id = s.thread_id AND t.space_id = s.space_id
         WHERE s.space_id = $1 AND s.project_id = $2${windowClause}
         ORDER BY s.created_at ASC`,
       params,
@@ -897,7 +916,7 @@ export class InquirySignalService {
   private async assertActiveThread(db: Queryable, spaceId: string, projectId: string, threadId: string): Promise<void> {
     const thread = await db.query(
       `SELECT 1 FROM inquiry_threads
-        WHERE id=$1 AND space_id=$2 AND project_id=$3 AND lifecycle_status='active'`,
+        WHERE object_id=$1 AND space_id=$2 AND project_id=$3 AND lifecycle_status='active'`,
       [threadId, spaceId, projectId],
     );
     if (!thread.rows[0]) throw new HttpError(409, "Candidate target Thread is not active");

@@ -24,10 +24,6 @@ services:
       target: dev-runtime
       network: host
     container_name: agent-space-test-server
-    # Required by the rootless bubblewrap read-only Project Folder boundary.
-    # Keep the container unprivileged and do not add SYS_ADMIN.
-    security_opt:
-      - seccomp=unconfined
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -44,9 +40,13 @@ services:
       - AGENT_SPACE_HOME=/aspace
       - AGENT_SPACE_ENV=test
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-agent_space}:${POSTGRES_PASSWORD:-agent_space_dev_password}@postgres:5432/${POSTGRES_DB:-agent_space}}
+      - SANDBOX_RUNNER_HOST=sandbox-runner
+      - SANDBOX_RUNNER_SERVER_HOST=server
     depends_on:
       postgres:
         condition: service_healthy
+      sandbox-runner:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8010/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       start_period: 60s
@@ -57,6 +57,42 @@ services:
     command: >
       sh -c "node scripts/watch-typescript.mjs &
              node --watch dist/index.js"
+    restart: unless-stopped
+    networks:
+      - default
+      - runner-control
+
+  sandbox-runner:
+    build:
+      context: ../../
+      dockerfile: sandbox/Dockerfile
+      network: host
+    security_opt:
+      - seccomp=unconfined
+      - no-new-privileges=true
+    cap_drop:
+      - ALL
+    read_only: true
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+      - /run:rw,noexec,nosuid,size=16m
+    env_file:
+      - path: ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/.runner.env
+        required: false
+    volumes:
+      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/workspaces:/runner/workspaces
+      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/sandboxes:/runner/sandboxes
+      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/runtime-tools:/runner/runtime-tools:ro
+      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/cache/runtime-homes:/runner/run-homes
+      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/cache/conversation-runtime-homes:/runner/conversation-homes
+      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/cache/login-homes:/runner/login-homes
+    environment:
+      - SANDBOX_RUNNER_PORT=8020
+    networks:
+      - runner-control
     restart: unless-stopped
 
   frontend:
@@ -93,3 +129,7 @@ services:
       - AGENT_SPACE_HOME=/aspace
       - AGENT_SPACE_ENV=test
     restart: unless-stopped
+
+networks:
+  runner-control:
+    internal: true

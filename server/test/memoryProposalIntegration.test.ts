@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { loadConfig } from "../src/config";
 import {
   MemoryProposalNotFoundError,
@@ -35,6 +35,7 @@ beforeAll(async () => {
     );
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[memory-proposal-integration] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -117,7 +118,6 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
       owner_user_id: null,
       access_level: "full",
       last_confirmed_at: null,
-      project_folder_id: null,
       memory_layer: null,
       actor_user_id: null,
       provenance_entries: [
@@ -162,7 +162,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
       title: "Original",
     });
 
-    const update = await repo.updateMemoryProposal(SPACE, USER, "memory-1", null, {
+    const update = await repo.updateMemoryProposal(SPACE, USER, "memory-1", {
       operation: "update",
       target_memory_id: "memory-1",
       content: "proposed",
@@ -175,15 +175,13 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
       importance: null,
       tags: null,
       subject_user_id: null,
-      project_folder_id: null,
       memory_layer: null,
       actor_user_id: null,
       provenance_entries: [],
     });
-    const archive = await repo.archiveMemoryProposal(SPACE, USER, "memory-1", null, {
+    const archive = await repo.archiveMemoryProposal(SPACE, USER, "memory-1", {
       operation: "archive",
       target_memory_id: "memory-1",
-      project_folder_id: null,
       actor_user_id: null,
       provenance_entries: [],
     });
@@ -214,7 +212,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
     });
 
     await expect(
-      repo.updateMemoryProposal(SPACE, USER, "private-other", null, {
+      repo.updateMemoryProposal(SPACE, USER, "private-other", {
         operation: "update",
         target_memory_id: "private-other",
         content: "nope",
@@ -227,7 +225,6 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
         importance: null,
         tags: null,
         subject_user_id: null,
-        project_folder_id: null,
         memory_layer: null,
         actor_user_id: null,
         provenance_entries: [],

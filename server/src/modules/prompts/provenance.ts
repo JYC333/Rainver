@@ -31,7 +31,7 @@ export function promptProvenanceOf(result: PromptResolveResult): PromptProvenanc
  * Merges prompt provenance into an existing metadata_json object under
  * metadata.prompts[key], preserving any other metadata already present.
  * `key` distinguishes multiple prompts resolved within the same run/step
- * (e.g. "condenser", "query_rewrite").
+ * (e.g. "checkpoint_extract", "query_rewrite").
  */
 export function withPromptProvenance(
   metadata: Record<string, unknown>,

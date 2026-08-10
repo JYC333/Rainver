@@ -91,7 +91,7 @@ export class ExperimentRunService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, db);
+      const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (definition.status === "completed" || definition.status === "archived") {
         throw new HttpError(409, `Cannot create a Run for a ${definition.status} Experiment`);
       }
@@ -165,7 +165,7 @@ export class ExperimentRunService {
     if (!agentId) throw new HttpError(422, "agent_id is required");
     return withQueryableTransaction(this.db, async db => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, db);
+      const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (definition.status === "completed" || definition.status === "archived") {
         throw new HttpError(409, `Cannot launch a Run for a ${definition.status} Experiment`);
       }
@@ -329,8 +329,11 @@ export class ExperimentRunService {
         }
         if (row.is_baseline) {
           await db.query(
-            `UPDATE experiment_definitions SET baseline_run_id=$3,updated_at=$4
-              WHERE id=$1 AND space_id=$2`,
+            `WITH d AS (
+               UPDATE experiment_definitions SET baseline_run_id=$3
+                WHERE object_id=$1 AND space_id=$2
+             )
+             UPDATE space_objects SET updated_at=$4 WHERE id=$1 AND space_id=$2`,
             [row.definition_id, spaceId, row.experiment_run_id, now],
           );
         }
@@ -341,7 +344,7 @@ export class ExperimentRunService {
 
   async listRuns(identity: SpaceUserIdentity, projectId: string, definitionId: string, versionId?: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await new ExperimentDefinitionService(this.db).requireDefinition(identity.spaceId, projectId, definitionId);
+    await new ExperimentDefinitionService(this.db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId);
     const params: unknown[] = [identity.spaceId, definitionId];
     let clause = "";
     if (versionId) {
@@ -382,7 +385,7 @@ export class ExperimentRunService {
     if (!status) throw new HttpError(422, `status must be one of ${[...TERMINAL_RUN_STATUSES].join(", ")}`);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, db);
+      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId);
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
@@ -408,10 +411,12 @@ export class ExperimentRunService {
       }
       if (status === "completed") {
         if (run.is_baseline) {
-          await db.query(`UPDATE experiment_definitions SET baseline_run_id=$3, updated_at=$4 WHERE id=$1 AND space_id=$2`, [definitionId, identity.spaceId, runId, now]);
+          await db.query(`WITH d AS (UPDATE experiment_definitions SET baseline_run_id=$3 WHERE object_id=$1 AND space_id=$2)
+             UPDATE space_objects SET updated_at=$4 WHERE id=$1 AND space_id=$2`, [definitionId, identity.spaceId, runId, now]);
         }
         if (body.mark_as_best === true) {
-          await db.query(`UPDATE experiment_definitions SET best_run_id=$3, updated_at=$4 WHERE id=$1 AND space_id=$2`, [definitionId, identity.spaceId, runId, now]);
+          await db.query(`WITH d AS (UPDATE experiment_definitions SET best_run_id=$3 WHERE object_id=$1 AND space_id=$2)
+             UPDATE space_objects SET updated_at=$4 WHERE id=$1 AND space_id=$2`, [definitionId, identity.spaceId, runId, now]);
         }
       }
       const updated = await this.runRow(db, identity.spaceId, runId);
@@ -430,7 +435,7 @@ export class ExperimentRunService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, db);
+      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId);
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
@@ -442,7 +447,7 @@ export class ExperimentRunService {
 
   async listObservations(identity: SpaceUserIdentity, projectId: string, definitionId: string, runId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await new ExperimentDefinitionService(this.db).requireDefinition(identity.spaceId, projectId, definitionId);
+    await new ExperimentDefinitionService(this.db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId);
     const run = await this.runRowForDefinition(this.db, identity.spaceId, definitionId, runId);
     if (!run) throw new HttpError(404, "Experiment Run not found");
     return (await this.observationsFor(this.db, identity.spaceId, runId)).map(observationToOut);

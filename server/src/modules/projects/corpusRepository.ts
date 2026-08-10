@@ -1,3 +1,4 @@
+import { objectStatusScalarSql } from "../../db/objectStatusSql";
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -15,6 +16,7 @@ import {
 import { contentReadSql } from "../access/contentAccessSql";
 import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } from "../sources/sourceItemAccess";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access";
+import { materializePassingProjectCorpusItems } from "./corpusMaterialization";
 
 export type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
 export type ProjectCorpusStatus = "active" | "archived";
@@ -75,7 +77,7 @@ const CORPUS_COLUMNS = `
   pci.role, pci.status, pci.triage_status, pci.triage_confirmed_by_user, pci.read_status, pci.relevance,
   pci.confidence, pci.reason, pci.added_by_user_id, pci.metadata_json,
   pci.created_at, pci.updated_at, pci.last_reviewed_at, pci.last_read_at,
-  so.object_type, so.title AS object_title, so.summary AS object_summary, so.status AS object_status,
+  so.object_type, so.title AS object_title, so.summary AS object_summary, ${objectStatusScalarSql("so")} AS object_status,
   si.item_type AS source_item_type, si.title AS source_item_title,
   si.source_uri AS source_item_uri, si.source_domain AS source_item_domain, si.excerpt AS source_item_excerpt,
   ev.evidence_type, ev.title AS evidence_title, ev.content_excerpt AS evidence_excerpt,
@@ -109,6 +111,41 @@ function corpusPrimarySourceJoin(viewerParam: string): string {
   ) si ON true`;
 }
 
+/**
+ * The FROM/WHERE of "corpus rows this viewer may read", shared by the id
+ * lookup and the Overview's counts so the two can never drift. Space and
+ * Project are always `$1`/`$2`; the viewer parameter is named by the caller
+ * because the two queries bind it at different positions.
+ */
+function readableCorpusItemFrom(viewerParam: string): string {
+  return `FROM project_corpus_items pci
+         LEFT JOIN space_objects so ON so.id = pci.object_id AND so.space_id = pci.space_id
+         ${corpusPrimarySourceJoin(viewerParam)}
+         LEFT JOIN extracted_evidence ev ON ev.id = pci.evidence_id AND ev.space_id = pci.space_id
+         LEFT JOIN source_items evidence_source
+           ON evidence_source.id = COALESCE(ev.source_item_id, ev.origin_source_item_id)
+          AND evidence_source.space_id = ev.space_id
+          AND evidence_source.deleted_at IS NULL
+        WHERE pci.space_id = $1 AND pci.project_id = $2
+          AND (pci.object_id IS NULL OR (so.id IS NOT NULL AND ${contentReadSql("space_object", "so", viewerParam)}))
+          AND (pci.source_item_id IS NULL OR si.id IS NOT NULL)
+          AND (
+            pci.evidence_id IS NULL
+            OR (
+              ev.id IS NOT NULL
+              AND ${contentReadSql("extracted_evidence", "ev", viewerParam)}
+              AND (
+                COALESCE(ev.source_item_id, ev.origin_source_item_id) IS NULL
+                OR (
+                  evidence_source.id IS NOT NULL
+                  AND ${sourceItemReadableClause("evidence_source", viewerParam, false)}
+                )
+              )
+              AND ${sourceSnapshotReadableForEvidenceClause("ev", viewerParam)}
+            )
+          )`;
+}
+
 export interface ProjectCorpusBackfillResult {
   project_id: string;
   source_items: number;
@@ -131,6 +168,36 @@ export class ProjectCorpusRepository {
     return (await this.readableItemIds(identity, projectId, [corpusItemId])).has(corpusItemId);
   }
 
+  /**
+   * How much collected material and extracted evidence this Project holds,
+   * counted through the same readability predicate the corpus list uses.
+   *
+   * These are Project-owned rows, so the Overview reads them here rather than
+   * through the entity summary registry, which exists to keep the Project
+   * module out of *other* domains' tables.
+   */
+  async entityCounts(
+    identity: SpaceUserIdentity,
+    projectId: string,
+  ): Promise<{ source_item_count: number; extracted_evidence_count: number }> {
+    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    // Counted in SQL rather than by materializing every corpus id and
+    // intersecting in memory: a Project's corpus is unbounded, and the
+    // Overview asks for this on every visit.
+    const result = await this.db.query<{ source_items: string | number; evidence_items: string | number }>(
+      `SELECT count(*)::text AS source_items,
+              count(*) FILTER (WHERE pci.evidence_id IS NOT NULL)::text AS evidence_items
+         ${readableCorpusItemFrom("$3")}
+          AND pci.status = 'active'`,
+      [identity.spaceId, projectId, identity.userId],
+    );
+    const row = result.rows[0];
+    return {
+      source_item_count: Number(row?.source_items ?? 0),
+      extracted_evidence_count: Number(row?.evidence_items ?? 0),
+    };
+  }
+
   async readableItemIds(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -141,32 +208,8 @@ export class ProjectCorpusRepository {
     if (ids.length === 0) return new Set();
     const result = await this.db.query<{ id: string }>(
       `SELECT pci.id
-         FROM project_corpus_items pci
-         LEFT JOIN space_objects so ON so.id = pci.object_id AND so.space_id = pci.space_id
-         ${corpusPrimarySourceJoin("$4")}
-         LEFT JOIN extracted_evidence ev ON ev.id = pci.evidence_id AND ev.space_id = pci.space_id
-         LEFT JOIN source_items evidence_source
-           ON evidence_source.id = COALESCE(ev.source_item_id, ev.origin_source_item_id)
-          AND evidence_source.space_id = ev.space_id
-          AND evidence_source.deleted_at IS NULL
-        WHERE pci.space_id=$1 AND pci.project_id=$2 AND pci.id=ANY($3::varchar[])
-          AND (pci.object_id IS NULL OR (so.id IS NOT NULL AND ${contentReadSql("space_object", "so", "$4")}))
-          AND (pci.source_item_id IS NULL OR si.id IS NOT NULL)
-          AND (
-            pci.evidence_id IS NULL
-            OR (
-              ev.id IS NOT NULL
-              AND ${contentReadSql("extracted_evidence", "ev", "$4")}
-              AND (
-                COALESCE(ev.source_item_id, ev.origin_source_item_id) IS NULL
-                OR (
-                  evidence_source.id IS NOT NULL
-                  AND ${sourceItemReadableClause("evidence_source", "$4", false)}
-                )
-              )
-              AND ${sourceSnapshotReadableForEvidenceClause("ev", "$4")}
-            )
-          )`,
+         ${readableCorpusItemFrom("$4")}
+          AND pci.id = ANY($3::varchar[])`,
       [identity.spaceId, projectId, ids, identity.userId],
     );
     return new Set(result.rows.map((row) => row.id));
@@ -386,6 +429,10 @@ export class ProjectCorpusRepository {
         now,
       });
     }
+    if (target.sourceItemId) {
+      await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId, corpusItemId });
+      await upsertProjectCorpusObjectsFromSourceItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId });
+    }
     const item = await this.getById(identity, projectId, corpusItemId);
     if (!item) throw new HttpError(500, "Failed to upsert project corpus item");
     return projectCorpusItemOut(item);
@@ -464,6 +511,10 @@ export class ProjectCorpusRepository {
         triageExplicitlyConfirmed,
       ],
     );
+    if (current.source_item_id) {
+      await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: current.source_item_id, corpusItemId });
+      await upsertProjectCorpusObjectsFromSourceItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: current.source_item_id });
+    }
     const updated = await this.getById(identity, projectId, corpusItemId);
     if (!updated) throw new HttpError(404, "Project corpus item not found");
     return projectCorpusItemOut(updated);
@@ -476,6 +527,7 @@ export class ProjectCorpusRepository {
       await lockCorpusProjects(db, { spaceId: identity.spaceId, projectId, sourceItemId: null });
       const sourceItems = await upsertProjectCorpusSourceItemsFromLinks(db, { spaceId: identity.spaceId, projectId });
       const sourceDecisions = await syncProjectCorpusSourceDecisions(db, { spaceId: identity.spaceId, projectId });
+      await materializePassingProjectCorpusItems(db, { spaceId: identity.spaceId, projectId });
       const sourceObjects = await upsertProjectCorpusObjectsFromSourceItems(db, { spaceId: identity.spaceId, projectId });
       const evidenceItems = await upsertProjectCorpusEvidenceFromLinks(db, { spaceId: identity.spaceId, projectId });
       const evidenceObjects = await upsertProjectCorpusObjectsFromEvidence(db, { spaceId: identity.spaceId, projectId });
@@ -711,6 +763,7 @@ export async function syncProjectCorpusForSourceItem(
   return withQueryableTransaction(db, async (tx) => {
     await lockCorpusProjects(tx, input);
     const sourceItems = await upsertProjectCorpusSourceItemsFromLinks(tx, input);
+    await materializePassingProjectCorpusItems(tx, input);
     const sourceObjects = await upsertProjectCorpusObjectsFromSourceItems(tx, input);
     const archivedSourceItems = await archiveCorpusSourceItemsWithoutActiveLinks(tx, input);
     return { source_items: sourceItems, source_objects: sourceObjects, archived_source_items: archivedSourceItems };
@@ -740,6 +793,7 @@ export async function syncProjectCorpusDecisionForSourceItem(
   return withQueryableTransaction(db, async (tx) => {
     await lockCorpusProjects(tx, input);
     const decisions = await syncProjectCorpusSourceDecisions(tx, input);
+    await materializePassingProjectCorpusItems(tx, input);
     await upsertProjectCorpusObjectsFromSourceItems(tx, input);
     return decisions;
   });

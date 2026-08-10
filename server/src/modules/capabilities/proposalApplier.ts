@@ -226,6 +226,15 @@ async function applyRuntimeSkillBindingUpdateProposal(
     throw new HttpError(422, "runtime_skill_binding_update requires enabled or binding_json");
   }
   const now = new Date().toISOString();
+  const bindingAuthority = await context.db.query<{ capability_key: string }>(
+    `SELECT capability_key FROM capability_runtime_bindings
+      WHERE id=$1 AND space_id=$2`,
+    [bindingId, context.proposal.space_id],
+  );
+  if (!bindingAuthority.rows[0]) throw new HttpError(404, "Runtime skill binding not found");
+  await context.db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+    `runtime-skill-authority:${context.proposal.space_id}:${bindingAuthority.rows[0].capability_key}`,
+  ]);
   const rows = await context.db.query<JsonRecord>(
     `UPDATE capability_runtime_bindings
         SET enabled = COALESCE($3, enabled),
@@ -337,6 +346,9 @@ async function updateEnablement(
     now: string;
   },
 ): Promise<JsonRecord> {
+  await context.db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+    `runtime-skill-authority:${context.proposal.space_id}:${input.capabilityKey}`,
+  ]);
   const params = [
     context.proposal.space_id,
     input.scope.projectId,

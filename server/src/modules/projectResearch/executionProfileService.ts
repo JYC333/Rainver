@@ -92,7 +92,7 @@ export class ProjectResearchExecutionProfileService {
         name: RESEARCH_AGENT_NAME,
         description: "System-managed execution agent for Project Research workflows.",
         visibility: "space_shared",
-        roleInstruction: "Execute bounded academic research stages and preserve source/evidence references.",
+        roleInstruction: "Execute bounded Project Research stages and preserve source/evidence references.",
         systemPrompt: "You are the Project Research execution agent. Work only on the supplied research corpus and preserve source and evidence references in every research output.",
         defaultModelProviderId: modelProviderId,
         defaultModel: modelName,

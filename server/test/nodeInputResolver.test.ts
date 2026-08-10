@@ -33,7 +33,6 @@ describe("node input resolver", () => {
       scopeId: "version-1",
     });
     expect(result.values).toEqual({ summary: "done", value: 42, report: { artifact_id: "artifact-1", artifact_type: "report" } });
-    expect(result.contextArtifactIds).toEqual(["artifact-1"]);
   });
 
   it("fails closed for a missing required input and records optional absence", async () => {

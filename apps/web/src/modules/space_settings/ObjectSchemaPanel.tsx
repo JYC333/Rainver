@@ -11,13 +11,13 @@ import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
 import { errMsg } from '../../lib/utils'
 import {
-  SPACE_OBJECT_KIND_KEYS_BY_BASE_OBJECT_TYPE,
+  SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE,
   type ObjectSchemaExportManifest,
   type RetrievalObjectType,
-  type SpaceObjectKindCreateProposalRequest,
-  type SpaceObjectKindOut,
-  type SpaceObjectKindRelationHintRequest,
-  type SpaceObjectKindStatus,
+  type SpaceObjectProfileCreateProposalRequest,
+  type SpaceObjectProfileOut,
+  type SpaceObjectProfileRelationHintRequest,
+  type SpaceObjectProfileStatus,
 } from '../../types/api'
 
 const BASE_TYPES: RetrievalObjectType[] = [
@@ -28,7 +28,7 @@ const BASE_TYPES: RetrievalObjectType[] = [
   'memory_entry',
   'project_public_summary',
 ]
-const STATUSES: SpaceObjectKindStatus[] = ['draft', 'active', 'deprecated', 'archived']
+const STATUSES: SpaceObjectProfileStatus[] = ['draft', 'active', 'deprecated', 'archived']
 
 interface CreateForm {
   key: string
@@ -51,13 +51,13 @@ const EMPTY_CREATE: CreateForm = {
 }
 
 export function ObjectSchemaPanel() {
-  const [items, setItems] = useState<SpaceObjectKindOut[]>([])
+  const [items, setItems] = useState<SpaceObjectProfileOut[]>([])
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [importing, setImporting] = useState(false)
   const [busyKind, setBusyKind] = useState<string | null>(null)
-  const [status, setStatus] = useState<SpaceObjectKindStatus | 'all'>('all')
+  const [status, setStatus] = useState<SpaceObjectProfileStatus | 'all'>('all')
   const [baseType, setBaseType] = useState<RetrievalObjectType | 'all'>('all')
   const [form, setForm] = useState<CreateForm>(EMPTY_CREATE)
   const [exportedManifest, setExportedManifest] = useState('')
@@ -86,7 +86,7 @@ export function ObjectSchemaPanel() {
   useEffect(() => { void load() }, [status, baseType])
 
   const grouped = useMemo(() => {
-    const out = new Map<RetrievalObjectType, SpaceObjectKindOut[]>()
+    const out = new Map<RetrievalObjectType, SpaceObjectProfileOut[]>()
     for (const item of items) {
       const arr = out.get(item.base_object_type) ?? []
       arr.push(item)
@@ -100,7 +100,7 @@ export function ObjectSchemaPanel() {
   }
 
   function setBaseObjectType(value: RetrievalObjectType) {
-    const allowed = SPACE_OBJECT_KIND_KEYS_BY_BASE_OBJECT_TYPE[value]
+    const allowed = SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE[value]
     setForm(current => ({
       ...current,
       base_object_type: value,
@@ -117,11 +117,11 @@ export function ObjectSchemaPanel() {
     return parsed as Record<string, unknown>
   }
 
-  function parseRelationHints(raw: string): SpaceObjectKindRelationHintRequest[] {
+  function parseRelationHints(raw: string): SpaceObjectProfileRelationHintRequest[] {
     if (!raw.trim()) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) throw new Error('relation_hints must be a JSON array')
-    return parsed as SpaceObjectKindRelationHintRequest[]
+    return parsed as SpaceObjectProfileRelationHintRequest[]
   }
 
   async function createProposal() {
@@ -130,7 +130,7 @@ export function ObjectSchemaPanel() {
       return
     }
     let fieldSchema: Record<string, unknown>
-    let relationHints: SpaceObjectKindRelationHintRequest[]
+    let relationHints: SpaceObjectProfileRelationHintRequest[]
     try {
       fieldSchema = parseJsonObject(form.field_schema, 'field_schema')
       relationHints = parseRelationHints(form.relation_hints)
@@ -140,7 +140,7 @@ export function ObjectSchemaPanel() {
     }
     setCreating(true)
     try {
-      const body: SpaceObjectKindCreateProposalRequest = {
+      const body: SpaceObjectProfileCreateProposalRequest = {
         key: form.key.trim(),
         label: form.label.trim(),
         description: form.description.trim() || null,
@@ -160,20 +160,20 @@ export function ObjectSchemaPanel() {
     }
   }
 
-  function editRelationHints(kind: SpaceObjectKindOut) {
+  function editRelationHints(kind: SpaceObjectProfileOut) {
     setEditingHintsFor(kind.id)
     setRelationHintDraft(JSON.stringify((kind.relation_hints ?? []).map(hint => ({
       endpoint_object_type: hint.endpoint_object_type,
-      endpoint_object_kind_id: hint.endpoint_object_kind_id ?? null,
-      relation_type: hint.relation_type,
+      endpoint_object_profile_id: hint.endpoint_object_profile_id ?? null,
+      link_type: hint.link_type,
       direction: hint.direction ?? 'from',
       confidence_default: hint.confidence_default ?? 0.55,
       required: hint.required ?? false,
     })), null, 2))
   }
 
-  async function proposeRelationHintUpdate(kind: SpaceObjectKindOut) {
-    let relationHints: SpaceObjectKindRelationHintRequest[]
+  async function proposeRelationHintUpdate(kind: SpaceObjectProfileOut) {
+    let relationHints: SpaceObjectProfileRelationHintRequest[]
     try {
       relationHints = parseRelationHints(relationHintDraft)
     } catch (e) {
@@ -196,7 +196,7 @@ export function ObjectSchemaPanel() {
     }
   }
 
-  async function proposeAction(kind: SpaceObjectKindOut, action: 'activate' | 'deprecate' | 'archive') {
+  async function proposeAction(kind: SpaceObjectProfileOut, action: 'activate' | 'deprecate' | 'archive') {
     setBusyKind(kind.id)
     try {
       const proposal = action === 'activate'
@@ -218,7 +218,7 @@ export function ObjectSchemaPanel() {
     try {
       const manifest = await objectSchemaApi.exportSchema()
       setExportedManifest(JSON.stringify(manifest, null, 2))
-      toast.success(`Exported ${manifest.object_kinds.length} object kinds`)
+      toast.success(`Exported ${manifest.object_profiles.length} object kinds`)
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -266,7 +266,7 @@ export function ObjectSchemaPanel() {
           />
           <Select
             value={status}
-            onChange={v => setStatus(v as SpaceObjectKindStatus | 'all')}
+            onChange={v => setStatus(v as SpaceObjectProfileStatus | 'all')}
             options={[{ value: 'all', label: 'all statuses' }, ...STATUSES.map(v => ({ value: v, label: v }))]}
           />
           <Button variant="outline" size="sm" onClick={load} disabled={loading}>
@@ -282,7 +282,7 @@ export function ObjectSchemaPanel() {
           <Select
             value={form.key}
             onChange={v => setField('key', v)}
-            options={SPACE_OBJECT_KIND_KEYS_BY_BASE_OBJECT_TYPE[form.base_object_type].map(v => ({ value: v, label: v }))}
+            options={SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE[form.base_object_type].map(v => ({ value: v, label: v }))}
           />
         </div>
         <div>
@@ -314,7 +314,7 @@ export function ObjectSchemaPanel() {
           <Textarea
             value={form.relation_hints}
             onChange={e => setField('relation_hints', e.target.value)}
-            placeholder='optional, e.g. [{"endpoint_object_type":"source","relation_type":"references","direction":"from"}]'
+            placeholder='optional, e.g. [{"endpoint_object_type":"source","link_type":"references","direction":"from"}]'
           />
         </div>
       </div>
@@ -385,7 +385,7 @@ export function ObjectSchemaPanel() {
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {kind.relation_hints?.map(hint => (
                             <Badge key={hint.id} variant="outline">
-                              {hint.relation_type} {hint.direction ?? 'from'} {hint.endpoint_object_type}
+                              {hint.link_type} {hint.direction ?? 'from'} {hint.endpoint_object_type}
                               {hint.required ? ' required' : ''}
                             </Badge>
                           ))}

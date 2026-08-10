@@ -22,13 +22,15 @@ describe("buildSourceSchedulerTasks", () => {
       "custom_source_handler_scheduler",
       "source_recipe_scan_scheduler",
       "source_post_processing_scheduler",
+      "source_annotation_sweep",
     ]);
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("omits only the post-processing task when no job queue is available", () => {
+  it("omits the queue-backed tasks when no job queue is available", () => {
     const names = buildSourceSchedulerTasks(config, { queue: null }).map((t) => t.name);
     expect(names).not.toContain("source_post_processing_scheduler");
+    expect(names).not.toContain("source_annotation_sweep");
     expect(names).toContain("source_backfill_reconciler");
   });
 

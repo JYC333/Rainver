@@ -8,7 +8,7 @@ import { PgAgentRepository } from "../src/modules/agents/repository";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
 import { refreshSourcePostProcessingAgentPrompt } from "../src/modules/sources/postProcessing/service";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "version-integrity-space";
@@ -29,6 +29,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(
       `[core-version-integrity-db] skipped — Docker/Postgres unavailable: ${
         error instanceof Error ? error.message : String(error)

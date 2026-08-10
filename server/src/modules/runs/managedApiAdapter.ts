@@ -6,9 +6,16 @@ import type {
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
   RunTriggerOrigin,
+  InvocationDelivery,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
-import { executeRuntimeHost, type RuntimeHostLogger } from "../runtimeHost";
+import {
+  authorizeRuntimeHostDelivery,
+  bindRuntimeHostDeliveryRequest,
+  executeRuntimeHost,
+  type RuntimeHostLogger,
+} from "../runtimeHost";
+import { getDbPool } from "../../db/pool";
 import { contractRecord } from "./contractSnapshot";
 import { assembleRunInputEnvelope } from "./runInputEnvelope";
 import type { RunRecord } from "./repository";
@@ -21,6 +28,8 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction";
 import { normalizeManagedModelEvents } from "./runtimeEventNormalization";
+import { managedAdapterRequest } from "../runtimeContext";
+import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts";
 
 export type ManagedApiAdapterType = "model_api" | "ts_agent_host";
 
@@ -43,9 +52,10 @@ export interface ManagedApiNoToolAdapterInput {
   prompt?: string | null;
   context_text?: string | null;
   max_tokens?: number | null;
-  context_snapshot_id?: string | null;
   text_delta_sink?: (delta: string) => void;
   abort_signal?: AbortSignal;
+  invocation_delivery?: InvocationDelivery;
+  invocation_attempts?: RunInvocationAttemptLifecycle;
 }
 
 export interface ManagedApiNoToolAdapterDeps extends ManagedApiRetrievalToolDeps {
@@ -83,17 +93,66 @@ export async function executeManagedApiNoToolAdapter(
     );
   }
 
-  const request = runtimeHostRequest(input, adapterType, modelProviderId);
+  const accepted = input.invocation_delivery
+    ? await managedAdapterRequest(input.invocation_delivery)
+    : null;
+  const request = runtimeHostRequest(input, adapterType, modelProviderId, accepted);
   const baseExecute = deps.executeRuntimeHost
-    ?? ((runtimeConfig, runtimeRequest, options) =>
-      executeRuntimeHost(
+    ?? (async (runtimeConfig, runtimeRequest, options) => {
+      if (runtimeRequest.invocation_audit_refs) {
+        if (!runtimeConfig.databaseUrl) throw new Error("SERVER_DATABASE_URL is required for Runtime Host dispatch");
+        const db = getDbPool(runtimeConfig.databaseUrl);
+        await bindRuntimeHostDeliveryRequest(db, runtimeRequest);
+        await authorizeRuntimeHostDelivery(db, runtimeRequest);
+      } else {
+        throw new Error("Managed Runtime Host dispatch requires Invocation Delivery audit references");
+      }
+      return executeRuntimeHost(
         runtimeConfig,
         runtimeRequest,
         deps.runtimeHostLogger,
         { onTextDelta: input.text_delta_sink, signal: options?.signal },
-      ));
-  const execute = (runtimeConfig: ServerConfig, runtimeRequest: RuntimeHostExecuteRequest) =>
-    baseExecute(runtimeConfig, runtimeRequest, { signal: input.abort_signal });
+      );
+    });
+  let firstDelivery = input.invocation_delivery ?? null;
+  const baseMessageCount = accepted?.messages.length ?? 0;
+  const execute = async (runtimeConfig: ServerConfig, runtimeRequest: RuntimeHostExecuteRequest) => {
+    const delivery = firstDelivery ?? await input.invocation_attempts?.prepare() ?? null;
+    firstDelivery = null;
+    const mapped = delivery ? await managedAdapterRequest(delivery) : null;
+    const nextRequest = mapped
+      ? {
+          ...runtimeRequest,
+          model_provider_id: mapped.providerId ?? runtimeRequest.model_provider_id,
+          model: mapped.model,
+          system_prompt: mapped.system,
+          prompt: mapped.messages.at(-1)?.content ?? "",
+          messages: [
+            ...mapped.messages,
+            ...(runtimeRequest.messages ?? []).slice(baseMessageCount),
+          ],
+          invocation_audit_refs: mapped.auditRefs,
+        }
+      : runtimeRequest;
+    let response: RuntimeHostExecuteResponse;
+    try {
+      response = await baseExecute(runtimeConfig, nextRequest, { signal: input.abort_signal });
+    } catch (error) {
+      if (delivery && input.invocation_attempts) {
+        await input.invocation_attempts.acknowledge(delivery, {
+          success: false,
+          error_code: "runtime_host_transport_failed",
+        });
+        await input.invocation_attempts.finalize(delivery, "runtime_host_transport_failed");
+      }
+      throw error;
+    }
+    if (delivery && input.invocation_attempts) {
+      await input.invocation_attempts.acknowledge(delivery, response);
+      await input.invocation_attempts.finalize(delivery, response.error_code ?? null);
+    }
+    return response;
+  };
   const response = await new AgentToolGateway(config).execute(input.run, request, execute, deps);
   return envelopeFromRuntimeHost(input, adapterType, response, startedAt);
 }
@@ -107,6 +166,7 @@ function runtimeHostRequest(
   input: ManagedApiNoToolAdapterInput,
   adapterType: ManagedApiAdapterType,
   modelProviderId: string,
+  accepted: Awaited<ReturnType<typeof managedAdapterRequest>> | null,
 ): RuntimeHostExecuteRequest {
   // `instruction` is per-run domain content (e.g. the grounding text a
   // capability builds for this specific call), distinct from the agent's
@@ -133,7 +193,6 @@ function runtimeHostRequest(
   return {
     run_input: input.run_input ?? assembleRunInputEnvelope(input.run, {
       prompt: input.prompt,
-      contextSnapshotId: input.context_snapshot_id,
     }),
     run_id: input.run.id,
     space_id: input.run.space_id,
@@ -141,15 +200,17 @@ function runtimeHostRequest(
     // Routing persists the selected model on the run. Worker requests do not
     // repeat that value, so the adapter must honor the durable binding instead
     // of silently falling back to the provider default.
-    model: input.model ?? stringValue(override.model),
-    system_prompt: composeSystemContext(
+    model: accepted?.model ?? input.model ?? stringValue(override.model),
+    system_prompt: accepted?.system ?? composeSystemContext(
       groupedAgentIdentity,
       systemPrompt,
       messages ? null : input.context_text ?? input.run.instruction ?? null,
       messages ? null : chatContextPreamble,
     ),
-    prompt: input.prompt ?? input.run.prompt ?? "",
-    ...(messages
+    prompt: accepted?.messages.at(-1)?.content ?? input.prompt ?? input.run.prompt ?? "",
+    ...(accepted
+      ? { messages: accepted.messages }
+      : messages
       ? { messages: appendDynamicConversationContext(messages, dynamicConversationContext) }
       : {}),
     mode: input.run.mode,
@@ -163,8 +224,8 @@ function runtimeHostRequest(
     project_folder_id: input.run.project_folder_id,
     trigger_origin: (input.run.trigger_origin ?? null) as RunTriggerOrigin | null,
     capability_id: null,
-    context_snapshot_id: input.context_snapshot_id ?? null,
-    max_tokens: input.max_tokens ?? undefined,
+    ...(accepted ? { invocation_audit_refs: accepted.auditRefs } : {}),
+    max_tokens: accepted?.maxOutputTokens ?? input.max_tokens ?? undefined,
     ...(outputFormat ? { output_format: outputFormat } : {}),
     tool_mode: "disabled",
     tool_bindings: [],
@@ -273,11 +334,17 @@ function envelopeFromRuntimeHost(
   response: RuntimeHostExecuteResponse,
   startedAt: string,
 ): RunAdapterResultEnvelope {
+  const completedAt = response.completed_at ?? new Date().toISOString();
+  const actualProviderId =
+    stringValue(recordOrEmpty(response.adapter_metadata).model_provider_id) ?? input.run.model_provider_id;
+  const requestedProviderId =
+    stringValue(recordOrEmpty(response.adapter_metadata).requested_model_provider_id) ?? input.run.model_provider_id;
   const metadata = sanitizeEvidenceJson({
     ...(recordOrEmpty(response.adapter_metadata)),
     adapter_type: adapterType,
     runtime_host_adapter_type: recordOrEmpty(response.adapter_metadata).adapter_type,
-    model_provider_id: input.run.model_provider_id,
+    model_provider_id: actualProviderId,
+    requested_model_provider_id: requestedProviderId,
     model: response.model ?? input.model ?? null,
   });
   return {
@@ -300,13 +367,26 @@ function envelopeFromRuntimeHost(
     error_code: response.error_code ?? null,
     error_message: redactEvidenceText(response.error_text ?? null),
     started_at: response.started_at ?? startedAt,
-    completed_at: response.completed_at ?? new Date().toISOString(),
+    completed_at: completedAt,
     usage: normalizeUsage(response.usage),
     metadata_json: metadata as RunAdapterResultEnvelope["metadata_json"],
-    runtime_events: normalizeManagedModelEvents(
-      response.events,
-      response.completed_at ?? new Date().toISOString(),
-    ),
+    runtime_events: [
+      ...normalizeManagedModelEvents(response.events, completedAt),
+      ...(actualProviderId && requestedProviderId && actualProviderId !== requestedProviderId
+        ? [{
+            schema_version: "runtime_event.v1" as const,
+            type: "warning" as const,
+            occurred_at: completedAt,
+            call_id: null,
+            summary: "Managed model invocation used a fallback Provider.",
+            metadata_json: {
+              event_code: "model_provider_mismatch",
+              model_provider_id: actualProviderId,
+              requested_model_provider_id: requestedProviderId,
+            },
+          }]
+        : []),
+    ],
   };
 }
 

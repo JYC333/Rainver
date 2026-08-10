@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { MemoryMaintenanceService } from "../src/modules/memory/maintenance";
 import {
@@ -34,6 +34,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[memory-maintenance-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -50,7 +51,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    `TRUNCATE memory_access_logs, memory_entries, artifacts, proposals,
+    `TRUNCATE content_access_logs, memory_entries, artifacts, proposals,
               project_members, projects, users, spaces CASCADE`,
   );
   for (const id of [VIEWER, OTHER]) {
@@ -277,7 +278,7 @@ describe("Memory maintenance scan (real Postgres)", () => {
       `SELECT
          (SELECT count(*) FROM artifacts) AS artifacts,
          (SELECT count(*) FROM proposals) AS proposals,
-         (SELECT count(*) FROM memory_access_logs) AS access_logs`,
+         (SELECT count(*) FROM content_access_logs) AS access_logs`,
     );
     expect(counts.rows[0]).toEqual({
       artifacts: "0",

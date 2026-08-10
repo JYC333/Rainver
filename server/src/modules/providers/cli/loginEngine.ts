@@ -1,7 +1,8 @@
 /**
  * CLI login engine — server owner of the interactive vendor-CLI login flows.
  *
- * CLI login always runs the vendor command on a real PTY (node-pty), because
+ * CLI login always runs the vendor command on a real PTY supplied by the
+ * scoped Sandbox Runner, because
  * vendor login flows are terminal-sensitive:
  *   navigating  → press Enter whenever output settles, until a URL appears,
  *                 then emit needs_input for CLIs that expect a code back;
@@ -57,7 +58,7 @@ export interface LoginToolResolver {
 export type LoginEvent = Record<string, unknown> & { type: string };
 export type LoginEmit = (event: LoginEvent) => void;
 
-/** Minimal PTY surface; the default factory wraps node-pty. */
+/** Minimal PTY surface; production supplies the scoped Runner implementation. */
 export interface PtyHandle {
   write(data: string): void;
   onData(listener: (data: string) => void): void;
@@ -119,23 +120,7 @@ export function __setLoginFactoriesForTests(overrides: {
 }
 
 async function defaultPtyFactory(): Promise<PtyFactory> {
-  const pty = (await import("node-pty")) as typeof import("node-pty");
-  return {
-    spawn(command, args, options) {
-      const handle = pty.spawn(command, args, {
-        name: "xterm-256color",
-        cols: options.cols,
-        rows: options.rows,
-        env: options.env,
-      });
-      return {
-        write: (data) => handle.write(data),
-        onData: (listener) => void handle.onData(listener),
-        onExit: (listener) => void handle.onExit(({ exitCode }) => listener(exitCode)),
-        kill: () => handle.kill(),
-      };
-    },
-  };
+  throw new Error("Interactive CLI login requires the scoped Sandbox Runner PTY factory.");
 }
 
 function processHome(): string {
@@ -260,6 +245,7 @@ async function runPtyLogin(
   loginHome: string,
   timings: LoginTimings,
   profileId?: string | null,
+  suppliedFactory?: PtyFactory,
 ): Promise<void> {
   const command = cfg.command as string[];
   // Captured before spawn so a credential file written during login is newer.
@@ -278,7 +264,7 @@ async function runPtyLogin(
   activeLogins.delete(sessionKey);
 
   await mkdir(loginHome, { recursive: true, mode: 0o700 });
-  const factory = ptyFactoryOverride ?? (await defaultPtyFactory());
+  const factory = suppliedFactory ?? ptyFactoryOverride ?? (await defaultPtyFactory());
   const handle = factory.spawn(command[0], command.slice(1), {
     cols: PTY_COLS,
     rows: PTY_ROWS,
@@ -420,6 +406,7 @@ export async function runCliLogin(
   loginHome?: string,
   profileId?: string | null,
   sessionKey?: string,
+  ptyFactory?: PtyFactory,
 ): Promise<void> {
   if (!cfg) {
     emit({ type: "error", text: `Unknown runtime: ${runtime}\n` });
@@ -467,6 +454,7 @@ export async function runCliLogin(
     resolvedHome,
     timings,
     profileId,
+    ptyFactory,
   );
 }
 

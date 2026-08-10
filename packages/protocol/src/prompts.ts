@@ -24,7 +24,6 @@ export const PROMPT_TYPES = [
   "retrieval_query",
   "retrieval_rerank",
   "retrieval_synthesis",
-  "condenser",
   "agent_system",
 ] as const;
 export const PromptTypeSchema = z.enum(PROMPT_TYPES);

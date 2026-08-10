@@ -18,10 +18,6 @@ export const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "degraded", "cancelled", "orphaned"]);
 
 const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = {
-  context_snapshot_population_failed: {
-    layer: "context",
-    reason: "context_snapshot_population_failed",
-  },
   sandbox_required: { layer: "sandbox", reason: "sandbox_required" },
   docker_sandbox_not_supported: {
     layer: "sandbox",
@@ -31,9 +27,13 @@ const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = 
     layer: "sandbox",
     reason: "docker_network_policy_denied",
   },
-  docker_sandbox_unavailable: {
+  sandbox_runner_unavailable: {
     layer: "sandbox",
-    reason: "docker_sandbox_unavailable",
+    reason: "sandbox_runner_unavailable",
+  },
+  sandbox_namespace_unavailable: {
+    layer: "sandbox",
+    reason: "sandbox_namespace_unavailable",
   },
   file_access_adapter_requires_worktree_policy: {
     layer: "policy",

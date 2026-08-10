@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
@@ -11,9 +11,10 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
 import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for the Academic Research project-scoped research
-// workflow/checkpoint/artifact-link/literature-matrix/integrity API surface
+// workflow/checkpoint/artifact-link/evidence-matrix/integrity API surface
 // backing /api/v1/projects/:projectId/research/*.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
@@ -36,6 +37,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -87,12 +89,10 @@ function repo(): ProjectResearchRepository {
 async function seedWorkflow(state: Record<string, unknown> = {}, primaryThreadId: string | null = null): Promise<string> {
   const workflowId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
-    `INSERT INTO project_research_workflows (
-       id, space_id, project_id, workflow_type, status, mode, state_json, primary_thread_id, created_at, updated_at
-     ) VALUES ($1,$2,$3,'literature_review','active','manual',$4::jsonb,$5,$6,$6)`,
-    [workflowId, SPACE, PROJECT, JSON.stringify(state), primaryThreadId, now],
-  );
+  await insertResearchWorkflowFixture(pool!, {
+    id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    state, primaryThreadId, now,
+  });
   return workflowId;
 }
 
@@ -124,7 +124,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const second = await resolveResearchThreadScope(pool, identity, PROJECT, "Which mechanism explains the effect?", null);
     expect(second).toEqual(first);
     expect((await pool.query<{ created_from: string }>(
-      `SELECT created_from FROM inquiry_threads WHERE id=$1 AND space_id=$2`,
+      `SELECT created_from FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,
       [first.thread_id, SPACE],
     )).rows[0]?.created_from).toBe("user");
   });
@@ -161,7 +161,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     await pool!.query(
       `UPDATE project_research_workflows
           SET state_json=state_json || $3::jsonb
-        WHERE space_id=$1 AND id=$2`,
+        WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId, JSON.stringify({ channel_ids: ["channel-1"], monitoring: { active: true } })],
     );
     const operationId = randomUUID();
@@ -209,7 +209,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     await pool!.query(
       `UPDATE project_research_workflows
           SET state_json=state_json || $3::jsonb
-        WHERE space_id=$1 AND id=$2`,
+        WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId, JSON.stringify({ channel_ids: ["channel-1"], monitoring: { active: true } })],
     );
     for (const [jobId, scannedAt] of [["scan-job-a", "2026-07-18T08:00:00.000Z"], ["scan-job-b", "2026-07-18T20:00:00.000Z"]] as const) {
@@ -233,7 +233,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     // Reused workflows created by the draft/item-limit paths carry a minimal
     // state without a `monitoring` key; jsonb_set cannot create it.
     await pool!.query(
-      `UPDATE project_research_workflows SET state_json='{"schema_version":"project_research_initial_intake.v1"}'::jsonb WHERE space_id=$1 AND id=$2`,
+      `UPDATE project_research_workflows SET state_json='{"schema_version":"project_research_initial_intake.v1"}'::jsonb WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId],
     );
     const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG) as unknown as {
@@ -249,7 +249,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       watermark: { before: null, after: null, overlap_hours: 48 },
     });
     const updated = await pool!.query<{ state_json: Record<string, unknown> }>(
-      `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND id=$2`,
+      `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId],
     );
     expect(updated.rows[0]?.state_json).toMatchObject({ monitoring: { active: true, channel_ids: [] } });
@@ -264,24 +264,16 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       PROJECT,
       { kind: "question", statement: "Old research question" },
     );
-    await pool!.query(
-      `INSERT INTO project_research_workflows (
-         id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at
-       ) VALUES ($1,$2,$3,'literature_review','screening','active','autonomous',$4::jsonb,$5,$5)`,
-      [
-        workflowId,
-        SPACE,
-        PROJECT,
-        JSON.stringify({
+    await insertResearchWorkflowFixture(pool!, {
+      id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+      currentStage: "screening", primaryThreadId: String(thread.id), state: {
           research_question: "Old research question",
           thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
           channel_ids: [],
           project_source_binding_ids: [],
           monitoring: { active: true },
-        }),
-        now,
-      ],
-    );
+        }, now,
+    });
     await new InquiryIterationService(pool!).reviseDefinition(identity, PROJECT, thread.id as string, {
       revision_kind: "wording_only",
       new_statement: "New research question",
@@ -299,7 +291,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       previous_research_question_version: 1,
     });
     const stored = await pool!.query<{ state_json: Record<string, unknown> }>(
-      `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND id=$2`,
+      `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId],
     );
     expect(stored.rows[0]?.state_json).toMatchObject({ research_question: "New research question" });
@@ -316,17 +308,15 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       PROJECT,
       { kind: "question", statement: "Old question" },
     );
-    await pool!.query(
-      `INSERT INTO project_research_workflows (
-         id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at
-       ) VALUES ($1,$2,$3,'literature_review','complete','active','autonomous',$4::jsonb,$5,$5)`,
-      [workflowId, SPACE, PROJECT, JSON.stringify({
+    await insertResearchWorkflowFixture(pool!, {
+      id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+      currentStage: "complete", primaryThreadId: String(thread.id), state: {
         research_question: "Old question", research_question_version: 1, channel_ids: [],
         thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
         report_depth: "full", question_refine_skipped: false,
         source_post_processing_rule_ids: [], monitoring: { active: true },
-      }), now],
-    );
+      }, now,
+    });
     await new InquiryIterationService(pool!).reviseDefinition(identity, PROJECT, thread.id as string, {
       revision_kind: "wording_only",
       new_statement: "New question",
@@ -401,13 +391,13 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     expect(checkpoints[0]!.id).toBe(checkpoint.id);
   });
 
-  it("literature matrix includes only included/maybe corpus items, and rebuild backfills from source links", async () => {
+  it("evidence matrix includes only included/maybe corpus items, and rebuild backfills from source links", async () => {
     if (!available) return;
     const now = new Date().toISOString();
     const objectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Paper A','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper A',$3,$3)`,
       [objectId, SPACE, now],
     );
     const corpusItemId = randomUUID();
@@ -421,8 +411,8 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const excludedCorpusItemId = randomUUID();
     const excludedObjectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Paper B','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper B',$3,$3)`,
       [excludedObjectId, SPACE, now],
     );
     await pool!.query(
@@ -433,11 +423,11 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [excludedCorpusItemId, SPACE, PROJECT, excludedObjectId, now],
     );
 
-    const matrix = await repo().getLiteratureMatrix(identity, PROJECT);
+    const matrix = await repo().getEvidenceMatrix(identity, PROJECT);
     expect(matrix).toHaveLength(1);
     expect(matrix[0]).toMatchObject({ object_id: objectId, title: "Paper A", triage_status: "included" });
 
-    const rebuilt = await repo().rebuildLiteratureMatrix(identity, PROJECT);
+    const rebuilt = await repo().rebuildEvidenceMatrix(identity, PROJECT);
     expect(rebuilt).toHaveLength(1);
   });
 
@@ -460,15 +450,18 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const saved = await repo().upsertScreeningCriteria(identity, PROJECT, {
       include_keywords: ["transformer", "attention"],
       exclude_keywords: ["survey"],
-      methods: ["ablation"],
-      venues: ["NeurIPS"],
+      // `venues` generalized to a source restriction (R4/D12) — journals,
+      // outlets and sites are one concept. `methods` moved into the
+      // profile-declared bag, which this Project binds no source for, so it is
+      // covered by researchScreeningCriteriaDb rather than here.
+      source_restrictions: ["NeurIPS"],
       date_range_start: "2020-01-01T00:00:00.000Z",
       date_range_end: "2024-01-01T00:00:00.000Z",
     });
-    expect(saved).toMatchObject({ include_keywords: ["transformer", "attention"], venues: ["NeurIPS"] });
+    expect(saved).toMatchObject({ include_keywords: ["transformer", "attention"], source_restrictions: ["NeurIPS"] });
 
     const fetched = await repo().getScreeningCriteria(identity, PROJECT);
-    expect(fetched).toMatchObject({ exclude_keywords: ["survey"], methods: ["ablation"] });
+    expect(fetched).toMatchObject({ exclude_keywords: ["survey"], domain_criteria: {} });
 
     await expect(
       repo().upsertScreeningCriteria(identity, PROJECT, {
@@ -478,7 +471,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("enriches the literature matrix with academic metadata and evidence/annotation counts", async () => {
+  it("enriches the evidence matrix with academic metadata and evidence/annotation counts", async () => {
     if (!available) return;
     const now = new Date().toISOString();
     const sourceItemId = randomUUID();
@@ -491,8 +484,8 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     );
     const objectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Paper A','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper A',$3,$3)`,
       [objectId, SPACE, now],
     );
     await pool!.query(
@@ -545,7 +538,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [randomUUID(), SPACE, sourceItemId, OTHER, now],
     );
 
-    const matrix = await repo().getLiteratureMatrix(identity, PROJECT);
+    const matrix = await repo().getEvidenceMatrix(identity, PROJECT);
     expect(matrix).toHaveLength(1);
     expect(matrix[0]).toMatchObject({
       object_id: objectId,
@@ -573,8 +566,8 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const sourceItemId = randomUUID();
     const corpusItemId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id,space_id,object_type,title,status,visibility,created_at,updated_at)
-       VALUES ($1,$2,'source','Restricted paper','processed','space_shared',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, created_at, updated_at)
+       VALUES ($1,$2,'source','Restricted paper','space_shared',$3,$3)`,
       [objectId, SPACE, now],
     );
     await pool!.query(
@@ -596,8 +589,8 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
     );
 
-    await expect(repo().getLiteratureMatrix(identity, PROJECT)).resolves.toHaveLength(1);
-    await expect(repo().getLiteratureMatrix({ spaceId: SPACE, userId: OTHER }, PROJECT)).resolves.toEqual([]);
+    await expect(repo().getEvidenceMatrix(identity, PROJECT)).resolves.toHaveLength(1);
+    await expect(repo().getEvidenceMatrix({ spaceId: SPACE, userId: OTHER }, PROJECT)).resolves.toEqual([]);
   });
 
   it("counts corpus status once per source item when evidence has its own corpus row", async () => {
@@ -659,8 +652,8 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const objectId = randomUUID();
     const objectCorpusItemId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Paper A','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper A',$3,$3)`,
       [objectId, SPACE, now],
     );
     await pool!.query(

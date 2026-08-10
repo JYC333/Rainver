@@ -152,7 +152,7 @@ process environment.
 |---|---|
 | Anthropic (Claude) | Data sent to Anthropic servers; not for private/sensitive enterprise data without a data processing agreement |
 | OpenAI (Codex) | Same; OpenAI API terms apply |
-| Any cloud LLM | Prompts include context_snapshot (memory + Project Folder). Review what goes in context before using a third-party provider |
+| Any cloud LLM | Accepted Runtime Context Delivery may include Memory and Project data. Review egress policy and sensitivity ceilings before using a third-party provider |
 | Ollama / local | No external data transmission; safe for private data |
 
 ## When Adding a New Provider

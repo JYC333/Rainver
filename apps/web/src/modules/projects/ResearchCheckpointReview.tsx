@@ -23,12 +23,12 @@ function fallbackReview(checkpoint: ProjectResearchCheckpoint): ProjectResearchC
     type: screening ? 'screening' : 'ideas',
     title: screening ? 'Screening results' : 'Idea candidates',
     description: screening
-      ? 'Review the AI triage for this intake batch before it enters the literature matrix and synthesis.'
+      ? 'Review the AI triage for this intake batch before it enters the evidence matrix and synthesis.'
       : 'Review the generated research directions before they become part of the project’s working plan.',
     decision_scope: 'batch',
     decision_help: screening
       ? empty
-        ? 'No papers matched this search window. Revise the search query or date range and rescan before continuing.'
+        ? 'No material matched this search window. Revise the search query or date range and rescan before continuing.'
         : 'Approve accepts this batch as screened. Reject keeps the research paused so the search or screening criteria can be revised.'
       : 'Approve accepts the complete idea batch. Reject keeps the candidates out of the formal research outputs.',
     summary: screening
@@ -131,7 +131,7 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        <SummaryMetric label="Papers" value={summary.total ?? review.item_count} />
+        <SummaryMetric label="Items" value={summary.total ?? review.item_count} />
         <SummaryMetric label="Classified" value={summary.classified ?? 0} />
         <SummaryMetric label="Relevant" value={summary.relevant ?? 0} tone="success" />
         <SummaryMetric label="Maybe" value={summary.maybe ?? 0} tone="warning" />
@@ -152,12 +152,12 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
       </div>
       {summary.coverage_degraded === true && (
         <div role="status" className="rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
-          Some source history is temporarily unavailable and is retrying in the background. You can continue with the papers already collected; recovered papers will be added to screening or a later monitoring update.
+          Some source history is temporarily unavailable and is retrying in the background. You can continue with the material already collected; recovered items will be added to screening or a later monitoring update.
         </div>
       )}
       {summary.processing_status === 'incomplete' && (
         <div className="flex items-center justify-between gap-3 rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
-          <span>AI screening is still in progress. Approval will be enabled after all {summary.total ?? review.item_count} papers have a classification.</span>
+          <span>AI screening is still in progress. Approval will be enabled after all {summary.total ?? review.item_count} items have a classification.</span>
           {onRefresh && (
             <Button size="sm" variant="outline" disabled={refreshing} onClick={onRefresh} className="shrink-0">
               <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
@@ -168,12 +168,12 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
       )}
       {summary.processing_status === 'empty' && (
         <div role="alert" className="rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
-          No papers matched this search window, so there is nothing to screen. Synthesis is paused. Revise the search query or date range, then use “Rescan empty windows” to try again.
+          No material matched this search window, so there is nothing to screen. Synthesis is paused. Revise the search query or date range, then use “Rescan empty windows” to try again.
         </div>
       )}
       {(summary.total ?? 0) > 0 && (summary.relevant ?? 0) + (summary.maybe ?? 0) === 0 && (
         <div className="rounded border border-warning/35 bg-warning/5 p-3 text-xs text-warning">
-          No papers are currently eligible for the literature matrix. Approve only if an empty result is intentional; otherwise reject this batch and revise the search or screening criteria.
+          No material is currently eligible for the evidence matrix. Approve only if an empty result is intentional; otherwise reject this batch and revise the search or screening criteria.
         </div>
       )}
       <div className="rounded border border-border bg-muted/20 p-3">
@@ -184,11 +184,11 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold">Optional paper details</p>
-              <p className="text-xs text-muted-foreground">The decision is for the batch; inspect individual papers only when the summary shows an anomaly.</p>
+              <p className="text-xs font-semibold">Optional item details</p>
+              <p className="text-xs text-muted-foreground">The decision is for the batch; inspect individual items only when the summary shows an anomaly.</p>
             </div>
             <Button size="sm" variant="outline" onClick={() => setShowDetails(value => !value)}>
-              {showDetails ? 'Hide details' : 'View sample papers'}
+              {showDetails ? 'Hide details' : 'View sample items'}
             </Button>
           </div>
           {showDetails && <div className="space-y-2">
@@ -223,14 +223,14 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
             })}
             {(review.truncated || visibleItems.length < review.items.length) && (
             <Button size="sm" variant="outline" onClick={() => setShowAll(value => !value)}>
-              {showAll ? 'Show fewer papers' : `Show all ${review.items.length} papers`}
+              {showAll ? 'Show fewer items' : `Show all ${review.items.length} items`}
             </Button>
             )}
           </div>}
         </div>
       ) : (
         <div className="rounded border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
-          The batch summary is ready, but the paper list is still being prepared. Refresh this project before deciding.
+          The batch summary is ready, but the item list is still being prepared. Refresh this Project before deciding.
         </div>
       )}
     </div>
@@ -311,8 +311,8 @@ export function ResearchCheckpointReview({ checkpoint, onDecide, onRefresh, refr
           size="sm"
           disabled={screeningIncomplete || screeningEmpty}
           title={screeningIncomplete
-            ? 'Wait for AI screening to classify every paper'
-            : screeningEmpty ? 'No papers matched this search window; rescan before continuing' : undefined}
+            ? 'Wait for AI screening to classify every item'
+            : screeningEmpty ? 'No material matched this search window; rescan before continuing' : undefined}
           onClick={() => onDecide('approved')}
         >
           {screening ? 'Approve screening' : 'Approve ideas'}

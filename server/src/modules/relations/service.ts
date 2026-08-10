@@ -169,6 +169,8 @@ export class RelationsService {
     return withDbTransaction(this.pool, async (client) => {
       const row = await this.repository.createPerson(client, {
         spaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+        visibility: requiredString(body.visibility, "visibility"),
         title,
         summary: optionalString(body.summary),
         pronouns: optionalString(body.pronouns),
@@ -224,6 +226,8 @@ export class RelationsService {
     return withDbTransaction(this.pool, async (client) => {
       const row = await this.repository.createOrganization(client, {
         spaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+        visibility: requiredString(body.visibility, "visibility"),
         title,
         summary: optionalString(body.summary),
         orgType,
@@ -297,7 +301,7 @@ export class RelationsService {
     return new PgKnowledgeRepository(this.pool).proposeObjectRelation(identity, {
       from_object_id: personObjectId,
       to_object_id: organizationObjectId,
-      relation_type: "affiliated_with",
+      link_type: "affiliated_with",
       confidence,
       metadata: {
         role: optionalString(body.role),

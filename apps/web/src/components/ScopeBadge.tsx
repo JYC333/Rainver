@@ -10,9 +10,9 @@ interface ScopeBadgeProps {
 }
 
 const VISIBILITY_LABELS: Record<string, { label: string; variant: BadgeProps['variant'] }> = {
-  private: { label: 'Private', variant: 'warning' },
-  selected_users: { label: 'Selected users', variant: 'destructive' },
-  space_shared: { label: 'Shared', variant: 'muted' },
+  private: { label: 'Only me', variant: 'warning' },
+  selected_users: { label: 'Selected people', variant: 'destructive' },
+  space_shared: { label: 'Shared in scope', variant: 'muted' },
 }
 
 export function ScopeBadge({ visibility, spaceName, ownerLabel, omitShared = false, className }: ScopeBadgeProps) {

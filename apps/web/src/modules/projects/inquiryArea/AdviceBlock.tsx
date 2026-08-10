@@ -1,22 +1,30 @@
 import { useState } from 'react'
-import { AlertTriangle, Check, RefreshCw, Sparkles, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { AlertTriangle, ArrowRight, Check, RefreshCw, Sparkles, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { inquiryApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
-import type { InquiryThreadAdvice } from '../../../types/api'
+import type { InquiryThreadAdvice, ProjectResearchWorkflow } from '../../../types/api'
 import { Button } from '../../../components/ui/button'
-import { NEXT_FOCUS_LABELS } from './nextFocus'
+import { NEXT_FOCUS_LABELS, nextFocusDestination, type ThreadTabId } from './nextFocus'
 
 /**
  * Model advice about this Thread's next step. It stays a suggestion: adopting
  * it calls the same work-state command the user's own choice does, so the
  * Next Focus invariant keeps exactly one enforcement point.
+ *
+ * The entry point for the suggested step is resolved here rather than sent
+ * with the advice (ADR 0012 decision 8, amended): route strings and the
+ * running-workflow state that picks between them are the client's to know, and
+ * a second copy on the server drifted out of date the moment routes moved.
  */
-export function AdviceBlock({ projectId, threadId, advice, canAct, onChanged }: {
+export function AdviceBlock({ projectId, threadId, advice, canAct, startedWorkflow, onOpenTab, onChanged }: {
   projectId: string
   threadId: string
   advice: InquiryThreadAdvice | null
   canAct: boolean
+  startedWorkflow: ProjectResearchWorkflow | null
+  onOpenTab: (tab: ThreadTabId) => void
   onChanged: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
@@ -47,6 +55,9 @@ export function AdviceBlock({ projectId, threadId, advice, canAct, onChanged }: 
   }
 
   const adopted = advice.status === 'adopted'
+  const destination = nextFocusDestination(advice.recommended_focus_kind, {
+    projectId, threadId, startedWorkflow,
+  })
 
   return (
     <div className="mt-3 space-y-2 border-t pt-3">
@@ -70,6 +81,16 @@ export function AdviceBlock({ projectId, threadId, advice, canAct, onChanged }: 
 
       {canAct && (
         <div className="flex flex-wrap gap-1.5">
+          {destination.kind === 'link' && (
+            <Button size="sm" variant="outline" asChild>
+              <Link to={destination.to}>{destination.cta}<ArrowRight className="size-4" /></Link>
+            </Button>
+          )}
+          {destination.kind === 'tab' && (
+            <Button size="sm" variant="outline" onClick={() => onOpenTab(destination.tab)}>
+              {destination.cta}<ArrowRight className="size-4" />
+            </Button>
+          )}
           {!adopted && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => run(() => inquiryApi.adoptAdvice(projectId, threadId))}>
               <Check className="size-4" />Adopt as next step

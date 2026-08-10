@@ -50,6 +50,11 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - One Project owns zero or more Project Folders; one Folder belongs to exactly one Project
   (`project_folders.project_id` is a direct, non-null, single-owner FK — no link table, no
   Folder role vocabulary).
+- A registered Project Folder is a shared workspace with no personal area. The
+  whole Folder follows Project authority and is mounted read-only into CLI
+  sandboxes; personal material belongs in database-backed personal content.
+  There are no file-level ACLs because the external filesystem remains mutable
+  outside the application.
 - Frontend must not access arbitrary server paths — all file access via
   `PgProjectFolderRepository` / `PgRunSandboxManager`.
 - File browsing is always read-only for the UI; writes go through the agent + proposal flow

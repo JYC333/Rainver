@@ -34,7 +34,9 @@
       "items": [
         {
           "item_type": "project_folder",
-          "item_id": "ws-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "ws-1",
           "title": "WS",
           "excerpt": "desc",
           "score": 0.9,
@@ -44,7 +46,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "m-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-1",
           "title": "Mem",
           "excerpt": "content",
           "score": 0.8,
@@ -58,7 +62,9 @@
       "items": [
         {
           "item_type": "project_folder",
-          "item_id": "ws-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "ws-1",
           "title": "WS",
           "excerpt": "desc",
           "score": 0.9,
@@ -68,7 +74,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "m-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-1",
           "title": "Mem",
           "excerpt": "content",
           "score": 0.8,
@@ -104,7 +112,9 @@
       "items": [
         {
           "item_type": "memory",
-          "item_id": "m-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-1",
           "title": null,
           "excerpt": null,
           "score": null,
@@ -114,7 +124,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "m-2",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-2",
           "title": null,
           "excerpt": null,
           "score": null,
@@ -124,7 +136,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "m-3",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-3",
           "title": null,
           "excerpt": null,
           "score": null,
@@ -138,7 +152,9 @@
       "items": [
         {
           "item_type": "memory",
-          "item_id": "m-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-1",
           "title": null,
           "excerpt": null,
           "score": null,
@@ -148,7 +164,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "m-2",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-2",
           "title": null,
           "excerpt": null,
           "score": null,
@@ -183,7 +201,9 @@
       "items": [
         {
           "item_type": "source",
-          "item_id": "s-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "s-1",
           "title": null,
           "excerpt": "aaa",
           "score": null,
@@ -193,7 +213,9 @@
         },
         {
           "item_type": "source",
-          "item_id": "s-2",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "s-2",
           "title": null,
           "excerpt": "bbb",
           "score": null,
@@ -203,7 +225,9 @@
         },
         {
           "item_type": "source",
-          "item_id": "s-3",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "s-3",
           "title": null,
           "excerpt": "ccc",
           "score": null,
@@ -217,7 +241,9 @@
       "items": [
         {
           "item_type": "source",
-          "item_id": "s-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "s-1",
           "title": null,
           "excerpt": "aaa",
           "score": null,
@@ -227,7 +253,9 @@
         },
         {
           "item_type": "source",
-          "item_id": "s-2",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "s-2",
           "title": null,
           "excerpt": "bbb",
           "score": null,
@@ -263,7 +291,9 @@
       "items": [
         {
           "item_type": "memory",
-          "item_id": "dup",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "dup",
           "title": "first",
           "excerpt": null,
           "score": null,
@@ -273,7 +303,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "dup",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "dup",
           "title": "second",
           "excerpt": null,
           "score": null,
@@ -283,7 +315,9 @@
         },
         {
           "item_type": "knowledge_item",
-          "item_id": "dup",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "dup",
           "title": "other-type",
           "excerpt": null,
           "score": null,
@@ -297,7 +331,9 @@
       "items": [
         {
           "item_type": "memory",
-          "item_id": "dup",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "dup",
           "title": "first",
           "excerpt": null,
           "score": null,
@@ -307,7 +343,9 @@
         },
         {
           "item_type": "knowledge_item",
-          "item_id": "dup",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "dup",
           "title": "other-type",
           "excerpt": null,
           "score": null,
@@ -335,15 +373,17 @@
   {
     "input": {
       "allowed_sources": [
-        "manual_context"
+        "activity_record"
       ],
       "max_tokens": 4000,
       "max_items": 20,
       "context_policy_applied": true,
       "items": [
         {
-          "item_type": "manual_context",
-          "item_id": null,
+          "item_type": "activity_record",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": null,
           "title": "a",
           "excerpt": "aa",
           "score": 1.0,
@@ -354,8 +394,10 @@
           }
         },
         {
-          "item_type": "manual_context",
-          "item_id": null,
+          "item_type": "activity_record",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": null,
           "title": "b",
           "excerpt": "bb",
           "score": 1.0,
@@ -370,8 +412,10 @@
     "expected": {
       "items": [
         {
-          "item_type": "manual_context",
-          "item_id": null,
+          "item_type": "activity_record",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": null,
           "title": "a",
           "excerpt": "aa",
           "score": 1.0,
@@ -382,8 +426,10 @@
           }
         },
         {
-          "item_type": "manual_context",
-          "item_id": null,
+          "item_type": "activity_record",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": null,
           "title": "b",
           "excerpt": "bb",
           "score": 1.0,
@@ -398,7 +444,7 @@
       "truncated": false,
       "retrieval_trace": {
         "allowed_sources": [
-          "manual_context"
+          "activity_record"
         ],
         "context_policy_applied": true,
         "item_count": 2,
@@ -424,8 +470,10 @@
       "context_policy_applied": true,
       "items": [
         {
-          "item_type": "manual_context",
-          "item_id": "mc-1",
+          "item_type": "activity_record",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "mc-1",
           "title": null,
           "excerpt": "x",
           "score": null,
@@ -435,7 +483,9 @@
         },
         {
           "item_type": "project_folder",
-          "item_id": "ws-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "ws-1",
           "title": null,
           "excerpt": "y",
           "score": null,
@@ -445,7 +495,9 @@
         },
         {
           "item_type": "project",
-          "item_id": "pr-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "pr-1",
           "title": null,
           "excerpt": "z",
           "score": null,
@@ -455,7 +507,9 @@
         },
         {
           "item_type": "memory",
-          "item_id": "m-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "m-1",
           "title": null,
           "excerpt": "w",
           "score": null,
@@ -468,8 +522,10 @@
     "expected": {
       "items": [
         {
-          "item_type": "manual_context",
-          "item_id": "mc-1",
+          "item_type": "activity_record",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "mc-1",
           "title": null,
           "excerpt": "x",
           "score": null,
@@ -479,7 +535,9 @@
         },
         {
           "item_type": "project_folder",
-          "item_id": "ws-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "ws-1",
           "title": null,
           "excerpt": "y",
           "score": null,
@@ -489,7 +547,9 @@
         },
         {
           "item_type": "project",
-          "item_id": "pr-1",
+          "owner_user_id": null,
+          "visibility": "space_shared",
+"item_id": "pr-1",
           "title": null,
           "excerpt": "z",
           "score": null,

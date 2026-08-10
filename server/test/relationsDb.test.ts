@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { RelationsRepository } from "../src/modules/relations/repository";
 import { RelationsService } from "../src/modules/relations/service";
@@ -27,6 +27,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[relations-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -60,8 +61,26 @@ beforeEach(async () => {
   }
 });
 
+class PrivateCreationRelationsService extends RelationsService {
+  override createPerson(
+    identity: Parameters<RelationsService["createPerson"]>[0],
+    body: Parameters<RelationsService["createPerson"]>[1],
+  ) {
+    return super.createPerson(identity, { visibility: "private", ...body });
+  }
+
+  override createOrganization(
+    identity: Parameters<RelationsService["createOrganization"]>[0],
+    body: Parameters<RelationsService["createOrganization"]>[1],
+  ) {
+    return super.createOrganization(identity, { visibility: "private", ...body });
+  }
+}
+
 function service(): RelationsService {
-  return new RelationsService(pool as Pool, new RelationsRepository(pool as Pool));
+  // Route-level creation resolution is outside this repository integration
+  // suite; its direct service calls model an already-resolved private context.
+  return new PrivateCreationRelationsService(pool as Pool, new RelationsRepository(pool as Pool));
 }
 
 describe("relations module (real Postgres)", () => {
@@ -184,19 +203,19 @@ describe("relations module (real Postgres)", () => {
       operation: "object_relation_create",
       from_object_id: person.object_id,
       to_object_id: org.object_id,
-      relation_type: "affiliated_with",
+      link_type: "affiliated_with",
       metadata: expect.objectContaining({ role: "professor", title: "Professor of Computer Science" }),
     });
 
     const edgeResult = await pool!.query(
-      `SELECT relation_type, status FROM object_relations WHERE from_object_id = $1 AND to_object_id = $2`,
+      `SELECT link_type, status FROM object_relations WHERE from_object_id = $1 AND to_object_id = $2`,
       [person.object_id, org.object_id],
     );
     expect(edgeResult.rows).toHaveLength(0);
 
     const approved = await pool!.query<{ id: string }>(
       `INSERT INTO object_relations (
-         id, space_id, from_object_id, to_object_id, relation_type, status,
+         id, space_id, from_object_id, to_object_id, link_type, status,
          confidence, metadata_json, created_by_user_id, created_at, updated_at
        ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'affiliated_with','active',0.9,$4::jsonb,$5,now(),now())
        RETURNING id`,
@@ -302,10 +321,7 @@ describe("relations module (real Postgres)", () => {
     );
     const sourceObjectId = "88888888-8888-4888-8888-888888888888";
     await pool.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, status, visibility, access_level,
-         owner_user_id, created_at, updated_at
-       ) VALUES ($1,$2,'source','Private canonical source','processed','private','full',$3,$4,$4)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES ($1,$2,'source','Private canonical source','private','full',$3,$4,$4)`,
       [sourceObjectId, SPACE, OTHER_USER, now],
     );
     const objectEvidenceId = "99999999-9999-4999-8999-999999999999";
@@ -358,7 +374,7 @@ describe("relations module (real Postgres)", () => {
     if (!available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "To Be Archived" });
     await service().archivePerson({ spaceId: SPACE, userId: USER }, person.object_id);
-    const result = await pool!.query(`SELECT status FROM space_objects WHERE id = $1`, [person.object_id]);
+    const result = await pool!.query(`SELECT status FROM relation_people WHERE object_id = $1`, [person.object_id]);
     expect(result.rows[0].status).toBe("archived");
   });
 });

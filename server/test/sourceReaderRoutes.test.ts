@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
@@ -6,12 +6,21 @@ import { __setAuthIdentityForTests } from "../src/modules/auth";
 import { type Queryable } from "../src/modules/routeUtils/common";
 import { PgReaderActionRepository, PgAnnotationRepository, PgCommentRepository } from "../src/modules/reader/repository";
 import type { SourceItemRow } from "../src/modules/sources/sourceRepositoryRows";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 const SPACE = "space-1";
 const USER = "user-1";
 const identity = { spaceId: SPACE, userId: USER };
+
+beforeEach(() => {
+  __setContentCreationContextResolverForTests(async (_db, input) => ({
+    spaceId: input.requestSpaceId,
+    projectId: input.projectId ?? null,
+    visibility: input.projectId ? "space_shared" : "private",
+  }));
+});
 
 function config() {
   return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" });
@@ -22,6 +31,7 @@ function fakeAnnotation(overrides: Record<string, unknown> = {}): Record<string,
   return {
     id: "ann-1",
     space_id: SPACE,
+    project_id: null,
     document_type: "source_item",
     document_id: "item-1",
     annotation_type: "excerpt",
@@ -46,6 +56,7 @@ function fakeItem(overrides: Partial<SourceItemRow> = {}): SourceItemRow {
   return {
     id: "item-1",
     space_id: SPACE,
+    project_id: null,
     owner_user_id: USER,
     visibility: "space_shared",
     access_level: "full",
@@ -139,6 +150,7 @@ let app: FastifyInstance | undefined;
 
 afterEach(async () => {
   __setAuthIdentityForTests(null);
+  __setContentCreationContextResolverForTests(null);
   await app?.close();
   app = undefined;
 });
@@ -253,8 +265,9 @@ describe("PgReaderActionRepository.createEvidence", () => {
     const evidenceInsert = calls.find((c) => c.sql.includes("INSERT INTO extracted_evidence"));
     expect(evidenceInsert).toBeDefined();
     expect(evidenceInsert?.params).toContain("candidate");
-    expect(evidenceInsert?.params?.[5]).toBeNull();
-    expect(evidenceInsert?.params?.[6]).toBe("item-1");
+    expect(evidenceInsert?.params?.[2]).toBeNull();
+    expect(evidenceInsert?.params?.[6]).toBeNull();
+    expect(evidenceInsert?.params?.[7]).toBe("item-1");
   });
 
   it("does not write to memory_entries or knowledge_items", async () => {
@@ -517,6 +530,133 @@ describe("PgAnnotationRepository.listAnnotations — document gate", () => {
     expect(listQuery!.sql).toContain("created_by_user_id");
     // User id must be a query param, not inlined
     expect(listQuery!.params).toContain(USER);
+  });
+});
+
+describe("PgAnnotationRepository.createAnnotation — document scope", () => {
+  it("rejects client-owned access fields", async () => {
+    const { db, calls } = sequentialDb([]);
+    const repo = new PgAnnotationRepository(db);
+
+    await expect(repo.createAnnotation(identity, {
+      annotation_type: "excerpt",
+      quote_text: "fox",
+      anchor_json: {
+        schema_version: 1,
+        quote_text: "fox",
+        text_range: { start: 0, end: 3, unit: "utf16" },
+        before_context: "",
+        after_context: "",
+      },
+      document_type: "source_item",
+      document_id: "item-1",
+      project_id: "project-forged",
+      visibility: "space_shared",
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    expect(calls.some((call) => call.sql.includes("INSERT INTO reader_annotations"))).toBe(false);
+  });
+
+  it("inherits Project and access level from the document but stays private", async () => {
+    const { db, calls } = sequentialDb([
+      [fakeItem({
+        project_id: "project-document",
+        visibility: "selected_users",
+        access_level: "summary",
+      })],
+      [{ extracted_artifact_id: null, excerpt: "fox" }],
+      [fakeAnnotation({
+        project_id: "project-document",
+        visibility: "private",
+        access_level: "summary",
+      })],
+      [],
+    ]);
+    const repo = new PgAnnotationRepository(db);
+
+    await repo.createAnnotation(identity, {
+      annotation_type: "excerpt",
+      quote_text: "fox",
+      anchor_json: {
+        schema_version: 1,
+        quote_text: "fox",
+        text_range: { start: 0, end: 3, unit: "utf16" },
+        before_context: "",
+        after_context: "",
+      },
+      document_type: "source_item",
+      document_id: "item-1",
+    });
+
+    const insert = calls.find((call) => call.sql.includes("INSERT INTO reader_annotations"));
+    expect(insert?.params).toContain("project-document");
+    expect(insert?.params).toContain("summary");
+    // ADR 0013 decision 3a: scope and access level are inherited, visibility is
+    // not. A margin note on a shared document stays private until its author
+    // says otherwise, so no grants are copied either.
+    expect(insert?.params).toContain("private");
+    expect(insert?.params).not.toContain("selected_users");
+    expect(calls.some((call) => call.sql.includes("INSERT INTO content_access_grants"))).toBe(false);
+  });
+
+  it("copies the document's grants only when the author shares the annotation", async () => {
+    const { db, calls } = sequentialDb([
+      [fakeItem({
+        project_id: "project-document",
+        visibility: "selected_users",
+        access_level: "summary",
+      })],
+      [{ extracted_artifact_id: null, excerpt: "fox" }],
+      [fakeAnnotation({
+        project_id: "project-document",
+        visibility: "selected_users",
+        access_level: "summary",
+      })],
+      [],
+    ]);
+    const repo = new PgAnnotationRepository(db);
+
+    await repo.createAnnotation(identity, {
+      annotation_type: "excerpt",
+      quote_text: "fox",
+      anchor_json: {
+        schema_version: 1,
+        quote_text: "fox",
+        text_range: { start: 0, end: 3, unit: "utf16" },
+        before_context: "",
+        after_context: "",
+      },
+      document_type: "source_item",
+      document_id: "item-1",
+      visibility: "selected_users",
+    });
+
+    const insert = calls.find((call) => call.sql.includes("INSERT INTO reader_annotations"));
+    expect(insert?.params).toContain("selected_users");
+    expect(calls.some((call) => call.sql.includes("INSERT INTO content_access_grants"))).toBe(true);
+  });
+
+  it("refuses to make an annotation wider than its document", async () => {
+    const { db } = sequentialDb([
+      [fakeItem({ project_id: "project-document", visibility: "private", access_level: "full" })],
+      [{ extracted_artifact_id: null, excerpt: "fox" }],
+    ]);
+    const repo = new PgAnnotationRepository(db);
+
+    await expect(repo.createAnnotation(identity, {
+      annotation_type: "excerpt",
+      quote_text: "fox",
+      anchor_json: {
+        schema_version: 1,
+        quote_text: "fox",
+        text_range: { start: 0, end: 3, unit: "utf16" },
+        before_context: "",
+        after_context: "",
+      },
+      document_type: "source_item",
+      document_id: "item-1",
+      visibility: "space_shared",
+    })).rejects.toMatchObject({ statusCode: 422 });
   });
 });
 

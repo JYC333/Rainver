@@ -104,10 +104,6 @@ export class PgJobQueueRepository {
          $1, $2, $3, $4, $5, $6, 'pending', $7,
          $8::jsonb, 0, $9, $10::timestamptz, $11::timestamptz, $11::timestamptz
        )
-       ON CONFLICT (space_id, (payload_json->>'source_run_id'))
-         WHERE job_type = 'session_condense'
-           AND payload_json->>'source_run_id' IS NOT NULL
-       DO NOTHING
        RETURNING ${JOB_SELECT_COLUMNS}`,
       [
         id,
@@ -124,23 +120,8 @@ export class PgJobQueueRepository {
       ],
     );
     const row = result.rows[0];
-    if (row) return row;
-    const sourceRunId = typeof input.payload.source_run_id === "string"
-      ? input.payload.source_run_id
-      : null;
-    if (input.job_type === "session_condense" && sourceRunId) {
-      const existing = await this.db.query<JobRecord>(
-        `SELECT ${JOB_SELECT_COLUMNS}
-           FROM jobs
-          WHERE space_id = $1
-            AND job_type = 'session_condense'
-            AND payload_json->>'source_run_id' = $2
-          LIMIT 1`,
-        [input.space_id, sourceRunId],
-      );
-      if (existing.rows[0]) return existing.rows[0];
-    }
-    throw new Error("Job enqueue returned no row");
+    if (!row) throw new Error("Job enqueue returned no row");
+    return row;
   }
 
   async ensureAgentRunJob(

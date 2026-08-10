@@ -3,13 +3,12 @@
 # Maps task types to the minimal set of docs and code roots an agent should load.
 # Do not load all bundles for every task — use the smallest relevant set.
 #
+# This file routes development-time coding agents only. Product runtime,
+# RuntimeContextGateway, adapters, and sandboxes must never read this file or
+# any referenced .agent/ document as model-visible context.
+#
 # Bundles must not reference .agent/reports/ entries — reports are temporary and not source of truth.
 # Bundles must not reference stale historical refactor or audit docs.
-#
-# Usage (future ContextCompiler integration):
-#   classifier = TaskClassifier(prompt)
-#   bundle = context_bundles[classifier.type]
-#   compiler.compile(context, target, task_goal, bundle=bundle)
 
 # ---------------------------------------------------------------------------
 # Primary task-type bundles (use these first)
@@ -33,7 +32,7 @@ security-access:
     - server/src/modules/policy
     - server/src/modules/auth
     - server/src/modules/memory
-    - server/src/modules/context
+    - server/src/modules/runtimeContext
     - server/test
     - packages/protocol/src
 
@@ -62,13 +61,13 @@ frontend-product:
     - .agent/modules/activity-inbox.md
     - .agent/modules/library.md
     - .agent/architecture/PRODUCT_AND_BOUNDARIES.md
-    - .agent/decisions/0007-plugin-module-architecture.md
+    - .agent/decisions/0006-plugin-module-architecture.md
     - .agent/BOUNDARIES.md
     - .agent/COMMANDS.md
   code_roots:
     - apps/web/src/core
     - apps/web/src/modules
-    - apps/web/src/api/client.js
+    - apps/web/src/api/client.ts
     - apps/web/vite.config.ts
 
 runtime-agent:
@@ -90,6 +89,38 @@ runtime-agent:
     - server/test/runOrchestrationService.test.ts
     - server/test/runsWorkerRuntime.test.ts
 
+runtime-context:
+  docs:
+    - .agent/decisions/0014-unified-runtime-context-engine.md
+    - .agent/architecture/CONTEXT_AND_RETRIEVAL_LAYER.md
+    - .agent/architecture/MEMORY_CONTEXT_RUNTIME.md
+    - .agent/architecture/EXECUTION_MODEL.md
+    - .agent/architecture/RUNTIME_ADAPTER_STANDARD.md
+    - .agent/architecture/SECURITY_AND_ACCESS_BOUNDARIES.md
+    - .agent/architecture/POLICY_ENFORCEMENT_INVENTORY.md
+    - .agent/architecture/TESTING_STRATEGY.md
+    - .agent/modules/runtime-context.md
+    - .agent/modules/runtime-adapters.md
+    - .agent/modules/sandbox.md
+    - .agent/BOUNDARIES.md
+    - .agent/COMMANDS.md
+  code_roots:
+    - server/src/modules/runtimeContext
+    - server/src/modules/retrieval
+    - server/src/modules/policy
+    - server/src/modules/usage
+    - server/src/modules/runs
+    - server/src/modules/rooms
+    - server/src/modules/sessions
+    - server/src/modules/runtimeAdapters
+    - server/src/modules/runtimeHost
+    - server/src/modules/projectFolders
+    - server/src/db/schema
+    - packages/protocol/src
+    - apps/web/src
+    - sandbox
+    - server/test
+
 memory-activity-proposal:
   docs:
     - .agent/architecture/MEMORY_ACTIVITY_PROVENANCE.md
@@ -105,7 +136,7 @@ memory-activity-proposal:
     - server/src/modules/memory
     - server/src/modules/activity
     - server/src/modules/proposals
-    - server/src/modules/context
+    - server/src/modules/runtimeContext
     - server/test/frontendSupport.test.ts
     - server/test/runMaterializationService.test.ts
 
@@ -115,7 +146,7 @@ project-folder-artifact:
     - .agent/architecture/EXECUTION_MODEL.md
     - .agent/modules/sandbox.md
     - .agent/modules/project-files.md
-    - .agent/modules/context-compiler.md
+    - .agent/modules/runtime-context.md
     - .agent/decisions/0004-context-wrapper.md
     - .agent/BOUNDARIES.md
   code_roots:
@@ -150,7 +181,7 @@ memory:
   code_roots:
     - server/src/modules/memory
     - server/src/modules/activity
-    - server/src/modules/context
+    - server/src/modules/runtimeContext
     - server/test/frontendSupport.test.ts
 
 agents:
@@ -159,7 +190,7 @@ agents:
     - .agent/modules/sandbox.md
     - .agent/decisions/0002-agent-model.md
     - .agent/decisions/0004-context-wrapper.md
-    - .agent/decisions/0007-plugin-module-architecture.md
+    - .agent/decisions/0006-plugin-module-architecture.md
     - .agent/BOUNDARIES.md
   code_roots:
     - server/src/modules/agents
@@ -179,7 +210,7 @@ capability:
   docs:
     - .agent/modules/capability.md
     - .agent/architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md
-    - .agent/modules/context-compiler.md
+    - .agent/modules/runtime-context.md
     - .agent/BOUNDARIES.md
   code_roots:
     - catalog/capabilities
@@ -200,7 +231,7 @@ proposals:
 sandbox:
   docs:
     - .agent/modules/sandbox.md
-    - .agent/modules/context-compiler.md
+    - .agent/modules/runtime-context.md
     - .agent/decisions/0004-context-wrapper.md
   code_roots:
     - server/src/modules/projectFolders
@@ -234,7 +265,7 @@ knowledge:
     - .agent/architecture/CONTEXT_AND_RETRIEVAL_LAYER.md
     - .agent/modules/activity-inbox.md
     - .agent/modules/proposals.md
-    - .agent/decisions/0007-plugin-module-architecture.md
+    - .agent/decisions/0006-plugin-module-architecture.md
   code_roots:
     - server/src/modules/knowledge
     - apps/web/src/modules/knowledge/KnowledgePage.tsx   # stub exists
@@ -248,7 +279,6 @@ relations:
   code_roots:
     - server/src/modules/relations
     - server/src/modules/academic
-    - server/src/modules/projectTemplates
     - server/src/modules/projectResearch
     - server/src/modules/graph
     - server/src/db/schema/relations.ts
@@ -261,7 +291,7 @@ cards:
     - .agent/modules/knowledge-base.md
     - .agent/modules/media-cards.md
     - .agent/modules/proposals.md
-    - .agent/decisions/0007-plugin-module-architecture.md
+    - .agent/decisions/0006-plugin-module-architecture.md
   code_roots:
     - server/migrations     # card tables when this surface is implemented
     - apps/web/src/modules/cards/CardReviewPage.tsx   # stub exists
@@ -273,7 +303,7 @@ assistant:
     - .agent/modules/memory.md
   code_roots:
     - server/src/modules/agents
-    - server/src/modules/context
+    - server/src/modules/runtimeContext
     - server/src/modules/memory
 
 run:
@@ -286,7 +316,7 @@ run:
   code_roots:
     - server/src/modules/runs
     - server/src/modules/agents
-    - server/src/modules/context
+    - server/src/modules/runtimeContext
     - packages/protocol/src
 
 runtime_status:
@@ -324,7 +354,7 @@ module_registry:
   docs:
     - .agent/architecture/MODULES.md
     - .agent/architecture/MODULE_DEVELOPMENT_GUIDE.md
-    - .agent/decisions/0007-plugin-module-architecture.md
+    - .agent/decisions/0006-plugin-module-architecture.md
     - .agent/BOUNDARIES.md
   code_roots:
     - server/src/gateway/routeRegistry.ts
@@ -347,7 +377,7 @@ credentials:
 runtime_tools:
   docs:
     - .agent/modules/runtime-adapters.md
-    - .agent/decisions/0008-multi-cli-mvp.md
+    - .agent/decisions/0007-multi-cli-mvp.md
     - .agent/BOUNDARIES.md
   code_roots:
     - server/src/modules/runtimeAdapters/
@@ -374,4 +404,4 @@ space:
     - server/migrations
     - server/src/config.ts
     - server/src/modules/spaces
-    - server/src/modules/context
+    - server/src/modules/runtimeContext

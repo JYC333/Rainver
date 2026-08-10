@@ -1,3 +1,6 @@
+import { checkLinkTypeAllowed } from "../ontology/validation";
+import { hasDeclaration } from "../ontology/linkTypes";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ProposalApplyContext,
@@ -22,9 +25,10 @@ import {
   isKnowledgeRetrievalProjectedRelation,
 } from "./retrievalObjectTypes";
 import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes";
-import { allowedObjectKindKeys } from "./objectKindSubtypeKeys";
+import { allowedObjectProfileKeys } from "../ontology/objectProfileSubtypeKeys";
 import { isContentOwner } from "../access/contentAccessPolicy";
 import { contentDecisionFromDb } from "../access/contentAccessQuery";
+import { isProvenanceSourceType } from "../ontology/entities";
 
 // The retrieval projection is a derived index. A projection failure must not
 // roll back an accepted canonical Knowledge mutation, but the reindex runs
@@ -192,7 +196,7 @@ interface ObjectRelationRow {
   from_object_type: string | null;
   to_object_id: string;
   to_object_type: string | null;
-  relation_type: string;
+  link_type: string;
   status: string;
   confidence: number | null;
   evidence_summary: string | null;
@@ -206,7 +210,7 @@ interface ObjectRelationRow {
   updated_at: string | null;
 }
 
-interface SpaceObjectKindRow {
+interface SpaceObjectProfileRow {
   id: string;
   space_id: string;
   key: string;
@@ -268,20 +272,6 @@ const VALID_VERIFICATION_STATUSES = new Set(["unverified", "needs_review", "veri
 
 const VALID_REFLECTION_STATUSES = new Set(["unreviewed", "reviewed", "distilled"]);
 
-const VALID_RELATION_TYPES = new Set([
-  "related_to",
-  "explains",
-  "depends_on",
-  "prerequisite_of",
-  "part_of",
-  "example_of",
-  "applies_to",
-  "supports",
-  "contradicts",
-  "derived_from",
-  "summarizes",
-  "updates",
-]);
 
 const VALID_CLAIM_KINDS = new Set([
   "fact",
@@ -347,29 +337,12 @@ const VALID_CLAIM_SOURCE_TRUST_LEVELS = new Set([
   "unknown",
 ]);
 
-const VALID_OBJECT_RELATION_TYPES = new Set([
-  "related_to",
-  "references",
-  "depends_on",
-  "part_of",
-  "source_for",
-  "derived_from",
-  "about",
-  "supports",
-  "contradicts",
-  "supersedes",
-  "refines",
-  "same_as",
-  "affiliated_with",
-  "cites",
-  "authored_by",
-]);
 
-const VALID_OBJECT_KIND_BASE_TYPES = new Set<string>(RETRIEVAL_OBJECT_TYPE_VALUES);
-const CREATE_OBJECT_KIND_STATUSES = new Set(["draft", "active"]);
-const OBJECT_KIND_RELATION_HINT_DIRECTIONS = new Set(["from", "to", "either"]);
-const OBJECT_KIND_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const UNSAFE_OBJECT_KIND_CONFIG_KEY_TOKENS = new Set([
+const VALID_OBJECT_PROFILE_BASE_TYPES = new Set<string>(RETRIEVAL_OBJECT_TYPE_VALUES);
+const CREATE_OBJECT_PROFILE_STATUSES = new Set(["draft", "active"]);
+const OBJECT_PROFILE_RELATION_HINT_DIRECTIONS = new Set(["from", "to", "either"]);
+const OBJECT_PROFILE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const UNSAFE_OBJECT_PROFILE_CONFIG_KEY_TOKENS = new Set([
   "script",
   "scripts",
   "shell",
@@ -388,19 +361,9 @@ const UNSAFE_OBJECT_KIND_CONFIG_KEY_TOKENS = new Set([
   "executable",
 ]);
 
-const VALID_PROVENANCE_TYPES = new Set([
-  "activity",
-  "proposal",
-  "memory",
-  "artifact",
-  "run_step",
-  "external_source",
-  "user_confirmation",
-  "source_item",
-  "source_snapshot",
-  "extracted_evidence",
-  "run_event",
-]);
+// Was a fourth hand-maintained copy of the `provenance_links.source_type`
+// list; it now defers to the single owner. The old copy silently *dropped*
+// unrecognized entries, so a divergence lost provenance without an error.
 
 const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
@@ -408,7 +371,7 @@ const KNOWLEDGE_ITEM_COLUMNS = `
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
   so.title, ki.content, ki.content_json, ki.content_format,
   ki.content_schema_version, ki.plain_text, so.summary AS excerpt,
-  so.status, so.visibility, ki.verification_status, ki.reflection_status,
+  ki.status, so.visibility, ki.verification_status, ki.reflection_status,
   ki.tags_json, ki.confidence, so.owner_user_id,
   so.created_by_user_id, so.created_by_agent_id, so.created_by_run_id,
   ki.created_from_proposal_id,
@@ -429,7 +392,7 @@ const CLAIM_COLUMNS = `
   c.claim_kind, c.claim_text, c.normalized_claim_hash, c.holder_object_id,
   c.holder_type, c.holder_id, c.confidence, c.confidence_method,
   c.resolution_state, c.valid_from, c.valid_until, c.observed_at,
-  c.metadata_json, so.status, so.visibility, so.title, so.summary AS excerpt,
+  c.metadata_json, c.status, so.visibility, so.title, so.summary AS excerpt,
   so.owner_user_id, so.primary_project_id AS project_id, so.project_folder_id,
   so.created_by_user_id, so.created_by_agent_id, so.created_by_run_id,
   c.created_from_proposal_id, c.approved_by_user_id, so.archived_at,
@@ -455,13 +418,13 @@ const OBJECT_RELATION_COLUMNS = `
   r.id, r.space_id,
   r.from_object_id, from_so.object_type AS from_object_type,
   r.to_object_id, to_so.object_type AS to_object_type,
-  r.relation_type, r.status, r.confidence, r.evidence_summary,
+  r.link_type, r.status, r.confidence, r.evidence_summary,
   r.source_claim_id, r.source_object_id, r.source_proposal_id,
   r.metadata_json, r.created_by_user_id, r.created_by_agent_id,
   r.created_at, r.updated_at
 `;
 
-const SPACE_OBJECT_KIND_COLUMNS = `
+const SPACE_OBJECT_PROFILE_COLUMNS = `
   id, space_id, key, label, description, base_object_type, status, version,
   field_schema_json, extraction_policy_json, retrieval_policy_json, ui_config_json,
   created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
@@ -481,10 +444,10 @@ export function registerKnowledgeProposalAppliers(
   registry.register("claim_archive", applyClaimArchiveProposal);
   registry.register("object_relation_create", applyObjectRelationCreateProposal);
   registry.register("object_relation_delete", applyObjectRelationDeleteProposal);
-  registry.register("object_kind_create", applyObjectKindCreateProposal);
-  registry.register("object_kind_update", applyObjectKindUpdateProposal);
-  registry.register("object_kind_deprecate", applyObjectKindDeprecateProposal);
-  registry.register("object_kind_archive", applyObjectKindArchiveProposal);
+  registry.register("object_profile_create", applyObjectProfileCreateProposal);
+  registry.register("object_profile_update", applyObjectProfileUpdateProposal);
+  registry.register("object_profile_deprecate", applyObjectProfileDeprecateProposal);
+  registry.register("object_profile_archive", applyObjectProfileArchiveProposal);
 }
 
 async function applyKnowledgeCreateProposal(
@@ -559,45 +522,44 @@ async function applyKnowledgeCreateProposal(
   const plainText = derivePlainText({ title, content, contentJson });
   const excerpt = plainText ? plainText.slice(0, 280) : null;
   const itemId = randomUUID();
+  const object = buildSpaceObjectInsert({
+    id: itemId,
+    spaceId: context.proposal.space_id,
+    objectType: "knowledge_item",
+    title,
+    summary: excerpt,
+    visibility,
+    ownerUserId: requestedOwnerUserId ?? context.proposal.created_by_user_id,
+    primaryProjectId: projectId,
+    projectFolderId,
+    createdByUserId: context.proposal.created_by_user_id,
+    createdByRunId: sourceRunId ?? context.proposal.created_by_run_id,
+    createdAt: now,
+  });
+  const n = object.params.length;
   const row = await getKnowledgeRowsOrThrow<{ id: string }>(
     context.db,
     `WITH obj AS (
-       INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
-         created_by_agent_id, created_by_run_id, created_at, updated_at
-       ) VALUES (
-         $1, $2, 'knowledge_item', $3, $4, 'active', $5,
-         $6, $7, $8, $9,
-         NULL, $10, $11, $11
-       )
+       ${object.sql}
      ), item AS (
        INSERT INTO knowledge_items (
-         object_id, space_id, knowledge_kind, slug, aliases_json, content,
+         object_id, space_id, status, knowledge_kind, slug, aliases_json, content,
          content_json, content_format, content_schema_version, plain_text,
          verification_status, reflection_status, tags_json, confidence,
          created_from_proposal_id, approved_by_user_id, version, pinned_source_ref_json
        ) VALUES (
-         $1, $2, $12, $13, $14::jsonb, $15,
-         $16::jsonb, $17, COALESCE($18::int, 1), $19,
-         $20, $21, $22::jsonb, $23,
-         $24, $25, 1, $26::jsonb
+         $${n + 1}, $${n + 2}, 'active', $${n + 3}, $${n + 4}, $${n + 5}::jsonb, $${n + 6},
+         $${n + 7}::jsonb, $${n + 8}, COALESCE($${n + 9}::int, 1), $${n + 10},
+         $${n + 11}, $${n + 12}, $${n + 13}::jsonb, $${n + 14},
+         $${n + 15}, $${n + 16}, 1, $${n + 17}::jsonb
        )
        RETURNING object_id AS id
      )
      SELECT id FROM item`,
     [
+      ...object.params,
       itemId,
       context.proposal.space_id,
-      title,
-      excerpt,
-      visibility,
-      requestedOwnerUserId ?? context.proposal.created_by_user_id,
-      projectId,
-      projectFolderId,
-      context.proposal.created_by_user_id,
-      sourceRunId ?? context.proposal.created_by_run_id,
-      now,
       knowledgeKind,
       slug,
       JSON.stringify(aliases),
@@ -684,47 +646,46 @@ async function applyKnowledgeUpdateProposal(
   const excerpt = plainText.slice(0, 280);
 
   const newVersion = toNumber(current.version) + 1;
+  const object = buildSpaceObjectInsert({
+    id: itemId,
+    spaceId: context.proposal.space_id,
+    objectType: "knowledge_item",
+    title,
+    summary: excerpt,
+    visibility: current.visibility,
+    ownerUserId: current.owner_user_id,
+    primaryProjectId: current.project_id,
+    projectFolderId: current.project_folder_id,
+    createdByUserId: context.proposal.created_by_user_id,
+    createdByRunId: context.proposal.created_by_run_id,
+    createdAt: now,
+  });
+  const n = object.params.length;
   const created = await getKnowledgeRowsOrThrow<{ id: string }>(
     context.db,
     `WITH obj AS (
-       INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
-         created_by_agent_id, created_by_run_id, created_at, updated_at
-       ) VALUES (
-         $1, $2, 'knowledge_item', $3, $4, 'active', $5,
-         $6, $7, $8, $9,
-         NULL, $10, $11, $11
-       )
+       ${object.sql}
      ), item AS (
        INSERT INTO knowledge_items (
-         object_id, space_id, root_item_id, supersedes_item_id,
+         object_id, space_id, status, root_item_id, supersedes_item_id,
          knowledge_kind, slug, aliases_json, content, content_json,
          content_format, content_schema_version, plain_text,
          verification_status, reflection_status, tags_json, confidence,
          created_from_proposal_id, approved_by_user_id, version, pinned_source_ref_json
        ) VALUES (
-         $1, $2, $12, $13,
-         $14, $15, $16::jsonb, $17, $18::jsonb,
-         $19, $20, $21,
-         $22, $23, $24::jsonb, $25,
-         $26, $27, $28, $29::jsonb
+         $${n + 1}, $${n + 2}, 'active', $${n + 3}, $${n + 4},
+         $${n + 5}, $${n + 6}, $${n + 7}::jsonb, $${n + 8}, $${n + 9}::jsonb,
+         $${n + 10}, $${n + 11}, $${n + 12},
+         $${n + 13}, $${n + 14}, $${n + 15}::jsonb, $${n + 16},
+         $${n + 17}, $${n + 18}, $${n + 19}, $${n + 20}::jsonb
        )
        RETURNING object_id AS id
      )
      SELECT id FROM item`,
     [
+      ...object.params,
       itemId,
       context.proposal.space_id,
-      title,
-      excerpt,
-      current.visibility,
-      current.owner_user_id,
-      current.project_id,
-      current.project_folder_id,
-      context.proposal.created_by_user_id,
-      context.proposal.created_by_run_id,
-      now,
       rootItemId,
       current.id,
       current.knowledge_kind,
@@ -747,9 +708,13 @@ async function applyKnowledgeUpdateProposal(
   );
 
   await context.db.query(
-    `UPDATE space_objects
-       SET status = 'superseded', updated_at = $2
-     WHERE id = $1 AND space_id = $3 AND object_type = 'knowledge_item'`,
+    `WITH item AS (
+       UPDATE knowledge_items SET status = 'superseded'
+        WHERE object_id = $1 AND space_id = $3
+     )
+     UPDATE space_objects
+        SET updated_at = $2
+      WHERE id = $1 AND space_id = $3 AND object_type = 'knowledge_item'`,
     [current.id, now, context.proposal.space_id],
   );
 
@@ -788,8 +753,12 @@ async function applyKnowledgeArchiveProposal(
 
   const now = new Date().toISOString();
   await context.db.query(
-    `UPDATE space_objects
-      SET status = 'archived', archived_at = $2, updated_at = $2
+    `WITH item AS (
+       UPDATE knowledge_items SET status = 'archived'
+        WHERE object_id = $1 AND space_id = $3
+     )
+     UPDATE space_objects
+      SET archived_at = $2, updated_at = $2
      WHERE id = $1 AND space_id = $3 AND object_type = 'knowledge_item'`,
     [targetId, now, context.proposal.space_id],
   );
@@ -874,46 +843,44 @@ async function applyClaimCreateProposal(
   const sources = await claimSourcesFromPayload(context, payload.sources);
   const now = new Date().toISOString();
   const claimId = randomUUID();
+  const object = buildSpaceObjectInsert({
+    id: claimId,
+    spaceId: context.proposal.space_id,
+    objectType: "claim",
+    title,
+    summary: optionalString(payload.summary) ?? claimText.slice(0, 280),
+    visibility,
+    ownerUserId: requestedOwnerUserId ?? context.proposal.created_by_user_id,
+    primaryProjectId: optionalString(payload.project_id) ?? context.proposal.project_id,
+    projectFolderId: optionalString(payload.project_folder_id) ?? context.proposal.project_folder_id,
+    createdByUserId: context.proposal.created_by_user_id,
+    createdByRunId: context.proposal.created_by_run_id ?? null,
+    createdAt: now,
+    archivedAt: status === "archived" ? now : null,
+  });
+  const n = object.params.length;
   await context.db.query(
     `WITH obj AS (
-       INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
-         created_by_agent_id, created_by_run_id, created_at, updated_at,
-         archived_at
-       ) VALUES (
-         $1, $2, 'claim', $3, $4, $5::varchar(32), $6,
-         $7, $8, $9, $10,
-         NULL, $11, $12, $12,
-         CASE WHEN $5::varchar(32) = 'archived' THEN $12::timestamptz ELSE NULL END
-       )
+       ${object.sql}
      )
      INSERT INTO claims (
-       object_id, space_id, subject_object_id, subject_text, claim_kind,
+       object_id, space_id, status, subject_object_id, subject_text, claim_kind,
        claim_text, normalized_claim_hash, holder_object_id, holder_type,
        holder_id, confidence, confidence_method, resolution_state, valid_from,
        valid_until, observed_at, metadata_json, created_from_proposal_id,
        approved_by_user_id
      ) VALUES (
-       $1, $2, $13, $14, $15,
-       $16, $17, $18, $19,
-       $20, $21, $22, $23, $24,
-       $25, $26, $27::jsonb, $28,
-       $29
+       $${n + 1}, $${n + 2}, $${n + 3}::varchar(32), $${n + 4}, $${n + 5}, $${n + 6},
+       $${n + 7}, $${n + 8}, $${n + 9}, $${n + 10},
+       $${n + 11}, $${n + 12}, $${n + 13}, $${n + 14}, $${n + 15},
+       $${n + 16}, $${n + 17}, $${n + 18}::jsonb, $${n + 19},
+       $${n + 20}
      )`,
     [
+      ...object.params,
       claimId,
       context.proposal.space_id,
-      title,
-      optionalString(payload.summary) ?? claimText.slice(0, 280),
       status,
-      visibility,
-      requestedOwnerUserId ?? context.proposal.created_by_user_id,
-      optionalString(payload.project_id) ?? context.proposal.project_id,
-      optionalString(payload.project_folder_id) ?? context.proposal.project_folder_id,
-      context.proposal.created_by_user_id,
-      context.proposal.created_by_run_id ?? null,
-      now,
       subjectObjectId,
       subjectText,
       claimKind,
@@ -1033,7 +1000,6 @@ async function applyClaimUpdateProposal(
        UPDATE space_objects
           SET title = $3,
               summary = CASE WHEN $4::boolean THEN $5 ELSE summary END,
-              status = $6::varchar(32),
               visibility = $7,
               archived_at = CASE WHEN $6::varchar(32) = 'archived' THEN $24::timestamptz ELSE archived_at END,
               updated_at = $24
@@ -1041,7 +1007,8 @@ async function applyClaimUpdateProposal(
         RETURNING id
      )
      UPDATE claims
-        SET subject_object_id = $8,
+        SET status = $6::varchar(32),
+            subject_object_id = $8,
             subject_text = $9,
             claim_kind = $10,
             claim_text = $11,
@@ -1121,8 +1088,12 @@ async function applyClaimArchiveProposal(
   if (transitionError) throw new KnowledgeApplyValidationError(transitionError);
   const now = new Date().toISOString();
   await context.db.query(
-    `UPDATE space_objects
-        SET status = 'archived', archived_at = $3, updated_at = $3
+    `WITH claim AS (
+       UPDATE claims SET status = 'archived'
+        WHERE object_id = $1 AND space_id = $2
+     )
+     UPDATE space_objects
+        SET archived_at = $3, updated_at = $3
       WHERE id = $1 AND space_id = $2 AND object_type = 'claim'`,
     [targetId, context.proposal.space_id, now],
   );
@@ -1147,32 +1118,38 @@ async function applyObjectRelationCreateProposal(
   const fromObjectId = expectString(payload.from_object_id);
   const toObjectId = expectString(payload.to_object_id);
   if (fromObjectId === toObjectId) throw new KnowledgeApplyValidationError("object relation endpoints must differ");
-  const relationType = expectString(payload.relation_type);
-  if (!VALID_OBJECT_RELATION_TYPES.has(relationType)) {
-    throw new KnowledgeApplyValidationError(`invalid relation_type: ${JSON.stringify(relationType)}`);
-  }
+  const linkType = expectString(payload.link_type);
   const status = optionalString(payload.status) ?? "active";
   if (!RELATION_CREATE_STATUSES.has(status)) {
     throw new KnowledgeApplyValidationError(`invalid relation status: ${JSON.stringify(status)}`);
   }
-  const metadata = validatedObjectRelationMetadata(relationType, payload.metadata);
+  const metadata = validatedObjectRelationMetadata(linkType, payload.metadata);
 
   const fromObject = await requireSpaceObjectForMutation(context.db, context.proposal.space_id, fromObjectId, context.proposal);
   const toObject = await requireSpaceObjectForMutation(context.db, context.proposal.space_id, toObjectId, context.proposal);
-  assertTypedObjectRelationEndpoints(relationType, fromObject.object_type, toObject.object_type);
+  // Apply is the canonical write boundary, so the registry is consulted here
+  // and not only when the proposal was created: vocabulary, declared
+  // governance, and endpoints together.
+  const linkViolation = checkLinkTypeAllowed({
+    linkType,
+    fromObjectType: fromObject.object_type,
+    toObjectType: toObject.object_type,
+    via: "proposal",
+  });
+  if (linkViolation) throw new KnowledgeApplyValidationError(linkViolation);
   const sourceClaimId = optionalString(payload.source_claim_id);
   if (sourceClaimId) await requireClaimForMutation(context.db, context.proposal.space_id, sourceClaimId, context.proposal);
   const sourceObjectId = optionalString(payload.source_object_id);
   if (sourceObjectId) await requireSpaceObject(context.db, context.proposal.space_id, sourceObjectId, context.proposal);
   if (status === "active") {
-    await assertNoActiveObjectRelation(context.db, context.proposal.space_id, fromObjectId, toObjectId, relationType);
+    await assertNoActiveObjectRelation(context.db, context.proposal.space_id, fromObjectId, toObjectId, linkType);
   }
 
   const now = new Date().toISOString();
   const relationId = randomUUID();
   await context.db.query(
     `INSERT INTO object_relations (
-       id, space_id, from_object_id, to_object_id, relation_type, status,
+       id, space_id, from_object_id, to_object_id, link_type, status,
        confidence, evidence_summary, source_claim_id, source_object_id,
        source_proposal_id, metadata_json, created_by_user_id,
        created_by_agent_id, created_at, updated_at
@@ -1187,7 +1164,7 @@ async function applyObjectRelationCreateProposal(
       context.proposal.space_id,
       fromObjectId,
       toObjectId,
-      relationType,
+      linkType,
       status,
       parseConfidence(payload.confidence),
       optionalString(payload.evidence_summary),
@@ -1225,7 +1202,7 @@ async function applyObjectRelationDeleteProposal(
 
   const now = new Date().toISOString();
   const metadataPatch = strictMetadataObject(payload.metadata_patch, "metadata_patch");
-  const metadata = validatedObjectRelationMetadata(relation.relation_type, {
+  const metadata = validatedObjectRelationMetadata(relation.link_type, {
     ...strictMetadataObject(relation.metadata_json, "stored relation metadata"),
     ...metadataPatch,
   });
@@ -1250,37 +1227,37 @@ async function applyObjectRelationDeleteProposal(
   };
 }
 
-async function applyObjectKindCreateProposal(
+async function applyObjectProfileCreateProposal(
   context: ProposalApplyContext,
 ): Promise<ProposalApplyResult> {
   const payload = context.proposal.payload_json ?? {};
-  ensureOperation(payload, "object_kind_create");
+  ensureOperation(payload, "object_profile_create");
 
-  const key = expectObjectKindKey(payload.key);
+  const key = expectObjectProfileKey(payload.key);
   const label = expectBoundedString(payload.label, "label", 160);
-  const baseObjectType = expectObjectKindBaseType(payload.base_object_type);
-  assertObjectKindKeyMatchesBase(baseObjectType, key);
+  const baseObjectType = expectObjectProfileBaseType(payload.base_object_type);
+  assertObjectProfileKeyMatchesBase(baseObjectType, key);
   const status = optionalString(payload.status) ?? "active";
-  if (!CREATE_OBJECT_KIND_STATUSES.has(status)) {
+  if (!CREATE_OBJECT_PROFILE_STATUSES.has(status)) {
     throw new KnowledgeApplyValidationError("object kind create status must be draft or active");
   }
 
-  const fieldSchema = objectKindConfig(payload.field_schema, "field_schema");
-  const extractionPolicy = objectKindConfig(payload.extraction_policy, "extraction_policy");
-  const retrievalPolicy = objectKindConfig(payload.retrieval_policy, "retrieval_policy");
-  const uiConfig = objectKindConfig(payload.ui_config, "ui_config");
-  const relationHints = await objectKindRelationHints(
+  const fieldSchema = objectProfileConfig(payload.field_schema, "field_schema");
+  const extractionPolicy = objectProfileConfig(payload.extraction_policy, "extraction_policy");
+  const retrievalPolicy = objectProfileConfig(payload.retrieval_policy, "retrieval_policy");
+  const uiConfig = objectProfileConfig(payload.ui_config, "ui_config");
+  const relationHints = await objectProfileRelationHints(
     context.db,
     context.proposal.space_id,
     payload.relation_hints,
   );
 
-  await assertObjectKindKeyAvailable(context.db, context.proposal.space_id, baseObjectType, key);
+  await assertObjectProfileKeyAvailable(context.db, context.proposal.space_id, baseObjectType, key);
 
   const now = new Date().toISOString();
   const id = randomUUID();
   await context.db.query(
-    `INSERT INTO space_object_kinds (
+    `INSERT INTO space_object_profiles (
        id, space_id, key, label, description, base_object_type, status, version,
        field_schema_json, extraction_policy_json, retrieval_policy_json, ui_config_json,
        created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
@@ -1308,23 +1285,23 @@ async function applyObjectKindCreateProposal(
       now,
     ],
   );
-  await insertObjectKindRelationHints(context.db, context.proposal.space_id, id, relationHints, now);
+  await insertObjectProfileRelationHints(context.db, context.proposal.space_id, id, relationHints, now);
 
-  const row = await getObjectKindById(context.db, context.proposal.space_id, id);
+  const row = await getObjectProfileById(context.db, context.proposal.space_id, id);
   return {
-    result_type: "object_kind",
-    result: objectKindApplyResult(row),
+    result_type: "object_profile",
+    result: objectProfileApplyResult(row),
   };
 }
 
-async function applyObjectKindUpdateProposal(
+async function applyObjectProfileUpdateProposal(
   context: ProposalApplyContext,
 ): Promise<ProposalApplyResult> {
   const payload = context.proposal.payload_json ?? {};
-  ensureOperation(payload, "object_kind_update");
+  ensureOperation(payload, "object_profile_update");
 
-  const targetId = expectString(payload.target_kind_id);
-  const current = await requireObjectKindMutable(context.db, context.proposal.space_id, targetId);
+  const targetId = expectString(payload.target_profile_id);
+  const current = await requireObjectProfileMutable(context.db, context.proposal.space_id, targetId);
   const label = hasPayloadKey(payload, "label")
     ? expectBoundedString(payload.label, "label", 160)
     : current.label;
@@ -1332,22 +1309,22 @@ async function applyObjectKindUpdateProposal(
     ? optionalString(payload.description)
     : current.description;
   const status = hasPayloadKey(payload, "status")
-    ? expectObjectKindActivationStatus(payload.status, current.status)
+    ? expectObjectProfileActivationStatus(payload.status, current.status)
     : current.status;
   const fieldSchema = hasPayloadKey(payload, "field_schema")
-    ? objectKindConfig(payload.field_schema, "field_schema")
+    ? objectProfileConfig(payload.field_schema, "field_schema")
     : objectRecord(current.field_schema_json);
   const extractionPolicy = hasPayloadKey(payload, "extraction_policy")
-    ? objectKindConfig(payload.extraction_policy, "extraction_policy")
+    ? objectProfileConfig(payload.extraction_policy, "extraction_policy")
     : objectRecord(current.extraction_policy_json);
   const retrievalPolicy = hasPayloadKey(payload, "retrieval_policy")
-    ? objectKindConfig(payload.retrieval_policy, "retrieval_policy")
+    ? objectProfileConfig(payload.retrieval_policy, "retrieval_policy")
     : objectRecord(current.retrieval_policy_json);
   const uiConfig = hasPayloadKey(payload, "ui_config")
-    ? objectKindConfig(payload.ui_config, "ui_config")
+    ? objectProfileConfig(payload.ui_config, "ui_config")
     : objectRecord(current.ui_config_json);
   const relationHints = hasPayloadKey(payload, "relation_hints")
-    ? await objectKindRelationHints(context.db, context.proposal.space_id, payload.relation_hints)
+    ? await objectProfileRelationHints(context.db, context.proposal.space_id, payload.relation_hints)
     : null;
 
   if (
@@ -1365,7 +1342,7 @@ async function applyObjectKindUpdateProposal(
 
   const now = new Date().toISOString();
   await context.db.query(
-    `UPDATE space_object_kinds
+    `UPDATE space_object_profiles
         SET label = $3,
             description = $4,
             status = $5,
@@ -1392,38 +1369,38 @@ async function applyObjectKindUpdateProposal(
     ],
   );
   if (relationHints) {
-    await replaceObjectKindRelationHints(context.db, context.proposal.space_id, targetId, relationHints, now);
+    await replaceObjectProfileRelationHints(context.db, context.proposal.space_id, targetId, relationHints, now);
   }
 
-  const row = await getObjectKindById(context.db, context.proposal.space_id, targetId);
+  const row = await getObjectProfileById(context.db, context.proposal.space_id, targetId);
   return {
-    result_type: "object_kind",
-    result: objectKindApplyResult(row),
+    result_type: "object_profile",
+    result: objectProfileApplyResult(row),
   };
 }
 
-async function applyObjectKindDeprecateProposal(
+async function applyObjectProfileDeprecateProposal(
   context: ProposalApplyContext,
 ): Promise<ProposalApplyResult> {
   const payload = context.proposal.payload_json ?? {};
-  ensureOperation(payload, "object_kind_deprecate");
-  return updateObjectKindStatus(context, expectString(payload.target_kind_id), "deprecated");
+  ensureOperation(payload, "object_profile_deprecate");
+  return updateObjectProfileStatus(context, expectString(payload.target_profile_id), "deprecated");
 }
 
-async function applyObjectKindArchiveProposal(
+async function applyObjectProfileArchiveProposal(
   context: ProposalApplyContext,
 ): Promise<ProposalApplyResult> {
   const payload = context.proposal.payload_json ?? {};
-  ensureOperation(payload, "object_kind_archive");
-  return updateObjectKindStatus(context, expectString(payload.target_kind_id), "archived");
+  ensureOperation(payload, "object_profile_archive");
+  return updateObjectProfileStatus(context, expectString(payload.target_profile_id), "archived");
 }
 
-async function updateObjectKindStatus(
+async function updateObjectProfileStatus(
   context: ProposalApplyContext,
   targetId: string,
   status: "deprecated" | "archived",
 ): Promise<ProposalApplyResult> {
-  const current = await getObjectKindById(context.db, context.proposal.space_id, targetId);
+  const current = await getObjectProfileById(context.db, context.proposal.space_id, targetId);
   if (current.status === "archived") {
     throw new KnowledgeApplyValidationError("archived object kinds cannot be changed");
   }
@@ -1432,7 +1409,7 @@ async function updateObjectKindStatus(
   }
   const now = new Date().toISOString();
   await context.db.query(
-    `UPDATE space_object_kinds
+    `UPDATE space_object_profiles
         SET status = $3,
             version = version + 1,
             updated_from_proposal_id = $4,
@@ -1440,10 +1417,10 @@ async function updateObjectKindStatus(
       WHERE id = $1 AND space_id = $2`,
     [targetId, context.proposal.space_id, status, context.proposal.id, now],
   );
-  const row = await getObjectKindById(context.db, context.proposal.space_id, targetId);
+  const row = await getObjectProfileById(context.db, context.proposal.space_id, targetId);
   return {
-    result_type: "object_kind",
-    result: objectKindApplyResult(row),
+    result_type: "object_profile",
+    result: objectProfileApplyResult(row),
   };
 }
 
@@ -1542,35 +1519,35 @@ async function getObjectRelationById(
   return row;
 }
 
-async function getObjectKindById(
+async function getObjectProfileById(
   db: Queryable,
   spaceId: string,
-  kindId: string,
-): Promise<SpaceObjectKindRow> {
-  const result = await db.query<SpaceObjectKindRow>(
-    `SELECT ${SPACE_OBJECT_KIND_COLUMNS}
-       FROM space_object_kinds
+  profileId: string,
+): Promise<SpaceObjectProfileRow> {
+  const result = await db.query<SpaceObjectProfileRow>(
+    `SELECT ${SPACE_OBJECT_PROFILE_COLUMNS}
+       FROM space_object_profiles
       WHERE id = $1 AND space_id = $2`,
-    [kindId, spaceId],
+    [profileId, spaceId],
   );
   const row = result.rows[0];
   if (!row) throw new KnowledgeApplyValidationError("Object kind not found");
   return row;
 }
 
-async function requireObjectKindMutable(
+async function requireObjectProfileMutable(
   db: Queryable,
   spaceId: string,
-  kindId: string,
-): Promise<SpaceObjectKindRow> {
-  const row = await getObjectKindById(db, spaceId, kindId);
+  profileId: string,
+): Promise<SpaceObjectProfileRow> {
+  const row = await getObjectProfileById(db, spaceId, profileId);
   if (row.status === "archived") {
     throw new KnowledgeApplyValidationError("archived object kinds cannot be changed");
   }
   return row;
 }
 
-async function assertObjectKindKeyAvailable(
+async function assertObjectProfileKeyAvailable(
   db: Queryable,
   spaceId: string,
   baseObjectType: string,
@@ -1578,7 +1555,7 @@ async function assertObjectKindKeyAvailable(
 ): Promise<void> {
   const result = await db.query<{ id: string }>(
     `SELECT id
-       FROM space_object_kinds
+       FROM space_object_profiles
       WHERE space_id = $1
         AND base_object_type = $2
         AND key = $3
@@ -1799,7 +1776,7 @@ async function hasActiveSupersedingClaimRelation(
         AND to_so.deleted_at IS NULL
       WHERE r.space_id = $1
         AND r.to_object_id = $2
-        AND r.relation_type = 'supersedes'
+        AND r.link_type = 'supersedes'
         AND r.status = 'active'
       LIMIT 1`,
     [spaceId, targetClaimId],
@@ -1812,13 +1789,13 @@ async function assertNoActiveObjectRelation(
   spaceId: string,
   fromObjectId: string,
   toObjectId: string,
-  relationType: string,
+  linkType: string,
 ): Promise<void> {
   const result = await db.query<{ id: string }>(
     `SELECT id FROM object_relations
       WHERE space_id = $1 AND from_object_id = $2 AND to_object_id = $3
-        AND relation_type = $4 AND status = 'active'`,
-    [spaceId, fromObjectId, toObjectId, relationType],
+        AND link_type = $4 AND status = 'active'`,
+    [spaceId, fromObjectId, toObjectId, linkType],
   );
   if (result.rows[0]) throw new KnowledgeApplyValidationError("active Object relation already exists");
 }
@@ -1877,7 +1854,7 @@ function provenanceEntriesFromPayload(sourceRefs: unknown): ProvenanceEntry[] {
     const sourceType = rawType.trim();
     const sourceId = rawId.trim();
     if (!sourceType || !sourceId) continue;
-    if (!VALID_PROVENANCE_TYPES.has(sourceType)) continue;
+    if (!isProvenanceSourceType(sourceType)) continue;
 
     const entry: ProvenanceEntry = {
       source_type: sourceType,
@@ -2007,7 +1984,7 @@ function serializeObjectRelation(row: ObjectRelationRow): Record<string, unknown
     space_id: row.space_id,
     from_object_id: row.from_object_id,
     to_object_id: row.to_object_id,
-    relation_type: row.relation_type,
+    link_type: row.link_type,
     status: row.status,
     confidence: row.confidence,
     evidence_summary: row.evidence_summary,
@@ -2023,7 +2000,7 @@ function serializeObjectRelation(row: ObjectRelationRow): Record<string, unknown
   };
 }
 
-function serializeObjectKind(row: SpaceObjectKindRow): Record<string, unknown> {
+function serializeObjectProfile(row: SpaceObjectProfileRow): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -2102,24 +2079,24 @@ function expectBoundedString(value: unknown, field: string, maxLength: number): 
   return normalized;
 }
 
-function expectObjectKindKey(value: unknown): string {
+function expectObjectProfileKey(value: unknown): string {
   const key = expectString(value);
-  if (!OBJECT_KIND_KEY_PATTERN.test(key)) {
+  if (!OBJECT_PROFILE_KEY_PATTERN.test(key)) {
     throw new KnowledgeApplyValidationError("object kind key must be lowercase letters, numbers, or underscores and start with a letter");
   }
   return key;
 }
 
-function expectObjectKindBaseType(value: unknown): string {
+function expectObjectProfileBaseType(value: unknown): string {
   const baseObjectType = expectString(value);
-  if (!VALID_OBJECT_KIND_BASE_TYPES.has(baseObjectType)) {
+  if (!VALID_OBJECT_PROFILE_BASE_TYPES.has(baseObjectType)) {
     throw new KnowledgeApplyValidationError(`invalid base_object_type: ${JSON.stringify(baseObjectType)}`);
   }
   return baseObjectType;
 }
 
-function assertObjectKindKeyMatchesBase(baseObjectType: string, key: string): void {
-  const allowed = allowedObjectKindKeys(baseObjectType);
+function assertObjectProfileKeyMatchesBase(baseObjectType: string, key: string): void {
+  const allowed = allowedObjectProfileKeys(baseObjectType);
   if (!allowed?.includes(key)) {
     throw new KnowledgeApplyValidationError(
       `object kind key must match the canonical ${baseObjectType} subtype (${allowed?.join(", ") ?? "none"})`,
@@ -2127,7 +2104,7 @@ function assertObjectKindKeyMatchesBase(baseObjectType: string, key: string): vo
   }
 }
 
-function expectObjectKindActivationStatus(value: unknown, currentStatus: string): "active" {
+function expectObjectProfileActivationStatus(value: unknown, currentStatus: string): "active" {
   const status = expectString(value);
   if (status !== "active") {
     throw new KnowledgeApplyValidationError("object kind update status can only be active");
@@ -2154,12 +2131,12 @@ function objectRecord(value: unknown): Record<string, unknown> {
   return optionalObject(value) ?? {};
 }
 
-function objectKindConfig(value: unknown, field: string): Record<string, unknown> {
+function objectProfileConfig(value: unknown, field: string): Record<string, unknown> {
   if (value !== undefined && value !== null && optionalObject(value) === null) {
     throw new KnowledgeApplyValidationError(`${field} must be a JSON object`);
   }
   const record = objectRecord(value);
-  assertObjectKindConfigSafe(record, field, 0);
+  assertObjectProfileConfigSafe(record, field, 0);
   const serialized = JSON.stringify(record);
   if (serialized.length > 16_000) {
     throw new KnowledgeApplyValidationError(`${field} is too large`);
@@ -2167,20 +2144,20 @@ function objectKindConfig(value: unknown, field: string): Record<string, unknown
   return record;
 }
 
-interface ObjectKindRelationHintPayload {
+interface ObjectProfileRelationHintPayload {
   endpointObjectType: string;
-  endpointObjectKindId: string | null;
-  relationType: string;
+  endpointObjectProfileId: string | null;
+  linkType: string;
   direction: "from" | "to" | "either";
   confidenceDefault: number;
   required: boolean;
 }
 
-async function objectKindRelationHints(
+async function objectProfileRelationHints(
   db: Queryable,
   spaceId: string,
   rawHints: unknown,
-): Promise<ObjectKindRelationHintPayload[]> {
+): Promise<ObjectProfileRelationHintPayload[]> {
   if (rawHints === undefined || rawHints === null) return [];
   if (!Array.isArray(rawHints)) {
     throw new KnowledgeApplyValidationError("relation_hints must be an array");
@@ -2188,37 +2165,37 @@ async function objectKindRelationHints(
   if (rawHints.length > 50) {
     throw new KnowledgeApplyValidationError("relation_hints can include at most 50 entries");
   }
-  const hints: ObjectKindRelationHintPayload[] = [];
+  const hints: ObjectProfileRelationHintPayload[] = [];
   for (const rawHint of rawHints) {
     const hint = optionalObject(rawHint);
     if (!hint) throw new KnowledgeApplyValidationError("relation_hints entries must be objects");
-    const endpointObjectType = expectObjectKindBaseType(hint.endpoint_object_type);
-    const relationType = expectString(hint.relation_type);
-    if (!VALID_RELATION_TYPES.has(relationType) && !VALID_OBJECT_RELATION_TYPES.has(relationType)) {
-      throw new KnowledgeApplyValidationError("invalid relation_hints relation_type");
+    const endpointObjectType = expectObjectProfileBaseType(hint.endpoint_object_type);
+    const linkType = expectString(hint.link_type);
+    if (!hasDeclaration(linkType)) {
+      throw new KnowledgeApplyValidationError("invalid relation_hints link_type");
     }
     const direction = optionalString(hint.direction) ?? "from";
-    if (!OBJECT_KIND_RELATION_HINT_DIRECTIONS.has(direction)) {
+    if (!OBJECT_PROFILE_RELATION_HINT_DIRECTIONS.has(direction)) {
       throw new KnowledgeApplyValidationError("invalid relation_hints direction");
     }
     const confidenceDefault = numberValue(hint.confidence_default) ?? 0.55;
     if (confidenceDefault < 0 || confidenceDefault > 1) {
       throw new KnowledgeApplyValidationError("relation_hints confidence_default must be between 0 and 1");
     }
-    const endpointObjectKindId = optionalString(hint.endpoint_object_kind_id);
-    if (endpointObjectKindId) {
-      const endpointKind = await getObjectKindById(db, spaceId, endpointObjectKindId);
+    const endpointObjectProfileId = optionalString(hint.endpoint_object_profile_id);
+    if (endpointObjectProfileId) {
+      const endpointKind = await getObjectProfileById(db, spaceId, endpointObjectProfileId);
       if (endpointKind.status === "archived") {
         throw new KnowledgeApplyValidationError("relation hint endpoint object kind is archived");
       }
       if (endpointKind.base_object_type !== endpointObjectType) {
-        throw new KnowledgeApplyValidationError("relation_hints endpoint_object_kind_id must match endpoint_object_type");
+        throw new KnowledgeApplyValidationError("relation_hints endpoint_object_profile_id must match endpoint_object_type");
       }
     }
     hints.push({
       endpointObjectType,
-      endpointObjectKindId,
-      relationType,
+      endpointObjectProfileId,
+      linkType,
       direction: direction as "from" | "to" | "either",
       confidenceDefault,
       required: hint.required === true,
@@ -2227,18 +2204,18 @@ async function objectKindRelationHints(
   return hints;
 }
 
-async function insertObjectKindRelationHints(
+async function insertObjectProfileRelationHints(
   db: Queryable,
   spaceId: string,
-  objectKindId: string,
-  hints: readonly ObjectKindRelationHintPayload[],
+  objectProfileId: string,
+  hints: readonly ObjectProfileRelationHintPayload[],
   now: string,
 ): Promise<void> {
   for (const hint of hints) {
     await db.query(
-      `INSERT INTO space_object_kind_relation_hints (
-         id, space_id, object_kind_id, endpoint_object_type, endpoint_object_kind_id,
-         relation_type, direction, confidence_default, required, created_at
+      `INSERT INTO space_object_profile_relation_hints (
+         id, space_id, object_profile_id, endpoint_object_type, endpoint_object_profile_id,
+         link_type, direction, confidence_default, required, created_at
        ) VALUES (
          $1, $2, $3, $4, $5,
          $6, $7, $8, $9, $10
@@ -2246,10 +2223,10 @@ async function insertObjectKindRelationHints(
       [
         randomUUID(),
         spaceId,
-        objectKindId,
+        objectProfileId,
         hint.endpointObjectType,
-        hint.endpointObjectKindId,
-        hint.relationType,
+        hint.endpointObjectProfileId,
+        hint.linkType,
         hint.direction,
         hint.confidenceDefault,
         hint.required,
@@ -2259,49 +2236,49 @@ async function insertObjectKindRelationHints(
   }
 }
 
-async function replaceObjectKindRelationHints(
+async function replaceObjectProfileRelationHints(
   db: Queryable,
   spaceId: string,
-  objectKindId: string,
-  hints: readonly ObjectKindRelationHintPayload[],
+  objectProfileId: string,
+  hints: readonly ObjectProfileRelationHintPayload[],
   now: string,
 ): Promise<void> {
   await db.query(
-    `DELETE FROM space_object_kind_relation_hints
-      WHERE space_id = $1 AND object_kind_id = $2`,
-    [spaceId, objectKindId],
+    `DELETE FROM space_object_profile_relation_hints
+      WHERE space_id = $1 AND object_profile_id = $2`,
+    [spaceId, objectProfileId],
   );
-  await insertObjectKindRelationHints(db, spaceId, objectKindId, hints, now);
+  await insertObjectProfileRelationHints(db, spaceId, objectProfileId, hints, now);
 }
 
-function assertObjectKindConfigSafe(value: unknown, path: string, depth: number): void {
+function assertObjectProfileConfigSafe(value: unknown, path: string, depth: number): void {
   if (depth > 8) throw new KnowledgeApplyValidationError(`${path} is too deeply nested`);
   if (Array.isArray(value)) {
     if (value.length > 200) throw new KnowledgeApplyValidationError(`${path} has too many array entries`);
-    value.forEach((entry, index) => assertObjectKindConfigSafe(entry, `${path}[${index}]`, depth + 1));
+    value.forEach((entry, index) => assertObjectProfileConfigSafe(entry, `${path}[${index}]`, depth + 1));
     return;
   }
   if (!value || typeof value !== "object") return;
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (unsafeObjectKindConfigKey(key)) {
+    if (unsafeObjectProfileConfigKey(key)) {
       throw new KnowledgeApplyValidationError(`${path}.${key} is not allowed in object schema config`);
     }
-    assertObjectKindConfigSafe(entry, `${path}.${key}`, depth + 1);
+    assertObjectProfileConfigSafe(entry, `${path}.${key}`, depth + 1);
   }
 }
 
-function unsafeObjectKindConfigKey(key: string): boolean {
+function unsafeObjectProfileConfigKey(key: string): boolean {
   const normalized = key
     .trim()
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
   const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
-  return tokens.some((token) => UNSAFE_OBJECT_KIND_CONFIG_KEY_TOKENS.has(token));
+  return tokens.some((token) => UNSAFE_OBJECT_PROFILE_CONFIG_KEY_TOKENS.has(token));
 }
 
-function objectKindApplyResult(row: SpaceObjectKindRow): Record<string, unknown> {
+function objectProfileApplyResult(row: SpaceObjectProfileRow): Record<string, unknown> {
   return {
-    object_kind: serializeObjectKind(row),
+    object_profile: serializeObjectProfile(row),
     registry_write_performed: true,
     canonical_domain_write_performed: false,
   };
@@ -2329,12 +2306,12 @@ function strictMetadataObject(value: unknown, field: string): Record<string, unk
 }
 
 function validatedObjectRelationMetadata(
-  relationType: string,
+  linkType: string,
   value: unknown,
 ): Record<string, unknown> {
   const metadata = strictMetadataObject(value, "object relation metadata");
   const normalized = { ...metadata };
-  if (relationType === "authored_by") {
+  if (linkType === "authored_by") {
     const position = metadata.author_position;
     if (position !== null && position !== undefined) {
       if (typeof position !== "number" || !Number.isInteger(position) || position < 1) {
@@ -2346,7 +2323,7 @@ function validatedObjectRelationMetadata(
       throw new KnowledgeApplyValidationError("authored_by is_corresponding must be a boolean or null");
     }
   }
-  if (relationType === "affiliated_with") {
+  if (linkType === "affiliated_with") {
     for (const field of ["role", "title"] as const) {
       const fieldValue = metadata[field];
       if (fieldValue !== null && fieldValue !== undefined && typeof fieldValue !== "string") {
@@ -2368,19 +2345,6 @@ function validatedObjectRelationMetadata(
     }
   }
   return normalized;
-}
-
-function assertTypedObjectRelationEndpoints(
-  relationType: string,
-  fromObjectType: string,
-  toObjectType: string,
-): void {
-  if (relationType === "affiliated_with" && (fromObjectType !== "person" || toObjectType !== "organization")) {
-    throw new KnowledgeApplyValidationError("affiliated_with requires person -> organization endpoints");
-  }
-  if (relationType === "authored_by" && (fromObjectType !== "source" || toObjectType !== "person")) {
-    throw new KnowledgeApplyValidationError("authored_by requires source -> person endpoints");
-  }
 }
 
 function hasPayloadKey(payload: Record<string, unknown>, key: string): boolean {

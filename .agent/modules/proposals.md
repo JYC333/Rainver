@@ -15,7 +15,7 @@ Approval workflow. Durable memory and code changes must go through a Proposal be
 ```
 Proposal:
   id, space_id, project_folder_id
-  proposal_type (memory_create|memory_update|memory_archive|memory_maintenance_packet|object_kind_create|object_kind_update|object_kind_deprecate|object_kind_archive|policy_change|code_patch|egress_review|follow_up_task|custom_source_policy_delta|custom_source_credentialed_source|custom_source_repair_activation|source_recipe_activation)
+  proposal_type (memory_create|memory_update|memory_archive|memory_maintenance_packet|object_profile_create|object_profile_update|object_profile_deprecate|object_profile_archive|policy_change|code_patch|egress_review|follow_up_task|custom_source_policy_delta|custom_source_credentialed_source|custom_source_repair_activation|source_recipe_activation)
   title, summary, rationale, payload_json
   risk_level (low|medium|high|critical)
   status (pending|accepted|rejected|superseded|expired)
@@ -53,7 +53,7 @@ CodePatchSnapshot:
    - Enforces `SourceMonitoringService` for semantic/policy types
    - Writes `ProvenanceLink` rows for accepted memory/policy changes
    - Dispatches through `ProposalApplierRegistry` to the target module's registered applier
-4. `proposal.status = "accepted"`, `decided_at` set, commit — durable write completes. No separate approval-event row is created for normal accept/reject. `ProposalApproval` rows are distinct egress approval metadata (written via `/proposals/{id}/approvals/egress-granting-user`); they do not by themselves make `egress_review` apply-supported.
+4. `proposal.status = "accepted"`, `decided_at` set, commit — durable write completes. No separate approval-event row is created for normal accept/reject. `ProposalApproval` rows are distinct egress approval metadata (written via `/proposals/{id}/approvals/egress-granting-user`). The registered `egress_review` applier requires every owner named by the target's current context taint to have an active approval before it publishes the target.
 5. For `code_patch` proposals, a `CodePatchSnapshot` (pre-apply file content) is persisted inside the apply transaction. The user can later call `POST /api/v1/proposals/{id}/rollback` to restore files to their pre-apply state while the snapshot is within its retention window and status is `available`.
 
 ## Server Apply Boundary
@@ -71,15 +71,15 @@ The public proposal review/apply surface is owned by the server:
   `memory_archive`, `knowledge_create`, `knowledge_update`, `knowledge_archive`,
   `follow_up_task`, `claim_create`, `claim_update`, `claim_archive`,
   `object_relation_create`, `object_relation_delete`,
-  `object_kind_create`, `object_kind_update`, `object_kind_deprecate`,
-  `object_kind_archive`,
+  `object_profile_create`, `object_profile_update`, `object_profile_deprecate`,
+  `object_profile_archive`,
   `memory_maintenance_packet`, `retrieval_maintenance_packet`,
   `retrieval_diagnostics_packet`, `code_patch`,
   `skill_import_approve`, `capability_install`, `capability_update`,
   `capability_enable`, `capability_disable`, and
   `runtime_skill_binding_update`, plus `custom_source_policy_delta`,
   `custom_source_credentialed_source`, `custom_source_repair_activation`, and
-  `source_recipe_activation`.
+  `source_recipe_activation`, and `egress_review`.
   Unregistered proposal types fail closed until
   their owning domain registers an applier.
 - `memory_maintenance_packet`, `retrieval_maintenance_packet`, and

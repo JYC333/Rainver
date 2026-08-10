@@ -4,27 +4,21 @@ import { Plus, X, Send, Link2, Mic, Paperclip, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { activityApi } from '../api/client'
 import { useSpace } from '../contexts/SpaceContext'
-import { Select } from './ui/select'
-import { Badge } from './ui/badge'
 import { cn, errMsg } from '../lib/utils'
-import { spacePath, type RouteScope } from '../core/navigation'
+import { spacePath } from '../core/navigation'
 
 const URL_RE = /^https?:\/\/\S+$/i
-
-function spaceLabel(name: string, isPersonal: boolean) {
-  return isPersonal ? 'Personal Space' : name
-}
 
 /**
  * Compact, always-available capture widget — floats bottom-right, never a large Home panel.
  *
- * Home is not a Space, so the write target is shown explicitly and defaults to the user's
- * Personal Space. On space-scoped routes the target is the active Space (no picker needed).
+ * Context-free capture always lands in the user's Personal Space, independently of the
+ * Space currently being browsed.
  * Saving keeps you in place and shows lightweight feedback rather than navigating away.
  */
-export function FloatingQuickCapture({ scope }: { scope: RouteScope }) {
+export function FloatingQuickCapture() {
   const navigate = useNavigate()
-  const { spaces, personalSpaceId, activeSpaceId, activeSpaceName, writeTargetSpaceId, setWriteTarget } = useSpace()
+  const { spaces, personalSpaceId } = useSpace()
 
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
@@ -32,13 +26,9 @@ export function FloatingQuickCapture({ scope }: { scope: RouteScope }) {
   const [dragOver, setDragOver] = useState(false)
   const textRef = useRef<HTMLTextAreaElement>(null)
 
-  // Home writes to the explicit write target (default Personal Space); space routes write to
-  // the active Space. Either way the destination is shown to the user — never silent.
-  const targetId = scope === 'home' ? writeTargetSpaceId : activeSpaceId
+  const targetId = personalSpaceId
   const targetSpace = spaces.find(s => s.id === targetId) ?? null
-  const targetName = targetSpace ? spaceLabel(targetSpace.name, targetSpace.type === 'personal') : (activeSpaceName ?? null)
-
-  const writeTargetOptions = spaces.map(s => ({ value: s.id, label: spaceLabel(s.name, s.type === 'personal') }))
+  const targetName = targetSpace ? 'Personal Space' : null
 
   const save = useCallback(async () => {
     const value = text.trim()
@@ -126,31 +116,11 @@ export function FloatingQuickCapture({ scope }: { scope: RouteScope }) {
           </div>
         )}
 
-        {/* Write target — always visible. Home lets you pick; space routes show the active space. */}
-        {scope === 'home' ? (
-          spaces.length === 0 ? (
-            <Badge variant="warning" className="gap-1 self-start"><Send className="size-3" /> No write target</Badge>
-          ) : (
-            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Send className="size-3" />
-              <span>Save to:</span>
-              <Select
-                value={writeTargetSpaceId ?? personalSpaceId ?? ''}
-                options={writeTargetOptions}
-                onChange={setWriteTarget}
-                size="sm"
-                dropUp
-                className="min-w-[150px]"
-              />
-            </div>
-          )
-        ) : (
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Send className="size-3" />
-            <span>Save to:</span>
-            <span className="text-foreground font-medium">{targetName ?? '—'}</span>
-          </div>
-        )}
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Send className="size-3" />
+          <span>Save to:</span>
+          <span className="text-foreground font-medium">{targetName ?? 'Personal Space unavailable'}</span>
+        </div>
 
         <div className="flex items-center justify-between gap-2 pt-0.5">
           <div className="flex items-center gap-1">

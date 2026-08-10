@@ -1,3 +1,4 @@
+import { assertLinkTypeAllowed } from "../ontology/validation";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import {
@@ -10,7 +11,8 @@ import {
 } from "../routeUtils/common";
 import { getDbPool } from "../../db/pool";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { THREAD_COLUMNS, threadToOut, type ThreadRow } from "./threadService";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { THREAD_COLUMNS, THREAD_FROM, TOUCH_THREAD_ROOT_SQL, threadToOut, type ThreadRow } from "./threadService";
 import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService";
 import { RetrievalProjectionService } from "../retrieval";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter";
@@ -74,7 +76,7 @@ export class InquiryIterationService {
     const result = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const threadRow = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM inquiry_threads WHERE id = $1 AND space_id = $2 AND project_id = $3 FOR UPDATE`,
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3 FOR UPDATE OF t`,
         [threadId, identity.spaceId, projectId],
       );
       const thread = threadRow.rows[0];
@@ -195,16 +197,19 @@ export class InquiryIterationService {
       const nextFocusUpdate = confirmedNextFocus
         ? { kind: confirmedNextFocus, note: optionalString(body.next_focus_note) }
         : null;
-      const updatedThread = await db.query<ThreadRow>(
+      await db.query(
         `UPDATE inquiry_threads SET
            version = version + 1,
-           updated_at = $1,
-           next_focus_kind = COALESCE($2, next_focus_kind),
-           next_focus_note = CASE WHEN $2::text IS NOT NULL THEN $3 ELSE next_focus_note END,
-           blocked_reason = CASE WHEN $2::text IS NOT NULL THEN NULL ELSE blocked_reason END
-         WHERE id = $4 AND space_id = $5
-         RETURNING ${THREAD_COLUMNS}`,
-        [now, nextFocusUpdate?.kind ?? null, nextFocusUpdate?.note ?? null, threadId, identity.spaceId],
+           next_focus_kind = COALESCE($1, next_focus_kind),
+           next_focus_note = CASE WHEN $1::text IS NOT NULL THEN $2 ELSE next_focus_note END,
+           blocked_reason = CASE WHEN $1::text IS NOT NULL THEN NULL ELSE blocked_reason END
+         WHERE object_id = $3 AND space_id = $4`,
+        [nextFocusUpdate?.kind ?? null, nextFocusUpdate?.note ?? null, threadId, identity.spaceId],
+      );
+      await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
+      const updatedThread = await db.query<ThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId],
       );
 
       const finalThread = updatedThread.rows[0]!;
@@ -243,7 +248,7 @@ export class InquiryIterationService {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query(
       `SELECT i.* FROM inquiry_iterations i
-         JOIN inquiry_threads t ON t.id = i.thread_id AND t.space_id = i.space_id
+         JOIN inquiry_threads t ON t.object_id = i.thread_id AND t.space_id = i.space_id
         WHERE i.space_id = $1 AND i.project_id = $2 AND i.thread_id = $3
         ORDER BY i.created_at DESC`,
       [identity.spaceId, projectId, threadId],
@@ -259,7 +264,7 @@ export class InquiryIterationService {
               r.change_significance, r.created_by_user_id, r.created_at
          FROM inquiry_thread_revisions r
          JOIN inquiry_threads t
-           ON t.id=r.thread_id AND t.project_id=r.project_id AND t.space_id=r.space_id
+           ON t.object_id=r.thread_id AND t.project_id=r.project_id AND t.space_id=r.space_id
         WHERE r.space_id=$1 AND r.project_id=$2 AND r.thread_id=$3
         ORDER BY r.version DESC`,
       [identity.spaceId, projectId, threadId],
@@ -297,7 +302,7 @@ export class InquiryIterationService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const threadRow = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM inquiry_threads WHERE id = $1 AND space_id = $2 AND project_id = $3 FOR UPDATE`,
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3 FOR UPDATE OF t`,
         [threadId, identity.spaceId, projectId],
       );
       const thread = threadRow.rows[0];
@@ -321,10 +326,19 @@ export class InquiryIterationService {
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [randomUUID(), identity.spaceId, projectId, threadId, revisionKind, thread.statement, newStatement, structureAction, optionalString(body.impact_note), identity.userId, now],
         );
-        const updated = await db.query<ThreadRow>(
-          `UPDATE inquiry_threads SET statement = $1, version = version + 1, updated_at = $2
-            WHERE id = $3 AND space_id = $4 RETURNING ${THREAD_COLUMNS}`,
+        await db.query(
+          `UPDATE inquiry_threads SET statement = $1, version = version + 1
+            WHERE object_id = $2 AND space_id = $3`,
+          [newStatement, threadId, identity.spaceId],
+        );
+        // The root title is a projection of the statement (ADR 0012 decision 10).
+        await db.query(
+          `UPDATE space_objects SET title = $1, updated_at = $2 WHERE id = $3 AND space_id = $4`,
           [newStatement, now, threadId, identity.spaceId],
+        );
+        const updated = await db.query<ThreadRow>(
+          `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+          [threadId, identity.spaceId],
         );
         const revised = updated.rows[0]!;
         const cognitiveState = await this.currentCognitiveState(db, threadId, thread.kind);
@@ -343,11 +357,22 @@ export class InquiryIterationService {
       // child/supersede: create a new Thread carrying the revised definition.
       // The historical Thread is deliberately not mutated before the branch.
       const newThreadId = randomUUID();
+      const branchObject = buildSpaceObjectInsert({
+        id: newThreadId,
+        spaceId: identity.spaceId,
+        objectType: "inquiry_thread",
+        title: newStatement,
+        ownerUserId: identity.userId,
+        primaryProjectId: projectId,
+        createdByUserId: identity.userId,
+        createdAt: now,
+      });
+      await db.query(branchObject.sql, branchObject.params);
       await db.query(
         `INSERT INTO inquiry_threads (
-           id, space_id, project_id, kind, statement, lifecycle_status, attention_state, priority,
-           primary_parent_id, owner_user_id, created_from, created_by_user_id, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, 'active', 'backlog', $6, $7, $8, 'user', $8, $9, $9)`,
+           object_id, space_id, project_id, kind, statement, lifecycle_status, attention_state, priority,
+           primary_parent_id, created_from
+         ) VALUES ($1, $2, $3, $4, $5, 'active', 'backlog', $6, $7, 'user')`,
         [
           newThreadId,
           identity.spaceId,
@@ -356,8 +381,6 @@ export class InquiryIterationService {
           newStatement,
           thread.priority,
           structureAction === "child" ? thread.id : thread.primary_parent_id,
-          identity.userId,
-          now,
         ],
       );
       if (thread.kind === "question") {
@@ -387,12 +410,22 @@ export class InquiryIterationService {
         at: now,
       });
       const relationKind = structureAction === "child" ? "decomposes_into" : "supersedes";
+      // Every edge write asks the registry, including the ones a domain makes
+      // directly — otherwise governance and endpoints hold only where someone
+      // remembered to check.
+      assertLinkTypeAllowed({
+        linkType: relationKind,
+        fromObjectType: "inquiry_thread",
+        toObjectType: "inquiry_thread",
+        via: "direct",
+      });
       await db.query(
-        `INSERT INTO inquiry_thread_relations (id, space_id, project_id, from_thread_id, to_thread_id, relation_kind, created_by_user_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO object_relations
+           (id, space_id, from_object_id, to_object_id, link_type, status, created_by_user_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $7)`,
         structureAction === "child"
-          ? [randomUUID(), identity.spaceId, projectId, threadId, newThreadId, relationKind, identity.userId, now]
-          : [randomUUID(), identity.spaceId, projectId, newThreadId, threadId, relationKind, identity.userId, now],
+          ? [randomUUID(), identity.spaceId, threadId, newThreadId, relationKind, identity.userId, now]
+          : [randomUUID(), identity.spaceId, newThreadId, threadId, relationKind, identity.userId, now],
       );
       await db.query(
         `INSERT INTO inquiry_thread_statement_revisions (
@@ -418,7 +451,7 @@ export class InquiryIterationService {
       );
       if (structureAction === "child") {
         const child = await db.query<ThreadRow>(
-          `SELECT ${THREAD_COLUMNS} FROM inquiry_threads WHERE id = $1 AND space_id = $2`,
+          `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
           [newThreadId, identity.spaceId],
         );
         await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", newThreadId);
@@ -430,10 +463,15 @@ export class InquiryIterationService {
          VALUES ($1,$2,$3,$4,$5,'superseded',$6,$7,$8)`,
         [randomUUID(), identity.spaceId, projectId, threadId, thread.lifecycle_status, optionalString(body.impact_note), identity.userId, now],
       );
+      await db.query(
+        `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived'
+          WHERE object_id = $1 AND space_id = $2`,
+        [threadId, identity.spaceId],
+      );
+      await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
       const supersededThread = await db.query<ThreadRow>(
-        `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived', updated_at = $1
-          WHERE id = $2 AND space_id = $3 RETURNING ${THREAD_COLUMNS}`,
-        [now, threadId, identity.spaceId],
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId],
       );
       const projection = new RetrievalProjectionService(db, inquiryRetrievalRegistry);
       await projection.reindex(identity.spaceId, "inquiry_thread", threadId);
@@ -504,7 +542,7 @@ export class InquiryIterationService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const threadRow = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM inquiry_threads WHERE id = $1 AND space_id = $2 AND project_id = $3 FOR UPDATE`,
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3 FOR UPDATE OF t`,
         [threadId, identity.spaceId, projectId],
       );
       const thread = threadRow.rows[0];
@@ -572,13 +610,21 @@ export class InquiryIterationService {
         );
       }
 
-      const updated = await db.query<ThreadRow>(
+      await db.query(
         `UPDATE inquiry_threads SET
-           priority = $1, owner_user_id = $2, attention_state = $3,
-           next_focus_kind = $4, next_focus_note = $5, blocked_reason = $6, updated_at = $7
-         WHERE id = $8 AND space_id = $9
-         RETURNING ${THREAD_COLUMNS}`,
-        [nextPriority, nextOwner, nextAttention, nextFocusKind, nextFocusNote, nextBlockedReason, now, threadId, identity.spaceId],
+           priority = $1, attention_state = $2,
+           next_focus_kind = $3, next_focus_note = $4, blocked_reason = $5
+         WHERE object_id = $6 AND space_id = $7`,
+        [nextPriority, nextAttention, nextFocusKind, nextFocusNote, nextBlockedReason, threadId, identity.spaceId],
+      );
+      // Ownership is a root column now (B12D), so reassignment writes there.
+      await db.query(
+        `UPDATE space_objects SET owner_user_id = $1, updated_at = $2 WHERE id = $3 AND space_id = $4`,
+        [nextOwner, now, threadId, identity.spaceId],
+      );
+      const updated = await db.query<ThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId],
       );
       return { ...threadToOut(updated.rows[0]!), wip_limit_exceeded: wipLimitExceeded };
     });
@@ -588,7 +634,7 @@ export class InquiryIterationService {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query(
       `SELECT e.* FROM inquiry_thread_work_events e
-         JOIN inquiry_threads t ON t.id = e.thread_id AND t.space_id = e.space_id
+         JOIN inquiry_threads t ON t.object_id = e.thread_id AND t.space_id = e.space_id
         WHERE e.space_id = $1 AND t.project_id = $2 AND e.thread_id = $3
         ORDER BY e.created_at DESC`,
       [identity.spaceId, projectId, threadId],
@@ -611,8 +657,8 @@ export class InquiryIterationService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const row = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM inquiry_threads
-          WHERE id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`,
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+          WHERE t.object_id=$1 AND t.space_id=$2 AND t.project_id=$3 FOR UPDATE OF t`,
         [threadId, identity.spaceId, projectId],
       );
       const current = row.rows[0];
@@ -627,11 +673,16 @@ export class InquiryIterationService {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [randomUUID(), identity.spaceId, projectId, threadId, current.lifecycle_status, toStatus, optionalString(body.reason), identity.userId, now],
       );
-      const updated = await db.query<ThreadRow>(
+      await db.query(
         `UPDATE inquiry_threads SET lifecycle_status=$1, attention_state=$2,
-           next_focus_kind=NULL, next_focus_note=NULL, blocked_reason=NULL, updated_at=$3
-         WHERE id=$4 AND space_id=$5 RETURNING ${THREAD_COLUMNS}`,
-        [toStatus, attention, now, threadId, identity.spaceId],
+           next_focus_kind=NULL, next_focus_note=NULL, blocked_reason=NULL
+         WHERE object_id=$3 AND space_id=$4`,
+        [toStatus, attention, threadId, identity.spaceId],
+      );
+      await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
+      const updated = await db.query<ThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId],
       );
       await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", threadId);
       return threadToOut(updated.rows[0]!);

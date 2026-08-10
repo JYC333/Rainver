@@ -22,7 +22,7 @@ export const researchIntegrityAlerts = pgTable("research_integrity_alerts", {
   check("ck_research_integrity_alerts_detail_object", sql`jsonb_typeof(detail_json) = 'object'`),
 ]);
 
-export const researchPaperCards = pgTable("research_paper_cards", {
+export const researchEvidenceCards = pgTable("research_evidence_cards", {
   id: varchar({ length: 36 }).primaryKey().notNull(), spaceId: varchar("space_id", { length: 36 }).notNull(),
   projectId: varchar("project_id", { length: 36 }).notNull(), sourceItemId: varchar("source_item_id", { length: 36 }).notNull(),
   objectId: varchar("object_id", { length: 36 }), whyMd: text("why_md").default("").notNull(), howMd: text("how_md").default("").notNull(),
@@ -30,13 +30,13 @@ export const researchPaperCards = pgTable("research_paper_cards", {
   editedByUser: boolean("edited_by_user").default(false).notNull(), stance: varchar({ length: 24 }), comparisonDetail: text("comparison_detail"),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(), updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-  unique("uq_research_paper_cards_project_source").on(table.spaceId, table.projectId, table.sourceItemId),
-  index("ix_research_paper_cards_project").on(table.spaceId, table.projectId),
-  foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "research_paper_cards_project_fkey" }).onDelete("cascade"),
-  foreignKey({ columns: [table.sourceItemId, table.spaceId], foreignColumns: [sourceItems.id, sourceItems.spaceId], name: "research_paper_cards_source_item_fkey" }).onDelete("cascade"),
-  foreignKey({ columns: [table.objectId], foreignColumns: [spaceObjects.id], name: "research_paper_cards_object_delete_fkey" }).onDelete("set null"),
-  foreignKey({ columns: [table.objectId, table.spaceId], foreignColumns: [spaceObjects.id, spaceObjects.spaceId], name: "research_paper_cards_object_fkey" }),
-  check("ck_research_paper_cards_stance", sql`stance IS NULL OR stance IN ('supports','contradicts','new_direction')`),
+  unique("uq_research_evidence_cards_project_source").on(table.spaceId, table.projectId, table.sourceItemId),
+  index("ix_research_evidence_cards_project").on(table.spaceId, table.projectId),
+  foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "research_evidence_cards_project_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.sourceItemId, table.spaceId], foreignColumns: [sourceItems.id, sourceItems.spaceId], name: "research_evidence_cards_source_item_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.objectId], foreignColumns: [spaceObjects.id], name: "research_evidence_cards_object_delete_fkey" }).onDelete("set null"),
+  foreignKey({ columns: [table.objectId, table.spaceId], foreignColumns: [spaceObjects.id, spaceObjects.spaceId], name: "research_evidence_cards_object_fkey" }),
+  check("ck_research_evidence_cards_stance", sql`stance IS NULL OR stance IN ('supports','contradicts','new_direction')`),
 ]);
 
 export const researchChecklistItems = pgTable("research_checklist_items", {

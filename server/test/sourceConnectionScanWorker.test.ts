@@ -489,8 +489,9 @@ describe("SourceExtractionWorker connection_scan", () => {
     expect(artifactInsert?.params).toContain(JSON.stringify(["json"]));
     const evidenceInsert = db.calls.find(call => call.sql.includes("INSERT INTO extracted_evidence"));
     expect(evidenceInsert?.sql).toContain("RETURNING id");
-    expect(evidenceInsert?.params.slice(1, 7)).toEqual([
+    expect(evidenceInsert?.params.slice(1, 8)).toEqual([
       "space-1",
+      null,
       "user-1",
       "private",
       "full",

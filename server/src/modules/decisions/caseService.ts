@@ -1,3 +1,6 @@
+import { contentReadSql } from "../access/contentAccessSql";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { assertLinkTypeAllowed } from "../ontology/validation";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "../../db/pool";
 import {
@@ -13,6 +16,14 @@ import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutatio
 import { PgTaskRepository } from "../tasks/repository";
 
 const CASE_STATUSES = new Set(["open", "decided", "archived"]);
+
+// A Decision Case is an ontology object (ADR 0012): its title, ownership,
+// provenance, and timestamps come from `space_objects`.
+const CASE_FROM = `decision_cases c
+     JOIN space_objects so ON so.id = c.object_id AND so.space_id = c.space_id`;
+const CASE_COLUMNS = `c.object_id AS id, c.space_id, c.project_id, so.title, c.framing, c.status,
+    c.decided_option_id, c.decided_at, c.decided_by_user_id,
+    so.created_by_user_id, so.created_at, so.updated_at`;
 
 interface CaseRow {
   id: string; space_id: string; project_id: string; title: string; framing: string | null; status: string;
@@ -100,23 +111,45 @@ export class DecisionCaseService {
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const id = randomUUID();
+      const object = buildSpaceObjectInsert({
+        id,
+        spaceId: identity.spaceId,
+        objectType: "decision_case",
+        title,
+        ownerUserId: identity.userId,
+        primaryProjectId: projectId,
+        createdByUserId: identity.userId,
+        createdAt: now,
+      });
+      await db.query(object.sql, object.params);
       await db.query(
-        `INSERT INTO decision_cases (id, space_id, project_id, title, framing, status, created_by_user_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $7)`,
-        [id, identity.spaceId, projectId, title, framing, identity.userId, now],
+        `INSERT INTO decision_cases (object_id, space_id, project_id, framing, status)
+         VALUES ($1, $2, $3, $4, 'open')`,
+        [id, identity.spaceId, projectId, framing],
       );
       for (const threadId of new Set(threadIds)) {
         const thread = await db.query(
-          `SELECT id FROM inquiry_threads WHERE id=$1 AND project_id=$2 AND space_id=$3`,
+          `SELECT object_id AS id FROM inquiry_threads WHERE object_id=$1 AND project_id=$2 AND space_id=$3`,
           [threadId, projectId, identity.spaceId],
         );
         if (!thread.rows[0]) throw new HttpError(422, `source Thread ${threadId} not found in this Project`);
+        // Cross-aggregate reference between two ontology objects; the domain
+        // join table it replaces had no attributes of its own.
+        assertLinkTypeAllowed({
+          linkType: "derived_from",
+          fromObjectType: "decision_case",
+          toObjectType: "inquiry_thread",
+          via: "direct",
+        });
         await db.query(
-          `INSERT INTO decision_case_sources (id, space_id, project_id, decision_case_id, thread_id, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
-          [randomUUID(), identity.spaceId, projectId, id, threadId, now],
+          `INSERT INTO object_relations
+             (id, space_id, from_object_id, to_object_id, link_type, status, created_by_user_id, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,'derived_from','active',$5,$6,$6)
+           ON CONFLICT (space_id, from_object_id, to_object_id, link_type) WHERE status = 'active' DO NOTHING`,
+          [randomUUID(), identity.spaceId, id, threadId, identity.userId, now],
         );
       }
-      const row = await db.query<CaseRow>(`SELECT * FROM decision_cases WHERE id=$1 AND space_id=$2`, [id, identity.spaceId]);
+      const row = await db.query<CaseRow>(`SELECT ${CASE_COLUMNS} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2`, [id, identity.spaceId]);
       return caseToOut(row.rows[0]!);
     });
   }
@@ -128,10 +161,17 @@ export class DecisionCaseService {
     if (status) {
       if (!CASE_STATUSES.has(status)) throw new HttpError(422, `status must be one of: ${[...CASE_STATUSES].join(", ")}`);
       params.push(status);
-      clause = " AND status = $3";
+      clause = " AND c.status = $3";
     }
+    // Project membership is necessary but not sufficient now that a Case is an
+    // ontology object: the root's visibility decides who sees it, and a
+    // `visibility` column nothing enforces is worse than none.
+    params.push(identity.userId);
     const rows = await this.pool.query<CaseRow>(
-      `SELECT * FROM decision_cases WHERE space_id=$1 AND project_id=$2${clause} ORDER BY created_at DESC`,
+      `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM}
+        WHERE c.space_id=$1 AND c.project_id=$2${clause}
+          AND ${contentReadSql("space_object", "so", `$${params.length}`)}
+        ORDER BY so.created_at DESC`,
       params,
     );
     return rows.rows.map(caseToOut);
@@ -139,9 +179,9 @@ export class DecisionCaseService {
 
   async getCase(identity: SpaceUserIdentity, projectId: string, caseId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.pool, identity.spaceId, projectId, identity.userId);
-    const row = await this.requireCase(this.pool, identity.spaceId, projectId, caseId);
+    const row = await this.requireCase(this.pool, identity.spaceId, projectId, caseId, identity.userId);
     const [sources, options, criteria, scores, commitments] = await Promise.all([
-      this.pool.query<{ thread_id: string }>(`SELECT thread_id FROM decision_case_sources WHERE decision_case_id=$1 AND space_id=$2`, [caseId, identity.spaceId]),
+      this.pool.query<{ thread_id: string }>(`SELECT to_object_id AS thread_id FROM object_relations WHERE from_object_id=$1 AND space_id=$2 AND link_type='derived_from' AND status='active'`, [caseId, identity.spaceId]),
       this.pool.query<OptionRow>(`SELECT * FROM decision_options WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
       this.pool.query<CriterionRow>(`SELECT * FROM decision_criteria WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
       this.pool.query<ScoreRow>(`SELECT * FROM decision_option_scores WHERE decision_case_id=$1 AND space_id=$2`, [caseId, identity.spaceId]),
@@ -164,7 +204,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId);
+      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
       if (decisionCase.status !== "open") throw new HttpError(409, "Options can only be added to an open Decision Case");
       const id = randomUUID();
       await db.query(
@@ -185,7 +225,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId);
+      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
       if (decisionCase.status !== "open") throw new HttpError(409, "Criteria can only be added to an open Decision Case");
       const id = randomUUID();
       await db.query(
@@ -210,7 +250,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.requireCase(db, identity.spaceId, projectId, caseId);
+      await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
       const option = await db.query(`SELECT id FROM decision_options WHERE id=$1 AND decision_case_id=$2 AND space_id=$3`, [optionId, caseId, identity.spaceId]);
       if (!option.rows[0]) throw new HttpError(404, "Option not found in this Decision Case");
       const criterion = await db.query(`SELECT id FROM decision_criteria WHERE id=$1 AND decision_case_id=$2 AND space_id=$3`, [criterionId, caseId, identity.spaceId]);
@@ -234,7 +274,7 @@ export class DecisionCaseService {
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const lockedCase = await db.query<CaseRow>(
-        `SELECT * FROM decision_cases WHERE id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`,
+        `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2 AND c.project_id=$3 FOR UPDATE OF c`,
         [caseId, identity.spaceId, projectId],
       );
       const decisionCase = lockedCase.rows[0];
@@ -244,11 +284,17 @@ export class DecisionCaseService {
       if (!option.rows[0]) throw new HttpError(404, "Option not found in this Decision Case");
       if (option.rows[0].status !== "active") throw new HttpError(409, "Only an active Option can be decided");
       await db.query(
-        `UPDATE decision_cases SET status='decided', decided_option_id=$3, decided_at=$4, decided_by_user_id=$5, updated_at=$4
-         WHERE id=$1 AND space_id=$2`,
+        `UPDATE decision_cases SET status='decided', decided_option_id=$3, decided_at=$4, decided_by_user_id=$5
+         WHERE object_id=$1 AND space_id=$2`,
         [caseId, identity.spaceId, optionId, now, identity.userId],
       );
-      const row = await db.query<CaseRow>(`SELECT * FROM decision_cases WHERE id=$1 AND space_id=$2`, [caseId, identity.spaceId]);
+      // The timestamp lives on the root now, so a domain-only write would
+      // leave it stale.
+      await db.query(
+        `UPDATE space_objects SET updated_at=$1 WHERE id=$2 AND space_id=$3`,
+        [now, caseId, identity.spaceId],
+      );
+      const row = await db.query<CaseRow>(`SELECT ${CASE_COLUMNS} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2`, [caseId, identity.spaceId]);
       return caseToOut(row.rows[0]!);
     });
   }
@@ -259,7 +305,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId);
+      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
       if (decisionCase.status !== "decided") throw new HttpError(409, "A Commitment requires a decided Decision Case");
       const id = randomUUID();
       await db.query(
@@ -283,7 +329,7 @@ export class DecisionCaseService {
     await assertProjectWriter(this.pool, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.requireCase(db, identity.spaceId, projectId, caseId);
+      await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
       const commitment = await db.query<CommitmentRow>(
         `SELECT * FROM decision_commitments
           WHERE id=$1 AND decision_case_id=$2 AND project_id=$3 AND space_id=$4
@@ -313,8 +359,26 @@ export class DecisionCaseService {
     });
   }
 
-  private async requireCase(db: Queryable, spaceId: string, projectId: string, caseId: string): Promise<CaseRow> {
-    const row = await db.query<CaseRow>(`SELECT * FROM decision_cases WHERE id=$1 AND space_id=$2 AND project_id=$3`, [caseId, spaceId, projectId]);
+  /**
+   * The single-Case lookup every read and mutation goes through. It applies the
+   * object read gate, not just Project membership: the list already did, and a
+   * visibility rule that holds for the list but not for a direct fetch is not a
+   * rule. Mutations pass through it too — you should not be able to change what
+   * you cannot see.
+   */
+  private async requireCase(
+    db: Queryable,
+    spaceId: string,
+    projectId: string,
+    caseId: string,
+    viewerUserId: string,
+  ): Promise<CaseRow> {
+    const row = await db.query<CaseRow>(
+      `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM}
+        WHERE c.object_id=$1 AND c.space_id=$2 AND c.project_id=$3
+          AND ${contentReadSql("space_object", "so", "$4")}`,
+      [caseId, spaceId, projectId, viewerUserId],
+    );
     if (!row.rows[0]) throw new HttpError(404, "Decision Case not found");
     return row.rows[0];
   }

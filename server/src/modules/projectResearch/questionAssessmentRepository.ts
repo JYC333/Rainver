@@ -286,8 +286,8 @@ export class ProjectResearchQuestionAssessmentRepository {
     activeOnly = false,
   ): Promise<void> {
     const thread = await db.query<{ id: string }>(
-      `SELECT id FROM inquiry_threads
-        WHERE id=$1 AND project_id=$2 AND space_id=$3
+      `SELECT object_id AS id FROM inquiry_threads
+        WHERE object_id=$1 AND project_id=$2 AND space_id=$3
           ${activeOnly ? "AND lifecycle_status='active'" : ""}`,
       [threadId, projectId, spaceId],
     );

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common";
+import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
 import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access";
 import { ProjectCorpusRepository } from "../projects/corpusRepository";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess";
@@ -11,14 +11,11 @@ import { RunOrchestrationService } from "../runs/orchestrationService";
 import { runOutputResult } from "../runs/orchestrationResults";
 import { PgSessionRepository } from "../sessions/repository";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { markdownToPm, normalizePmText, pmBlocksText } from "../knowledge/noteDocument";
-import {
-  applyNoteOpsWithConflictFallback,
-  insertInitialNoteRevision,
-  sha256,
-  writeNote,
-} from "../knowledge/noteRevisionService";
-import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveProjectNoteByTitle, type SectionKey } from "./notebookNotes";
+import { markdownToPm, pmBlocksText } from "../knowledge/noteDocument";
+import { withNoteWrites, type NoteWriteScope } from "../knowledge/noteWriter";
+import { ensureProjectNotesFolder } from "../knowledge/noteProjectFolders";
+import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveNotebookNote, resolveNotebookNotes, type NotebookNoteRow, type SectionKey } from "./notebookNotes";
+import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjectRoles";
 
 export { NOTEBOOK_SECTION_KEYS, SECTION_LABELS };
 
@@ -125,19 +122,21 @@ export class ProjectResearchAreaService {
   async initializeArea(identity: SpaceUserIdentity, projectId: string) {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const existing = await this.db.query(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
-    if (existing.rows[0]) return this.getArea(identity, projectId);
     if (!await canWriteProject(this.db, identity.spaceId, projectId, identity.userId)) {
-      // Readers must not fail the page; they see the uninitialized state.
+      // Readers may inspect an initialized area, but cannot repair a partial
+      // baseline or create one as a side effect of a read.
+      if (existing.rows[0]) return this.getArea(identity, projectId);
       throw new HttpError(404, "Research Area not initialized");
     }
-    await withQueryableTransaction(this.db, async (db) => {
+    await withNoteWrites(this.db, async (scope) => {
+      const db = scope.db;
       await assertProjectWriter(db, identity.spaceId, projectId, identity.userId);
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const service = new ProjectResearchAreaService(db, this.config);
-      await service.ensureArea(identity.spaceId, projectId);
+      await service.ensureArea(scope, identity.spaceId, projectId);
       // Projects with reports from before the living area existed get
       // their notes seeded from the latest completed report once.
-      const report = await db.query<{ synthesis_run_id: string; content_json: unknown }>(
+      const report = existing.rows[0] ? { rows: [] } : await db.query<{ synthesis_run_id: string; content_json: unknown }>(
         `SELECT synthesis_run_id,content_json FROM project_research_reports
           WHERE space_id=$1 AND project_id=$2 AND status <> 'rejected'
           ORDER BY created_at DESC LIMIT 1`,
@@ -162,9 +161,9 @@ export class ProjectResearchAreaService {
     });
     const items = Array.isArray(corpus.items) ? corpus.items as Record<string, unknown>[] : [];
     const sourceIds = items.map((row) => optionalString(row.source_item_id)).filter((id): id is string => Boolean(id));
-    const cards = sourceIds.length ? await this.db.query(`SELECT * FROM research_paper_cards WHERE space_id=$1 AND project_id=$2 AND source_item_id=ANY($3::text[])`, [identity.spaceId, projectId, sourceIds]) : { rows: [] as Record<string, unknown>[] };
+    const cards = sourceIds.length ? await this.db.query(`SELECT * FROM research_evidence_cards WHERE space_id=$1 AND project_id=$2 AND source_item_id=ANY($3::text[])`, [identity.spaceId, projectId, sourceIds]) : { rows: [] as Record<string, unknown>[] };
     const bySource = new Map(cards.rows.map((card) => [String(card.source_item_id), card]));
-    return { ...corpus, items: items.map((row) => ({ ...row, paper_card: bySource.get(String(row.source_item_id)) ?? null })) };
+    return { ...corpus, items: items.map((row) => ({ ...row, evidence_card: bySource.get(String(row.source_item_id)) ?? null })) };
   }
 
   // Per-note editing, revision history, and rollback are no longer
@@ -172,11 +171,11 @@ export class ProjectResearchAreaService {
   // /api/v1/knowledge/notes/:noteId (+/revisions, +/rollback) endpoints
   // directly, since a project's notes are ordinary Notes.
 
-  async upsertPaperCard(identity: SpaceUserIdentity, projectId: string, sourceItemId: string, body: Record<string, unknown>) {
+  async upsertEvidenceCard(identity: SpaceUserIdentity, projectId: string, sourceItemId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const now = new Date().toISOString();
     const result = await this.db.query(
-      `INSERT INTO research_paper_cards (id,space_id,project_id,source_item_id,object_id,why_md,how_md,what_md,provenance_json,edited_by_user,created_at,updated_at)
+      `INSERT INTO research_evidence_cards (id,space_id,project_id,source_item_id,object_id,why_md,how_md,what_md,provenance_json,edited_by_user,created_at,updated_at)
        SELECT $1::varchar,$2::varchar,$3::varchar,$4::varchar,pci.object_id,$5::text,$6::text,$7::text,'{}'::jsonb,true,$8::timestamptz,$8::timestamptz
          FROM project_corpus_items pci
          JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
@@ -186,7 +185,7 @@ export class ProjectResearchAreaService {
        ON CONFLICT (space_id,project_id,source_item_id) DO UPDATE SET why_md=EXCLUDED.why_md,how_md=EXCLUDED.how_md,what_md=EXCLUDED.what_md,edited_by_user=true,updated_at=EXCLUDED.updated_at RETURNING *`,
       [randomUUID(), identity.spaceId, projectId, sourceItemId, text(body.why_md, 4000), text(body.how_md, 4000), text(body.what_md, 4000), now, identity.userId],
     );
-    if (!result.rows[0]) throw new HttpError(404, "Project paper not found");
+    if (!result.rows[0]) throw new HttpError(404, "Project material not found");
     return result.rows[0];
   }
 
@@ -221,45 +220,53 @@ export class ProjectResearchAreaService {
     const prompt = text(body.prompt, 4000);
     if (!prompt) throw new HttpError(422, "prompt is required");
     // `section_key` is a legacy field name (kept for the existing Reading
-    // List "compare selected papers" caller): a known starter-note key maps
-    // to its title; any other value is used as a literal note title,
-    // created if it doesn't exist yet.
+    // List "compare selected material" caller): a registered role resolves to
+    // whichever note holds that role, whatever its title now is; any other
+    // value is a literal note title, created if it doesn't exist yet.
     const requested = optionalString(body.section_key) ?? "understanding";
-    const title = (SECTION_LABELS as Record<string, string>)[requested] ?? requested;
+    const role = isNoteProjectRole(requested) ? requested : null;
+    const title = role ? SECTION_LABELS[role] : requested;
     const used = await this.adhocRunsUsedToday(identity.spaceId, projectId);
     if (used >= RESEARCH_ADHOC_DAILY_RUN_LIMIT) {
       throw new HttpError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
     }
-    const { folderId } = await withQueryableTransaction(this.db, (db) =>
-      new ProjectResearchAreaService(db, this.config).ensureArea(identity.spaceId, projectId));
-    let note = await resolveProjectNoteByTitle(this.db, identity.spaceId, projectId, title);
+    const { folderId } = await withNoteWrites(this.db, (scope) =>
+      new ProjectResearchAreaService(scope.db, this.config).ensureArea(scope, identity.spaceId, projectId));
+    let note: NotebookNoteRow | null = null;
+    if (role) {
+      const resolution = await resolveNotebookNote(this.db, identity.spaceId, projectId, role);
+      if (resolution.present) note = resolution.note;
+    } else {
+      note = await this.resolveProjectNoteByExactTitle(identity.spaceId, projectId, title);
+    }
     if (!note) {
       const now = new Date().toISOString();
-      const created = await withQueryableTransaction(this.db, (db) =>
-        new ProjectResearchAreaService(db, this.config).createProjectNote({
+      const created = await withNoteWrites(this.db, (scope) =>
+        new ProjectResearchAreaService(scope.db, this.config).createProjectNote(scope, {
           spaceId: identity.spaceId, projectId, folderId, title, doc: markdownToPm(""), createdByUserId: identity.userId, at: now,
+          projectRole: role,
         }));
       note = { id: created.id, version: created.version, content_json: markdownToPm(""), plain_text: "" };
     }
     const baseVersion = note.version;
     const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
-    const paperIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
-    const papers = paperIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
+    const materialIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
+    const material = materialIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
       `SELECT si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
          FROM project_corpus_items pci
          JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
-         LEFT JOIN research_paper_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
+         LEFT JOIN research_evidence_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
           AND pci.status='active' AND ${sourceItemReadableClause("si", "$4", false)}`,
-      [identity.spaceId, projectId, paperIds, identity.userId],
+      [identity.spaceId, projectId, materialIds, identity.userId],
     ) : { rows: [] };
     const execution = objectValue(body.execution); const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
     const instruction = [
-      "Perform the requested bounded research analysis using only the supplied note and paper context.",
+      "Perform the requested bounded research analysis using only the supplied note and evidence context.",
       `User request: ${prompt}`, `Target note: ${title}`, `Note base version: ${baseVersion}`,
       `Current note as indexed blocks (edit by block index; the document has ${blocks.length} blocks):\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`,
-      `Selected papers:\n${papers.rows.map((p) => JSON.stringify(p)).join("\n")}`,
+      `Selected material:\n${material.rows.map((item) => JSON.stringify(item)).join("\n")}`,
       "Return JSON only with a top-level notebook_update. Express the change as minimal block operations against the indexed blocks:",
       `- {"op":"append","index":null,"count":null,"markdown":"..."} adds blocks at the end`,
       `- {"op":"insert","index":N,"count":null,"markdown":"..."} inserts before block N`,
@@ -271,7 +278,7 @@ export class ProjectResearchAreaService {
       agent_id: resolved.agentId, space_id: identity.spaceId, user_id: identity.userId, project_id: projectId,
       mode: "live", run_type: "agent", trigger_origin: "manual", runtime_profile_id: resolved.runtimeProfileId,
       prompt, instruction, capability_id: "research.adhoc_analyze", capabilities_json: ["research.adhoc_analyze"],
-      contract_snapshot: { source: { kind: "direct", id: note.id }, project_id: projectId, policy_context_json: createManagedExecutionPolicy("project_research", true), workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: paperIds } }, structured_output_json: ADHOC_OUTPUT_CONTRACT },
+      contract_snapshot: { source: { kind: "direct", id: note.id }, project_id: projectId, policy_context_json: createManagedExecutionPolicy("project_research", true), workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: materialIds } }, structured_output_json: ADHOC_OUTPUT_CONTRACT },
     });
     const job = await new PgJobQueueRepository(this.db).enqueue({ job_type: "agent_run", space_id: identity.spaceId, user_id: identity.userId, agent_id: resolved.agentId, payload: { run_id: run.id } });
     return { run_id: run.id, job_id: job.id, status: run.status, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
@@ -279,7 +286,7 @@ export class ProjectResearchAreaService {
 
   /**
    * Synchronous multi-turn conversation grounded in the whole notebook +
-   * selected papers. Reuses the generic sessions store (project_id-scoped)
+   * selected material. Reuses the generic sessions store (project_id-scoped)
    * for history; when the model's reply includes a notebook_update it is
    * applied immediately (same ai_adhoc direct-write + revision model as
    * askAi), and the applied/attempted edit is attached to the assistant
@@ -295,8 +302,8 @@ export class ProjectResearchAreaService {
     if (used >= RESEARCH_ADHOC_DAILY_RUN_LIMIT) {
       throw new HttpError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
     }
-    const { folderId } = await withQueryableTransaction(this.db, (db) =>
-      new ProjectResearchAreaService(db, this.config).ensureArea(identity.spaceId, projectId));
+    const { folderId } = await withNoteWrites(this.db, (scope) =>
+      new ProjectResearchAreaService(scope.db, this.config).ensureArea(scope, identity.spaceId, projectId));
     const sessions = new PgSessionRepository(this.db);
     const requestedSessionId = optionalString(body.session_id);
     const session = requestedSessionId
@@ -312,16 +319,16 @@ export class ProjectResearchAreaService {
       ? `Conversation so far:\n${history.slice(0, -1).map((m) => `${m.role}: ${m.content}`).join("\n")}`
       : "";
 
-    const paperIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
-    const papers = paperIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
+    const materialIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
+    const material = materialIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
       `SELECT si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
          FROM project_corpus_items pci
          JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
-         LEFT JOIN research_paper_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
+         LEFT JOIN research_evidence_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
           AND pci.status='active' AND ${sourceItemReadableClause("si", "$4", false)}`,
-      [identity.spaceId, projectId, paperIds, identity.userId],
+      [identity.spaceId, projectId, materialIds, identity.userId],
     ) : { rows: [] };
     const execution = objectValue(body.execution);
     const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
@@ -333,12 +340,12 @@ export class ProjectResearchAreaService {
     }).join("\n\n");
 
     const instruction = [
-      "You are discussing this project's notes with the user. Answer their latest message, grounded only in the supplied notes and paper context.",
+      "You are discussing this project's notes with the user. Answer their latest message, grounded only in the supplied notes and evidence context.",
       "notebook_update is always present in your JSON reply. Only if the user is asking you to update a note: set note_id to an existing note's id (from the list below) to edit it, referencing that note's base version; or leave note_id null and set new_note_title to create a new note instead. Otherwise leave ops as an empty array — that means no edit.",
       historyBlock,
       `Latest message: ${message}`,
       `Current notes:\n${notebookText || "(no notes yet)"}`,
-      `Selected papers:\n${papers.rows.map((p) => JSON.stringify(p)).join("\n")}`,
+      `Selected material:\n${material.rows.map((item) => JSON.stringify(item)).join("\n")}`,
       "If proposing notebook_update, express it as minimal block operations against the target note's indexed blocks:",
       `- {"op":"append","index":null,"count":null,"markdown":"..."} adds blocks at the end`,
       `- {"op":"insert","index":N,"count":null,"markdown":"..."} inserts before block N`,
@@ -378,21 +385,26 @@ export class ProjectResearchAreaService {
       const requestedNoteId = optionalString(notebookUpdate.note_id);
       const targetNote = requestedNoteId ? notes.find((n) => n.id === requestedNoteId) : undefined;
       if (targetNote) {
-        const applied = await withQueryableTransaction(this.db, (db) => applyNoteOpsWithConflictFallback(db, {
+        const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
           spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
         }));
         if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
       } else {
         const newTitle = text(notebookUpdate.new_note_title, 200) || "Untitled";
         const now = new Date().toISOString();
-        const created = await withQueryableTransaction(this.db, (db) =>
-          new ProjectResearchAreaService(db, this.config).createProjectNote({
-            spaceId: identity.spaceId, projectId, folderId, title: newTitle, doc: markdownToPm(""), createdByUserId: null, at: now,
-          }));
-        const applied = await withQueryableTransaction(this.db, (db) => applyNoteOpsWithConflictFallback(db, {
-          spaceId: identity.spaceId, noteId: created.id, baseVersion: created.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
-        }));
-        if (applied) notebookEdit = { note_id: created.id, version: applied.note.version, conflict: applied.conflict };
+        // One scope: a note created for an edit that then fails to apply is a
+        // note nobody asked for.
+        const applied = await withNoteWrites(this.db, async (scope) => {
+          const created = await new ProjectResearchAreaService(scope.db, this.config).createProjectNote(scope, {
+            spaceId: identity.spaceId, projectId, folderId, title: newTitle, doc: markdownToPm(""),
+            createdByUserId: null, createdByRunId: run.id, at: now,
+          });
+          const result = await scope.applyOps({
+            spaceId: identity.spaceId, noteId: created.id, baseVersion: created.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
+          });
+          return result ? { noteId: created.id, ...result } : null;
+        });
+        if (applied) notebookEdit = { note_id: applied.noteId, version: applied.note.version, conflict: applied.conflict };
       }
     }
     await sessions.addMessage(identity.spaceId, identity.userId, session.id, {
@@ -425,33 +437,30 @@ export class ProjectResearchAreaService {
       throw new Error("Ad-hoc research run output does not contain a valid notebook_update");
     }
     const refs = Array.isArray(update.refs) ? update.refs.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
-    await withQueryableTransaction(this.db, (db) => applyNoteOpsWithConflictFallback(db, {
+    await withNoteWrites(this.db, (scope) => scope.applyOps({
       spaceId, noteId, baseVersion, rawOps, source: "ai_adhoc", runId, refs,
     }));
   }
 
   async seedFromReport(input: { spaceId: string; projectId: string; runId: string; report: Record<string, unknown> }) {
-    return withQueryableTransaction(this.db, async (db) => {
+    return withNoteWrites(this.db, async (scope) => {
+      const db = scope.db;
       const service = new ProjectResearchAreaService(db, this.config);
-      await service.ensureArea(input.spaceId, input.projectId);
+      await service.ensureArea(scope, input.spaceId, input.projectId);
       const sections: Record<SectionKey, string> = {
         understanding: [text(input.report.summary, 20_000), ...arrayObjects(input.report.findings).map((v) => `- ${text(v.title, 1000) || text(v.claim, 1000)} ${text(v.detail, 4000)}`)].filter(Boolean).join("\n\n"),
         questions: arrayStrings(input.report.limitations).map((v) => `- ${v}`).join("\n"),
         ideas: arrayObjects(input.report.ideas).map((v) => `- ${text(v.title, 1000) || text(v.idea, 1000)} ${text(v.detail, 4000)}`).join("\n"), experiments: "",
       };
       const reportRefs = collectSourceItemRefs(input.report);
+      const byRole = await resolveNotebookNotes(db, input.spaceId, input.projectId);
       for (const key of NOTEBOOK_SECTION_KEYS) {
         const markdown = sections[key]; if (!markdown) continue;
-        const current = await db.query<{ object_id: string; version: number; plain_text: string | null }>(
-          `SELECT n.object_id, n.version, n.plain_text FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
-            WHERE so.space_id=$1 AND so.primary_project_id=$2 AND so.status='active' AND so.title=$3 LIMIT 1`,
-          [input.spaceId, input.projectId, SECTION_LABELS[key]],
-        );
-        const row = current.rows[0];
+        const row = byRole[key];
         // Only seed a starter note that's never been touched (still v1, still empty).
         if (!row || row.version !== 1 || (row.plain_text ?? "") !== "") continue;
-        await writeNote(db, {
-          spaceId: input.spaceId, noteId: row.object_id,
+        await scope.write({
+          spaceId: input.spaceId, noteId: row.id,
           expectVersion: 1,
           content: { kind: "doc", doc: markdownToPm(markdown) },
           source: "seed", runId: input.runId, refs: reportRefs,
@@ -477,24 +486,24 @@ export class ProjectResearchAreaService {
     });
   }
 
-  async materializePaperCardsFromDeepAnalysis(input: { spaceId: string; projectId: string; runId: string; promptHash?: string | null; summaries: Array<{ source_item_id: string; summary_markdown: string }> }): Promise<number> {
+  async materializeEvidenceCardsFromDeepAnalysis(input: { spaceId: string; projectId: string; runId: string; promptHash?: string | null; summaries: Array<{ source_item_id: string; summary_markdown: string }> }): Promise<number> {
     const now = new Date().toISOString();
     let written = 0;
     const creator = await this.db.query<{ model_provider_id: string | null; model_override_json: unknown }>(`SELECT model_provider_id,model_override_json FROM runs WHERE id=$1 AND space_id=$2`, [input.runId, input.spaceId]);
     const runProvenance = creator.rows[0];
     for (const summary of input.summaries) {
-      const parts = paperCardParts(summary.summary_markdown);
+      const parts = evidenceCardParts(summary.summary_markdown);
       // User-edited cards are never overwritten by generation; the user's
       // interpretation wins until they clear it themselves.
       const result = await this.db.query(
-        `INSERT INTO research_paper_cards (id,space_id,project_id,source_item_id,object_id,why_md,how_md,what_md,provenance_json,edited_by_user,created_at,updated_at)
+        `INSERT INTO research_evidence_cards (id,space_id,project_id,source_item_id,object_id,why_md,how_md,what_md,provenance_json,edited_by_user,created_at,updated_at)
          SELECT $1::varchar,$2::varchar,$3::varchar,$4::varchar,pci.object_id,$5::text,$6::text,$7::text,$8::jsonb,false,$9::timestamptz,$9::timestamptz FROM project_corpus_items pci
           JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
           JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
           WHERE pci.space_id=$2::varchar AND pci.project_id=$3::varchar AND pcis.source_item_id=$4::varchar AND pci.status='active'
             AND pci.triage_status IN ('relevant','maybe','included') LIMIT 1
          ON CONFLICT (space_id,project_id,source_item_id) DO UPDATE SET why_md=EXCLUDED.why_md,how_md=EXCLUDED.how_md,what_md=EXCLUDED.what_md,provenance_json=EXCLUDED.provenance_json,updated_at=EXCLUDED.updated_at
-         WHERE research_paper_cards.edited_by_user=false
+         WHERE research_evidence_cards.edited_by_user=false
          RETURNING id`,
         [randomUUID(), input.spaceId, input.projectId, summary.source_item_id, parts.why, parts.how, parts.what,
           JSON.stringify({ run_id: input.runId, model_provider_id: runProvenance?.model_provider_id ?? null, model: optionalString(objectValue(runProvenance?.model_override_json).model), prompt_hash: input.promptHash ?? null, generated_from: "deep_analysis" }), now],
@@ -522,88 +531,146 @@ export class ProjectResearchAreaService {
    * interlinked with the rest of Knowledge — not locked to a fixed
    * 4-section structure.
    */
-  private async ensureArea(spaceId: string, projectId: string): Promise<{ folderId: string }> {
+  private async ensureArea(scope: NoteWriteScope, spaceId: string, projectId: string): Promise<{ folderId: string }> {
     const folderId = await this.ensureProjectNotesFolder(spaceId, projectId);
-    await this.ensureStarterNotes(spaceId, projectId, folderId);
+    await this.adoptStarterNotesByTitle(scope, spaceId, projectId);
+    await this.ensureStarterNotes(scope, spaceId, projectId, folderId);
     return { folderId };
   }
 
-  private async ensureProjectNotesFolder(spaceId: string, projectId: string): Promise<string> {
-    const existing = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]);
-    if (existing.rows[0]) return existing.rows[0].id;
-    const project = await this.db.query<{ name: string }>(`SELECT name FROM projects WHERE id=$1 AND space_id=$2`, [projectId, spaceId]);
-    const parentId = await this.resolveProjectsParentFolderId(spaceId);
-    const id = randomUUID(); const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,project_id,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,'project',0,true,false,$5,$6,$6)
-       ON CONFLICT (space_id,project_id) WHERE project_id IS NOT NULL DO NOTHING`,
-      [id, spaceId, parentId, project.rows[0]?.name ?? "Project", projectId, now],
-    );
-    const found = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]);
-    return found.rows[0]!.id;
-  }
-
-  /** Every space is seeded with a protected, singleton "Projects" PARA
-   * folder (system_role='projects_root', see spaceSeeds.ts) — nest each
-   * project's auto-created notes folder under it so it shows up where a
-   * user following that structure would look for it. Looked up by role
-   * (like Inbox/Archive), not by name, since the folder is protected but a
-   * pre-existing space seeded before this role existed may not have one —
-   * that degrades gracefully to a root-level folder, matching prior
-   * behavior. */
-  private async resolveProjectsParentFolderId(spaceId: string): Promise<string | null> {
-    const result = await this.db.query<{ id: string }>(
-      `SELECT id FROM note_collections WHERE space_id=$1 AND system_role='projects_root' LIMIT 1`,
-      [spaceId],
-    );
-    return result.rows[0]?.id ?? null;
-  }
-
-  private async ensureStarterNotes(spaceId: string, projectId: string, folderId: string): Promise<void> {
-    const base = Date.now();
-    for (const [index, key] of NOTEBOOK_SECTION_KEYS.entries()) {
-      const title = SECTION_LABELS[key];
-      const existing = await resolveProjectNoteByTitle(this.db, spaceId, projectId, title);
-      // Strictly increasing timestamps keep starter-note ordering
-      // (understanding/questions/ideas/experiments) deterministic — they'd
-      // otherwise tie on created_at if stamped with one shared `now`.
-      if (!existing) await this.createProjectNote({ spaceId, projectId, folderId, title, doc: markdownToPm(""), createdByUserId: null, at: new Date(base + index).toISOString() });
+  /**
+   * One-shot reconciliation for projects whose starter notes predate the role
+   * marker (N2). Title matching here is legitimate and is the only place it
+   * remains: it reconstructs the binding the old title-based resolver created,
+   * rather than being a binding of its own.
+   *
+   * The schema is regenerated from one baseline rather than migrated
+   * incrementally, so this lives on the read path — the same place that
+   * already creates a missing starter note — and stops doing anything the
+   * moment every role is filled. A note whose title the user already changed
+   * is not adopted: there is nothing to reconstruct, and guessing would put a
+   * role on a note the user never designated.
+   */
+  private async adoptStarterNotesByTitle(scope: NoteWriteScope, spaceId: string, projectId: string): Promise<void> {
+    const byRole = await resolveNotebookNotes(this.db, spaceId, projectId);
+    for (const role of NOTEBOOK_SECTION_KEYS) {
+      if (byRole[role]) continue;
+      // Finding the candidate is this method's own business — the title match
+      // is the whole point here. Writing the role is not: that goes through
+      // the note writer like every other role write, so the registry check and
+      // the displacement rule apply here too.
+      const candidate = await this.db.query<{ object_id: string }>(
+        `SELECT n.object_id FROM notes n
+           JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+          WHERE n.space_id=$1 AND so.primary_project_id=$2 AND n.status='active'
+            AND so.deleted_at IS NULL AND so.title=$3 AND n.project_role IS NULL
+          ORDER BY so.created_at ASC LIMIT 1`,
+        [spaceId, projectId, SECTION_LABELS[role]],
+      );
+      const noteId = candidate.rows[0]?.object_id;
+      if (!noteId) continue;
+      await scope.setProjectRole({ spaceId, noteId, actor: { system: true }, role, projectId });
     }
   }
 
-  private async listProjectNotes(spaceId: string, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>> {
-    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>(
-      `SELECT n.object_id AS id, so.title, n.version, n.content_json
+  /** The folder itself belongs to Knowledge, which owns `note_collections`;
+   * the research area is one of two callers that need it to exist (the other
+   * is the Project's notes surface), so the rule lives there rather than here. */
+  private async ensureProjectNotesFolder(spaceId: string, projectId: string): Promise<string> {
+    return ensureProjectNotesFolder(this.db, spaceId, projectId);
+  }
+
+  private async projectOwnerUserId(spaceId: string, projectId: string): Promise<string | null> {
+    const row = await this.db.query<{ owner_user_id: string | null }>(
+      `SELECT owner_user_id FROM projects WHERE id = $1 AND space_id = $2`,
+      [projectId, spaceId],
+    );
+    return row.rows[0]?.owner_user_id ?? null;
+  }
+
+  private async ensureStarterNotes(scope: NoteWriteScope, spaceId: string, projectId: string, folderId: string): Promise<void> {
+    const base = Date.now();
+    const byRole = await resolveNotebookNotes(this.db, spaceId, projectId);
+    for (const [index, key] of NOTEBOOK_SECTION_KEYS.entries()) {
+      // Presence is decided by the role, so a user who renamed "Idea pool" does
+      // not get a second one seeded next to it.
+      if (byRole[key]) continue;
+      // Strictly increasing timestamps keep starter-note ordering
+      // (understanding/questions/ideas/experiments) deterministic — they'd
+      // otherwise tie on created_at if stamped with one shared `now`.
+      await this.createProjectNote(scope, {
+        spaceId, projectId, folderId, title: SECTION_LABELS[key], doc: markdownToPm(""),
+        createdByUserId: null, at: new Date(base + index).toISOString(), projectRole: key,
+      });
+    }
+  }
+
+  /**
+   * Free-form title lookup, for the ad-hoc caller that names a note instead of
+   * a role. Not a system binding: the title is the user's own input in that
+   * path, so matching it is what they asked for.
+   */
+  private async resolveProjectNoteByExactTitle(spaceId: string, projectId: string, title: string): Promise<NotebookNoteRow | null> {
+    const result = await this.db.query<NotebookNoteRow>(
+      `SELECT n.object_id AS id, n.version, n.content_json, n.plain_text
          FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
-        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND so.status='active' ORDER BY so.created_at ASC`,
+        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active'
+          AND so.deleted_at IS NULL AND so.title=$3
+        ORDER BY so.created_at ASC LIMIT 1`,
+      [spaceId, projectId, title],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private async listProjectNotes(spaceId: string, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>> {
+    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>(
+      `SELECT n.object_id AS id, so.title, n.version, n.content_json, n.project_role
+         FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active' AND so.deleted_at IS NULL
+        ORDER BY so.created_at ASC`,
       [spaceId, projectId],
     );
     return rows.rows;
   }
 
-  private async createProjectNote(input: {
+  /**
+   * Creates a note in this Project's notebook folder.
+   *
+   * The work is the shared note writer's: this method only supplies what is
+   * specific to a Project note — the folder, the role, and the attribution for
+   * scaffolding nobody asked for by hand. It used to assemble the root row,
+   * the extension row, the revision and the folder membership itself, and had
+   * drifted from the general path in two visible ways (no `summary`, and every
+   * note filed at `sort_order` 0).
+   */
+  private async createProjectNote(scope: NoteWriteScope, input: {
     spaceId: string; projectId: string; folderId: string; title: string; doc: Record<string, unknown>;
-    createdByUserId: string | null; at: string;
+    createdByUserId: string | null; createdByRunId?: string | null; at: string;
+    /** The notebook role this note is created to hold, when it has one. */
+    projectRole?: NoteProjectRole | null;
   }): Promise<{ id: string; version: number }> {
-    const objectId = randomUUID();
-    const normalized = normalizePmText(input.doc);
-    await this.db.query(
-      `INSERT INTO space_objects (id,space_id,object_type,title,status,visibility,owner_user_id,primary_project_id,created_by_user_id,created_at,updated_at)
-       VALUES ($1,$2,'note',$3,'active','space_shared',$4,$5,$4,$6,$6)`,
-      [objectId, input.spaceId, input.title, input.createdByUserId, input.projectId, input.at],
-    );
-    await this.db.query(
-      `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash)
-       VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,1,$5)`,
-      [objectId, input.spaceId, JSON.stringify(input.doc), normalized, sha256(normalized)],
-    );
-    await insertInitialNoteRevision(this.db, { spaceId: input.spaceId, noteId: objectId, doc: input.doc, at: input.at, userId: input.createdByUserId });
-    await this.db.query(
-      `INSERT INTO note_collection_items (id,space_id,collection_id,note_id,sort_order,created_at) VALUES ($1,$2,$3,$4,0,$5)`,
-      [randomUUID(), input.spaceId, input.folderId, objectId, input.at],
-    );
-    return { id: objectId, version: 1 };
+    // Auto-created scaffolding (starter notes) has no acting user. Attributing
+    // it to the Project owner is accurate — the notes exist because that
+    // Project does — and leaves the object traceable, which B12H requires.
+    const createdByUserId = input.createdByUserId
+      ?? (input.createdByRunId ? null : await this.projectOwnerUserId(input.spaceId, input.projectId));
+    return scope.create({
+      spaceId: input.spaceId,
+      // Seeding is not a user action even when a user triggered the run that
+      // caused it, so the Project write check does not apply: the Project is
+      // this service's own, not one the caller named.
+      actor: { system: true },
+      title: input.title,
+      doc: input.doc,
+      contentFormat: "prosemirror_json",
+      ownerUserId: createdByUserId,
+      createdByUserId,
+      createdByRunId: input.createdByRunId ?? null,
+      primaryProjectId: input.projectId,
+      collectionId: input.folderId,
+      projectRole: input.projectRole ?? null,
+      at: input.at,
+    });
   }
 }
 
@@ -618,7 +685,7 @@ function collectSourceItemRefs(value: unknown, refs = new Set<string>()): string
   }
   return [...refs];
 }
-function paperCardParts(markdown: string): { why: string; how: string; what: string } {
+function evidenceCardParts(markdown: string): { why: string; how: string; what: string } {
   const take = (label: string) => markdown.match(new RegExp(`(?:^|\\n)#{0,3}\\s*${label}\\s*:?\\s*([^\\n]+(?:\\n(?!#{0,3}\\s*(?:WHY|HOW|WHAT)\\b)[^\\n]+)*)`, "i"))?.[1]?.trim().slice(0, 4000) ?? "";
   const why = clipWords(take("WHY"), 80); const how = clipWords(take("HOW"), 80); const what = clipWords(take("WHAT"), 80);
   return { why, how, what: what || (!why && !how ? clipWords(markdown.trim(), 80) : "") };

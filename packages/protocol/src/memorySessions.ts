@@ -14,12 +14,6 @@ const TraceSafeObjectSchema = TraceSafeJsonSchema.refine(
   (value) => value !== null && typeof value === "object" && !Array.isArray(value),
   "Expected trace-safe object",
 );
-const TraceSafeArraySchema = z.array(TraceSafeJsonSchema);
-const RawContextResponseGuards = {
-  compiled_prefix_text: z.never().optional(),
-  compiled_tail_text: z.never().optional(),
-  rendered_context_text: z.never().optional(),
-};
 
 export const SessionOutSchema = z
   .object({
@@ -27,7 +21,7 @@ export const SessionOutSchema = z
     space_id: IdSchema,
     user_id: IdSchema.nullish(),
     project_folder_id: IdSchema.nullish(),
-    project_id:IdSchema.nullish(),
+    project_id: IdSchema.nullish(),
     room_id: IdSchema.nullish(),
     title: z.string().nullish(),
     status: z.string(),
@@ -70,6 +64,7 @@ export const SessionCreateRequestSchema = z
     space_id: IdSchema.nullish(),
     user_id: IdSchema.nullish(),
     project_folder_id: IdSchema.nullish(),
+    project_id: IdSchema.nullish(),
     title: z.string().nullish(),
     metadata: JsonObjectSchema.nullish(),
   })
@@ -82,41 +77,6 @@ export const MessageCreateRequestSchema = z
   })
   .strict();
 export type MessageCreateRequest = z.infer<typeof MessageCreateRequestSchema>;
-
-export const SessionSummaryForContextSchema = z
-  .object({
-    id: IdSchema,
-    session_id: IdSchema,
-    version: z.number().int().positive(),
-    summary_text: z.string(),
-    condenser_version: z.string(),
-    source_message_count: z.number().int().nonnegative().nullish(),
-    source_first_message_id: IdSchema.nullish(),
-    source_last_message_id: IdSchema.nullish(),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type SessionSummaryForContext = z.infer<
-  typeof SessionSummaryForContextSchema
->;
-
-export const SessionSummaryGetLatestRequestSchema = z.object({
-  session_id: IdSchema,
-  space_id: IdSchema,
-});
-export type SessionSummaryGetLatestRequest = z.infer<
-  typeof SessionSummaryGetLatestRequestSchema
->;
-
-export const SessionSummaryGetLatestResultSchema = z
-  .object({
-    summary: SessionSummaryForContextSchema.nullish(),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type SessionSummaryGetLatestResult = z.infer<
-  typeof SessionSummaryGetLatestResultSchema
->;
 
 export const ChatTurnRequestSchema = z
   .object({
@@ -245,71 +205,8 @@ export type ChatTurnPrepareRunResult = z.infer<
   typeof ChatTurnPrepareRunResultSchema
 >;
 
-/**
- * Context assembly for the chat path. The server chat turn owns the
- * `ChatContextBuilder` selection/budget loop, candidate reads, and
- * `context_snapshots` / `context_snapshot_items` persistence.
- */
-export const ChatContextCandidateItemSchema = z
-  .object({
-    item_type: z.string(),
-    item_id: IdSchema.nullish(),
-    title: z.string().nullish(),
-    excerpt: z.string().nullish(),
-    score: z.number().nullish(),
-    reason: z.string().nullish(),
-    token_count: z.number().int().nonnegative().nullish(),
-    metadata: TraceSafeObjectSchema.default({}),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ChatContextCandidateItem = z.infer<
-  typeof ChatContextCandidateItemSchema
->;
-
-export const ChatContextCandidatesRequestSchema = z.object({
-  agent_id: IdSchema,
-  space_id: IdSchema,
-  user_id: IdSchema,
-  session_id: IdSchema,
-  message: z.string().min(1).max(8000),
-  project_id:IdSchema.nullish(),
-});
-export type ChatContextCandidatesRequest = z.infer<
-  typeof ChatContextCandidatesRequestSchema
->;
-
-export const ChatContextCandidatesResultSchema = z
-  .object({
-    allowed_sources: z.array(z.string()).default([]),
-    max_tokens: z.number().int().positive(),
-    max_items: z.number().int().positive(),
-    context_policy_applied: z.boolean(),
-    items: z.array(ChatContextCandidateItemSchema).default([]),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ChatContextCandidatesResult = z.infer<
-  typeof ChatContextCandidatesResultSchema
->;
-
-export const ChatRunCreateRequestSchema = z.object({
-  agent_id: IdSchema,
-  space_id: IdSchema,
-  user_id: IdSchema,
-  session_id: IdSchema,
-  prompt: z.string().min(1),
-});
-export type ChatRunCreateRequest = z.infer<typeof ChatRunCreateRequestSchema>;
-
-export const ChatRunCreateResultSchema = z
-  .object({
-    run_id: IdSchema,
-    context_snapshot_id: IdSchema.nullish(),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ChatRunCreateResult = z.infer<typeof ChatRunCreateResultSchema>;
+export const MemoryScopeSchema = z.enum(["user", "project"]);
+export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
 
 export const MemoryOutSchema = z
   .object({
@@ -317,8 +214,7 @@ export const MemoryOutSchema = z
     space_id: IdSchema,
     subject_user_id: IdSchema.nullish(),
     owner_user_id: IdSchema.nullish(),
-    project_folder_id: IdSchema.nullish(),
-    scope: z.string(),
+    scope: MemoryScopeSchema,
     namespace: z.string().nullish(),
     type: z.string(),
     title: z.string().nullish(),
@@ -360,7 +256,7 @@ const MemoryCreateFieldsSchema = z.object({
   title: z.string(),
   content: z.string(),
   type: z.string(),
-  scope: z.string().default("user"),
+  scope: MemoryScopeSchema.default("user"),
   namespace: z.string().default("user.default"),
   visibility: z.string().nullish(),
   access_level: z.string().default("full"),
@@ -373,7 +269,7 @@ const MemoryCreateFieldsSchema = z.object({
   subject_user_id: IdSchema.nullish(),
   owner_user_id: IdSchema.nullish(),
   last_confirmed_at: ISODateTimeSchema.nullish(),
-  project_folder_id: IdSchema.nullish(),
+  project_id: IdSchema.nullish(),
   memory_layer: z.string().nullish(),
 });
 
@@ -381,7 +277,7 @@ const MemoryUpdateFieldsSchema = z.object({
   title: z.string().nullish(),
   content: z.string().nullish(),
   type: z.string().nullish(),
-  scope: z.string().nullish(),
+  scope: MemoryScopeSchema.nullish(),
   namespace: z.string().nullish(),
   visibility: z.string().nullish(),
   access_level: z.string().nullish(),
@@ -391,7 +287,7 @@ const MemoryUpdateFieldsSchema = z.object({
   tags: z.array(z.string()).nullish(),
   subject_user_id: IdSchema.nullish(),
   owner_user_id: IdSchema.nullish(),
-  project_folder_id: IdSchema.nullish(),
+  project_id: IdSchema.nullish(),
   memory_layer: z.string().nullish(),
 });
 
@@ -417,7 +313,6 @@ export type MemoryProposalUpdateCommand = z.infer<
 export const MemoryProposalArchiveCommandSchema = z.object({
   operation: z.literal("archive"),
   target_memory_id: IdSchema,
-  project_folder_id: IdSchema.nullish(),
   actor_user_id: IdSchema.nullish(),
   provenance_entries: z.array(TraceSafeObjectSchema).default([]),
 });
@@ -450,14 +345,6 @@ export type MemoryProposalCreateResult = z.infer<
   typeof MemoryProposalCreateResultSchema
 >;
 
-/**
- * Public `POST /memory/search` body. `space_id`/
- * `user_id` override the caller's identity; `type` is the wire name for
- * `memory_type`. `include_system` is an opt-in: by default the user-facing
- * search hides `scope=system` seed memories (system policy rows) so they do not
- * appear as user memory hits; pass it (or an explicit `scope=system`) to include
- * them.
- */
 // Memory search is identity-scoped: the surface intentionally has no space_id /
 // user_id fields. The server derives both from the authenticated identity, so a
 // request can never search another space or impersonate another user
@@ -469,8 +356,6 @@ export const MemorySearchRequestSchema = z
     namespace: z.string().nullish(),
     type: z.string().nullish(),
     limit: z.number().int().nonnegative().default(10),
-    project_folder_id: IdSchema.nullish(),
-    include_system: z.boolean().default(false),
   })
   .passthrough();
 export type MemorySearchRequest = z.infer<typeof MemorySearchRequestSchema>;
@@ -480,13 +365,11 @@ export const MemoryReadRequestSchema = z.object({
   user_id: IdSchema.nullish(),
   agent_id: IdSchema.nullish(),
   run_id: IdSchema.nullish(),
-  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   memory_id: IdSchema.nullish(),
   query: z.string().nullish(),
   limit: z.number().int().nonnegative().default(50),
   offset: z.number().int().nonnegative().default(0),
-  include_system_scope: z.boolean().default(false),
   reason: z.string().nullish(),
 });
 export type MemoryReadRequest = z.infer<typeof MemoryReadRequestSchema>;
@@ -501,22 +384,6 @@ export const MemoryPageSchema = z
   })
   .passthrough();
 export type MemoryPage = z.infer<typeof MemoryPageSchema>;
-
-export const MemoryReadTraceSchema = z
-  .object({
-    id: IdSchema,
-    space_id: IdSchema,
-    memory_id: IdSchema,
-    user_id: IdSchema.nullish(),
-    agent_id: IdSchema.nullish(),
-    run_id: IdSchema.nullish(),
-    access_type: z.string(),
-    reason: z.string().nullish(),
-    accessed_at: ISODateTimeSchema,
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type MemoryReadTrace = z.infer<typeof MemoryReadTraceSchema>;
 
 export const MemoryMaintenanceFindingKindSchema = z.enum([
   "duplicate",
@@ -630,269 +497,3 @@ export const MemoryMaintenanceJobRunResponseSchema = z
   })
   .strict();
 export type MemoryMaintenanceJobRunResponse = z.infer<typeof MemoryMaintenanceJobRunResponseSchema>;
-
-export const MemoryAccessLogEntrySchema = z
-  .object({
-    id: IdSchema,
-    space_id: IdSchema,
-    memory_id: IdSchema,
-    user_id: IdSchema.nullish(),
-    agent_id: IdSchema.nullish(),
-    run_id: IdSchema.nullish(),
-    access_type: z.string(),
-    reason: z.string().nullish(),
-    accessed_at: ISODateTimeSchema,
-    memory_title: z.string().nullable(),
-    memory_scope: z.string().nullable(),
-    memory_visibility: z.string().nullable(),
-    project_id: IdSchema.nullish(),
-    ...SecretResponseGuards,
-  })
-  .strict();
-export type MemoryAccessLogEntry = z.infer<typeof MemoryAccessLogEntrySchema>;
-
-export const MemoryAccessLogListResponseSchema = z
-  .object({
-    items: z.array(MemoryAccessLogEntrySchema),
-    limit: z.number().int().positive(),
-    offset: z.number().int().nonnegative(),
-    returned: z.number().int().nonnegative(),
-    has_more: z.boolean(),
-    ...SecretResponseGuards,
-  })
-  .strict();
-export type MemoryAccessLogListResponse = z.infer<typeof MemoryAccessLogListResponseSchema>;
-
-export const ContextSourceRefSchema = z
-  .object({
-    source_type: z.string(),
-    source_id: IdSchema.nullish(),
-    section: z.string().nullish(),
-    title: z.string().nullish(),
-    ...SecretResponseGuards,
-  })
-  .catchall(TraceSafeJsonSchema);
-export type ContextSourceRef = z.infer<typeof ContextSourceRefSchema>;
-
-export const ContextBuildRequestSchema = z.object({
-  space_id: IdSchema,
-  user_id: IdSchema.nullish(),
-  project_folder_id: IdSchema.nullish(),
-  project_id: IdSchema.nullish(),
-  task_type: z.string().nullish(),
-  capability_id: z.string().nullish(),
-  session_id: IdSchema.nullish(),
-  run_id: IdSchema.nullish(),
-  query: z.string().nullish(),
-  agent_id: IdSchema.nullish(),
-  context_artifact_ids: z.array(IdSchema).max(8).default([]),
-});
-export type ContextBuildRequest = z.infer<typeof ContextBuildRequestSchema>;
-
-export const ContextArtifactRevocationScopeSchema = z.enum(["project_folder", "project"]);
-export type ContextArtifactRevocationScope = z.infer<typeof ContextArtifactRevocationScopeSchema>;
-
-export const ContextArtifactRevocationSchema = z
-  .object({
-    id: IdSchema,
-    space_id: IdSchema,
-    artifact_id: IdSchema,
-    scope_type: ContextArtifactRevocationScopeSchema,
-    scope_id: IdSchema,
-    reason: z.string().nullish(),
-    created_by_user_id: IdSchema.nullish(),
-    created_at: ISODateTimeSchema,
-    ...SecretResponseGuards,
-  })
-  .strict();
-export type ContextArtifactRevocation = z.infer<typeof ContextArtifactRevocationSchema>;
-
-export const ContextArtifactRevocationCreateRequestSchema = z
-  .object({
-    artifact_id: IdSchema,
-    scope_type: ContextArtifactRevocationScopeSchema,
-    scope_id: IdSchema,
-    reason: z.string().max(512).nullish(),
-  })
-  .strict();
-export type ContextArtifactRevocationCreateRequest = z.infer<typeof ContextArtifactRevocationCreateRequestSchema>;
-
-export const ContextArtifactRevocationListResponseSchema = z
-  .object({
-    items: z.array(ContextArtifactRevocationSchema),
-    ...SecretResponseGuards,
-  })
-  .strict();
-export type ContextArtifactRevocationListResponse = z.infer<typeof ContextArtifactRevocationListResponseSchema>;
-
-export const ContextArtifactAttachmentSchema = z
-  .object({
-    attachment_type: z.literal("artifact_evidence_pack"),
-    artifact_id: IdSchema.optional(),
-    artifact_type: z.string().optional(),
-    label: z.string(),
-    domain_label: z.string().optional(),
-    approved: z.boolean(),
-    resolved_content: z.string().optional(),
-    rejection_reason: z.string().optional(),
-    policy_snapshot: TraceSafeObjectSchema.optional(),
-    source_policy_snapshot: TraceSafeObjectSchema.optional(),
-    ...SecretResponseGuards,
-  })
-  .strict();
-export type ContextArtifactAttachment = z.infer<typeof ContextArtifactAttachmentSchema>;
-
-export const ContextPackageSchema = z
-  .object({
-    user_memory: z.array(MemoryOutSchema).default([]),
-    project_folder_memory: z.array(MemoryOutSchema).default([]),
-    capability_memory: z.array(MemoryOutSchema).default([]),
-    agent_memory: z.array(MemoryOutSchema).default([]),
-    system_policy: z.array(MemoryOutSchema).default([]),
-    recent_session_summary: z.array(SessionSummaryForContextSchema).default([]),
-    relevant_episodes: z.array(MemoryOutSchema).default([]),
-    evidence_items: z.array(TraceSafeObjectSchema).default([]),
-    attachments: z.array(ContextArtifactAttachmentSchema.or(TraceSafeObjectSchema)).default([]),
-    active_policies: z.array(TraceSafeObjectSchema).default([]),
-    stable_prefix_refs: z.array(ContextSourceRefSchema).default([]),
-    dynamic_tail_refs: z.array(ContextSourceRefSchema).default([]),
-    source_refs: z.array(ContextSourceRefSchema).default([]),
-    retrieval_trace: TraceSafeObjectSchema.default({}),
-    token_budget: TraceSafeObjectSchema.default({}),
-    personal_context_block: z.string().default(""),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ContextPackage = z.infer<typeof ContextPackageSchema>;
-
-export const ContextBuildResultSchema = z
-  .object({
-    package: ContextPackageSchema,
-    context_snapshot_id: IdSchema.nullish(),
-    memory_read_traces: z.array(MemoryReadTraceSchema).default([]),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ContextBuildResult = z.infer<typeof ContextBuildResultSchema>;
-
-export const ContextCompileTargetSchema = z.enum([
-  "claude",
-  "codex_cli",
-  "cursor",
-  "generic",
-  "soul",
-  "prompt",
-]);
-export type ContextCompileTarget = z.infer<typeof ContextCompileTargetSchema>;
-
-export const ContextCompileRequestSchema = z.object({
-  space_id: IdSchema,
-  target: ContextCompileTargetSchema,
-  task_goal: z.string(),
-  context_package: ContextPackageSchema,
-  project_folder_path: z.string().nullish(),
-  budget_chars: z.number().int().positive().nullish(),
-});
-export type ContextCompileRequest = z.infer<typeof ContextCompileRequestSchema>;
-
-export const ContextCompileResultSchema = z
-  .object({
-    target: ContextCompileTargetSchema,
-    task_prompt: z.string(),
-    instruction_file_path: z.string().nullish(),
-    total_chars: z.number().int().nonnegative(),
-    budget_chars: z.number().int().positive(),
-    dropped_sections: z.array(z.string()).default([]),
-    budget_trace: TraceSafeObjectSchema.default({}),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ContextCompileResult = z.infer<
-  typeof ContextCompileResultSchema
->;
-
-export const ContextSnapshotAuditSchema = z
-  .object({
-    id: IdSchema,
-    space_id: IdSchema,
-    source_refs_json: z.array(ContextSourceRefSchema).default([]),
-    token_estimate: z.number().int().nonnegative().nullish(),
-    relevant_period_start: ISODateTimeSchema.nullish(),
-    relevant_period_end: ISODateTimeSchema.nullish(),
-    prefix_hash: z.string().nullish(),
-    tail_hash: z.string().nullish(),
-    compiler_version: z.string().nullish(),
-    retrieval_trace_json: TraceSafeArraySchema.nullish(),
-    token_budget_json: TraceSafeObjectSchema.nullish(),
-    policy_bundle_version: z.string().nullish(),
-    memory_digest_version: z.string().nullish(),
-    project_folder_digest_version: z.string().nullish(),
-    included_memory_refs_json: z.array(ContextSourceRefSchema).nullish(),
-    included_evidence_refs_json: z.array(ContextSourceRefSchema).nullish(),
-    included_file_refs_json: z.array(ContextSourceRefSchema).nullish(),
-    included_doc_refs_json: z.array(ContextSourceRefSchema).nullish(),
-    redactions_json: TraceSafeObjectSchema.nullish(),
-    data_exposure_level: z.string().nullish(),
-    rendered_context_uri: z.string().nullish(),
-    has_compiled_prefix_text: z.boolean().default(false),
-    has_compiled_tail_text: z.boolean().default(false),
-    has_rendered_context_text: z.boolean().default(false),
-    created_at: ISODateTimeSchema,
-    ...RawContextResponseGuards,
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ContextSnapshotAudit = z.infer<
-  typeof ContextSnapshotAuditSchema
->;
-
-export const ContextSnapshotItemAuditSchema = z
-  .object({
-    id: IdSchema,
-    context_snapshot_id: IdSchema,
-    item_type: z.string(),
-    item_id: IdSchema.nullish(),
-    title: z.string().nullish(),
-    excerpt: z.string().nullish(),
-    score: z.number().nullish(),
-    reason: z.string().nullish(),
-    token_count: z.number().int().nonnegative().nullish(),
-    metadata_json: TraceSafeObjectSchema.default({}),
-    created_at: ISODateTimeSchema,
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ContextSnapshotItemAudit = z.infer<
-  typeof ContextSnapshotItemAuditSchema
->;
-
-export const ContextEngineEventTypeSchema = z.enum([
-  "context.build_started",
-  "context.session_summary_loaded",
-  "context.memory_selected",
-  "context.evidence_selected",
-  "context.compaction_applied",
-  "context.overflow_recovered",
-  "context.snapshot_persisted",
-  "context.build_completed",
-  "context.build_failed",
-]);
-export type ContextEngineEventType = z.infer<
-  typeof ContextEngineEventTypeSchema
->;
-
-export const ContextEngineEventSchema = z
-  .object({
-    event_type: ContextEngineEventTypeSchema,
-    space_id: IdSchema,
-    session_id: IdSchema.nullish(),
-    run_id: IdSchema.nullish(),
-    context_snapshot_id: IdSchema.nullish(),
-    status: z.enum(["started", "succeeded", "failed", "skipped", "warning"]),
-    message: z.string().nullish(),
-    metadata_json: TraceSafeObjectSchema.default({}),
-    created_at: ISODateTimeSchema,
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ContextEngineEvent = z.infer<typeof ContextEngineEventSchema>;

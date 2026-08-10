@@ -20,7 +20,6 @@ const MEMORY_OBJECT_TYPES = ["memory_entry"] as const;
 
 interface MemoryProjectionRow {
   id: string;
-  project_folder_id: string | null;
   owner_user_id: string | null;
   sensitivity_level: string | null;
   visibility: string | null;
@@ -45,12 +44,9 @@ type MemoryProjectableFields = Pick<
   "scope_type" | "visibility" | "access_level" | "owner_user_id" | "sensitivity_level"
 >;
 
-// Keep this predicate in lock-step with `isMemoryRetrievalProjectable` below.
-// Both lower-case the enum columns so a non-canonical-cased row is judged the
-// same way on the SQL (listObjectIds) and TS (loadCanonical) paths.
-const MEMORY_RETRIEVAL_PROJECTABLE_SQL = `
-  lower(COALESCE(scope_type, '')) <> 'system'
-`;
+// Scope validity is enforced by the canonical table CHECK; projection only
+// needs the visibility/access vocabulary checks below.
+const MEMORY_RETRIEVAL_PROJECTABLE_SQL = "TRUE";
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
 
@@ -74,7 +70,7 @@ export const memoryRetrievalAdapter: RetrievalDomainAdapter = {
 
   async loadCanonical(db, spaceId, _objectType, objectId): Promise<CanonicalObject | null> {
     const result = await db.query<MemoryProjectionRow>(
-      `SELECT id, project_folder_id, owner_user_id, visibility, status, memory_type,
+      `SELECT id, owner_user_id, visibility, status, memory_type,
               title, content, sensitivity_level, scope_type, access_level, updated_at
          FROM memory_entries
         WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
@@ -94,11 +90,11 @@ export const memoryRetrievalAdapter: RetrievalDomainAdapter = {
       objectId: row.id,
       title,
       slug: null,
-      projectFolderId: row.project_folder_id,
       ownerUserId: row.owner_user_id,
+      projectFolderId: null,
       visibility: row.visibility,
       status: row.status,
-      objectKind: row.memory_type,
+      objectProfile: row.memory_type,
       aliases: [],
       text: joinText([title, row.content]),
       sourceConnectionIds,
@@ -138,13 +134,12 @@ async function revalidateMemoryMany(
   const result = await db.query<MemoryVisibilityRow>(
     `SELECT me.id, me.space_id, me.deleted_at, me.sensitivity_level, me.visibility,
             me.access_level, ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$3" })} AS effective_access_level,
-            me.owner_user_id, me.scope_type, me.project_folder_id, me.project_id, me.title, me.content
+            me.owner_user_id, me.scope_type, me.project_id, me.title, me.content
        FROM memory_entries me
       WHERE me.space_id = $1
         AND me.id = ANY($2::varchar[])
         AND me.status = 'active'
         AND me.deleted_at IS NULL
-        AND me.scope_type <> 'system'
         AND ${contentReadSql("memory", "me", "$3")}
         AND ${memorySensitivityReadSql("me", "$3")}`,
     [spaceId, ids, viewerUserId],
@@ -182,8 +177,6 @@ function memoryIsoOrNull(value: Date | string | null | undefined): string | null
 }
 
 export function isMemoryRetrievalProjectable(row: MemoryProjectableFields): boolean {
-  const scope = (row.scope_type ?? "").toLowerCase();
-  if (scope === "system") return false;
   return isContentVisibility(row.visibility) && isContentAccessLevel(row.access_level);
 }
 

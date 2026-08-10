@@ -4,8 +4,10 @@ import {
   useSensor, useSensors, type CollisionDetection, type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
 import {
-  ChevronRight, EyeOff, FileText, Folder, FolderPlus, MoreHorizontal, Pencil, Trash2,
+  ChevronRight, Copy, ExternalLink, EyeOff, FileText, Focus, Folder, FolderPlus, FolderTree,
+  MoreHorizontal, Pencil, Trash2, X,
 } from 'lucide-react'
+import { SpaceLink as Link } from '../../../core/spaceNav'
 import type { NoteCollection, NoteSummary } from '../../../types/api'
 import { cn } from '../../../lib/utils'
 import {
@@ -16,7 +18,7 @@ import {
   buildCollectionTree, collectionAndDescendantIds, findCollectionNode, flattenVisibleNotes,
   groupNotesByCollection, isDraggableCollection, isProtectedCollection, resolveTreeDrop,
   type CollectionMove, type CollectionNode,
-  type DragSourceData, type DropTargetData, type NoteMove,
+  type DragSourceData, type DropTargetData, type NoteMove, type PlacedNote,
 } from './model'
 
 const notesTreeCollisionDetection: CollisionDetection = args => {
@@ -63,14 +65,31 @@ export interface NotesTreeProps {
   onMove: (collection: NoteCollection) => void
   onHide: (collection: NoteCollection) => void
   onDeleteCollection: (collection: NoteCollection) => void
+  /** The folder the tree is hoisted into: it becomes the only root and
+   * everything outside its subtree is hidden. Null spans every collection. */
+  hoistRootId: string | null
+  /** Enter hoisting on a folder, or leave it (`null`). */
+  onHoist: (collectionId: string | null) => void
+  /** Whether leaving the current hoist root is offered. A surface that exists
+   * *because* of its root — a Project's notes — has nowhere to leave to. */
+  canExitHoist: boolean
   /** Drag a folder onto another folder (or a gap between siblings, or the
    * root strip) to reparent and/or reorder it. Project-backed folders may be
    * freely placed; fixed collection roots (Inbox/Archive/Projects) are not
    * draggable. Every affected sibling's new position is included. */
   onDropCollections?: (updates: CollectionMove[]) => void
   /** Drag a note onto a folder (or a gap between two notes in a folder) to
-   * move and/or reorder it. */
+   * move and/or reorder that placement. */
   onDropNotes?: (updates: NoteMove[]) => void
+  /**
+   * Hold Alt while dropping to add a placement instead of moving one (U5).
+   * Trilium uses a modifier on drop for the same distinction; without one the
+   * only options are silently widening every drag or never allowing a second
+   * placement at all.
+   */
+  onPlaceNote?: (noteId: string, collectionId: string) => void
+  /** Take a note out of one folder, leaving its other placements alone. */
+  onRemovePlacement?: (noteId: string, collectionId: string) => void
 }
 
 export default function NotesTree({
@@ -78,8 +97,17 @@ export default function NotesTree({
   resolveNoteTitle, onToggleCollection, onSelectCollection, onSelectNoteCollection,
   onOpenNote, onArchiveNote, onArchiveNotes, onDeleteNote, onDeleteNotes,
   onCreateChild, onRename, onMove, onHide, onDeleteCollection, onDropCollections, onDropNotes,
+  onPlaceNote, onRemovePlacement, hoistRootId, onHoist, canExitHoist,
 }: NotesTreeProps) {
-  const collectionTree = useMemo(() => buildCollectionTree(collections), [collections])
+  const fullTree = useMemo(() => buildCollectionTree(collections), [collections])
+  const hoistRoot = useMemo(
+    () => (hoistRootId ? findCollectionNode(fullTree, hoistRootId) : null),
+    [fullTree, hoistRootId],
+  )
+  // Hoisting is a filter over the tree that is already built, not a second
+  // tree: the hoisted folder becomes the only root, so it stays visible as the
+  // thing you are inside rather than disappearing along with its parents.
+  const collectionTree = hoistRoot ? [hoistRoot] : fullTree
   const visibleTreeNotes = useMemo(
     () => notes.filter(note => note.status !== 'archived' && note.status !== 'deleted'),
     [notes],
@@ -107,8 +135,30 @@ export default function NotesTree({
   }, [collectionTree, draggingCollectionId])
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
+  // dnd-kit reports the pointer event that *started* the drag, so the modifier
+  // state at drop time has to be tracked separately. Watched only while a note
+  // is being dragged, and mirrored into the drag preview so "this will add a
+  // placement" is visible before the pointer is released.
+  const [additiveDrop, setAdditiveDrop] = useState(false)
+  const draggingNote = activeDrag?.type === 'note'
+  useEffect(() => {
+    if (!draggingNote) {
+      setAdditiveDrop(false)
+      return
+    }
+    const sync = (event: globalThis.KeyboardEvent) => setAdditiveDrop(event.altKey)
+    window.addEventListener('keydown', sync)
+    window.addEventListener('keyup', sync)
+    return () => {
+      window.removeEventListener('keydown', sync)
+      window.removeEventListener('keyup', sync)
+    }
+  }, [draggingNote])
+
   function handleDragStart(event: DragStartEvent) {
     setActiveDrag((event.active.data.current as DragSourceData | undefined) ?? null)
+    const activator = event.activatorEvent as { altKey?: boolean } | undefined
+    setAdditiveDrop(Boolean(activator?.altKey))
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -118,16 +168,21 @@ export default function NotesTree({
     const source = active.data.current as DragSourceData | undefined
     const target = over.data.current as DropTargetData | undefined
     if (!source || !target) return
-    const resolved = resolveTreeDrop(source, target, collectionTree, collections, visibleTreeNotes)
+    const resolved = resolveTreeDrop(source, target, collectionTree, collections, visibleTreeNotes, additiveDrop)
     if (!resolved) return
     if (resolved.kind === 'move-collections') onDropCollections?.(resolved.updates)
+    else if (resolved.kind === 'place-note') onPlaceNote?.(resolved.noteId, resolved.collectionId)
     else onDropNotes?.(resolved.updates)
   }
-  const visibleNoteIds = useMemo(() => visibleNotes.map(note => note.id), [visibleNotes])
-  const visibleNotesById = useMemo(() => new Map(visibleNotes.map(note => [note.id, note])), [visibleNotes])
-  const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(() => new Set())
-  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
-  const [contextMenu, setContextMenu] = useState<(TreeContextMenuPosition & { noteId: string }) | null>(null)
+
+  // Selection is by *placement*, not by note: a note filed in two folders draws
+  // two rows, and Shift-range, the context menu and "remove from this folder"
+  // all need to know which of them the user is pointing at.
+  const visibleKeys = useMemo(() => visibleNotes.map(placed => placed.key), [visibleNotes])
+  const visibleByKey = useMemo(() => new Map(visibleNotes.map(placed => [placed.key, placed])), [visibleNotes])
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set())
+  const [selectionAnchorKey, setSelectionAnchorKey] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<(TreeContextMenuPosition & { key: string }) | null>(null)
   const pendingTreeOpenId = useRef<string | null>(null)
 
   useEffect(() => {
@@ -140,101 +195,99 @@ export default function NotesTree({
     // starts a new single-note selection. The active row is styled directly
     // from activeNoteId, so retaining the tree's Shift/Ctrl selection here
     // would leave the previously active note highlighted as well.
-    setSelectedNoteIds(new Set())
-    setSelectionAnchorId(null)
+    setSelectedKeys(new Set())
+    setSelectionAnchorKey(null)
     setContextMenu(null)
   }, [activeNoteId])
 
   useEffect(() => {
-    setSelectedNoteIds(prev => {
-      const visible = new Set(visibleNoteIds)
-      const next = new Set([...prev].filter(id => visible.has(id)))
+    setSelectedKeys(prev => {
+      const visible = new Set(visibleKeys)
+      const next = new Set([...prev].filter(key => visible.has(key)))
       return next.size === prev.size ? prev : next
     })
-    setSelectionAnchorId(prev => (prev && visibleNotesById.has(prev) ? prev : null))
-  }, [visibleNoteIds, visibleNotesById])
+    setSelectionAnchorKey(prev => (prev && visibleByKey.has(prev) ? prev : null))
+  }, [visibleKeys, visibleByKey])
 
-  const contextMenuNotes = useMemo(() => {
+  const contextMenuPlacements = useMemo(() => {
     if (!contextMenu) return []
-    const target = visibleNotesById.get(contextMenu.noteId)
+    const target = visibleByKey.get(contextMenu.key)
     if (!target) return []
-    const actionIds = selectedNoteIds.has(target.id) && selectedNoteIds.size > 1
-      ? selectedNoteIds
-      : new Set([target.id])
-    return visibleNotes.filter(note => actionIds.has(note.id))
-  }, [contextMenu, selectedNoteIds, visibleNotes, visibleNotesById])
+    const actionKeys = selectedKeys.has(target.key) && selectedKeys.size > 1
+      ? selectedKeys
+      : new Set([target.key])
+    return visibleNotes.filter(placed => actionKeys.has(placed.key))
+  }, [contextMenu, selectedKeys, visibleNotes, visibleByKey])
 
-  function notesForAction(note: NoteSummary) {
-    if (selectedNoteIds.has(note.id) && selectedNoteIds.size > 1) {
-      return visibleNotes.filter(item => selectedNoteIds.has(item.id))
+  const contextMenuTarget = contextMenu ? visibleByKey.get(contextMenu.key) ?? null : null
+
+  function placementsForAction(placed: PlacedNote) {
+    if (selectedKeys.has(placed.key) && selectedKeys.size > 1) {
+      return visibleNotes.filter(item => selectedKeys.has(item.key))
     }
-    return [note]
+    return [placed]
   }
 
-  function selectRange(toId: string) {
-    const fromId = selectionAnchorId ?? toId
-    const from = visibleNoteIds.indexOf(fromId)
-    const to = visibleNoteIds.indexOf(toId)
+  function selectRange(toKey: string) {
+    const fromKey = selectionAnchorKey ?? toKey
+    const from = visibleKeys.indexOf(fromKey)
+    const to = visibleKeys.indexOf(toKey)
     if (from === -1 || to === -1) {
-      setSelectedNoteIds(new Set([toId]))
-      setSelectionAnchorId(toId)
+      setSelectedKeys(new Set([toKey]))
+      setSelectionAnchorKey(toKey)
       return
     }
     const [start, end] = from < to ? [from, to] : [to, from]
-    setSelectedNoteIds(new Set(visibleNoteIds.slice(start, end + 1)))
+    setSelectedKeys(new Set(visibleKeys.slice(start, end + 1)))
   }
 
-  function toggleSelected(noteId: string) {
-    setSelectedNoteIds(prev => {
+  function toggleSelected(key: string) {
+    setSelectedKeys(prev => {
       const next = new Set(prev)
-      if (next.has(noteId)) next.delete(noteId)
-      else next.add(noteId)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
-    setSelectionAnchorId(noteId)
+    setSelectionAnchorKey(key)
   }
 
-  function selectSingle(noteId: string) {
-    setSelectedNoteIds(new Set([noteId]))
-    setSelectionAnchorId(noteId)
-  }
-
-  function syncNoteCollection(note: NoteSummary) {
-    if (note.collection_id) onSelectNoteCollection?.(note.collection_id)
+  function selectSingle(key: string) {
+    setSelectedKeys(new Set([key]))
+    setSelectionAnchorKey(key)
   }
 
   function handleCollectionSelect(id: string) {
-    setSelectedNoteIds(new Set())
-    setSelectionAnchorId(null)
+    setSelectedKeys(new Set())
+    setSelectionAnchorKey(null)
     setContextMenu(null)
     onSelectCollection(id)
   }
 
-  function handleNoteClick(note: NoteSummary, event: MouseEvent<HTMLButtonElement>) {
-    syncNoteCollection(note)
+  function handleNoteClick(placed: PlacedNote, event: MouseEvent<HTMLButtonElement>) {
+    onSelectNoteCollection?.(placed.collectionId)
     if (event.shiftKey) {
-      selectRange(note.id)
+      selectRange(placed.key)
       return
     }
     if (event.metaKey || event.ctrlKey) {
-      toggleSelected(note.id)
+      toggleSelected(placed.key)
       return
     }
-    selectSingle(note.id)
-    pendingTreeOpenId.current = note.id
-    onOpenNote(note.id)
+    selectSingle(placed.key)
+    pendingTreeOpenId.current = placed.note.id
+    onOpenNote(placed.note.id)
   }
 
-  function handleNoteContextMenu(note: NoteSummary, event: MouseEvent<HTMLButtonElement>) {
+  function handleNoteContextMenu(placed: PlacedNote, event: MouseEvent<HTMLButtonElement>) {
     event.preventDefault()
-    syncNoteCollection(note)
-    if (!selectedNoteIds.has(note.id)) selectSingle(note.id)
-    setContextMenu({ x: event.clientX, y: event.clientY, noteId: note.id })
+    onSelectNoteCollection?.(placed.collectionId)
+    if (!selectedKeys.has(placed.key)) selectSingle(placed.key)
+    setContextMenu({ x: event.clientX, y: event.clientY, key: placed.key })
   }
 
-  function requestDeleteNotes(targetNotes: NoteSummary[]) {
+  function requestDeleteNotes(targets: PlacedNote[]) {
     setContextMenu(null)
-    const uniqueNotes = [...new Map(targetNotes.map(note => [note.id, note])).values()]
+    const uniqueNotes = [...new Map(targets.map(placed => [placed.note.id, placed.note])).values()]
     if (uniqueNotes.length === 0) return
     if (uniqueNotes.length === 1 || !onDeleteNotes) {
       uniqueNotes.forEach(note => onDeleteNote(note))
@@ -243,9 +296,9 @@ export default function NotesTree({
     onDeleteNotes(uniqueNotes)
   }
 
-  function requestArchiveNotes(targetNotes: NoteSummary[]) {
+  function requestArchiveNotes(targets: PlacedNote[]) {
     setContextMenu(null)
-    const uniqueNotes = [...new Map(targetNotes.map(note => [note.id, note])).values()]
+    const uniqueNotes = [...new Map(targets.map(placed => [placed.note.id, placed.note])).values()]
     if (uniqueNotes.length === 0) return
     if (uniqueNotes.length === 1 || !onArchiveNotes) {
       uniqueNotes.forEach(note => onArchiveNote(note))
@@ -262,14 +315,23 @@ export default function NotesTree({
       onDragEnd={handleDragEnd}
       onDragCancel={() => setActiveDrag(null)}
     >
-      <RootDropZone visible={showCollectionGaps} />
+      {hoistRoot && (
+        <HoistBar name={hoistRoot.name} onExit={canExitHoist ? () => onHoist(null) : null} />
+      )}
+      {/* Hoisted, "top level" is the hoist root itself. Offering the root strip
+          would let a drag move a folder to a place the current view cannot
+          show — a silent disappearance rather than a move. */}
+      <RootDropZone visible={showCollectionGaps && !hoistRoot} />
       <CollectionTree
         nodes={collectionTree}
         parentId={null}
+        hoistedRootLevel={Boolean(hoistRoot)}
+        canExitHoist={canExitHoist}
+        onHoist={onHoist}
         notesByCollection={notesByCollection}
         selectedId={selectedCollectionId}
         activeNoteId={activeNoteId}
-        selectedNoteIds={selectedNoteIds}
+        selectedKeys={selectedKeys}
         collapsed={collapsedCollectionIds}
         invalidDropTargetIds={invalidDropTargetIds}
         showCollectionGaps={showCollectionGaps}
@@ -278,7 +340,7 @@ export default function NotesTree({
         onSelect={handleCollectionSelect}
         onNoteClick={handleNoteClick}
         onNoteContextMenu={handleNoteContextMenu}
-        onDeleteNotes={note => requestDeleteNotes(notesForAction(note))}
+        onDeleteNotes={placed => requestDeleteNotes(placementsForAction(placed))}
         titleFor={resolveNoteTitle}
         onCreateChild={onCreateChild}
         onRename={onRename}
@@ -287,18 +349,50 @@ export default function NotesTree({
         onDelete={onDeleteCollection}
       />
       <TreeContextMenu
-        label={contextMenuNotes.length > 1 ? 'Selected notes' : contextMenuNotes[0]?.title ?? 'Note'}
-        archiveLabel={contextMenuNotes.length > 1 ? `Archive ${contextMenuNotes.length} notes` : 'Archive'}
-        deleteLabel={contextMenuNotes.length > 1 ? `Delete ${contextMenuNotes.length} notes` : 'Delete'}
+        label={contextMenuPlacements.length > 1 ? 'Selected notes' : contextMenuPlacements[0]?.note.title ?? 'Note'}
+        archiveLabel={contextMenuPlacements.length > 1 ? `Archive ${contextMenuPlacements.length} notes` : 'Archive'}
+        deleteLabel={contextMenuPlacements.length > 1 ? `Delete ${contextMenuPlacements.length} notes` : 'Delete'}
         position={contextMenu}
         onClose={() => setContextMenu(null)}
-        onArchive={() => requestArchiveNotes(contextMenuNotes)}
-        onDelete={() => requestDeleteNotes(contextMenuNotes)}
+        onArchive={() => requestArchiveNotes(contextMenuPlacements)}
+        onDelete={() => requestDeleteNotes(contextMenuPlacements)}
+        // Offered only on a note that is in more than one folder, and only for
+        // a single row: taking a note out of its last folder is deleting it.
+        onRemovePlacement={
+          onRemovePlacement
+            && contextMenuPlacements.length === 1
+            && contextMenuTarget
+            && contextMenuTarget.note.placements.length > 1
+            ? () => onRemovePlacement(contextMenuTarget.note.id, contextMenuTarget.collectionId)
+            : undefined
+        }
       />
       <DragOverlay dropAnimation={{ duration: 150, easing: 'ease-out' }}>
-        {activeDrag && <DragPreview source={activeDrag} titleFor={resolveNoteTitle} />}
+        {activeDrag && <DragPreview source={activeDrag} titleFor={resolveNoteTitle} additive={additiveDrop} />}
       </DragOverlay>
     </DndContext>
+  )
+}
+
+/** Says where you are while hoisted, and — where there is somewhere to go back
+ * to — is the way out. */
+function HoistBar({ name, onExit }: { name: string; onExit: (() => void) | null }) {
+  return (
+    <div className="mb-1 flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-[12px]">
+      <Focus className="size-3.5 shrink-0 text-accent-foreground" />
+      <span className="min-w-0 flex-1 truncate font-medium text-accent-foreground" title={name}>{name}</span>
+      {onExit && (
+        <button
+          type="button"
+          onClick={onExit}
+          aria-label={`Exit focus on ${name}`}
+          title="Exit focus"
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background/80 hover:text-foreground"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -321,12 +415,20 @@ function RootDropZone({ visible }: { visible: boolean }) {
   )
 }
 
-function DragPreview({ source, titleFor }: { source: DragSourceData; titleFor: (id: string) => string }) {
-  const label = source.type === 'collection' ? source.collection.name : titleFor(source.note.id)
+function DragPreview({
+  source, titleFor, additive,
+}: { source: DragSourceData; titleFor: (id: string) => string; additive: boolean }) {
+  const label = source.type === 'collection' ? source.collection.name : titleFor(source.placed.note.id)
   return (
     <div className="flex size-full items-center gap-2 overflow-hidden rounded-md border border-border bg-card/90 px-2 text-[13px] opacity-85 shadow-lg backdrop-blur-[1px]">
       {source.type === 'collection' ? <Folder className="size-4 shrink-0" /> : <FileText className="size-3.5 shrink-0 opacity-70" />}
       <span className="truncate">{label}</span>
+      {/* Says which of the two drops this is before the pointer is released. */}
+      {additive && source.type === 'note' && (
+        <span className="ml-auto shrink-0 rounded bg-primary/15 px-1 text-[10px] font-medium text-accent-foreground">
+          + folder
+        </span>
+      )}
     </div>
   )
 }
@@ -353,43 +455,50 @@ function DropGap({ id, data, indent, visible }: { id: string; data: DropTargetDa
 interface CollectionTreeProps {
   nodes: CollectionNode[]
   parentId: string | null
-  notesByCollection: Map<string, NoteSummary[]>
+  notesByCollection: Map<string, PlacedNote[]>
   selectedId: string | null
   activeNoteId: string | undefined
-  selectedNoteIds: Set<string>
+  selectedKeys: Set<string>
   collapsed: Set<string>
   invalidDropTargetIds: Set<string>
   showCollectionGaps: boolean
   showNoteGaps: boolean
   onToggle: (id: string) => void
   onSelect: (id: string) => void
-  onNoteClick: (note: NoteSummary, event: MouseEvent<HTMLButtonElement>) => void
-  onNoteContextMenu: (note: NoteSummary, event: MouseEvent<HTMLButtonElement>) => void
-  onDeleteNotes: (note: NoteSummary) => void
+  onNoteClick: (placed: PlacedNote, event: MouseEvent<HTMLButtonElement>) => void
+  onNoteContextMenu: (placed: PlacedNote, event: MouseEvent<HTMLButtonElement>) => void
+  onDeleteNotes: (placed: PlacedNote) => void
   titleFor: (id: string) => string
   onCreateChild: (collection: NoteCollection) => void
   onRename: (collection: NoteCollection) => void
   onMove: (collection: NoteCollection) => void
   onHide: (collection: NoteCollection) => void
   onDelete: (collection: NoteCollection) => void
+  onHoist: (collectionId: string | null) => void
+  canExitHoist: boolean
+  /** True for the single level that *is* the hoist root: it defines the view,
+   * so it cannot be reordered or reparented from inside it. */
+  hoistedRootLevel?: boolean
   depth?: number
 }
 
 function CollectionTree({
-  nodes, parentId, notesByCollection, selectedId, activeNoteId, selectedNoteIds, collapsed, invalidDropTargetIds,
+  nodes, parentId, notesByCollection, selectedId, activeNoteId, selectedKeys, collapsed, invalidDropTargetIds,
   showCollectionGaps, showNoteGaps,
   onToggle, onSelect, onNoteClick, onNoteContextMenu, onDeleteNotes, titleFor,
-  onCreateChild, onRename, onMove, onHide, onDelete, depth = 0,
+  onCreateChild, onRename, onMove, onHide, onDelete, onHoist, canExitHoist,
+  hoistedRootLevel = false, depth = 0,
 }: CollectionTreeProps) {
   const visualDepth = Math.min(depth, 2)
   const indent = 8 + visualDepth * 14
+  const siblingGapsVisible = showCollectionGaps && !hoistedRootLevel
   return (
     <div>
       <DropGap
         id={`collection-gap:${parentId ?? 'root'}:${nodes[0]?.id ?? 'end'}`}
         data={{ kind: 'collection-gap', parentId, beforeId: nodes[0]?.id ?? null }}
         indent={indent}
-        visible={showCollectionGaps}
+        visible={siblingGapsVisible}
       />
       {nodes.map((node, index) => {
         const active = node.id === selectedId
@@ -408,10 +517,11 @@ function CollectionTree({
                 active={active}
                 indent={indent}
                 protectedCollection={protectedCollection}
-                draggableCollection={draggableCollection}
+                draggableCollection={draggableCollection && !hoistedRootLevel}
                 invalidDropTarget={invalidDropTargetIds.has(node.id)}
                 hasChildren={hasChildren}
                 expanded={expanded}
+                isHoistRoot={hoistedRootLevel}
                 onToggle={() => onToggle(node.id)}
                 onSelect={() => onSelect(node.id)}
                 onCreateChild={() => onCreateChild(node)}
@@ -419,6 +529,9 @@ function CollectionTree({
                 onMove={() => onMove(node)}
                 onHide={() => onHide(node)}
                 onDelete={() => onDelete(node)}
+                // The hoist root's own menu offers the way out, unless the
+                // surface pins it and there is nowhere to leave to.
+                onHoist={hoistedRootLevel && !canExitHoist ? null : () => onHoist(hoistedRootLevel ? null : node.id)}
               />
               {expanded && (
                 <div className="mt-1">
@@ -429,7 +542,7 @@ function CollectionTree({
                       notesByCollection={notesByCollection}
                       selectedId={selectedId}
                       activeNoteId={activeNoteId}
-                      selectedNoteIds={selectedNoteIds}
+                      selectedKeys={selectedKeys}
                       collapsed={collapsed}
                       invalidDropTargetIds={invalidDropTargetIds}
                       showCollectionGaps={showCollectionGaps}
@@ -445,33 +558,35 @@ function CollectionTree({
                       onMove={onMove}
                       onHide={onHide}
                       onDelete={onDelete}
+                      onHoist={onHoist}
+                      canExitHoist={canExitHoist}
                       depth={depth + 1}
                     />
                   )}
                   <DropGap
-                    id={`note-gap:${node.id}:${childNotes[0]?.id ?? 'end'}`}
-                    data={{ kind: 'note-gap', collectionId: node.id, beforeId: childNotes[0]?.id ?? null }}
+                    id={`note-gap:${node.id}:${childNotes[0]?.note.id ?? 'end'}`}
+                    data={{ kind: 'note-gap', collectionId: node.id, beforeId: childNotes[0]?.note.id ?? null }}
                     indent={indent + 26}
                     visible={showNoteGaps}
                   />
-                  {childNotes.map((note, noteIndex) => {
-                    const nextNote = childNotes[noteIndex + 1]
+                  {childNotes.map((placed, noteIndex) => {
+                    const nextPlaced = childNotes[noteIndex + 1]
                     return (
-                      <Fragment key={note.id}>
+                      <Fragment key={placed.key}>
                         <NoteTreeItem
-                          note={note}
-                          title={titleFor(note.id)}
-                          active={note.id === activeNoteId}
-                          selected={selectedNoteIds.has(note.id)}
-                          muted={note.status === 'archived'}
-                          onClick={event => onNoteClick(note, event)}
-                          onContextMenu={event => onNoteContextMenu(note, event)}
-                          onDelete={() => onDeleteNotes(note)}
+                          placed={placed}
+                          title={titleFor(placed.note.id)}
+                          active={placed.note.id === activeNoteId}
+                          selected={selectedKeys.has(placed.key)}
+                          muted={placed.note.status === 'archived'}
+                          onClick={event => onNoteClick(placed, event)}
+                          onContextMenu={event => onNoteContextMenu(placed, event)}
+                          onDelete={() => onDeleteNotes(placed)}
                           indent={indent + 26}
                         />
                         <DropGap
-                          id={`note-gap:${node.id}:${nextNote?.id ?? 'end'}`}
-                          data={{ kind: 'note-gap', collectionId: node.id, beforeId: nextNote?.id ?? null }}
+                          id={`note-gap:${node.id}:${nextPlaced?.note.id ?? 'end'}`}
+                          data={{ kind: 'note-gap', collectionId: node.id, beforeId: nextPlaced?.note.id ?? null }}
                           indent={indent + 26}
                           visible={showNoteGaps}
                         />
@@ -485,7 +600,7 @@ function CollectionTree({
               id={`collection-gap:${parentId ?? 'root'}:${nextSibling?.id ?? 'end'}`}
               data={{ kind: 'collection-gap', parentId, beforeId: nextSibling?.id ?? null }}
               indent={indent}
-              visible={showCollectionGaps}
+              visible={siblingGapsVisible}
             />
           </Fragment>
         )
@@ -503,6 +618,7 @@ interface FolderRowProps {
   invalidDropTarget: boolean
   hasChildren: boolean
   expanded: boolean
+  isHoistRoot: boolean
   onToggle: () => void
   onSelect: () => void
   onCreateChild: () => void
@@ -510,6 +626,7 @@ interface FolderRowProps {
   onMove: () => void
   onHide: () => void
   onDelete: () => void
+  onHoist: (() => void) | null
 }
 
 /** Folder action protection and drag policy are intentionally separate:
@@ -517,7 +634,7 @@ interface FolderRowProps {
  * freely, while fixed collection roots cannot move. */
 function FolderRow({
   node, active, indent, protectedCollection, draggableCollection, invalidDropTarget, hasChildren, expanded,
-  onToggle, onSelect, onCreateChild, onRename, onMove, onHide, onDelete,
+  isHoistRoot, onToggle, onSelect, onCreateChild, onRename, onMove, onHide, onDelete, onHoist,
 }: FolderRowProps) {
   const draggable = useDraggable({
     id: `collection:${node.id}`,
@@ -529,6 +646,7 @@ function FolderRow({
     data: { kind: 'into-collection', collectionId: node.id } satisfies DropTargetData,
   })
   const showsDropHighlight = droppable.isOver && !invalidDropTarget
+  const workspaceRoot = node.system_role === 'project'
 
   return (
     <div
@@ -563,9 +681,14 @@ function FolderRow({
         {...draggable.attributes}
         onClick={onSelect}
         className="min-w-0 flex-1 flex items-center gap-2 py-1.5 text-left"
-        title={node.name}
+        title={workspaceRoot ? `${node.name} · Project workspace` : node.name}
       >
-        <Folder className="size-4 shrink-0" />
+        {/* A Project's folder is a workspace root: hoisting into it is what
+            turns this tree into that Project's notes surface. Marked so a user
+            can see where hoisting is meaningful before trying it. */}
+        {workspaceRoot
+          ? <FolderTree className="size-4 shrink-0 text-accent-foreground" />
+          : <Folder className="size-4 shrink-0" />}
         <span className="truncate">{node.name}</span>
       </button>
       <DropdownMenu>
@@ -579,6 +702,21 @@ function FolderRow({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {/* NF: navigation both ways. The Notebook already links a note back
+              to its place in this tree ("Open in Notes"); this is the return
+              trip, so a project-backed folder is not a dead end. */}
+          {node.project_id && (
+            <DropdownMenuItem asChild>
+              <Link to={`/projects/${node.project_id}/research`}>
+                <ExternalLink className="size-4" /> Open project
+              </Link>
+            </DropdownMenuItem>
+          )}
+          {onHoist && (
+            <DropdownMenuItem onSelect={onHoist}>
+              <Focus className="size-4" /> {isHoistRoot ? 'Exit focus' : 'Focus on this folder'}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={onCreateChild}>
             <FolderPlus className="size-4" /> New child folder
           </DropdownMenuItem>
@@ -608,9 +746,9 @@ function FolderRow({
 }
 
 function NoteTreeItem({
-  note, title, active, selected, muted, onClick, onContextMenu, onDelete, indent,
+  placed, title, active, selected, muted, onClick, onContextMenu, onDelete, indent,
 }: {
-  note: NoteSummary
+  placed: PlacedNote
   title: string
   active: boolean
   selected: boolean
@@ -620,10 +758,13 @@ function NoteTreeItem({
   onDelete: () => void
   indent: number
 }) {
+  // Keyed by placement, not by note: the same note in two folders is two
+  // draggables, and dnd-kit would otherwise see one id in two places.
   const draggable = useDraggable({
-    id: `note:${note.id}`,
-    data: { type: 'note', note } satisfies DragSourceData,
+    id: `note:${placed.key}`,
+    data: { type: 'note', placed } satisfies DragSourceData,
   })
+  const placementCount = placed.note.placements.length
 
   return (
     <button
@@ -639,7 +780,7 @@ function NoteTreeItem({
         event.preventDefault()
         onDelete()
       }}
-      title={title}
+      title={placementCount > 1 ? `${title} · also in ${placementCount - 1} other folder${placementCount > 2 ? 's' : ''}` : title}
       style={{ paddingLeft: indent }}
       className={cn(
         'mx-1 mb-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-md py-1 pr-2 text-[13px] transition-colors',
@@ -654,6 +795,11 @@ function NoteTreeItem({
     >
       <FileText className="size-3.5 shrink-0 opacity-70" />
       <span className="truncate">{title}</span>
+      {/* A note that appears elsewhere too — editing it here changes it there,
+          and that is worth knowing before typing rather than after. */}
+      {placementCount > 1 && (
+        <Copy className="ml-auto size-3 shrink-0 opacity-60" aria-hidden />
+      )}
     </button>
   )
 }

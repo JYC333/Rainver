@@ -19,8 +19,8 @@
 ├─────────────────────────────────────────────────────┤
 │  10. Runtime Adapter / Sandbox Layer                 │
 │     RuntimeAdapterSpec, GenericCliRuntimeAdapter     │
-│     ContextCompiler, worktree/sandbox governance     │
-│     server/src/modules/runtimeAdapters + runs │
+│     typed Delivery, worktree/sandbox governance     │
+│     server/src/modules/runtimeContext + runs         │
 ├─────────────────────────────────────────────────────┤
 │  10b. Deployment Layer                               │
 │     DeployerClient → Unix socket → host deployer    │
@@ -54,8 +54,8 @@
 ├─────────────────────────────────────────────────────┤
 │   4. Memory Layer                                    │
 │     Scoped long-term context (not raw data)         │
-│     ContextBuilder, MemoryStore, evolution signals  │
-│     server/src/modules/memory + context       │
+│     MemoryStore, typed acquisition, evolution       │
+│     server/src/modules/memory + runtimeContext       │
 ├─────────────────────────────────────────────────────┤
 │   3. Activity Layer                                  │
 │     Raw inputs: user_input, web_capture, file_import │
@@ -79,11 +79,15 @@
 - **space_id** — every record carries it; the primary isolation boundary
 - **Run is the central execution object** — every agent invocation creates a Run; Run produces Activities, Artifacts, and Proposals; Session is conversation-level, Run is execution-level
 - **Proposal gate** — memory and code changes require explicit proposal approval before durable mutation
-- **Runtime-agnostic core** — Agent is a product-level actor; Runtime Adapter (capability, model_api, claude_code, codex_cli, opencode, ...) is a replaceable execution backend; Model Provider (Anthropic, OpenAI, litellm) is the underlying LLM. These three are distinct. Tool-using / filesystem Claude work goes through the `claude_code` CLI RuntimeAdapterSpec. Per ADR 0008 the governing invariant is **credential channel isolation** — an Anthropic API key must never enter a Claude Code CLI subprocess env; the in-process encrypted API channel (reflector, `/providers/chat`, `model_api`) passes the key as a litellm parameter (never via env) and may serve any provider including Anthropic.
+- **Runtime-agnostic core** — Agent is a product-level actor; Runtime Adapter (capability, model_api, claude_code, codex_cli, opencode, ...) is a replaceable execution backend; Model Provider (Anthropic, OpenAI, litellm) is the underlying LLM. These three are distinct. Tool-using / filesystem Claude work goes through the `claude_code` CLI RuntimeAdapterSpec. Per ADR 0008 the governing invariant is **credential channel isolation** — an Anthropic API key must never enter a Claude Code CLI subprocess env; server-owned encrypted Provider task and `model_api` channels resolve the key in process (never via ambient CLI env) and may serve any provider including Anthropic. Agent-facing model calls require Runtime Context Delivery rather than a public Provider Chat bypass.
 - **Sandbox enforcement** — file-access local CLI runtimes (`claude_code`, `codex_cli`) always run sandboxed (never `none`/`dry_run`). The working-directory scope is resolved from Project Folder binding + risk: no Folder bound → `ephemeral` (a system-provisioned throwaway run-scope dir, server-owned); Folder bound → `risk_level=high` → `worktree` (detached git worktree, diff → `code_patch` proposal). The agent never works directly in the real Project Folder. See `modules/sandbox.md`.
-- **ContextCompiler** — vendor files (CLAUDE.md, AGENTS.md, prompt.md, and adapter sidecars such as Agent Persona Prompt `SOUL.md`) are compiled artefacts written to the sandbox, never source of truth; security scanning, token budgets, and `.agent/` progressive loading enforced at compile time
-- **ContextSnapshot** — frozen ContextPackage saved at run-start; immutable; stored in `context_snapshots` for audit
-- **ContextAttachment** — structured context references (file, git_diff, memory_entry, etc.) resolved and scanned by ContextBuilder
+- **Runtime Context Gateway** — the sole typed acquisition, model-aware planning,
+  ordered Delivery, live reauthorization, safe Invocation Snapshot, and
+  continuity boundary for managed and CLI invocations
+- **Invocation Snapshot** — immutable safe record of one actual Delivery attempt;
+  stores refs, hashes, budget and acknowledgement metadata, never raw context
+- **Run Exchange** — runtime-neutral typed input/output manifests for declared
+  file outputs; it is not a context transport
 - **MemoryProvider** — abstract interface for memory backends; `LocalMemoryProvider` is the only enabled provider in MVP
 - **Module registry** — `server/src/gateway/routeRegistry.ts` (backend) and `apps/web/src/modules/registry.ts` (frontend) are the single sources of truth for which features are active; see [ADR 0006](decisions/0006-plugin-module-architecture.md)
 - **Client-server protocol** — REST (current) + WebSocket events + SSE streaming (planned)

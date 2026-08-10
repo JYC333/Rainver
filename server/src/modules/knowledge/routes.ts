@@ -7,10 +7,10 @@ import type {
   RelationDiscoveryScanRequest,
   ObjectSchemaImportRequest,
   ObjectSchemaSuggestionScanRequest,
-  SpaceObjectKindCreateProposalRequest,
-  SpaceObjectKindListRequest,
-  SpaceObjectKindStatusProposalRequest,
-  SpaceObjectKindUpdateProposalRequest,
+  SpaceObjectProfileCreateProposalRequest,
+  SpaceObjectProfileListRequest,
+  SpaceObjectProfileStatusProposalRequest,
+  SpaceObjectProfileUpdateProposalRequest,
   RetrievalCalibrationDecisionRequest,
   RetrievalCreateSafetyRequest,
   RetrievalEvalDiagnosticsReportRequest,
@@ -23,6 +23,7 @@ import type {
 import type { ServerConfig } from "../../config";
 import type { ModuleContext } from "../../gateway/routeRegistry";
 import {
+  csvQuery,
   dbPool,
   HttpError,
   jsonBody,
@@ -31,12 +32,17 @@ import {
   parsePage,
   params,
   query,
+  requiredString,
   resolveIdentity,
   sendRouteError,
   withDbTransaction,
 } from "../routeUtils/common";
 import { requireSpaceOwnerOrAdmin } from "../routeUtils/access";
 import { isSpaceOwnerOrAdmin } from "../access/roles";
+import {
+  applyContentCreationContext,
+  resolveContentCreationContext,
+} from "../access/creationContext";
 import { authRepositoryFromConfig } from "../auth/identity";
 import { PgKnowledgeRepository } from "./repository";
 import { parseNotesTreeReorder, persistNotesTreeReorder } from "./notesTreeReorder";
@@ -65,7 +71,7 @@ import {
 import {
   persistObjectSchemaSuggestionReportArtifact,
   scanObjectSchemaSuggestions,
-} from "./objectSchemaSuggestions";
+} from "../ontology/objectSchemaSuggestions";
 import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings";
 import { canInitiateContextOpsScan, canReviewSpaceOpsPackets } from "../contextOps/reviewPolicy";
 import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job";
@@ -138,7 +144,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         query: body.query,
         objectTypes: body.object_types,
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         maxResults: controls.maxResults,
         includeTrace: controls.includeTrace,
         feedbackSurface: "knowledge_search",
@@ -197,7 +203,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         query: body.query,
         objectTypes: body.object_types,
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         maxResults,
         includeTrace,
         mode,
@@ -214,7 +220,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           projectId: null,
           query: body.query,
           objectTypes: body.object_types,
-          objectKinds: body.object_kinds,
+          objectProfiles: body.object_profiles,
           maxResults,
           includeTrace,
           mode,
@@ -859,21 +865,21 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get("/api/v1/knowledge/object-schema/kinds", async (request, reply) => {
+  app.get("/api/v1/knowledge/object-schema/profiles", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       const protocol = await loadProtocol();
       const q = query(request);
       const { limit, offset } = parsePage(q);
-      const body = parseSpaceObjectKindListRequest(protocol.SpaceObjectKindListRequestSchema, {
+      const body = parseSpaceObjectProfileListRequest(protocol.SpaceObjectProfileListRequestSchema, {
         ...(optionalString(q.base_object_type) ? { base_object_type: optionalString(q.base_object_type) } : {}),
         ...(optionalString(q.status) ? { status: optionalString(q.status) } : {}),
         limit,
         offset,
       });
       return reply.send(
-        await repository().listObjectKinds(identity, {
+        await repository().listObjectProfiles(identity, {
           baseObjectType: body.base_object_type ?? null,
           status: body.status ?? null,
           limit: body.limit,
@@ -885,11 +891,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get("/api/v1/knowledge/object-schema/kinds/:kindId", async (request, reply) => {
+  app.get("/api/v1/knowledge/object-schema/profiles/:profileId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const kind = await repository().getObjectKind(identity, params(request).kindId ?? "");
+      const kind = await repository().getObjectProfile(identity, params(request).profileId ?? "");
       if (!kind) return reply.code(404).send({ detail: "Object kind not found" });
       return reply.send(kind);
     } catch (error) {
@@ -918,8 +924,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         protocol.ObjectSchemaImportRequestSchema,
         jsonBody(request),
       );
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        wholeSpace: true,
+      });
+      const creationIdentity = { spaceId: creation.spaceId, userId: identity.userId };
       const result = await withDbTransaction(dbPool(context.config), (client) =>
-        new PgKnowledgeRepository(client).importObjectSchemaManifest(identity, body),
+        new PgKnowledgeRepository(client).importObjectSchemaManifest(creationIdentity, body),
       );
       return reply.code(202).send(result);
     } catch (error) {
@@ -967,71 +979,79 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/knowledge/object-schema/kinds/proposals", async (request, reply) => {
+  app.post("/api/v1/knowledge/object-schema/profiles/proposals", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
       const protocol = await loadProtocol();
-      const body = parseSpaceObjectKindCreateProposalRequest(
-        protocol.SpaceObjectKindCreateProposalRequestSchema,
+      const body = parseSpaceObjectProfileCreateProposalRequest(
+        protocol.SpaceObjectProfileCreateProposalRequestSchema,
         jsonBody(request),
       );
-      return reply.code(202).send(await repository().proposeObjectKindCreate(identity, body));
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        wholeSpace: true,
+      });
+      return reply.code(202).send(await repository().proposeObjectProfileCreate(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        body,
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.patch("/api/v1/knowledge/object-schema/kinds/:kindId/proposals", async (request, reply) => {
+  app.patch("/api/v1/knowledge/object-schema/profiles/:profileId/proposals", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
       const protocol = await loadProtocol();
-      const body = parseSpaceObjectKindUpdateProposalRequest(
-        protocol.SpaceObjectKindUpdateProposalRequestSchema,
+      const body = parseSpaceObjectProfileUpdateProposalRequest(
+        protocol.SpaceObjectProfileUpdateProposalRequestSchema,
         jsonBody(request),
       );
       return reply
         .code(202)
-        .send(await repository().proposeObjectKindUpdate(identity, params(request).kindId ?? "", body));
+        .send(await repository().proposeObjectProfileUpdate(identity, params(request).profileId ?? "", body));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.post("/api/v1/knowledge/object-schema/kinds/:kindId/deprecate-proposals", async (request, reply) => {
+  app.post("/api/v1/knowledge/object-schema/profiles/:profileId/deprecate-proposals", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
       const protocol = await loadProtocol();
-      const body = parseSpaceObjectKindStatusProposalRequest(
-        protocol.SpaceObjectKindStatusProposalRequestSchema,
+      const body = parseSpaceObjectProfileStatusProposalRequest(
+        protocol.SpaceObjectProfileStatusProposalRequestSchema,
         jsonBody(request),
       );
       return reply
         .code(202)
-        .send(await repository().proposeObjectKindDeprecate(identity, params(request).kindId ?? "", body));
+        .send(await repository().proposeObjectProfileDeprecate(identity, params(request).profileId ?? "", body));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.delete("/api/v1/knowledge/object-schema/kinds/:kindId", async (request, reply) => {
+  app.delete("/api/v1/knowledge/object-schema/profiles/:profileId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
       const protocol = await loadProtocol();
-      const body = parseSpaceObjectKindStatusProposalRequest(
-        protocol.SpaceObjectKindStatusProposalRequestSchema,
+      const body = parseSpaceObjectProfileStatusProposalRequest(
+        protocol.SpaceObjectProfileStatusProposalRequestSchema,
         jsonBody(request),
       );
       return reply
         .code(202)
-        .send(await repository().proposeObjectKindArchive(identity, params(request).kindId ?? "", body));
+        .send(await repository().proposeObjectProfileArchive(identity, params(request).profileId ?? "", body));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1064,7 +1084,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(202).send(await repository().proposeCreate(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.code(202).send(await repository().proposeCreate(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1156,7 +1185,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(202).send(await repository().proposeClaimCreate(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.code(202).send(await repository().proposeClaimCreate(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1274,7 +1312,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(await repository().createSource(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.code(201).send(await repository().createSource(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1378,10 +1425,29 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           status: optionalString(q.status),
           projectId: optionalString(q.project_id),
           collectionId: optionalString(q.collection_id),
+          collectionIds: csvQuery(q.collection_ids),
           q: optionalString(q.q),
           limit,
           offset,
         }),
+      );
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  /**
+   * The Project's notes folder, created on first use. The Project notes surface
+   * is hoisted to it, so it has to exist before the surface can show anything —
+   * and it is no longer the Research Area's to create, since notes are a
+   * Project-level surface reachable from every Area.
+   */
+  app.post("/api/v1/notes/collections/project/:projectId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(
+        await repository().ensureProjectNotesCollection(identity, params(request).projectId ?? ""),
       );
     } catch (error) {
       return sendRouteError(reply, error);
@@ -1452,7 +1518,46 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(await repository().createNote(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.primary_project_id),
+      });
+      return reply.code(201).send(await repository().createNote(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        {
+          ...body,
+          primary_project_id: creation.projectId,
+          visibility: creation.visibility,
+        },
+      ));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // N7: "jot a note" from an evidence or material card. Creates (or appends
+  // to) a note and makes the note_link in one call, so the connection is
+  // recorded without a trip to the Notes page and back for an id.
+  app.post("/api/v1/knowledge/notes/jot", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.code(201).send(await repository().jotNoteForObject(identity, jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // The reverse of a jot: what notes cite this object. The note backlinks
+  // route cannot answer it — that one is note-keyed on both sides.
+  app.get("/api/v1/knowledge/objects/:objectId/note-links", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const objectId = params(request).objectId ?? "";
+      return reply.send(await repository().notesLinkingToObject(identity, objectId));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1501,6 +1606,103 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.send(await repository().deleteNote(identity, params(request).noteId ?? ""));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  /**
+   * Placements (U5). A note may sit in several folders at once; adding one is a
+   * separate action from moving the note, and removing the last one is refused
+   * rather than quietly leaving a note no tree can reach.
+   */
+  app.post("/api/v1/knowledge/notes/:noteId/placements", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const body = jsonBody(request);
+      return reply.status(201).send(
+        await repository().addNotePlacement(
+          identity,
+          params(request).noteId ?? "",
+          requiredString(body.collection_id, "collection_id"),
+          body.share_with_project === true,
+        ),
+      );
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.delete("/api/v1/knowledge/notes/:noteId/placements/:collectionId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const routeParams = params(request);
+      return reply.send(
+        await repository().removeNotePlacement(
+          identity,
+          routeParams.noteId ?? "",
+          routeParams.collectionId ?? "",
+        ),
+      );
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  /**
+   * Cross-Project shares (U8). Listing is gated by the note's own read gate, so
+   * a caller who cannot see the note cannot learn which Projects can.
+   */
+  app.get("/api/v1/knowledge/notes/:noteId/shares", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await repository().listNoteProjectShares(identity, params(request).noteId ?? ""));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.delete("/api/v1/knowledge/notes/:noteId/shares/:projectId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const routeParams = params(request);
+      return reply.send(
+        await repository().revokeNoteProjectShare(
+          identity,
+          routeParams.noteId ?? "",
+          routeParams.projectId ?? "",
+        ),
+      );
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // ND: promote a selected passage into a Knowledge Item. Builds an ordinary
+  // knowledge_create proposal — the review gate is unchanged — and records the
+  // originating Note as provenance.
+  app.post("/api/v1/knowledge/notes/:noteId/promote", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const noteId = params(request).noteId ?? "";
+      return reply.code(202).send(await repository().promoteNoteToKnowledge(identity, noteId, jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // The reverse of a promotion: what this note produced.
+  app.get("/api/v1/knowledge/notes/:noteId/promoted", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const noteId = params(request).noteId ?? "";
+      return reply.send(await repository().knowledgeItemsPromotedFromNote(identity, noteId));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -1706,31 +1908,31 @@ function parseRelationDiscoveryScanBody(
   return parseProtocolBody(schema, value);
 }
 
-function parseSpaceObjectKindListRequest(
-  schema: ProtocolSchema<SpaceObjectKindListRequest>,
+function parseSpaceObjectProfileListRequest(
+  schema: ProtocolSchema<SpaceObjectProfileListRequest>,
   value: unknown,
-): SpaceObjectKindListRequest {
+): SpaceObjectProfileListRequest {
   return parseProtocolBody(schema, value);
 }
 
-function parseSpaceObjectKindCreateProposalRequest(
-  schema: ProtocolSchema<SpaceObjectKindCreateProposalRequest>,
+function parseSpaceObjectProfileCreateProposalRequest(
+  schema: ProtocolSchema<SpaceObjectProfileCreateProposalRequest>,
   value: unknown,
-): SpaceObjectKindCreateProposalRequest {
+): SpaceObjectProfileCreateProposalRequest {
   return parseProtocolBody(schema, value);
 }
 
-function parseSpaceObjectKindUpdateProposalRequest(
-  schema: ProtocolSchema<SpaceObjectKindUpdateProposalRequest>,
+function parseSpaceObjectProfileUpdateProposalRequest(
+  schema: ProtocolSchema<SpaceObjectProfileUpdateProposalRequest>,
   value: unknown,
-): SpaceObjectKindUpdateProposalRequest {
+): SpaceObjectProfileUpdateProposalRequest {
   return parseProtocolBody(schema, value);
 }
 
-function parseSpaceObjectKindStatusProposalRequest(
-  schema: ProtocolSchema<SpaceObjectKindStatusProposalRequest>,
+function parseSpaceObjectProfileStatusProposalRequest(
+  schema: ProtocolSchema<SpaceObjectProfileStatusProposalRequest>,
   value: unknown,
-): SpaceObjectKindStatusProposalRequest {
+): SpaceObjectProfileStatusProposalRequest {
   return parseProtocolBody(schema, value);
 }
 

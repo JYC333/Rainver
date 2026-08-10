@@ -1,3 +1,4 @@
+import { registeredEntities } from "../ontology/entities";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
 import { contentResourceDefinition } from "../access/contentAccessRegistry";
 
@@ -6,9 +7,14 @@ const SOURCE_ITEM_ACCESS = contentResourceDefinition("source_item")!;
 const EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const SPACE_OBJECT_ACCESS = contentResourceDefinition("space_object")!;
 
-export function sourceItemReadableClause(itemAlias: string, userParam: string, libraryOnly: boolean): string {
+export function sourceItemReadableClause(
+  itemAlias: string,
+  userParam: string,
+  libraryOnly: boolean,
+  options?: { includeOversight?: boolean },
+): string {
   return `(
-    ${contentReadSql("source_item", itemAlias, userParam)}
+    ${contentReadSql("source_item", itemAlias, userParam, options)}
     AND ${sourceItemConnectionGateClause(itemAlias, userParam, libraryOnly)}
   )`;
 }
@@ -107,9 +113,7 @@ export function evidenceProvenanceReadableClause(evidenceAlias: string, userPara
     AND ${sourceSnapshotReadableForEvidenceClause(evidenceAlias, userParam, requireFull)}
     AND (
       ${evidenceAlias}.source_object_id IS NULL
-      OR ${evidenceAlias}.source_object_type NOT IN (
-        'knowledge_item', 'note', 'source', 'person', 'organization', 'relationship', 'claim'
-      )
+      OR ${evidenceAlias}.source_object_type NOT IN (${ontologyObjectTypeLiterals()})
       OR EXISTS (
         SELECT 1
           FROM space_objects evidence_provenance_object
@@ -132,4 +136,17 @@ export function evidenceEffectiveAccessLevelSql(evidenceAlias: string, userParam
     ${contentAccessLevelSql({ definition: EVIDENCE_ACCESS, alias: evidenceAlias, userExpr: userParam })} = 'full'
     AND ${evidenceProvenanceReadableClause(evidenceAlias, userParam, true)}
     THEN 'full' ELSE 'summary' END)`;
+}
+
+/**
+ * The ontology object types, as SQL literals, for the fail-closed guard below:
+ * if an evidence row points at an ontology object, that object must be readable.
+ * Derived from the registry rather than restated — the restated copy had drifted
+ * to include `relationship`, a type with no entity, no table, and no writer.
+ */
+function ontologyObjectTypeLiterals(): string {
+  return registeredEntities()
+    .filter((entity) => entity.rootEntity === "space_object")
+    .map((entity) => `'${entity.entityType}'`)
+    .join(", ");
 }

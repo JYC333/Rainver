@@ -515,7 +515,7 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
     }
 
     if (!followUpFailed) {
-      toast.success(isHypothesis ? 'Literature scope confirmed' : 'Research question confirmed')
+      toast.success(isHypothesis ? 'Evidence scope confirmed' : 'Research question confirmed')
     }
   }
 
@@ -715,7 +715,7 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
         >
           <div className="mr-8 rounded-lg rounded-tl-sm border border-border bg-background p-3 text-sm">
             {isHypothesis
-              ? 'I can help define the literature scope for this hypothesis. Tell me what evidence would support or challenge it.'
+              ? 'I can help define the evidence scope for this hypothesis. Tell me what evidence would support or challenge it.'
               : 'I can assess this question with the FINER framework and help make it researchable. Start with an assessment or tell me what outcome you have in mind.'}
           </div>
           {messages.map((message, index) => (
@@ -760,7 +760,7 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => void sendMessage(isHypothesis ? 'Assess the literature scope for this hypothesis.' : 'Assess this research question and identify what needs clarification.')}
+              onClick={() => void sendMessage(isHypothesis ? 'Assess the evidence scope for this hypothesis.' : 'Assess this research question and identify what needs clarification.')}
               disabled={refining || !draft.execution.model_provider_id}
             >
               Start assessment

@@ -2,12 +2,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for rescanning a literature intake operation that
 // finished a legitimately (or wrongly) empty backfill. The operation is
@@ -44,6 +45,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-rescan-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -133,17 +135,16 @@ beforeEach(async () => {
      ) VALUES ($1,$2,$3,$4,'Monitor','search','https://export.arxiv.org/api/query','{}'::jsonb,'{}'::jsonb,'fp-a','active','daily',$5,$5)`,
     [CHANNEL, SPACE, CONNECTION, OWNER, now],
   );
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, primary_thread_id, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','screening','active','agent_assisted',$4::jsonb,$5,$6,$6)`,
-    [WORKFLOW, SPACE, PROJECT, JSON.stringify({
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "screening", primaryThreadId: threadScope.thread_id, state: {
       research_question: "Does X improve Y?",
       research_question_version: thread.version,
       thread_scope: [threadScope],
       agent_id: AGENT,
       initial_intake: { max_items: 10 },
-    }), threadScope.thread_id, now],
-  );
+    }, now,
+  });
 });
 
 async function seedPlan(status: string, itemsIngested: number): Promise<void> {
@@ -216,7 +217,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     });
 
     const workflow = await pool.query<{ state_json: { research_question?: string; source_channel_ids?: string[]; initial_intake?: { max_items?: number } } }>(
-      `SELECT state_json FROM project_research_workflows WHERE id=$1`,
+      `SELECT state_json FROM project_research_workflows WHERE object_id=$1`,
       [WORKFLOW],
     );
     expect(workflow.rows[0]!.state_json.research_question).toBe("Does X improve Y?");
@@ -289,7 +290,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     expect(operation.rows[0]!.progress_json.partial).toBe(false);
 
     const workflow = await pool.query<{ state_json: { initial_intake?: { max_items?: number } } }>(
-      `SELECT state_json FROM project_research_workflows WHERE id=$1`,
+      `SELECT state_json FROM project_research_workflows WHERE object_id=$1`,
       [WORKFLOW],
     );
     expect(workflow.rows[0]!.state_json.initial_intake?.max_items).toBe(10);
@@ -370,7 +371,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     expect(operation.rows[0]!.progress_json.history?.max_items).toBe(30);
   });
 
-  it("rejects rescanning before literature monitors have even been resolved", async () => {
+  it("rejects rescanning before source monitors have even been resolved", async () => {
     if (!available || !pool) return;
     await seedOperation("active", "monitor_setup", []);
 
@@ -419,7 +420,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     );
     expect(checkpoint.rows).toHaveLength(0);
     const workflow = await pool.query<{ status: string; current_stage: string }>(
-      `SELECT status, current_stage FROM project_research_workflows WHERE id=$1`,
+      `SELECT status, current_stage FROM project_research_workflows WHERE object_id=$1`,
       [WORKFLOW],
     );
     expect(workflow.rows[0]).toEqual({ status: "paused", current_stage: "initial_intake_setup" });
@@ -427,7 +428,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
 
   it("saves a channel-less draft carrying the refinement assessment", async () => {
     if (!available || !pool) return;
-    await pool.query(`UPDATE project_research_workflows SET status='not_started', current_stage='initial_intake_setup' WHERE id=$1`, [WORKFLOW]);
+    await pool.query(`UPDATE project_research_workflows SET status='not_started', current_stage='initial_intake_setup' WHERE object_id=$1`, [WORKFLOW]);
     const workflow = await new ProjectResearchOrchestrator(pool!, CONFIG).saveInitialIntakeDraft(identity, PROJECT, {
       thread_id: threadScope.thread_id,
       research_question: "How should agents remember?",
@@ -473,7 +474,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       execution: {},
     })).rejects.toMatchObject({
       statusCode: 409,
-      message: "An active research workflow cannot be edited after initial literature intake has started",
+      message: "An active research workflow cannot be edited after initial material intake has started",
     });
 
     const workflows = await pool.query<{ count: number }>(
@@ -488,7 +489,7 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
     await pool.query(
       `UPDATE project_research_workflows
           SET status='not_started', current_stage='initial_intake_setup'
-        WHERE id=$1`,
+        WHERE object_id=$1`,
       [WORKFLOW],
     );
 
@@ -517,18 +518,16 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
   it("enforces one non-archived research workflow per Inquiry Thread in the database", async () => {
     if (!available || !pool) return;
     const now = new Date().toISOString();
-    await expect(pool.query(
-      `INSERT INTO project_research_workflows
-        (id,space_id,project_id,workflow_type,status,mode,state_json,primary_thread_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'literature_review','not_started','autonomous','{}'::jsonb,$4,$5,$5)`,
-      [randomUUID(), SPACE, PROJECT, threadScope.thread_id, now],
-    )).rejects.toMatchObject({ code: "23505" });
+    await expect(insertResearchWorkflowFixture(pool, {
+      id: randomUUID(), spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+      status: "not_started", primaryThreadId: threadScope.thread_id, now,
+    })).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("does not create a new draft after the same Inquiry intake completed", async () => {
     if (!available || !pool) return;
     await pool.query(
-      `UPDATE project_research_workflows SET status='completed', current_stage='completed' WHERE id=$1`,
+      `UPDATE project_research_workflows SET status='completed', current_stage='completed' WHERE object_id=$1`,
       [WORKFLOW],
     );
 

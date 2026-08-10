@@ -1,48 +1,17 @@
 # Hardening Remaining-Work Plan
 
 Date: 2026-07-24
-Status: active small backlog and trigger register
+Status: active small backlog and trigger register.
+Audited 2026-08-08: every remaining claim checked against the code; completed
+runtime-audit findings and obsolete Project/Note items removed, live runtime
+gaps absorbed below, and temporary reports retired.
 
 ## Purpose
 
 Track cross-cutting hardening that is neither owned by the active Project
-cutover nor by the orchestration/evolution backlog. Completed P0 history is
-removed; implementation truth lives in current architecture and code.
-
-## Immediate prerequisite
-
-### Toolchain pinning and compatibility
-
-Complete 2026-07-24. Complete before the broad Project schema/protocol/frontend rename:
-
-- pinned the supported Node version through `engines` (`>=24 <25` in all
-  three `package.json`) and root `.nvmrc` (`24.18.0`), matching the
-  `node:24.18.0-slim` base image in `server/Dockerfile` and
-  `apps/web/Dockerfile` and CI's `node-version-file: .nvmrc`;
-  `server/package.json` engines requirement was originally set to the
-  then-current `node:22.22.2-slim` pin and later moved to 24.18.0 LTS in the
-  same change, including a rebuild/retest of the native `node-pty` addon;
-- aligned React and `@types/react` major versions by upgrading `react` and
-  `react-dom` in `apps/web` from `^18.3.1` to `^19.2.8` (the previously
-  installed `@types/react`/`@types/react-dom` were already `^19.x`, so the
-  runtime was the outlier, not the types); fixed three pre-existing
-  test-only async races (`finance-page.test.tsx`,
-  `InquiryWorkspacePage.test.tsx`) that React 19's scheduling exposed;
-- standardized on npm as the documented package-manager/lockfile policy
-  (matching the `package-lock.json` files, `npm ci` in all Dockerfiles, and
-  CI) and corrected the `packageManager` field in all three `package.json`
-  from a stale, never-actually-used `pnpm@10.32.1` declaration to the
-  `npm@11.16.0` bundled with the pinned Node image; added
-  `engine-strict=true` via `.npmrc` in each package so
-  a Node-version mismatch fails the install instead of only warning;
-- confirmed the supported TypeScript version policy is already consistent:
-  `^7.0.0` (7.0.2 installed) across `server`, `apps/web`, and
-  `packages/protocol`;
-- CI now enforces the pinned Node version through `actions/setup-node`
-  reading `.nvmrc` directly (`node-version-file: .nvmrc`) instead of a
-  second hardcoded value that could drift from it.
-
-This was small risk reduction, not a product feature.
+cutover nor by the orchestration/evolution backlog. Completed history is
+removed rather than kept as a changelog; implementation truth lives in current
+architecture and code, and what a completed item did lives in git.
 
 ## Routed to active plans
 
@@ -67,7 +36,33 @@ These items are not duplicated here:
   [current-focus.md](../tasks/current-focus.md), not here;
 - unrelated Verification Engine, Workflow-lifecycle, and Artifact-provenance
   follow-ups, plus parked ideas →
-  [product-capability-followups-plan.md](product-capability-followups-plan.md).
+  [product-capability-followups-plan.md](product-capability-followups-plan.md);
+- protocol/client type duplication and the drift coverage the 2026-07-24 gate
+  promised →
+  [protocol-client-contract-drift-plan.md](protocol-client-contract-drift-plan.md).
+
+## Acceptance blockers
+
+### Runtime evidence and containment
+
+These are current correctness/containment gaps and therefore also appear in
+`tasks/current-focus.md` as acceptance-readiness work:
+
+- [ ] **Provider fallback mismatch event.** Managed runtime and adapter evidence
+  now preserve the routed Provider as `requested_model_provider_id` and the
+  actual executing Provider/model as `model_provider_id` / `model`. Emit a
+  stable Run event when those Provider ids differ so Operations and routing
+  diagnostics do not have to infer the fallback from terminal metadata.
+- [ ] **Codex internal-agent containment.** `codex_cli` is implemented and
+  enabled by default while its `subagent_disable_mechanism` and
+  `delegation_controllability` are both `unknown`. Either implement a tested
+  runtime configuration that disables internal delegation or make Codex
+  opt-in/default-off until one exists. Existing routing trust gates remain
+  defense in depth, not a substitute for an honest default.
+- [ ] **Explicit managed-tool degradation.** Retrieval/delegation tool fallback
+  now records failed tool summaries, so it is no longer silent. Add a typed
+  degraded/uncertain terminal signal and Run event so downstream evaluation
+  cannot treat a no-tool fallback as a clean equivalent result.
 
 ## Scheduled but not blocking
 
@@ -91,6 +86,31 @@ implemented. This item retains the broader trust/profiling wave after
 controlled smoke, following the same controlled-smoke needs as the active
 acceptance work.
 
+### Personal / team content boundary leftovers
+
+[ADR 0013](../decisions/0013-personal-team-content-boundary.md) is implemented
+and its plan is retired; current-state behavior lives in the ADR and in
+[Security and Access Boundaries](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md).
+Three items were deliberately left open and none blocks single- or two-person
+use, because each needs a real second member before its shape is knowable.
+
+- [ ] **Orphaned `private` rows after a member leaves a Space.** Their owner can
+  no longer read them and no one else ever could, so they are unreachable but
+  still counted, indexed, and backed up. Deleting them destroys content the
+  person may return for; reassigning them hands their private material to
+  someone else. Trigger: a member actually leaves a real shared Space.
+- [ ] **Explicit consent to `oversight_mode` when joining an existing Space.**
+  The mode is immutable and visible to members, but nothing makes a joiner
+  acknowledge it before their content lands under it. Trigger: someone joins a
+  Space they did not create.
+- [ ] **Detail-read auditing beyond the four wired types.**
+  `recordDetailRead` covers Task, Activity, Artifact, and note/`space_object`;
+  Run, Proposal, Agent, Reader annotation, and the Source types still record
+  nothing on a detail read, so a demotion disclosure for those reports no
+  readers even when there were some. Mechanical to extend, but each addition is
+  a write on a read path, so extend on evidence rather than pre-emptively.
+  Trigger: a demotion disclosure for one of those types is actually consulted.
+
 ### Retention and pruning design
 
 Append-only Run/Event/Evolution/usage data and Artifact storage need explicit
@@ -99,51 +119,6 @@ retention semantics. Trigger when the database reaches a few GB, backups exceed
 
 The design must preserve audit obligations, Proposal/Artifact provenance, and
 per-type policy; it cannot be a generic age-based delete job.
-
-### Frontend contract generation
-
-Before the Project clean cutover starts broad protocol/frontend edits, run a
-small feasibility gate:
-
-- inventory whether the affected Project/Folder/Runtime DTOs all have protocol
-  schemas;
-- prove one representative generated/shared type path;
-- estimate the uncovered client-only surface.
-
-If the affected surface is ready, complete generation/sharing before the broad
-rename so the cutover does not hand-edit two authorities. If it is not ready,
-record the exact coverage gap and proceed with matching protocol + frontend
-edits and drift tests. Do not turn the feasibility gate into a speculative
-whole-client rewrite.
-
-After the cutover, full client generation remains triggered by a second real
-contract-drift bug or demonstrated maintenance cost.
-
-**Gate run 2026-07-24 — decision: not ready, proceed with matching manual
-edits.**
-
-- `packages/protocol/src/schemas.ts` has only a minimal `WorkspaceRefSchema`
-  (`{id, name}` pointer). There is no protocol schema for the full Workspace,
-  `working_dirs`, `project_workspaces`, Project Profile, or any other DTO the
-  clean-cutover plan renames.
-- The representative shared-type path is proven and works: 22
-  `apps/web/src` files already import real contracts from
-  `@agent-space/protocol` (e.g. `GraphPage.tsx`, `UsagePage.tsx`,
-  `PublicationsPage.tsx`), and `packages/protocol` typechecks/builds/tests
-  clean standalone. This path is hand-maintained (no codegen tool is wired
-  into the repo), not generated, but it is real and functioning.
-- The uncovered client-only surface is large: `apps/web/src/types/api.ts`
-  alone hand-declares 85+ Workspace/Project/Folder/Runtime/Profile
-  interfaces and type aliases (`Workspace`, `WorkspaceCreateBody`,
-  `ProjectProfileDescriptor`, `AgentRuntimeProfileOut`,
-  `ProjectWorkspaceLinkOut`, etc.) with no protocol counterpart.
-- No frontend/protocol contract-drift test exists yet anywhere in the repo.
-- Building a generation pipeline for this surface from scratch is new
-  tooling, not a small gate — out of scope here. The Project model clean
-  cutover must hand-edit `packages/protocol` and `apps/web/src/types/api.ts`
-  in the same change per renamed entity, and add drift coverage (a test that
-  fails if a protocol DTO and its `apps/web` counterpart diverge) for the
-  entities it touches, rather than assuming generation will do it.
 
 ### Operations runbook consolidation
 

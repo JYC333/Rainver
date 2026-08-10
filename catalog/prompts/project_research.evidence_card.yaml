@@ -1,0 +1,60 @@
+asset_key: project_research.evidence_card
+display_name: Project Research Evidence Card Prompt
+description: Generates concise WHY, HOW, and WHAT cards from deep material analysis.
+content:
+  schema_version: prompt_asset.v1
+  prompt_type: workflow
+  template: |-
+    Project: {project_id}
+
+    For every supplied item, write an item summary with exactly three headings:
+    WHY: why this item matters to the project's research question.
+    HOW: the study design, data, method, and important constraints.
+    WHAT: the central result and the evidence that supports it.
+
+    Each section must be at most 80 words. Derive every statement from the supplied
+    excerpt or extracted text. Preserve the source_item_id and return the enclosing
+    source-post-processing JSON contract exactly; do not add prose outside JSON.
+
+    Valid JSON example (copy this complete structure, replace the example values, and
+    include corresponding entries for every supplied item):
+    {
+      "schema": "source_post_processing.result.v1",
+      "digest_markdown": "A concise cross-item digest grounded in the supplied content.",
+      "item_summaries": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "summary_markdown": "WHY: This item tests recovery after tool failure.\n\nHOW: It evaluates coding agents on controlled benchmark tasks with injected failures.\n\nWHAT: Retry with state inspection improves recovery in the reported setting."
+        }
+      ],
+      "item_decisions": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "relevance": "relevant",
+          "confidence": 0.9,
+          "reason": "The item directly evaluates the project's target phenomenon.",
+          "matched_context_refs": [{"ref": "project-research-question"}]
+        }
+      ],
+      "evidence_candidates": [
+        {
+          "source_item_id": "source-item-id-from-input",
+          "title": "Recovery improves after state inspection",
+          "content_excerpt": "A verbatim or faithful bounded excerpt from the supplied item content.",
+          "confidence": 0.85,
+          "matched_context_refs": [{"ref": "project-research-question"}]
+        }
+      ],
+      "proposal_markdown": ""
+    }
+  variables_schema:
+    type: object
+    required: [project_id]
+    properties:
+      project_id: { type: string }
+  output_schema: {}
+  model_config: {}
+  rendering: { engine: plain }
+  safety:
+    untrusted_data_delimiters: false
+    requires_proposal_for_promotion: false

@@ -4,8 +4,8 @@ import {
   syncProjectCorpusEvidenceForSourceItem,
   syncProjectCorpusForSourceItem,
 } from "./corpusRepository";
-import { materializeAcademicPaperFromSourceItem } from "../academic/paperMaterializer";
 import { lockActiveProjectForMutation } from "./access";
+import { ProjectResearchStandingComparisonService } from "../projectResearch/standingComparisonService";
 
 type ProjectSourceBindingFilterRow = {
   id: string;
@@ -15,14 +15,9 @@ type ProjectSourceBindingFilterRow = {
   priority: number;
   filters_json: unknown;
   collection_notifications_enabled: boolean;
+  standing_comparison_enabled: boolean;
   extraction_policy_json: unknown;
 };
-
-function extractionProfileKey(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const profileKey = (value as Record<string, unknown>).profile_key;
-  return typeof profileKey === "string" && profileKey.trim() ? profileKey.trim() : null;
-}
 
 type SourceItemFilterRow = {
   id: string;
@@ -130,6 +125,7 @@ async function matchingBindingRows(
   const result = await db.query<ProjectSourceBindingFilterRow>(
     `SELECT psb.id, psb.space_id, psb.project_id, psb.source_channel_id,
             psb.priority, psb.filters_json, psb.collection_notifications_enabled,
+            psb.standing_comparison_enabled,
             psb.extraction_policy_json
        FROM project_source_bindings psb
        JOIN projects project
@@ -194,23 +190,6 @@ async function upsertProjectSourceCollectionActivity(
   );
 }
 
-async function bestEffortAcademicPaperMaterialization(
-  db: Queryable,
-  input: { spaceId: string; sourceItemId: string },
-): Promise<void> {
-  const savepoint = "academic_paper_materialization";
-  await db.query(`SAVEPOINT ${savepoint}`);
-  try {
-    await materializeAcademicPaperFromSourceItem(db, input);
-    await db.query(`RELEASE SAVEPOINT ${savepoint}`);
-  } catch (error) {
-    await db.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => undefined);
-    await db.query(`RELEASE SAVEPOINT ${savepoint}`).catch(() => undefined);
-    process.stderr.write(
-      `[academic.paper_materializer] materialization failed (${input.sourceItemId}): ${String((error as Error)?.message ?? error)}\n`,
-    );
-  }
-}
 
 export async function materializeProjectSourceItemLinks(
   db: Queryable,
@@ -260,21 +239,12 @@ async function materializeProjectSourceItemLinksFromPlan(
 ): Promise<{ created: number; reactivated: number; archived: number }> {
   const { item, bindings, projectIds } = plan;
   if (!item || bindings.length === 0) return { created: 0, reactivated: 0, archived: 0 };
-  if (bindings.some((binding) => extractionProfileKey(binding.extraction_policy_json) === "academic_paper_v1")) {
-    // Best-effort: a materialization failure (e.g. a dedupe race between
-    // concurrent connection scans hitting the same arxiv_id) must not fail
-    // the whole scan/extraction job over one item, mirroring the retrieval
-    // reindex helpers in extractionWorker.ts.
-    await bestEffortAcademicPaperMaterialization(db, {
-      spaceId: input.spaceId,
-      sourceItemId: input.sourceItemId,
-    });
-  }
   const now = new Date().toISOString();
   const localDate = now.slice(0, 10);
   let created = 0;
   let reactivated = 0;
   let archived = 0;
+  const standingProjectIds = new Set<string>();
 
   for (const binding of bindings) {
     if (!sourceItemMatchesProjectFilters(item, binding.filters_json)) {
@@ -293,7 +263,13 @@ async function materializeProjectSourceItemLinksFromPlan(
       }
       continue;
     }
-    const result = await db.query<{ was_created: boolean; was_reactivated: boolean }>(
+    const previous = await db.query<{ status: string }>(
+      `SELECT status FROM project_source_item_links
+        WHERE space_id=$1 AND project_id=$2 AND project_source_binding_id=$3 AND source_item_id=$4
+        FOR UPDATE`,
+      [input.spaceId, binding.project_id, binding.id, input.sourceItemId],
+    );
+    const result = await db.query<{ was_created: boolean }>(
       `INSERT INTO project_source_item_links (
          id, space_id, project_id, project_source_binding_id, source_channel_id, source_connection_id,
          source_item_id, status, matched_at, match_reason, created_at, updated_at
@@ -307,8 +283,7 @@ async function materializeProjectSourceItemLinksFromPlan(
                      source_connection_id = EXCLUDED.source_connection_id,
                      match_reason = EXCLUDED.match_reason,
                      updated_at = EXCLUDED.updated_at
-       RETURNING (xmax = 0) AS was_created,
-                 (xmax <> 0 AND project_source_item_links.status = 'active') AS was_reactivated`,
+       RETURNING (xmax = 0) AS was_created`,
       [
         randomUUID(),
         input.spaceId,
@@ -323,8 +298,10 @@ async function materializeProjectSourceItemLinksFromPlan(
         now,
       ],
     );
-    if (result.rows[0]?.was_created) created++;
-    else reactivated++;
+    const wasCreated = result.rows[0]?.was_created === true;
+    const wasReactivated = previous.rows[0]?.status === "archived";
+    if (wasCreated) created++;
+    else if (wasReactivated) reactivated++;
     if (binding.collection_notifications_enabled) {
       await upsertProjectSourceCollectionActivity(db, {
         spaceId: input.spaceId,
@@ -334,6 +311,9 @@ async function materializeProjectSourceItemLinksFromPlan(
         now,
       });
     }
+    if (binding.standing_comparison_enabled && (wasCreated || wasReactivated)) {
+      standingProjectIds.add(binding.project_id);
+    }
   }
 
   for (const projectId of projectIds) {
@@ -341,6 +321,13 @@ async function materializeProjectSourceItemLinksFromPlan(
       spaceId: input.spaceId,
       sourceItemId: input.sourceItemId,
       projectId,
+    });
+  }
+  for (const projectId of standingProjectIds) {
+    await new ProjectResearchStandingComparisonService(db).collect({
+      spaceId: input.spaceId,
+      projectId,
+      sourceItemId: input.sourceItemId,
     });
   }
 

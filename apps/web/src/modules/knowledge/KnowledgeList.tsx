@@ -122,7 +122,7 @@ export default function KnowledgeList({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5 mb-1">
                     <h2 className="font-medium text-sm">{result.title}</h2>
-                    {result.object_kind_label && <Badge variant="secondary">{result.object_kind_label}</Badge>}
+                    {result.object_profile_label && <Badge variant="secondary">{result.object_profile_label}</Badge>}
                     <Badge variant="secondary">{result.evidence.kind}</Badge>
                     <Badge variant="outline">{result.score.toFixed(4)}</Badge>
                   </div>

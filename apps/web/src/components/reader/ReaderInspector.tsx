@@ -15,8 +15,6 @@ import {
 } from 'lucide-react'
 import { annotationCountsByType, openThreadCount, type ReaderAnnotationType } from './readerModel'
 
-type Visibility = 'private' | 'space_shared'
-
 const TYPE_ICONS: Record<ReaderAnnotationType, typeof Highlighter> = {
   highlight: Highlighter,
   comment: MessageSquare,
@@ -30,8 +28,6 @@ interface ReaderInspectorProps {
   selection: TextSelection | null
   selectedAnnotation: ReaderAnnotation | null
   threads: ReaderCommentThread[]
-  createVisibility: Visibility
-  onCreateVisibilityChange: (visibility: Visibility) => void
   createLabel: string
   onCreateLabelChange: (label: string) => void
   commentInputRef: RefObject<HTMLTextAreaElement | null>
@@ -46,8 +42,6 @@ export function ReaderInspector({
   selection,
   selectedAnnotation,
   threads,
-  createVisibility,
-  onCreateVisibilityChange,
   createLabel,
   onCreateLabelChange,
   commentInputRef,
@@ -152,22 +146,6 @@ export function ReaderInspector({
           <blockquote className="text-xs italic border-l-2 pl-2 text-muted-foreground line-clamp-3">
             {selection.quoteText}
           </blockquote>
-          <div className="flex gap-1">
-            <Button
-              variant={createVisibility === 'private' ? 'default' : 'outline'}
-              size="sm" className="h-7 text-xs"
-              onClick={() => onCreateVisibilityChange('private')}
-            >
-              <Lock className="size-3 mr-1" />Private
-            </Button>
-            <Button
-              variant={createVisibility === 'space_shared' ? 'default' : 'outline'}
-              size="sm" className="h-7 text-xs"
-              onClick={() => onCreateVisibilityChange('space_shared')}
-            >
-              <Globe className="size-3 mr-1" />Shared
-            </Button>
-          </div>
           <Input
             className="h-7 text-xs"
             placeholder="Label (optional)"

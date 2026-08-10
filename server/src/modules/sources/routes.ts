@@ -39,6 +39,7 @@ import { SourceBackfillPlanningService } from "./sourceBackfillService";
 import { SourceChannelService } from "./channels/sourceChannelService";
 import { SourceProviderCatalogService } from "./catalog/sourceProviderCatalogService";
 import { SourceQueryPreviewService } from "./sourceQueryPreviewService";
+import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgSourcesRepository(dbPool(context.config), context.config);
@@ -61,9 +62,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      const creationIdentity = { spaceId: creation.spaceId, userId: identity.userId };
+      const gate = await enforceSources(context, creationIdentity, "source.connection.manage", "source_channel");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await channels().create(identity, jsonBody(request)));
+      return reply.code(201).send(await channels().create(
+        creationIdentity,
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -87,6 +98,34 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const q = query(request);
       return reply.send(await channels().list(identity, { status: optionalString(q.status), providerKey: optionalString(q.provider_key) }));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/sources/recommendations", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await channels().listRecommendations(identity));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/sources/recommendations/:channelId/decision", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const decision = requiredString(jsonBody(request).decision, "decision");
+      if (!(["subscribed", "dismissed", "muted"] as string[]).includes(decision)) {
+        throw new HttpError(422, "decision must be subscribed, dismissed, or muted");
+      }
+      return reply.send(await channels().decideRecommendation(
+        identity,
+        params(request).channelId ?? "",
+        decision as "subscribed" | "dismissed" | "muted",
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -304,7 +343,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         query: body.query,
         objectTypes,
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         maxResults: controls.maxResults,
         includeTrace: controls.includeTrace,
         feedbackSurface: "source_search",
@@ -359,7 +398,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         query: body.query,
         objectTypes,
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         maxResults,
         includeTrace,
         mode,
@@ -376,7 +415,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           projectId: null,
           query: body.query,
           objectTypes,
-          objectKinds: body.object_kinds,
+          objectProfiles: body.object_profiles,
           maxResults,
           includeTrace,
           mode,
@@ -697,9 +736,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const gate = await enforceSources(context, identity, "source.item_create", "source_item");
+      const body = jsonBody(request);
+      const connectionId = optionalString(body.connection_id);
+      const creation = connectionId ? null : await resolveContentCreationContext(dbPool(context.config), {
+            userId: identity.userId,
+            requestSpaceId: identity.spaceId,
+            projectId: optionalString(body.project_id),
+          });
+      const creationIdentity = creation
+        ? { spaceId: creation.spaceId, userId: identity.userId }
+        : identity;
+      const gate = await enforceSources(context, creationIdentity, "source.item_create", "source_item");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await repository().createManualUrl(identity, jsonBody(request)));
+      return reply.code(201).send(await repository().createManualUrl(
+        creationIdentity,
+        creation ? applyContentCreationContext(body, creation) : body,
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -805,9 +857,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const gate = await enforceSources(context, identity, "evidence.create", "evidence");
+      const body = jsonBody(request);
+      const hasSource = Boolean(optionalString(body.source_item_id) || optionalString(body.artifact_id));
+      const creation = hasSource ? null : await resolveContentCreationContext(dbPool(context.config), {
+            userId: identity.userId,
+            requestSpaceId: identity.spaceId,
+            projectId: optionalString(body.project_id),
+          });
+      const creationIdentity = creation
+        ? { spaceId: creation.spaceId, userId: identity.userId }
+        : identity;
+      const gate = await enforceSources(context, creationIdentity, "evidence.create", "evidence");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await repository().createEvidence(identity, jsonBody(request)));
+      return reply.code(201).send(await repository().createEvidence(
+        creationIdentity,
+        creation ? applyContentCreationContext(body, creation) : body,
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

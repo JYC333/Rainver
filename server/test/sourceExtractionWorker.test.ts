@@ -206,7 +206,7 @@ describe("SourceExtractionWorker source retention policy", () => {
     expect(String(readerInsert?.params[3])).toContain("\"extraction_method\":\"pdf_text_v1\"");
     expect(String(readerInsert?.params[3])).toContain("Project Research PDF");
     const evidenceInsert = db.calls.find((call) => call.sql.includes("INSERT INTO extracted_evidence"));
-    expect(evidenceInsert?.params[21]).toBe("pdf_text_v1");
+    expect(evidenceInsert?.params[22]).toBe("pdf_text_v1");
   });
 
   it("uses the space download limit when extracting source URLs", async () => {

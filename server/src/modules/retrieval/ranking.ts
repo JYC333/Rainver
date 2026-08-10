@@ -22,7 +22,7 @@ export interface RankingSignalConfig {
   /** Per-object-type multiplier (source/canonical tier). Missing type = 1. */
   sourceTier: Partial<Record<RetrievalObjectType, number>>;
   /** Per relation-type multiplier for graph/relational candidates. Missing type = 1. */
-  relationTypeBoost: Partial<Record<string, number>>;
+  linkTypeBoost: Partial<Record<string, number>>;
   /** Candidate fused score floor before metadata boosts may apply. 0 disables. */
   metadataBoostFloor: number;
   /**
@@ -60,7 +60,7 @@ export interface RankingSignalConfig {
 
 export const DEFAULT_RANKING_SIGNALS: RankingSignalConfig = {
   sourceTier: { knowledge_item: 1.06, project_public_summary: 0.98 },
-  relationTypeBoost: {
+  linkTypeBoost: {
     supports: 1.07,
     references: 1.06,
     derived_from: 1.05,
@@ -111,10 +111,10 @@ export function titlePhraseMatches(title: string, normalizedQuery: string): bool
   return normalizeTextForSearch(title).includes(normalizedQuery);
 }
 
-export function relationTypeForCandidate(candidate: ScoredCandidate): string | null {
+export function linkTypeForCandidate(candidate: ScoredCandidate): string | null {
   if (candidate.evidence.kind !== "graph_neighbor") return null;
-  const relationType = candidate.evidence.field?.trim();
-  return relationType || null;
+  const linkType = candidate.evidence.field?.trim();
+  return linkType || null;
 }
 
 export function metadataBoostsAllowed(
@@ -153,9 +153,9 @@ export function rankingBoost(
       boost *= cfg.nameMatchBoost;
       recordAxis(telemetry, "name_match");
     }
-    const relationType = relationTypeForCandidate(candidate);
-    if (relationType) {
-      const relationBoost = cfg.relationTypeBoost[relationType] ?? 1;
+    const linkType = linkTypeForCandidate(candidate);
+    if (linkType) {
+      const relationBoost = cfg.linkTypeBoost[linkType] ?? 1;
       if (relationBoost !== 1) { boost *= relationBoost; recordAxis(telemetry, "relation_weight"); }
     }
     if (cfg.titlePhraseBoost !== 1 && titlePhraseMatches(candidate.title, normalizedQuery)) {
@@ -217,12 +217,12 @@ export function applyRankingSignals(
     .map((candidate) => {
       const metadataAllowed = metadataBoostsAllowed(candidate, cfg, topScore);
       const titlePhrase = metadataAllowed && cfg.titlePhraseBoost !== 1 && titlePhraseMatches(candidate.title, normalizedQuery);
-      const relationType = metadataAllowed ? relationTypeForCandidate(candidate) : null;
-      const relationWeighted = relationType && (cfg.relationTypeBoost[relationType] ?? 1) !== 1;
+      const linkType = metadataAllowed ? linkTypeForCandidate(candidate) : null;
+      const relationWeighted = linkType && (cfg.linkTypeBoost[linkType] ?? 1) !== 1;
       const matchedFields = [
         ...candidate.matchedFields,
         ...(titlePhrase ? ["title_phrase"] : []),
-        ...(relationWeighted ? [`relation_weight:${relationType}`] : []),
+        ...(relationWeighted ? [`relation_weight:${linkType}`] : []),
       ];
       return {
         ...candidate,

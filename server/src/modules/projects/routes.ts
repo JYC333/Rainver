@@ -112,6 +112,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/projects/:projectId/sources/extraction-profiles", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      return reply.send(await sourceBindings().listExtractionProfiles(identity, requiredString(p.projectId, "project_id")));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/projects/:projectId/sources/health", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -309,7 +320,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         query: body.query,
         objectTypes: ["project_public_summary"],
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         maxResults: controls.maxResults,
         includeTrace: controls.includeTrace,
         feedbackSurface: "project_public_summary_search",
@@ -369,7 +380,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         query: body.query,
         objectTypes: ["project_public_summary"],
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         maxResults,
         includeTrace,
         mode,
@@ -386,7 +397,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           projectId: null,
           query: body.query,
           objectTypes: ["project_public_summary"],
-          objectKinds: body.object_kinds,
+          objectProfiles: body.object_profiles,
           maxResults,
           includeTrace,
           mode,
@@ -699,6 +710,44 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return sendRouteError(reply, error);
     }
   });
+
+  app.post("/api/v1/projects/:projectId/brief-versions/:versionId/submit-review", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { const p = params(request); return reply.send(await kernel().submitBriefForReview(identity, requiredString(p.projectId, "project_id"), requiredString(p.versionId, "version_id"))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.post("/api/v1/projects/:projectId/brief-versions/:versionId/publish", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { const p = params(request); return reply.send(await kernel().publishBrief(identity, requiredString(p.projectId, "project_id"), requiredString(p.versionId, "version_id"))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.get("/api/v1/projects/:projectId/instruction-versions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { return reply.send(await kernel().listInstructionVersions(identity, requiredString(params(request).projectId, "project_id"))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.get("/api/v1/projects/:projectId/instruction-versions/active", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { return reply.send(await kernel().getActiveInstructionVersion(identity, requiredString(params(request).projectId, "project_id"))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.post("/api/v1/projects/:projectId/instruction-versions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { return reply.code(201).send(await kernel().createInstructionVersion(identity, requiredString(params(request).projectId, "project_id"), jsonBody(request))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+
+  for (const [path, publish] of [["submit-review", false], ["publish", true]] as const) {
+    app.post(`/api/v1/projects/:projectId/instruction-versions/:versionId/${path}`, async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+      try { const p = params(request); return reply.send(await kernel().transitionInstruction(identity, requiredString(p.projectId, "project_id"), requiredString(p.versionId, "version_id"), publish)); }
+      catch (error) { return sendRouteError(reply, error); }
+    });
+  }
 
   app.get("/api/v1/projects/:projectId/mode-transitions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

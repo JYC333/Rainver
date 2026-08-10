@@ -225,27 +225,6 @@ export const ProviderChatMessageSchema = z.object({
 });
 export type ProviderChatMessage = z.infer<typeof ProviderChatMessageSchema>;
 
-export const ProviderChatRequestSchema = z.object({
-  provider_id: IdSchema.nullish(),
-  model: z.string().nullish(),
-  messages: z.array(ProviderChatMessageSchema).min(1),
-  system: z.string().nullish(),
-  temperature: z.number().optional(),
-  max_tokens: z.number().int().positive().optional(),
-});
-export type ProviderChatRequest = z.infer<typeof ProviderChatRequestSchema>;
-
-export const ProviderChatResponseSchema = z
-  .object({
-    content: z.string(),
-    provider: z.string(),
-    model: z.string(),
-    usage: z.record(z.unknown()),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-export type ProviderChatResponse = z.infer<typeof ProviderChatResponseSchema>;
-
 /**
  * Public credential-channel metadata. This is not a secret carrier and does not
  * model the encrypted `Credential.secret_ref` value.

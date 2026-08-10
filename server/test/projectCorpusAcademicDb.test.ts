@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ProjectCorpusRepository, syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository";
 import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService";
@@ -35,6 +35,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-corpus-academic-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -161,8 +162,8 @@ async function seedPaperCorpusItem(): Promise<{ objectId: string; sourceItemId: 
   );
   const objectId = randomUUID();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-     VALUES ($1,$2,'source','Paper A','processed',$3,$3)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+     VALUES ($1,$2,'source','Paper A',$3,$3)`,
     [objectId, SPACE, now],
   );
   await pool!.query(
@@ -350,8 +351,8 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     const newObjectId = randomUUID();
     const now = new Date().toISOString();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','New Reference','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','New Reference',$3,$3)`,
       [newObjectId, SPACE, now],
     );
 
@@ -542,9 +543,7 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
 
     const privateObjectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, status, visibility, owner_user_id, created_by_user_id, created_at, updated_at
-       ) VALUES ($1,$2,'source','Private Paper','processed','private',$3,$3,$4,$4)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1,$2,'source','Private Paper','private',$3,$3,$4,$4)`,
       [privateObjectId, SPACE, SAME_SPACE_MEMBER, now],
     );
     await expect(repo().upsert(identity, PROJECT, { object_id: privateObjectId })).rejects.toMatchObject({ statusCode: 422 });
@@ -571,8 +570,8 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
 
     const sharedObjectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Shared Reference','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Shared Reference',$3,$3)`,
       [sharedObjectId, SPACE, now],
     );
     await pool!.query(
@@ -672,8 +671,8 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     const now = new Date().toISOString();
     const objectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Paper B','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper B',$3,$3)`,
       [objectId, SPACE, now],
     );
     await pool!.query(
@@ -725,8 +724,8 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     const newerDecisionAt = new Date(now - 60_000).toISOString();
     const objectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Canonical Paper','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Canonical Paper',$3,$3)`,
       [objectId, SPACE, olderDecisionAt],
     );
     await pool!.query(
@@ -793,8 +792,8 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     const newAt = new Date(now - 60_000).toISOString();
     const objectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Decision Ordering Paper','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Decision Ordering Paper',$3,$3)`,
       [objectId, SPACE, oldAt],
     );
     await pool!.query(
@@ -855,8 +854,8 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     const staleRowUpdatedAt = new Date(now - 180_000).toISOString();
     const objectId = randomUUID();
     await pool!.query(
-      `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-       VALUES ($1,$2,'source','Triage Ordering Paper','processed',$3,$3)`,
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Triage Ordering Paper',$3,$3)`,
       [objectId, SPACE, olderReviewAt],
     );
     await pool!.query(

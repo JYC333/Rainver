@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import * as poolModule from "../src/db/pool";
 import { migrate } from "../src/db/migrator";
 import { runBuiltInSeeds } from "../src/db/seeds";
@@ -35,6 +35,7 @@ beforeAll(async () => {
     await runBuiltInSeeds(pool, { info: () => {} }, CATALOG_ROOT);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[evolution-repository] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)

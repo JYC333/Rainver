@@ -36,9 +36,7 @@ CREATE TABLE public.project_members (
     CONSTRAINT project_members_pkey PRIMARY KEY (id)
 );
 
--- rooms/room_user_members back the Room-conversation lookup path
--- (getRoomConversation), which internal session derivation (condenseSession,
--- etc.) falls back to for a Room-backed session.
+-- rooms/room_user_members back the Room-conversation lookup path.
 
 CREATE TABLE public.rooms (
     id character varying(36) NOT NULL,
@@ -76,33 +74,6 @@ CREATE TABLE public.sessions (
         OR ((room_id IS NULL) AND (user_id IS NOT NULL))
     )
 );
-
-CREATE TABLE public.session_summaries (
-    id character varying(36) NOT NULL,
-    space_id character varying(36) NOT NULL,
-    session_id character varying(36) NOT NULL,
-    user_id character varying(36),
-    version integer NOT NULL,
-    status character varying(32) NOT NULL,
-    summary_text text NOT NULL,
-    source_message_count integer NOT NULL,
-    source_first_message_id character varying(36),
-    source_last_message_id character varying(36),
-    summary_json jsonb,
-    token_estimate_before integer,
-    token_estimate_after integer,
-    condenser_version character varying(64) NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    CONSTRAINT session_summaries_pkey PRIMARY KEY (id),
-    CONSTRAINT ck_session_summaries_status CHECK (
-        ((status)::text = ANY ((ARRAY['active'::character varying, 'superseded'::character varying])::text[]))
-    ),
-    CONSTRAINT uq_session_summaries_session_version UNIQUE (session_id, version)
-);
-
-CREATE UNIQUE INDEX ix_session_summaries_one_active_per_session
-    ON public.session_summaries USING btree (session_id)
-    WHERE ((status)::text = 'active'::text);
 
 CREATE TABLE public.messages (
     id character varying(36) NOT NULL,

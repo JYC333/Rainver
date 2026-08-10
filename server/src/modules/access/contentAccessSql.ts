@@ -1,4 +1,5 @@
 import { projectFolderReadAccessSql } from "../projectFolders/access";
+import type { ContentProjectShareDeclaration } from "../ontology/entities";
 import type { ContentResourceDefinition } from "./contentAccessRegistry";
 import { contentResourceDefinition } from "./contentAccessRegistry";
 import {
@@ -226,7 +227,16 @@ function contentScopeSql(
   const conditions: string[] = [];
   if (definition.projectColumn) {
     const projectExpr = `${alias}.${definition.projectColumn}`;
-    conditions.push(`(${projectExpr} IS NULL OR ${projectReadAccessSql(`${alias}.space_id`, projectExpr, userExpr)})`);
+    // The share term is appended only when the resource declares one. An
+    // undeclared resource must produce the predicate it produced before this
+    // existed — not `OR false`, which would be equivalent but would put a new
+    // branch in every plan for every content read in the system.
+    const sharedSql = definition.projectShare
+      ? ` OR ${projectShareReadAccessSql(definition.projectShare, alias, userExpr)}`
+      : "";
+    conditions.push(
+      `(${projectExpr} IS NULL OR ${projectReadAccessSql(`${alias}.space_id`, projectExpr, userExpr)}${sharedSql})`,
+    );
   }
   if (definition.projectFolderColumn) {
     const projectFolderExpr = `${alias}.${definition.projectFolderColumn}`;
@@ -237,6 +247,51 @@ function contentScopeSql(
     })})`);
   }
   return conditions.length > 0 ? `(${conditions.join(" AND ")})` : "true";
+}
+
+/**
+ * True when the resource is shared into some Project the viewer can read (U8).
+ *
+ * This widens the *scope* half of the gate and nothing else: `visibility`,
+ * `access_level` and `content_access_grants` are separate conjuncts evaluated
+ * after it, so sharing a `private` object into a Project does not make that
+ * Project's members able to read it. A share removes the Project barrier; it is
+ * not a grant.
+ *
+ * Its own table/column aliases are distinct from `projectReadAccessSql`'s
+ * because the two appear as siblings in the same disjunction.
+ */
+function projectShareReadAccessSql(
+  share: ContentProjectShareDeclaration,
+  alias: string,
+  userExpr: string,
+): string {
+  assertSqlIdentifier(share.tableName, "share table");
+  assertSqlIdentifier(share.resourceColumn, "share resource column");
+  assertSqlIdentifier(share.projectColumn, "share project column");
+  assertSqlIdentifier(share.revokedColumn, "share revoked column");
+  return `EXISTS (
+    SELECT 1
+      FROM ${share.tableName} content_share
+      JOIN projects content_share_project
+        ON content_share_project.id = content_share.${share.projectColumn}
+       AND content_share_project.space_id = content_share.space_id
+      JOIN spaces content_share_space ON content_share_space.id = content_share_project.space_id
+      LEFT JOIN project_members content_share_member
+        ON content_share_member.space_id = content_share_project.space_id
+       AND content_share_member.project_id = content_share_project.id
+       AND content_share_member.user_id = ${userExpr}
+       AND content_share_member.status = 'active'
+     WHERE content_share.space_id = ${alias}.space_id
+       AND content_share.${share.resourceColumn} = ${alias}.id
+       AND content_share.${share.revokedColumn} IS NULL
+       AND content_share_project.deleted_at IS NULL
+       AND (
+         content_share_space.type = 'personal'
+         OR content_share_project.owner_user_id = ${userExpr}
+         OR content_share_member.user_id IS NOT NULL
+       )
+  )`;
 }
 
 export function projectReadAccessSql(

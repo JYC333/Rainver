@@ -13,6 +13,10 @@ import {
 } from "../routeUtils/common";
 import { PgTaskRepository } from "./repository";
 import { PgPlanRepository } from "../plans/repository.js";
+import {
+  applyContentCreationContext,
+  resolveContentCreationContext,
+} from "../access/creationContext";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgTaskRepository(dbPool(context.config));
@@ -39,7 +43,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(await repository().createBoard(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.code(201).send(await repository().createBoard(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -85,7 +98,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(await repository().createTask(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.code(201).send(await repository().createTask(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

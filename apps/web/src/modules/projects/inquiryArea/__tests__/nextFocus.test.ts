@@ -21,7 +21,7 @@ const THREAD: InquiryThreadDetail = {
 
 function workflow(overrides: Partial<ProjectResearchWorkflow> = {}): ProjectResearchWorkflow {
   return {
-    id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review',
+    id: 'workflow-1', project_id: 'project-1',
     current_stage: 'screening', status: 'active', mode: 'autonomous',
     state_json: {}, primary_thread_id: 'thread-1',
     started_by_user_id: null, started_run_id: null,
@@ -54,8 +54,8 @@ describe('nextFocusDestination', () => {
   it('sends search_acquisition to Research Setup before a search runs and to Operations after', () => {
     expect(nextFocusDestination('search_acquisition', context)).toEqual({
       kind: 'link',
-      to: '/projects/project-1?research=new&thread=thread-1',
-      cta: 'Start literature search',
+      to: '/projects/project-1/research?research=new&thread=thread-1',
+      cta: 'Start evidence search',
     })
     expect(nextFocusDestination('search_acquisition', { ...context, startedWorkflow: workflow() })).toEqual({
       kind: 'link',
@@ -78,7 +78,7 @@ describe('nextFocusDestination', () => {
       create_delivery_task: '/projects/project-1/delivery',
       wait_for_monitoring: '/projects/project-1/operations',
       promote_knowledge: '/projects/project-1/knowledge-review',
-      synthesize: '/projects/project-1/research',
+      synthesize: '/projects/project-1/notes',
     }
     for (const [kind, to] of Object.entries(expected)) {
       const destination = nextFocusDestination(kind as InquiryNextFocusKind, context)

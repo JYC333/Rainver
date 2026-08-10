@@ -35,7 +35,7 @@ interface MatrixRow {
 export class ProjectResearchArtifactService {
   constructor(private readonly db: Queryable) {}
 
-  async ensureLiteratureMatrix(input: {
+  async ensureEvidenceMatrix(input: {
     spaceId: string;
     projectId: string;
     workflowId: string;
@@ -45,7 +45,7 @@ export class ProjectResearchArtifactService {
     const existing = await this.db.query<{ id: string }>(
       `SELECT id
          FROM artifacts
-        WHERE space_id=$1 AND project_id=$2 AND artifact_type='literature_matrix'
+        WHERE space_id=$1 AND project_id=$2 AND artifact_type='evidence_matrix'
           AND metadata_json->>'project_research_operation_id'=$3
         ORDER BY created_at DESC
         LIMIT 1`,
@@ -100,7 +100,7 @@ export class ProjectResearchArtifactService {
     );
 
     const content = JSON.stringify({
-      schema_version: "literature_matrix.v1",
+      schema_version: "evidence_matrix.v1",
       project_id: input.projectId,
       workflow_id: input.workflowId,
       operation_id: input.operationId,
@@ -124,7 +124,7 @@ export class ProjectResearchArtifactService {
       .map((row) => row.source_connection_id)
       .filter((value): value is string => Boolean(value)))];
     const metadata = JSON.stringify({
-      schema_version: "literature_matrix.v1",
+      schema_version: "evidence_matrix.v1",
       project_research_operation_id: input.operationId,
       project_research_workflow_id: input.workflowId,
       source_connection_ids: sourceConnectionIds,
@@ -135,7 +135,7 @@ export class ProjectResearchArtifactService {
         `UPDATE artifacts
             SET content=$1, title=$2, updated_at=$3, metadata_json=$4::jsonb
           WHERE id=$5 AND space_id=$6 AND project_id=$7`,
-        [content, `Literature Matrix (${now})`, now, metadata, existing.rows[0].id, input.spaceId, input.projectId],
+        [content, `Evidence Matrix (${now})`, now, metadata, existing.rows[0].id, input.spaceId, input.projectId],
       );
       return existing.rows[0].id;
     }
@@ -147,14 +147,14 @@ export class ProjectResearchArtifactService {
          exportable, export_formats_json, canonical_format, preview,
          created_at, updated_at, metadata_json, visibility, owner_user_id, trust_level
        ) VALUES (
-         $1,$2,$3,'literature_matrix','operational',$4,$5,'application/json',
+         $1,$2,$3,'evidence_matrix','operational',$4,$5,'application/json',
          true,$6::jsonb,'json',false,$7,$7,$8::jsonb,'private',$9,'medium'
        )`,
       [
         artifactId,
         input.spaceId,
         input.projectId,
-        `Literature Matrix (${new Date().toISOString()})`,
+        `Evidence Matrix (${new Date().toISOString()})`,
         content,
         JSON.stringify(["json"]),
         now,

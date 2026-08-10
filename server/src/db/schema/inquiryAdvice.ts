@@ -41,7 +41,7 @@ export const inquiryThreadAdvice = pgTable("inquiry_thread_advice", {
 	unique("uq_inquiry_thread_advice_id_space").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.threadId, table.projectId, table.spaceId],
-			foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+			foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId],
 			name: "inquiry_thread_advice_thread_fkey"
 		}).onDelete("cascade"),
 	foreignKey({

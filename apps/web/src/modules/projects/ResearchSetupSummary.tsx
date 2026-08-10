@@ -29,15 +29,15 @@ function executionLabel(draft: ResearchSetupDraft): string {
 export function ResearchSetupSummary({ draft, sourceChannels, saved, busyAction, canAct, onEdit, onStart }: ResearchSetupSummaryProps) {
   void sourceChannels
   return (
-    <section className="rounded-lg border border-border bg-card p-4 lg:p-5" aria-label="Initial literature intake setup">
+    <section className="rounded-lg border border-border bg-card p-4 lg:p-5" aria-label="Initial material intake setup">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold">Initial literature intake</h2>
+            <h2 className="text-base font-semibold">Initial material intake</h2>
             <Badge variant={saved ? 'success' : 'muted'}>{saved ? 'Setup saved' : 'Not configured'}</Badge>
           </div>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Choose the monitors and one-time history import that seed this project. After review, the same monitors continue collecting new literature.
+            Choose the monitors and one-time history import that seed this project. After review, the same monitors continue collecting new material.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -54,7 +54,7 @@ export function ResearchSetupSummary({ draft, sourceChannels, saved, busyAction,
 
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         <div className="rounded-md border border-border bg-muted/10 p-3">
-          <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Search className="size-3.5" />Literature monitors</div>
+          <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Search className="size-3.5" />Source monitors</div>
           <p className="mt-2 line-clamp-2 text-sm font-medium">{saved ? (draft.query_strategy_id ? `Adaptive strategy ${draft.query_strategy_id.slice(0, 8)}` : 'Search strategy not ready') : 'Evaluate provider coverage'}</p>
           <p className="mt-1 text-xs text-muted-foreground">{saved && draft.query_strategy_id ? 'Materialized provider queries' : 'No query strategy selected'}</p>
         </div>
@@ -72,7 +72,7 @@ export function ResearchSetupSummary({ draft, sourceChannels, saved, busyAction,
 
       <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
         <Activity className="size-3.5" />
-        {saved ? 'Saving updates the intake setup. Starting creates the one-time literature operation.' : 'Save this setup before starting initial research.'}
+        {saved ? 'Saving updates the intake setup. Starting creates the one-time material intake operation.' : 'Save this setup before starting initial research.'}
       </div>
     </section>
   )

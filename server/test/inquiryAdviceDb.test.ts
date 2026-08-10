@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -31,6 +31,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[inquiry-advice-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);

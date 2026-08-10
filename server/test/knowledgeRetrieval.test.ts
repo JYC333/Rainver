@@ -21,8 +21,8 @@ interface SearchObject {
   space_id: string;
   object_type: RetrievalObjectType;
   object_id: string;
-  object_kind?: string | null;
-  object_kind_label?: string | null;
+  object_profile?: string | null;
+  object_profile_label?: string | null;
   title: string;
   status: string;
   visibility: string | null;
@@ -50,7 +50,7 @@ interface SearchEdge {
   from_object_id: string;
   to_object_type: RetrievalObjectType;
   to_object_id: string;
-  relation_type: string;
+  link_type: string;
   edge_origin: string;
   confidence: number;
 }
@@ -105,7 +105,7 @@ class SearchFakeDb implements Queryable {
   async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
     const norm = sql.replace(/\s+/g, " ").trim();
     if (norm.includes("FROM retrieval_aliases ra")) {
-      const [spaceId, objectTypes, normalized, objectKindFilter] = params as [
+      const [spaceId, objectTypes, normalized, objectProfileFilter] = params as [
         string,
         RetrievalObjectType[],
         string[],
@@ -122,12 +122,12 @@ class SearchFakeDb implements Queryable {
             candidate.space_id === alias.space_id &&
             candidate.object_type === alias.object_type &&
             candidate.object_id === alias.object_id);
-          if (!object || !matchesObjectKindFilter(object, objectKindFilter)) return null;
+          if (!object || !matchesObjectProfileFilter(object, objectProfileFilter)) return null;
           return {
             object_type: alias.object_type,
             object_id: alias.object_id,
-            object_kind: object.object_kind_label ? object.object_kind ?? null : null,
-            object_kind_label: object.object_kind_label ?? null,
+            object_profile: object.object_profile_label ? object.object_profile ?? null : null,
+            object_profile_label: object.object_profile_label ?? null,
             title: object?.title ?? alias.alias,
             source_connection_ids_json: object?.source_connection_ids_json ?? [],
             snippet: object?.text ?? null,
@@ -140,7 +140,7 @@ class SearchFakeDb implements Queryable {
       return result(rows as Row[]);
     }
     if (norm.includes("FROM retrieval_chunks rc")) {
-      const [spaceId, objectTypes, like, , objectKindFilter] = params as [
+      const [spaceId, objectTypes, like, , objectProfileFilter] = params as [
         string,
         RetrievalObjectType[],
         string,
@@ -152,13 +152,13 @@ class SearchFakeDb implements Queryable {
         .filter((object) =>
           object.space_id === spaceId &&
           objectTypes.includes(object.object_type) &&
-          matchesObjectKindFilter(object, objectKindFilter) &&
+          matchesObjectProfileFilter(object, objectProfileFilter) &&
           (object.text ?? "").toLowerCase().includes(needle))
         .map((object, index) => ({
           object_type: object.object_type,
           object_id: object.object_id,
-          object_kind: object.object_kind_label ? object.object_kind ?? null : null,
-          object_kind_label: object.object_kind_label ?? null,
+          object_profile: object.object_profile_label ? object.object_profile ?? null : null,
+          object_profile_label: object.object_profile_label ?? null,
           title: object.title,
           source_connection_ids_json: object.source_connection_ids_json ?? [],
           snippet: object.text,
@@ -178,8 +178,8 @@ class SearchFakeDb implements Queryable {
       return result([{
         object_type: object.object_type,
         object_id: object.object_id,
-        object_kind: object.object_kind_label ? object.object_kind ?? null : null,
-        object_kind_label: object.object_kind_label ?? null,
+        object_profile: object.object_profile_label ? object.object_profile ?? null : null,
+        object_profile_label: object.object_profile_label ?? null,
         title: object.title,
         source_connection_ids_json: object.source_connection_ids_json ?? [],
         snippet: object.text,
@@ -210,12 +210,12 @@ class SearchFakeDb implements Queryable {
           return [{
             object_type: object.object_type,
             object_id: object.object_id,
-            object_kind: object.object_kind_label ? object.object_kind ?? null : null,
-            object_kind_label: object.object_kind_label ?? null,
+            object_profile: object.object_profile_label ? object.object_profile ?? null : null,
+            object_profile_label: object.object_profile_label ?? null,
             title: object.title,
             source_connection_ids_json: object.source_connection_ids_json ?? [],
             snippet: object.text,
-            relation_type: edge.relation_type,
+            link_type: edge.link_type,
             edge_origin: edge.edge_origin,
             rank: index + 1,
           }];
@@ -340,6 +340,9 @@ class SearchFakeDb implements Queryable {
       return result(this.sourceConnections.filter((connection) => sourceIds.includes(connection.id)) as Row[]);
     }
     if (norm.startsWith("SELECT role FROM space_memberships")) {
+      return result([] as Row[]);
+    }
+    if (norm.startsWith("INSERT INTO content_access_logs")) {
       return result([] as Row[]);
     }
     throw new Error(`unexpected SQL: ${norm}`);
@@ -481,7 +484,7 @@ class ProjectionFakeDb implements Queryable {
         from_object_id: params[3],
         to_object_type: params[4],
         to_object_id: params[5],
-        relation_type: params[6],
+        link_type: params[6],
         edge_origin: params[7],
         edge_status: params[8],
       };
@@ -491,7 +494,7 @@ class ProjectionFakeDb implements Queryable {
         existing.from_object_id === edge.from_object_id &&
         existing.to_object_type === edge.to_object_type &&
         existing.to_object_id === edge.to_object_id &&
-        existing.relation_type === edge.relation_type &&
+        existing.link_type === edge.link_type &&
         existing.edge_origin === edge.edge_origin);
       this.retrievalEdges.push(edge);
       return result([] as Row[]);
@@ -519,17 +522,17 @@ describe("Knowledge zero-LLM retrieval", () => {
     });
   });
 
-  it("surfaces active object_kind metadata and filters within a fixed object_type", async () => {
+  it("surfaces active object_profile metadata and filters within a fixed object_type", async () => {
     const db = searchDbWithKnowledge();
-    db.objects[0]!.object_kind = "decision";
-    db.objects[0]!.object_kind_label = "Decision";
+    db.objects[0]!.object_profile = "decision";
+    db.objects[0]!.object_profile_label = "Decision";
     db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
     db.addObject({
       space_id: SPACE_A,
       object_type: "knowledge_item",
       object_id: ITEM_B,
-      object_kind: "risk",
-      object_kind_label: null, // projected kind exists but is not active in the governed registry
+      object_profile: "risk",
+      object_profile_label: null, // projected kind exists but is not active in the governed registry
       title: "Alpha risk",
       status: "active",
       visibility: "space_shared",
@@ -547,19 +550,19 @@ describe("Knowledge zero-LLM retrieval", () => {
       maxResults: 10,
     });
     expect(all.items.find((item) => item.object_id === ITEM_A)).toMatchObject({
-      object_kind: "decision",
-      object_kind_label: "Decision",
+      object_profile: "decision",
+      object_profile_label: "Decision",
     });
     expect(all.items.find((item) => item.object_id === ITEM_B)).toMatchObject({
-      object_kind: null,
-      object_kind_label: null,
+      object_profile: null,
+      object_profile_label: null,
     });
 
     const decisions = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
       spaceId: SPACE_A,
       viewerUserId: USER_A,
       objectTypes: ["knowledge_item"],
-      objectKinds: ["decision"],
+      objectProfiles: ["decision"],
       query: "Alpha",
       includeTrace: true,
       maxResults: 10,
@@ -863,7 +866,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_type: "knowledge_item",
       to_object_id: ITEM_B,
       to_object_type: "knowledge_item",
-      relation_type: "supports",
+      link_type: "supports",
       confidence: 0.8,
       evidence_summary: "accepted",
     }];
@@ -873,7 +876,7 @@ describe("Knowledge zero-LLM retrieval", () => {
     expect(db.retrievalEdges).toContainEqual(expect.objectContaining({
       from_object_id: ITEM_A,
       to_object_id: ITEM_B,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       edge_status: "derived",
     }));
@@ -887,7 +890,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: ITEM_B,
-      relation_type: "related_to",
+      link_type: "related_to",
       edge_origin: "wikilink",
       edge_status: "suggested",
     });
@@ -910,7 +913,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: "stale-source",
       to_object_type: "knowledge_item",
       to_object_id: "stale-target",
-      relation_type: "related_to",
+      link_type: "related_to",
       edge_origin: "stale",
       edge_status: "suggested",
     });
@@ -920,7 +923,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: "memory-source",
       to_object_type: "memory_entry",
       to_object_id: "memory-target",
-      relation_type: "related_to",
+      link_type: "related_to",
       edge_origin: "memory-stale-but-other-registry",
       edge_status: "suggested",
     });
@@ -1094,7 +1097,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: ITEM_B,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1143,7 +1146,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: midId,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1153,7 +1156,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: midId,
       to_object_type: "knowledge_item",
       to_object_id: farId,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1191,7 +1194,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "source",
       to_object_id: SOURCE_A,
-      relation_type: "references",
+      link_type: "references",
       edge_origin: "source_link_projection",
       confidence: 1,
     });
@@ -1237,7 +1240,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: ITEM_B,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1278,7 +1281,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: ITEM_B,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1322,7 +1325,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: ITEM_B,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1357,7 +1360,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "knowledge_item",
       to_object_id: ITEM_B,
-      relation_type: "supports",
+      link_type: "supports",
       edge_origin: "object_relation_projection",
       confidence: 1,
     });
@@ -1400,7 +1403,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "source",
       to_object_id: SOURCE_A,
-      relation_type: "references",
+      link_type: "references",
       edge_origin: "source_link_projection",
       confidence: 1,
     });
@@ -1464,7 +1467,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       from_object_id: ITEM_A,
       to_object_type: "source",
       to_object_id: SOURCE_A,
-      relation_type: "references",
+      link_type: "references",
       edge_origin: "source_link_projection",
       confidence: 1,
     });
@@ -1556,12 +1559,12 @@ function fakeContentVisible(object: SearchObject, userId: string): boolean {
   return object.owner_user_id === userId || object.visibility === "space_shared";
 }
 
-function matchesObjectKindFilter(
-  object: Pick<SearchObject, "object_kind" | "object_kind_label">,
-  objectKindFilter: string[] | null | undefined,
+function matchesObjectProfileFilter(
+  object: Pick<SearchObject, "object_profile" | "object_profile_label">,
+  objectProfileFilter: string[] | null | undefined,
 ): boolean {
-  if (!objectKindFilter?.length) return true;
-  return Boolean(object.object_kind_label && object.object_kind && objectKindFilter.includes(object.object_kind));
+  if (!objectProfileFilter?.length) return true;
+  return Boolean(object.object_profile_label && object.object_profile && objectProfileFilter.includes(object.object_profile));
 }
 
 function removeWhere<T>(items: T[], predicate: (item: T) => boolean): void {

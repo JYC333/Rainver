@@ -269,46 +269,6 @@ describe("providers and credentials server authority", () => {
     expect(put.json()).toMatchObject({ task: "reflector" });
   });
 
-  it("invokes provider chat without putting the API key in the response", async () => {
-    const fetches: Array<{ url: string; headers: unknown; body: string }> = [];
-    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    __setProviderCommandStoreForTests(fakeStore());
-    __setProviderHttpClientForTests({
-      async fetch(url, init) {
-        fetches.push({
-          url,
-          headers: init?.headers,
-          body: String(init?.body ?? ""),
-        });
-        return new Response(
-          JSON.stringify({
-            choices: [{ message: { content: "hello" } }],
-            model: "gpt-4o-mini",
-            usage: { total_tokens: 3 },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      },
-    });
-    app = buildServer(await authorityConfig(), { logger: false });
-
-    const chat = await app.inject({
-      method: "POST",
-      url: "/api/v1/providers/chat?space_id=space-1",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        provider_id: "provider-1",
-        messages: [{ role: "user", content: "hi" }],
-      }),
-    });
-
-    expect(chat.statusCode).toBe(200);
-    expect(chat.json()).toMatchObject({ content: "hello", provider: "openai" });
-    expect(chat.payload).not.toContain("sk-test-provider");
-    expect(fetches[0].url).toBe("https://api.example.test/v1/chat/completions");
-    expect(JSON.stringify(fetches[0].headers)).toContain("sk-test-provider");
-  });
-
   it("owns CLI methods, status, and internal credential resolution", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProviderCommandStoreForTests(fakeStore());

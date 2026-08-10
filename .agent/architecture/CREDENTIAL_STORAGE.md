@@ -9,7 +9,7 @@ The system stores secrets in **three distinct channels**. Do not conflate them.
 | **Custom Source fetch credential** | Header-based credential (API key / bearer token) for an Sources Custom Source's outbound fetches | AES-256-GCM ciphertext in the same DB `credentials` table, distinct `credential_type` and `secret_ref` prefix | [modules/sources.md](../modules/sources.md), [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](SOURCE_CUSTOM_SOURCE_HANDLERS.md) |
 
 This doc covers the **ModelProvider API key** channel — the keys a user configures on the
-Providers page, used by the `model_api` runtime adapter, the reflector, and `/providers/chat`.
+Providers page, used by the `model_api` runtime adapter and bounded server-owned Provider tasks. There is no public Provider Chat execution route; agent-facing model calls enter through Runtime Context Delivery.
 The **Custom Source fetch credential** channel reuses this channel's DB table and master key
 (`server/src/modules/sources/customSources/customSourceCredentialCrypto.ts`,
 `server/src/modules/sources/customSources/customSourceCredentialService.ts`) but is functionally distinct: it
@@ -35,7 +35,7 @@ The plaintext API key is **never** stored. The encrypted material lives in:
 | `credentials` | `owner_user_id`, `secret_ref` | user-owned encrypted key material: `model_provider_api_key:v1:<ciphertext_b64>:<nonce_b64>`; `credential_type="api_key"`. |
 | `model_provider_space_grants` | grant metadata | explicit provider-to-space grants. Grant rows carry active-space `enabled`, `is_default`, and `network_profile_id` semantics. |
 | `model_provider_credentials` | pool membership | 1→N credential **pool** per provider: position, enabled, rotation health (`healthy`, `cooldown_until`, `last_failure_class`, request/failure counters). Holds **no secret material** — only FKs to `credentials`. The primary credential is lazily enrolled as the position-0 member. |
-| `provider_task_policies` | per-task chains | one ordered provider/model chain per (space, task) for auxiliary tasks (reflector, condenser, …). No secret material. |
+| `provider_task_policies` | per-task chains | one ordered provider/model chain per (space, task) for auxiliary tasks (reflector, checkpoint extractor, …). No secret material. |
 
 `secret_ref` scheme is defined in
 `server/src/modules/providers/secretRefCrypto.ts`

@@ -21,7 +21,7 @@ export class ProjectResearchIntegrityMonitorService {
 
   async check(input: { spaceId: string; projectId: string; workflowId: string; userId: string | null }) {
     const workflow = await this.db.query<{ id: string }>(
-      `SELECT id FROM project_research_workflows WHERE id=$1 AND space_id=$2 AND project_id=$3`,
+      `SELECT object_id AS id FROM project_research_workflows WHERE object_id=$1 AND space_id=$2 AND project_id=$3`,
       [input.workflowId, input.spaceId, input.projectId],
     );
     if (!workflow.rows[0]) throw new Error("Research integrity monitor workflow does not belong to the project");
@@ -95,9 +95,18 @@ export class ProjectResearchIntegrityMonitorService {
     const sourceRefs = new Set<string>();
     const evidenceRefs = new Set<string>();
     const directDois = new Set<string>();
+    // Refs come from each note's latest revision. They used to come from
+    // `notes.refs_json`, a duplicate of the same list that `note_revisions`
+    // already keeps per version; N8 removed the copy, so this reads the
+    // surviving one. DISTINCT ON picks the newest revision per note.
     const sections = await this.db.query<{ refs_json: unknown }>(
-      `SELECT n.refs_json FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
-        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND so.status='active'`,
+      `SELECT DISTINCT ON (nr.note_id) nr.refs_json
+         FROM note_revisions nr
+         JOIN notes n ON n.object_id=nr.note_id AND n.space_id=nr.space_id
+         JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+        WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active'
+          AND so.deleted_at IS NULL
+        ORDER BY nr.note_id, nr.version DESC`,
       [spaceId, projectId],
     );
     for (const row of sections.rows) {
@@ -139,8 +148,9 @@ export class ProjectResearchIntegrityMonitorService {
 export async function enqueueDueResearchIntegrityChecks(db: Queryable, now = new Date()): Promise<number> {
   const day = now.toISOString().slice(0, 10);
   const due = await db.query<{ space_id: string; project_id: string; workflow_id: string; user_id: string | null }>(
-    `SELECT DISTINCT ON (w.space_id,w.project_id) w.space_id,w.project_id,w.id AS workflow_id,w.started_by_user_id AS user_id
+    `SELECT DISTINCT ON (w.space_id,w.project_id) w.space_id,w.project_id,w.object_id AS workflow_id,w.started_by_user_id AS user_id
        FROM project_research_workflows w
+       JOIN space_objects object ON object.id=w.object_id AND object.space_id=w.space_id
       WHERE w.status='active' AND w.current_stage='monitoring'
         AND NOT EXISTS (
           SELECT 1 FROM jobs j
@@ -148,7 +158,7 @@ export async function enqueueDueResearchIntegrityChecks(db: Queryable, now = new
              AND j.payload_json->>'project_id'=w.project_id
              AND j.payload_json->>'schedule_day'=$1
         )
-      ORDER BY w.space_id,w.project_id,w.updated_at DESC`,
+      ORDER BY w.space_id,w.project_id,object.updated_at DESC`,
     [day],
   );
   const queue = new PgJobQueueRepository(db);

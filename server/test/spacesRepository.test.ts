@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { PgSpaceRepository, type SpaceFailure, type SpaceResult } from "../src/modules/spaces/repository";
 
@@ -21,6 +21,7 @@ beforeAll(async () => {
     repo = new PgSpaceRepository(pool);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[spaces-repository] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -48,7 +49,7 @@ function isFailure(value: SpaceResult | SpaceFailure): value is SpaceFailure {
   return "statusCode" in value;
 }
 
-describe("PgSpaceRepository.createSpace — oversight_mode", () => {
+describe("PgSpaceRepository.createSpace — immutable and defaulted Space policy", () => {
   it("accepts a valid oversight_mode and stores it", async () => {
     if (!available || !repo) return;
     const userId = await seedUser();
@@ -56,9 +57,19 @@ describe("PgSpaceRepository.createSpace — oversight_mode", () => {
     const result = await repo.createSpace(userId, { name: "Full Oversight Team", type: "team", oversight_mode: "full" });
 
     expect(isFailure(result)).toBe(false);
-    expect(result).toMatchObject({ oversight_mode: "full", role: "owner" });
-    const row = await pool!.query("SELECT oversight_mode FROM spaces WHERE id = $1", [(result as SpaceResult).id]);
-    expect(row.rows[0]).toEqual({ oversight_mode: "full" });
+    expect(result).toMatchObject({
+      oversight_mode: "full",
+      egress_notifications_enabled: true,
+      role: "owner",
+    });
+    const row = await pool!.query(
+      `SELECT oversight_mode, egress_notifications_enabled FROM spaces WHERE id = $1`,
+      [(result as SpaceResult).id],
+    );
+    expect(row.rows[0]).toEqual({
+      oversight_mode: "full",
+      egress_notifications_enabled: true,
+    });
   });
 
   it("defaults oversight_mode to 'none' when omitted", async () => {

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import type { PreRenderedChunk } from 'rollup'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -11,7 +12,38 @@ const apiProxyTarget = process.env.API_URL || 'http://server:8010'
 const projectRoot = process.cwd()
 const repoRoot = resolve(projectRoot, '../..')
 
+const graphWebglPackages = [
+  '/node_modules/@antv/g-webgl/',
+  '/node_modules/@antv/g-plugin-device-renderer/',
+  '/node_modules/@antv/g-device-api/',
+  '/node_modules/@antv/g-shader-components/',
+] as const
+
+function chunkFileName(chunk: PreRenderedChunk): string {
+  const moduleIds = chunk.moduleIds.map(id => id.replaceAll('\\', '/'))
+  if (moduleIds.some(id => graphWebglPackages.some(packagePath => id.includes(packagePath)))) {
+    return 'assets/graph-webgl-[hash].js'
+  }
+  if (moduleIds.some(id => (
+    id.includes('/node_modules/@antv/')
+    || id.includes('/src/components/graph/')
+  ))) {
+    return 'assets/graph-engine-[hash].js'
+  }
+  return 'assets/[name]-[hash].js'
+}
+
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      output: {
+        // Stable prefixes let Workbox keep the optional graph engine out of
+        // the application shell without changing Rollup's natural ownership
+        // of shared dependencies.
+        chunkFileNames: chunkFileName,
+      },
+    },
+  },
   resolve: {
     alias: [
       { find: /^react$/, replacement: resolve(projectRoot, 'node_modules/react/index.js') },
@@ -43,6 +75,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html}'],
+        globIgnores: [
+          '**/GraphView-*.js',
+          '**/graph-engine-*.js',
+          '**/graph-webgl-*.js',
+        ],
         runtimeCaching: [
           // POST/PATCH/DELETE mutations must never be served from cache.
           // Some operations (quota PTY refresh, workspace console runs) take
@@ -57,6 +94,19 @@ export default defineConfig({
             urlPattern: /^.*\/api\/v1\/.*/i,
             handler: 'NetworkFirst',
             options: { cacheName: 'api-cache', networkTimeoutSeconds: 10 },
+          },
+          // Graph rendering is optional and large. Cache its chunks after the
+          // first online visit instead of adding them to every PWA install.
+          {
+            urlPattern: /\/assets\/(?:GraphView|graph-engine|graph-webgl)-[^/]+\.js$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'graph-runtime-v1',
+              expiration: {
+                maxEntries: 12,
+                maxAgeSeconds: 30 * 24 * 60 * 60,
+              },
+            },
           },
         ],
       },

@@ -7,7 +7,9 @@ import type {
   RetrievalToolMode,
   SpaceRetrievalSettingsUpdate,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common";
+import { withQueryableTransaction } from "../routeUtils/common";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -165,35 +167,51 @@ export async function updateSpaceRetrievalSettings(
   patch: SpaceRetrievalSettingsUpdate,
   options: { actorUserId?: string | null } = {},
 ): Promise<SpaceRetrievalSettingsOut> {
-  const store = new ScopedSettingsStore(db);
-  const current = await store.getOrCreate(SPACE_RETRIEVAL_SETTINGS_DEFINITION, spaceId);
-  const next = {
-    defaultSearchMode: patch.default_search_mode ?? current.value.defaultSearchMode,
-    rerankEnabled: patch.rerank_enabled ?? current.value.rerankEnabled,
-    queryRewriteEnabled: patch.query_rewrite_enabled ?? current.value.queryRewriteEnabled,
-    queryRewriteDefault: patch.query_rewrite_default ?? current.value.queryRewriteDefault,
-    useQueryCache: patch.use_query_cache ?? current.value.useQueryCache,
-    includeTrace: patch.include_trace ?? current.value.includeTrace,
-    externalEgressEnabled: patch.external_egress_enabled ?? current.value.externalEgressEnabled,
-    retrievalToolMode: patch.retrieval_tool_mode ?? current.value.retrievalToolMode,
-    contextOpsReviewMode: patch.context_ops_review_mode ?? current.value.contextOpsReviewMode,
-    contextOpsScanMode: patch.context_ops_scan_mode ?? current.value.contextOpsScanMode,
-    embeddingDimensions: patch.embedding_dimensions ?? current.value.embeddingDimensions,
-    maxResultsDefault: patch.max_results_default ?? current.value.maxResultsDefault,
-    rankingConfig: await normalizeRankingConfigForUpdate(
-      db,
-      spaceId,
-      patch.ranking_config ?? current.value.rankingConfig,
-      options.actorUserId ?? null,
-    ),
-  };
-  const updated = await store.upsert(SPACE_RETRIEVAL_SETTINGS_DEFINITION, spaceId, next, {
-    updatedByUserId: options.actorUserId ?? null,
+  return withQueryableTransaction(db, async (transaction) => {
+    await transaction.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`runtime-egress-settings:${spaceId}`]);
+    const store = new ScopedSettingsStore(transaction);
+    const current = await store.getOrCreate(SPACE_RETRIEVAL_SETTINGS_DEFINITION, spaceId);
+    const next = {
+      defaultSearchMode: patch.default_search_mode ?? current.value.defaultSearchMode,
+      rerankEnabled: patch.rerank_enabled ?? current.value.rerankEnabled,
+      queryRewriteEnabled: patch.query_rewrite_enabled ?? current.value.queryRewriteEnabled,
+      queryRewriteDefault: patch.query_rewrite_default ?? current.value.queryRewriteDefault,
+      useQueryCache: patch.use_query_cache ?? current.value.useQueryCache,
+      includeTrace: patch.include_trace ?? current.value.includeTrace,
+      externalEgressEnabled: patch.external_egress_enabled ?? current.value.externalEgressEnabled,
+      retrievalToolMode: patch.retrieval_tool_mode ?? current.value.retrievalToolMode,
+      contextOpsReviewMode: patch.context_ops_review_mode ?? current.value.contextOpsReviewMode,
+      contextOpsScanMode: patch.context_ops_scan_mode ?? current.value.contextOpsScanMode,
+      embeddingDimensions: patch.embedding_dimensions ?? current.value.embeddingDimensions,
+      maxResultsDefault: patch.max_results_default ?? current.value.maxResultsDefault,
+      rankingConfig: await normalizeRankingConfigForUpdate(
+        transaction,
+        spaceId,
+        patch.ranking_config ?? current.value.rankingConfig,
+        options.actorUserId ?? null,
+      ),
+    };
+    if (next.externalEgressEnabled !== current.value.externalEgressEnabled) {
+      await transaction.query(
+        `INSERT INTO settings (
+           id,scope_type,scope_id,settings_key,settings_json,updated_by_user_id,created_at,updated_at
+         ) VALUES ($1,'space',$2,$3,'{"generation":1}'::jsonb,$4,now(),now())
+         ON CONFLICT (scope_type,scope_id,settings_key)
+         DO UPDATE SET settings_json=jsonb_build_object(
+           'generation',COALESCE((settings.settings_json->>'generation')::int,0)+1
+         ),updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=now()`,
+        [randomUUID(), spaceId, SETTINGS_KEYS.runtimeContextCliEgressGeneration,
+          options.actorUserId ?? null],
+      );
+    }
+    const updated = await store.upsert(SPACE_RETRIEVAL_SETTINGS_DEFINITION, spaceId, next, {
+      updatedByUserId: options.actorUserId ?? null,
+    });
+    if (next.embeddingDimensions !== current.value.embeddingDimensions) {
+      await new RetrievalEmbeddingStore(transaction).resetEmbeddingsForSpace(spaceId);
+    }
+    return outFromRead(spaceId, updated);
   });
-  if (next.embeddingDimensions !== current.value.embeddingDimensions) {
-    await new RetrievalEmbeddingStore(db).resetEmbeddingsForSpace(spaceId);
-  }
-  return outFromRead(spaceId, updated);
 }
 
 export function resolveRetrievalSearchControls(

@@ -1,16 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, BookOpen, FileText, Plus, RefreshCw } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, FileText, NotebookPen, RefreshCw } from 'lucide-react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import {
-  projectResearchApi,
-  projectsApi,
-  providersApi,
-  notesApi,
-  ApiRequestError,
-  type ModelProviderOut,
-} from '../../api/client'
-import type { Note, Project, ResearchArea, ResearchReadingList } from '../../types/api'
+import { projectResearchApi, ApiRequestError } from '../../api/client'
+import type { ResearchArea, ResearchReadingList } from '../../types/api'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -18,63 +11,49 @@ import { Card } from '../../components/ui/card'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import { errMsg } from '../../lib/utils'
+import { ResearchWorkflowPanel } from '../capabilities/ResearchWorkflowPanel'
 import { ChecklistView } from './researchArea/ChecklistView'
-import { NotebookChatPanel } from './researchArea/NotebookChatPanel'
-import { ProjectNoteCard } from './researchArea/NotebookView'
 import { ReadingListView } from './researchArea/ReadingListView'
+import { FocusResearchWorkbench } from './FocusResearchWorkbench'
+import { ProjectResearchStandingPanel } from './ProjectResearchStandingPanel'
+import { ResearchSetupDialog } from './ResearchSetupDialog'
+import { ResearchSettingsCard } from './ResearchSettingsCard'
+import { useProjectResearch } from './useProjectResearch'
 
 export default function ResearchAreaPage() {
   const { projectId = '' } = useParams()
-  const [project, setProject] = useState<Project | null>(null)
   const [area, setArea] = useState<ResearchArea | null>(null)
-  const [notes, setNotes] = useState<Note[]>([])
-  const [notesLoading, setNotesLoading] = useState(true)
-  const [creatingNote, setCreatingNote] = useState(false)
   const [reading, setReading] = useState<ResearchReadingList | null>(null)
-  const [providers, setProviders] = useState<ModelProviderOut[]>([])
-  const [tab, setTab] = useState('notebook')
+  // Standing discovery is the default view for goal-ambiguous work; the
+  // Thread-scoped focus workflow stays one click away. Both used to live on
+  // the Project Overview behind a second, nested tab bar.
+  const [tab, setTab] = useState('standing')
   const [loading, setLoading] = useState(true)
   const [notInitialized, setNotInitialized] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [generatingReport, setGeneratingReport] = useState(false)
+  const research = useProjectResearch(projectId)
 
   async function loadReading() {
     if (projectId) setReading(await projectResearchApi.readingList(projectId))
   }
 
-  // The area call returns a light notes listing (id/title/version) for
-  // overview + AI grounding; the Notebook tab needs the full Note objects
-  // (content_json) to actually edit them.
-  const loadNotes = useCallback(async () => {
-    setNotesLoading(true)
-    try {
-      const summaries = await notesApi.list({ project_id: projectId, status: 'active', limit: 200 })
-      const full = await Promise.all(summaries.items.map(s => notesApi.get(s.id)))
-      full.sort((a, b) => a.created_at.localeCompare(b.created_at))
-      setNotes(full)
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setNotesLoading(false)
-    }
-  }, [projectId])
-
-  const refreshArea = useCallback(async () => {
+  async function refreshArea() {
     try {
       setArea(await projectResearchApi.area(projectId))
-      await loadNotes()
     } catch (error) {
       toast.error(errMsg(error))
     }
-  }, [projectId, loadNotes])
+  }
 
   useEffect(() => {
     if (!projectId) return
     setLoading(true)
     setNotInitialized(false)
     setLoadError(null)
+    // The Project row itself comes from useProjectResearch; fetching it again
+    // here would mean two requests for one page.
     void Promise.all([
-      projectsApi.get(projectId),
       // Writers get the area created on first visit; readers on an
       // uninitialized project fall through to the empty state below.
       projectResearchApi.initializeArea(projectId).catch((error) => {
@@ -82,43 +61,16 @@ export default function ResearchAreaPage() {
         throw error
       }),
       projectResearchApi.readingList(projectId),
-      providersApi.list(),
-    ]).then(([nextProject, nextArea, nextReading, nextProviders]) => {
-      setProject(nextProject)
+    ]).then(([nextArea, nextReading]) => {
       setArea(nextArea)
       setNotInitialized(!nextArea)
       setReading(nextReading)
-      setProviders(nextProviders.filter((provider) => provider.enabled))
-      if (nextArea) void loadNotes()
-      else setNotesLoading(false)
     }).catch((error) => {
       const message = errMsg(error)
       setLoadError(message)
       toast.error(message)
     }).finally(() => setLoading(false))
-    // loadNotes intentionally excluded: it's stable per projectId and this
-    // effect already re-runs whenever projectId changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
-
-  async function createNote() {
-    if (!area) return
-    setCreatingNote(true)
-    try {
-      const created = await notesApi.create({
-        title: 'Untitled note',
-        primary_project_id: projectId,
-        collection_id: area.notes_collection_id,
-      })
-      setNotes(current => [...current, created])
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setCreatingNote(false)
-    }
-  }
-
-  const noteTitleById = useMemo(() => new Map(notes.map(n => [n.id, n.title])), [notes])
 
   async function generateReport() {
     setGeneratingReport(true)
@@ -160,46 +112,45 @@ export default function ResearchAreaPage() {
       <header className="flex flex-wrap items-center gap-3">
         <Link to={`/projects/${projectId}`}><Button variant="ghost" size="sm"><ArrowLeft className="size-4" />Project</Button></Link>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-semibold">{project?.current_focus ?? project?.name ?? 'Research Area'}</h1>
+          <h1 className="truncate text-xl font-semibold">{research.project?.current_focus ?? research.project?.name ?? 'Research Area'}</h1>
           <p className="text-sm text-muted-foreground">Living research documents evolve independently from report snapshots.</p>
         </div>
+        {/* The notebook is no longer a tab here: notes are a Project-level
+            surface, reachable from every Area rather than only this one. */}
+        <Link to={`/projects/${projectId}/notes`}>
+          <Button size="sm" variant="outline"><NotebookPen className="size-3.5" />Notes</Button>
+        </Link>
         <Button size="sm" variant="ghost" onClick={() => void refreshArea()}><RefreshCw className="size-3.5" />Refresh</Button>
       </header>
+      {/* One tab bar. The standing/focus workbench and the Area's own
+          documents are the same Area; nesting a second tab bar inside the
+          first is what made the Overview look like a page of its own. */}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="notebook"><BookOpen className="mr-1 size-4" />Notebook</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-5">
+          <TabsTrigger value="standing">Standing overview</TabsTrigger>
+          <TabsTrigger value="focus">Focus workbench</TabsTrigger>
           <TabsTrigger value="reading">Reading List</TabsTrigger>
           <TabsTrigger value="checklist">Checklist</TabsTrigger>
           <TabsTrigger value="reports"><FileText className="mr-1 size-4" />Reports</TabsTrigger>
         </TabsList>
-        <TabsContent value="notebook" className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-muted-foreground">
-                These notes live in Knowledge &gt; Notes too — free to add, rename, or link like any other note.
-              </p>
-              <Button size="sm" variant="outline" disabled={creatingNote} onClick={() => void createNote()}>
-                <Plus className="size-3.5" />Add note
-              </Button>
-            </div>
-            {notesLoading && notes.length === 0 && <p className="text-sm text-muted-foreground">Loading notes…</p>}
-            {notes.map((note) => (
-              <ProjectNoteCard
-                key={note.id}
-                note={note}
-                onSaved={(next) => setNotes((current) => current.map((value) => value.id === next.id ? next : value))}
-                onDeleted={(id) => setNotes((current) => current.filter((value) => value.id !== id))}
-              />
-            ))}
-          </div>
-          <div className="lg:sticky lg:top-6 lg:h-[calc(100vh-9rem)] lg:self-start">
-            <NotebookChatPanel
+        {/* Standing and focus keep their own in-progress state (a setup draft,
+            a selected Workflow), so switching between them must not unmount
+            either one. */}
+        <TabsContent value="standing" forceMount className="space-y-4 data-[state=inactive]:hidden">
+          <ProjectResearchStandingPanel projectId={projectId} canAct={research.project?.status === 'active'} />
+          <section className="space-y-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Research workflows</h2>
+            <ResearchWorkflowPanel
               projectId={projectId}
-              providers={providers}
-              noteTitleById={noteTitleById}
-              onNotebookChanged={() => void loadNotes()}
+              projectName={research.project?.name ?? ''}
+              folderOptions={research.workflowFolderOptions}
+              onRunCreated={research.onWorkflowRunCreated}
             />
-          </div>
+          </section>
+        </TabsContent>
+        <TabsContent value="focus" forceMount className="space-y-4 data-[state=inactive]:hidden">
+          {research.focusProps && <FocusResearchWorkbench {...research.focusProps} />}
+          {research.settings && <ResearchSettingsCard settings={research.settings} />}
         </TabsContent>
         <TabsContent value="reading"><ReadingListView projectId={projectId} value={reading} reload={loadReading} /></TabsContent>
         <TabsContent value="checklist">
@@ -225,6 +176,22 @@ export default function ResearchAreaPage() {
           )) : <EmptyState title="No report snapshots" description="Completed synthesis reports will appear here." />}
         </TabsContent>
       </Tabs>
+
+      {research.newSearch.thread && (
+        <ResearchSetupDialog
+          projectId={projectId}
+          workflowId={research.newSearch.workflowId}
+          threadId={research.newSearch.thread.id}
+          open={research.newSearch.open}
+          draft={research.newSearch.draft}
+          busyAction={research.actionBusy}
+          modelProviders={research.focusProps?.modelProviders ?? []}
+          canAct={research.project?.status === 'active'}
+          onOpenChange={research.newSearch.setOpen}
+          onSave={(config, dialogWorkflowId) => research.saveInitialIntake(config, dialogWorkflowId ?? null)}
+          onStart={(config, dialogWorkflowId) => { void research.startInitialIntake(config, dialogWorkflowId ?? null) }}
+        />
+      )}
     </div>
   )
 }

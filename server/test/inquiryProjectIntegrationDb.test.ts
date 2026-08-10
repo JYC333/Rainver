@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectOverviewService } from "../src/modules/projects/overviewService";
@@ -34,6 +34,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[inquiry-project-integration-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -71,8 +72,8 @@ async function createCorpusItem(projectId: string): Promise<string> {
   const corpusItemId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, created_at, updated_at)
-     VALUES ($1, $2, 'source', 'A source', 'processed', 'private', $3, $4, $4)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
+     VALUES ($1, $2, 'source', 'A source', 'private', $3, $4, $4)`,
     [objectId, SPACE, OWNER, now],
   );
   await pool!.query(
@@ -84,7 +85,7 @@ async function createCorpusItem(projectId: string): Promise<string> {
 }
 
 describe("Inquiry <-> Project Kernel integration (real Postgres)", () => {
-  it("the Project Overview's inquiry mode_projection and workspace_summaries reflect real Thread/Candidate state, not the fallback placeholder", async () => {
+  it("the Project Overview's inquiry mode_projection and entity_summaries reflect real Thread/Candidate state, not the fallback placeholder", async () => {
     if (!available || !pool) return;
     const project = await new PgProjectRepository(pool).create(identity(), { name: "Integration Project" });
     const threadSvc = new InquiryThreadService(pool);
@@ -97,18 +98,14 @@ describe("Inquiry <-> Project Kernel integration (real Postgres)", () => {
       classification: "contradicts",
     });
 
+    // Inquiry is no longer a Primary Mode — asking is how research starts, so
+    // `research` absorbed it. A Thread stays a first-class entity with its own
+    // summary row and its own Area, and a pending Candidate still reaches the
+    // shell through the attention adapter (asserted in the next case).
     const overview = await new ProjectOverviewService(pool).getOverview(identity(), project.id as string);
-    expect(overview.mode_projection).toMatchObject({
-      mode: "inquiry",
-      current_state_summary: expect.stringContaining("1 active Thread"),
-    });
-    expect(overview.mode_projection).not.toMatchObject({ current_state_summary: expect.stringContaining("no Overview adapter") });
-    const progress = (overview.mode_projection as Record<string, unknown>).progress_indicators as Array<{ metric: string; value: number }>;
-    expect(progress.find((p) => p.metric === "pending_candidates")?.value).toBe(1);
-
-    const inquirySummary = (overview.area_summaries as Array<{ mode: string; summary: { count: number; status: string } }>)
-      .find((w) => w.mode === "inquiry");
-    expect(inquirySummary).toMatchObject({ summary: { count: 1, status: "attention" } });
+    const inquirySummary = (overview.entity_summaries as Array<{ entity_type: string; count: number; status: string }>)
+      .find((row) => row.entity_type === "inquiry_thread");
+    expect(inquirySummary).toMatchObject({ count: 1, status: "attention" });
   });
 
   it("a pending Inquiry Candidate surfaces as a cross-workspace Attention item", async () => {

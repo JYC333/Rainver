@@ -8,6 +8,7 @@ import { SourceBackfillExecutionService } from "../../sources/sourceBackfillExec
 import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/config";
 import { SourcePostProcessingService } from "../../sources/postProcessing/service";
 import { relevanceProfileFromResearchContext, type ResearchScopeContext } from "../researchContext";
+import { hasProjectScreeningCriteria, loadProjectScreeningCriteria } from "../screeningCriteria";
 import { ProjectResearchDiscoveryBridge } from "./researchDiscoveryBridge";
 import type { ResearchThreadScopeRef } from "../threadScope";
 
@@ -54,7 +55,7 @@ export class ProjectResearchInitialIntakeCoordinator {
     input: InitialIntakeProvisionInput,
   ): Promise<InitialIntakeProvisionResult> {
     const channels = await this.resolveChannels(identity, sourceChannelIds);
-    if (channels.length === 0) throw new HttpError(422, "At least one literature monitor is required");
+    if (channels.length === 0) throw new HttpError(422, "At least one source monitor is required");
     const bindings: Record<string, unknown>[] = [];
     const rules: Record<string, unknown>[] = [];
     for (let index = 0; index < channels.length; index += 1) {
@@ -113,7 +114,7 @@ export class ProjectResearchInitialIntakeCoordinator {
       [identity.spaceId, sourceChannelIds],
     );
     if (channels.rows.length !== sourceChannelIds.length) {
-      throw new HttpError(422, "One or more selected literature monitors are unavailable");
+      throw new HttpError(422, "One or more selected source monitors are unavailable");
     }
     return channels.rows;
   }
@@ -152,6 +153,11 @@ export class ProjectResearchInitialIntakeCoordinator {
     const primaryThreadId = input.threadScope[0]?.thread_id;
     if (!primaryThreadId) throw new HttpError(422, "Auto Research requires a pinned Inquiry Thread scope");
     const ruleName = `Auto Research ${primaryThreadId.slice(0, 8)}: ${monitorName}`.trim();
+    const projectCriteria = await loadProjectScreeningCriteria(this.db, identity.spaceId, projectId);
+    const relevanceProfile = {
+      ...relevanceProfileFromResearchContext(input.researchQuestion, input.researchScope),
+      ...(hasProjectScreeningCriteria(projectCriteria) ? { project_criteria: projectCriteria } : {}),
+    };
     const existing = await this.db.query<Record<string, unknown>>(
       `SELECT * FROM source_post_processing_rules
         WHERE space_id=$1 AND project_id=$2 AND source_channel_id=$3
@@ -159,6 +165,13 @@ export class ProjectResearchInitialIntakeCoordinator {
       [identity.spaceId, projectId, channelId, ruleName],
     );
     if (existing.rows[0]) {
+      const inputConfig = objectValue(existing.rows[0].input_config_json);
+      await new SourcePostProcessingService(this.db, requiredConfig(this.config)).updateRule(
+        identity,
+        channelId,
+        String(existing.rows[0].id),
+        { input_config_json: { ...inputConfig, relevance_profile: relevanceProfile } },
+      );
       await this.ensureProcessingBatchSize(identity, [String(existing.rows[0].id)]);
       const refreshed = await this.db.query<Record<string, unknown>>(
         `SELECT * FROM source_post_processing_rules WHERE space_id=$1 AND id=$2`,
@@ -197,7 +210,7 @@ export class ProjectResearchInitialIntakeCoordinator {
           content_source: "prefer_extracted_text",
           output: "per_item_deep_summary",
         },
-        relevance_profile: relevanceProfileFromResearchContext(input.researchQuestion, input.researchScope),
+        relevance_profile: relevanceProfile,
       },
       actions_json: { batch_digest: true, per_item_summary: true, extract_evidence: true, create_proposals: false, mark_items: true },
     }));

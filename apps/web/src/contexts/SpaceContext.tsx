@@ -17,7 +17,6 @@ import type { SpaceWithMembership } from '../types/api'
  * Home is a user-level surface that lives outside any Space; on it `activeSpaceId` is null and
  * must never filter the cross-space aggregates. `preferredSpaceId` is the Space to target when
  * building a space link from a user-scoped surface (active → last visited → default → personal).
- * `writeTargetSpaceId` is the explicit destination for writes made from Home.
  */
 interface SpaceContextValue {
   spaces: SpaceWithMembership[]
@@ -31,45 +30,20 @@ interface SpaceContextValue {
   /** Best Space to target when navigating into a Space from a user-scoped surface. */
   preferredSpaceId: string | null
 
-  /** Explicit destination Space for writes initiated from Home. Defaults to Personal Space. */
-  writeTargetSpaceId: string | null
-
-  setWriteTarget: (spaceId: string | null) => void
   reloadSpaces: () => Promise<void>
 }
 
 const SpaceContext = createContext<SpaceContextValue | null>(null)
 
-const STORAGE_KEY = 'agent-space:space-context'
-
-interface StoredContext {
-  writeTargetSpaceId: string | null
-  lastSpaceId: string | null
-}
-
-function readStored(): StoredContext {
-  try {
-    const s = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
-    return {
-      writeTargetSpaceId: typeof s.writeTargetSpaceId === 'string' ? s.writeTargetSpaceId : null,
-      lastSpaceId: typeof s.lastSpaceId === 'string' ? s.lastSpaceId : null,
-    }
-  } catch {
-    return { writeTargetSpaceId: null, lastSpaceId: null }
-  }
-}
-
 export function SpaceProvider({ children }: { children: ReactNode }) {
   const { currentUser } = useAuth()
   const navigate = useNavigate()
-  const stored = readStored()
 
   // Active Space comes straight from the URL — `/spaces/:spaceId/...`.
   const spaceMatch = useMatch('/spaces/:spaceId/*')
   const activeSpaceId = spaceMatch?.params.spaceId ?? null
 
-  const [writeTargetSpaceId, setWriteTargetState] = useState<string | null>(stored.writeTargetSpaceId)
-  const [lastSpaceId, setLastSpaceId] = useState<string | null>(stored.lastSpaceId)
+  const [lastSpaceId, setLastSpaceId] = useState<string | null>(null)
   const [spaces, setSpaces] = useState<SpaceWithMembership[]>([])
   const [ready, setReady] = useState(false)
   const userId = currentUser?.id ?? ''
@@ -127,14 +101,6 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
     if (activeSpaceId && activeSpaceId !== lastSpaceId) setLastSpaceId(activeSpaceId)
   }, [activeSpaceId, lastSpaceId])
 
-  // Default the Home write target to the Personal Space once spaces resolve.
-  useEffect(() => {
-    if (!currentUser || spaces.length === 0) return
-    if (!has(writeTargetSpaceId)) {
-      setWriteTargetState(personalSpaceId ?? preferredSpaceId ?? spaces[0]?.id ?? null)
-    }
-  }, [currentUser, spaces, writeTargetSpaceId, personalSpaceId, preferredSpaceId, has])
-
   // If the URL names a Space the user can't see (or that doesn't exist), fall back cleanly.
   useEffect(() => {
     if (!ready || !currentUser || spaces.length === 0) return
@@ -142,16 +108,6 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
       navigate(spacePath(preferredSpaceId, '/today'), { replace: true })
     }
   }, [ready, currentUser, spaces, activeSpaceId, preferredSpaceId, has, navigate])
-
-  // Persist write target + last space (active space is the URL's concern, not storage).
-  useEffect(() => {
-    if (!ready) return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ writeTargetSpaceId, lastSpaceId } satisfies StoredContext))
-  }, [writeTargetSpaceId, lastSpaceId, ready])
-
-  const setWriteTarget = useCallback((newSpaceId: string | null) => {
-    setWriteTargetState(newSpaceId && spaces.some(s => s.id === newSpaceId) ? newSpaceId : null)
-  }, [spaces])
 
   if (!ready) return null
 
@@ -162,8 +118,6 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
     activeSpaceId,
     activeSpaceName,
     preferredSpaceId,
-    writeTargetSpaceId,
-    setWriteTarget,
     reloadSpaces,
   }
 

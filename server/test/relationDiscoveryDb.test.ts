@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { runRelationDiscoveryScan } from "../src/modules/knowledge/relationDiscovery";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures";
@@ -26,6 +26,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[relation-discovery-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -62,10 +63,7 @@ beforeEach(async () => {
 async function insertNote(pool: Pool, input: { id: string; title: string; plainText: string }): Promise<void> {
   await pool.query(
     `WITH obj AS (
-       INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, 'note', $3, left($4, 200), 'active', 'space_shared', $5, $5, now(), now())
+       INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'note', $3, left($4, 200), 'space_shared', $5, $5, now(), now())
      )
      INSERT INTO notes (object_id, space_id, content_json, content_format, content_schema_version, plain_text)
      VALUES ($1, $2, '{}'::jsonb, 'markdown', 1, $4)`,

@@ -13,8 +13,6 @@ vi.mock('../contexts/SpaceContext', () => ({
     activeSpaceId: 'personal-1',
     activeSpaceName: 'My Personal',
     preferredSpaceId: 'personal-1',
-    writeTargetSpaceId: 'personal-1',
-    setWriteTarget: vi.fn(),
   }),
 }))
 

@@ -25,6 +25,7 @@ export const SpaceRefSchema = z.object({
   // include the persisted mode and parsing normalizes legacy payloads to the
   // fail-closed default.
   oversight_mode: SpaceOversightModeSchema.default("none"),
+  egress_notifications_enabled: z.boolean(),
 });
 
 export const UserRefSchema = z.object({
@@ -168,14 +169,13 @@ export const ArtifactDTOSchema = z.object({
 export const MemoryDTOSchema = z.object({
   id: IdSchema,
   space_id: IdSchema,
-  scope: z.string(),
+  scope: z.enum(["user", "project"]),
   type: z.string(),
   status: z.string(),
   visibility: z.string(),
   sensitivity_level: z.string(),
   title: z.string().nullish(),
   content: z.string().nullish(),
-  project_folder_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
   subject_user_id: IdSchema.nullish(),
   owner_user_id: IdSchema.nullish(),

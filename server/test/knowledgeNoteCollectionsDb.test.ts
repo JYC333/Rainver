@@ -6,7 +6,7 @@ import { migrate } from "../src/db/migrator";
 import { withTransaction } from "../src/db/tx";
 import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 // Fixed workspace roots remain immovable at the server boundary. Project-backed
 // folders are different: they retain protected destructive actions but can be
@@ -26,6 +26,7 @@ beforeAll(async () => {
     await migrate(pool, join(process.cwd(), "migrations"));
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[knowledge-note-collections-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -228,5 +229,97 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
       { id: projectsRootId, parent_id: null },
       { id: projectFolderId, parent_id: projectsRootId },
     ]));
+  });
+  it("hides inaccessible Project workspaces and lets a Project viewer open but not mutate an existing one", async () => {
+    if (!available || !pool) return;
+    const viewer = randomUUID();
+    const privateProject = randomUUID();
+    const sharedProject = randomUUID();
+    const now = new Date().toISOString();
+    await pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+    await pool.query(
+      `INSERT INTO users (id,display_name,status,created_at,updated_at)
+       VALUES ($1,'Viewer','active',$2,$2)`,
+      [viewer, now],
+    );
+    await pool.query(
+      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'member','active',$4,$4)`,
+      [randomUUID(), SPACE, viewer, now],
+    );
+    await pool.query(
+      `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
+       VALUES ($1,$3,'Private','active',$4,$5,$5),
+              ($2,$3,'Shared','active',$4,$5,$5)`,
+      [privateProject, sharedProject, SPACE, USER, now],
+    );
+    await pool.query(
+      `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'viewer','active',$5,$5)`,
+      [randomUUID(), SPACE, sharedProject, viewer, now],
+    );
+
+    const ownerRepository = new PgKnowledgeRepository(pool);
+    const privateRoot = (await ownerRepository.ensureProjectNotesCollection(
+      { spaceId: SPACE, userId: USER }, privateProject,
+    ) as { id: string }).id;
+    const sharedRoot = (await ownerRepository.ensureProjectNotesCollection(
+      { spaceId: SPACE, userId: USER }, sharedProject,
+    ) as { id: string }).id;
+    const sharedChild = (await ownerRepository.createNoteCollection(
+      { spaceId: SPACE, userId: USER },
+      { name: "Visible child", parent_id: sharedRoot },
+    ) as { id: string }).id;
+    const privateChild = (await ownerRepository.createNoteCollection(
+      { spaceId: SPACE, userId: USER },
+      { name: "Secret child", parent_id: privateRoot },
+    ) as { id: string }).id;
+
+    const viewerRepository = new PgKnowledgeRepository(pool);
+    const viewerIdentity = { spaceId: SPACE, userId: viewer };
+    const listed = await viewerRepository.listNoteCollections(viewerIdentity);
+    expect(listed.map((row) => row.id)).toEqual(expect.arrayContaining([sharedRoot, sharedChild]));
+    expect(listed.map((row) => row.id)).not.toContain(privateRoot);
+    expect(listed.map((row) => row.id)).not.toContain(privateChild);
+    await expect(viewerRepository.ensureProjectNotesCollection(viewerIdentity, sharedProject))
+      .resolves.toMatchObject({ id: sharedRoot });
+    await expect(viewerRepository.ensureProjectNotesCollection(viewerIdentity, privateProject))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(viewerRepository.updateNoteCollection(viewerIdentity, sharedChild, { is_hidden: true }))
+      .rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("refuses moving a whole folder across a Project workspace boundary", async () => {
+    if (!available || !pool) return;
+    const repository = new PgKnowledgeRepository(pool);
+    const projectId = randomUUID();
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
+       VALUES ($1,$2,'Project','active',$3,$4,$4)`,
+      [projectId, SPACE, USER, now],
+    );
+    const projectRoot = (await repository.ensureProjectNotesCollection(
+      { spaceId: SPACE, userId: USER }, projectId,
+    ) as { id: string }).id;
+    const loose = (await repository.createNoteCollection(
+      { spaceId: SPACE, userId: USER }, { name: "Loose" },
+    ) as { id: string }).id;
+
+    await expect(withTransaction(pool, (client) =>
+      persistNotesTreeReorder(client, { spaceId: SPACE, userId: USER }, {
+        kind: "collections",
+        updates: [{ id: loose, parentId: projectRoot, sortOrder: 0 }],
+      }),
+    )).rejects.toMatchObject({ statusCode: 422 });
+    await expect(repository.updateNoteCollection(
+      { spaceId: SPACE, userId: USER }, loose, { parent_id: projectRoot },
+    )).rejects.toMatchObject({ statusCode: 422 });
+
+    const row = await pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id = $1`,
+      [loose],
+    );
+    expect(row.rows[0]?.parent_id).toBeNull();
   });
 });

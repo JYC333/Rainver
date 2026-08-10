@@ -42,6 +42,17 @@ import {
   type ResearchMutationResult,
 } from "./operationProjection";
 import { ProjectResearchIntegrityMonitorService } from "./integrityMonitorService";
+import {
+  ProjectResearchStandingComparisonService,
+  STANDING_COMPARISON_JOB_TYPE,
+  STANDING_COMPARISON_RECONCILE_JOB_TYPE,
+} from "./standingComparisonService";
+import {
+  createResearchWorkflow,
+  researchWorkflowProjection,
+  setResearchWorkflowThread,
+  type ResearchWorkflowRow,
+} from "./workflowOntology";
 import { ProjectResearchRetryService } from "./pipeline/retryService";
 import { ProjectResearchInitialIntakeCoordinator } from "./pipeline/initialIntakeCoordinator";
 import { ProjectResearchMonitoringCoordinator } from "./pipeline/monitoringCoordinator";
@@ -131,12 +142,7 @@ interface OperationRead extends OperationRow {
   links: Record<string, unknown>[];
 }
 
-interface WorkflowRow {
-  id: string;
-  status: string;
-  state_json: unknown;
-  [key: string]: unknown;
-}
+type WorkflowRow = ResearchWorkflowRow;
 
 export class ProjectResearchOrchestrator {
   private activePassExecutionId: string | null = null;
@@ -253,34 +259,22 @@ export class ProjectResearchOrchestrator {
     requestedWorkflowId: string | null,
   ) {
     await lockActiveProjectForMutation(this.db, identity.spaceId, projectId);
-    if (!draft.requestedThreadId) throw new HttpError(422, "thread_id is required for an initial literature intake draft");
+    if (!draft.requestedThreadId) throw new HttpError(422, "thread_id is required for an initial material intake draft");
     const existing = requestedWorkflowId
-      ? await this.db.query<WorkflowRow>(
-        `SELECT * FROM project_research_workflows
-          WHERE space_id=$1 AND project_id=$2 AND id=$3
-          LIMIT 1 FOR UPDATE`,
-        [identity.spaceId, projectId, requestedWorkflowId],
-      )
-      : await this.db.query<WorkflowRow>(
-          `SELECT * FROM project_research_workflows
-            WHERE space_id=$1 AND project_id=$2
-              AND status<>'archived'
-              AND primary_thread_id=$3
-            LIMIT 1 FOR UPDATE`,
-          [identity.spaceId, projectId, draft.requestedThreadId],
-        );
-    if (requestedWorkflowId && !existing.rows[0]) throw new HttpError(404, "Research workflow not found");
-    const existingThreadId = existing.rows[0]?.primary_thread_id ?? null;
-    if (existing.rows[0] && existingThreadId !== draft.requestedThreadId) {
+      ? await this.workflow(identity.spaceId, projectId, requestedWorkflowId, true, true)
+      : await this.workflowByThread(identity.spaceId, projectId, draft.requestedThreadId, true);
+    if (requestedWorkflowId && !existing) throw new HttpError(404, "Research workflow not found");
+    const existingThreadId = existing?.primary_thread_id ?? null;
+    if (existing && existingThreadId !== draft.requestedThreadId) {
       throw new HttpError(409, "The selected research workflow belongs to a different Inquiry Thread");
     }
-    if (existing.rows[0]?.status === "active") {
-      throw new HttpError(409, "An active research workflow cannot be edited after initial literature intake has started");
+    if (existing?.status === "active") {
+      throw new HttpError(409, "An active research workflow cannot be edited after initial material intake has started");
     }
-    if (existing.rows[0] && !["not_started", "paused"].includes(existing.rows[0].status)) {
+    if (existing && !["not_started", "paused"].includes(existing.status)) {
       throw new HttpError(409, "This research workflow can no longer be edited");
     }
-    const workflowId = existing.rows[0]?.id ?? randomUUID();
+    const workflowId = existing?.id ?? randomUUID();
     const startedBaseline = await this.db.query<{ id: string }>(
       `SELECT id FROM project_operations
         WHERE space_id=$1 AND project_id=$2 AND kind='research'
@@ -303,30 +297,35 @@ export class ProjectResearchOrchestrator {
       const canReconfigureEmptyIntake = latestBaseline.rows[0]?.status === "completed"
         && emptyResult.kind === "no_source_items";
       if (!canReconfigureEmptyIntake) {
-        throw new HttpError(409, "Initial literature intake already started; its execution snapshot cannot be edited");
+        throw new HttpError(409, "Initial material intake already started; its execution snapshot cannot be edited");
       }
     }
 
     const now = new Date().toISOString();
     const state = initialIntakeDraftState(draft, now);
-    if (existing.rows[0]) {
+    if (existing) {
       await this.db.query(
-        `UPDATE project_research_workflows
-            SET status='not_started', current_stage='initial_intake_setup', mode='autonomous',
-                state_json=$4::jsonb, primary_thread_id=$5, updated_at=$6
-          WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-        [identity.spaceId, projectId, workflowId, JSON.stringify(state), draft.requestedThreadId, now],
+        `WITH changed AS (UPDATE project_research_workflows
+            SET status='not_started', current_stage='initial_intake_setup',
+                state_json=$4::jsonb
+          WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+         UPDATE space_objects object SET updated_at=$5,title=$6 FROM changed
+          WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+        [identity.spaceId, projectId, workflowId, JSON.stringify(state), now, draft.researchQuestion.slice(0, 512)],
       );
+      await setResearchWorkflowThread(this.db, {
+        spaceId: identity.spaceId, projectId, workflowId,
+        threadId: draft.requestedThreadId, userId: identity.userId, now,
+      });
     } else {
-      await this.db.query(
-        `INSERT INTO project_research_workflows
-          (id,space_id,project_id,workflow_type,status,mode,current_stage,state_json,started_by_user_id,primary_thread_id,created_at,updated_at)
-         VALUES ($1,$2,$3,'literature_review','not_started','autonomous','initial_intake_setup',$4::jsonb,$5,$6,$7,$7)`,
-        [workflowId, identity.spaceId, projectId, JSON.stringify(state), identity.userId, draft.requestedThreadId, now],
-      );
+      await createResearchWorkflow(this.db, {
+        id: workflowId, spaceId: identity.spaceId, projectId,
+        title: draft.researchQuestion, status: "not_started", currentStage: "initial_intake_setup",
+        state, startedByUserId: identity.userId, primaryThreadId: draft.requestedThreadId, now,
+      });
     }
     const workflow = await this.workflow(identity.spaceId, projectId, workflowId, true);
-    if (!workflow) throw new HttpError(500, "Failed to save initial literature intake setup");
+    if (!workflow) throw new HttpError(500, "Failed to save initial material intake setup");
     return workflowOutput(workflow);
   }
 
@@ -376,7 +375,7 @@ export class ProjectResearchOrchestrator {
       previous_question: optionalString(state.research_question),
       current_question: currentQuestion,
       previous_version: version,
-      screened_papers: Number(screened.rows[0]?.count ?? 0),
+      screened_items: Number(screened.rows[0]?.count ?? 0),
       reports: Number(reports.rows[0]?.count ?? 0),
     };
   }
@@ -413,7 +412,7 @@ export class ProjectResearchOrchestrator {
         [identity.spaceId, projectId],
       );
       const sourceItemIds = corpus.rows.map((row) => row.source_item_id);
-      if (!sourceItemIds.length) throw new HttpError(409, "The project corpus has no papers to synthesize");
+      if (!sourceItemIds.length) throw new HttpError(409, "The project corpus has no material to synthesize");
       const key = `snapshot:${workflow.id}:${new Date().toISOString()}`;
       const state = incrementalStateFromWorkflow(workflow.state_json, workflow.id, sourceItemIds, key, null);
       state.run_kind = "synthesis_only";
@@ -494,9 +493,16 @@ export class ProjectResearchOrchestrator {
       ],
     };
     await this.db.query(
-      `UPDATE project_research_workflows SET state_json=$4::jsonb, primary_thread_id=$5, updated_at=$6 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [identity.spaceId, projectId, workflow.id, JSON.stringify(nextState), currentThread.id, now],
+      `WITH changed AS (UPDATE project_research_workflows SET state_json=$4::jsonb
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$5,title=$6 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+      [identity.spaceId, projectId, workflow.id, JSON.stringify(nextState), now, currentThread.statement.slice(0, 512)],
     );
+    await setResearchWorkflowThread(this.db, {
+      spaceId: identity.spaceId, projectId, workflowId: workflow.id,
+      threadId: currentThread.id, userId: identity.userId, now,
+    });
 
     if (ruleIds.length > 0) {
       const rules = await this.db.query<{ id: string; source_channel_id: string; input_config_json: unknown }>(
@@ -542,7 +548,7 @@ export class ProjectResearchOrchestrator {
       [identity.spaceId, projectId],
     );
     const sourceItemIds = corpus.rows.map((row) => row.source_item_id);
-    if (sourceItemIds.length === 0) throw new HttpError(409, "The project corpus has no papers to process for the new question");
+    if (sourceItemIds.length === 0) throw new HttpError(409, "The project corpus has no material to process for the new question");
 
     const key = `question:${strategy}:${workflow.id}:v${nextVersion}`;
     const state = incrementalStateFromWorkflow(nextState, workflow.id, sourceItemIds, key, null);
@@ -741,9 +747,14 @@ export class ProjectResearchOrchestrator {
     const itemIds = unique([...pendingItemIds, ...stringArray(body.source_item_ids)]);
     const consumePending = async () => {
       if (pendingItemIds.length === 0) return;
+      const now = new Date().toISOString();
       await this.db.query(
-        `UPDATE project_research_workflows SET state_json=state_json - 'pending_incremental_source_item_ids', updated_at=$4 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-        [identity.spaceId, projectId, workflowId, new Date().toISOString()],
+        `WITH changed AS (UPDATE project_research_workflows
+          SET state_json=state_json - 'pending_incremental_source_item_ids'
+          WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+         UPDATE space_objects object SET updated_at=$4 FROM changed
+          WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+        [identity.spaceId, projectId, workflowId, now],
       );
     };
     const prior = await this.operationByIdempotency(identity.spaceId, projectId, key);
@@ -976,7 +987,7 @@ export class ProjectResearchOrchestrator {
         // reconcile tick, independent of whether classification batches are
         // still running. isSourcePipelineDrained below only gates the stage
         // transition (finalizing coverage and creating the screening_gate
-        // checkpoint) — without this, "Papers classified"/"Batches" only ever
+        // checkpoint) — without this, "Items classified"/"Batches" only ever
         // showed their pre-run (empty) and post-run (final) values, never
         // anything in between while batches were actually in flight.
         const sourceRecoveryPreview = new SourcePostProcessingRecoveryService(this.db);
@@ -1143,7 +1154,7 @@ export class ProjectResearchOrchestrator {
         state.screening_progress = {
           ...state.screening_progress,
           phase: "completed",
-          message: "No relevant or maybe papers were found in this update.",
+          message: "No relevant or maybe material was found in this update.",
         };
         await this.setState(row, state, deriveSkippedAfterScreeningSteps());
       } else {
@@ -1395,7 +1406,7 @@ export class ProjectResearchOrchestrator {
       const machineResult = objectValue(value.machine_result_json);
       const screeningTotal = typeof machineResult.total === "number" ? machineResult.total : null;
       if (screeningTotal === 0 && !state.synthesis_run_id) {
-        throw new HttpError(409, "No papers matched this search window; revise the search query or date range and rescan before continuing");
+        throw new HttpError(409, "No material matched this search window; revise the search query or date range and rescan before continuing");
       }
       try {
         // A not-applied transition means the operation already moved past
@@ -1584,15 +1595,12 @@ export class ProjectResearchOrchestrator {
     if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > MAX_ITEMS_DEFAULT) {
       throw new HttpError(422, `max_items must be an integer between 1 and ${MAX_ITEMS_DEFAULT}`);
     }
-    const existing = await this.db.query<WorkflowRow>(
-      `SELECT * FROM project_research_workflows
-        WHERE space_id=$1 AND project_id=$2 AND id=$3
-        LIMIT 1 FOR UPDATE`,
-      [identity.spaceId, projectId, requestedWorkflowId],
-    );
-    if (requestedWorkflowId && !existing.rows[0]) throw new HttpError(404, "Research workflow not found");
+    const existing = requestedWorkflowId
+      ? await this.workflow(identity.spaceId, projectId, requestedWorkflowId, true, true)
+      : null;
+    if (requestedWorkflowId && !existing) throw new HttpError(404, "Research workflow not found");
     const now = new Date().toISOString();
-    const current = existing.rows[0];
+    const current = existing;
     if (current) {
       const operation = await this.db.query<{ id: string }>(
         `SELECT id FROM project_operations
@@ -1613,8 +1621,10 @@ export class ProjectResearchOrchestrator {
         initial_intake: { ...initialIntake, max_items: requestedLimit },
       };
       await this.db.query(
-        `UPDATE project_research_workflows SET state_json=$4::jsonb, updated_at=$5
-          WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+        `WITH changed AS (UPDATE project_research_workflows SET state_json=$4::jsonb
+          WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+         UPDATE space_objects object SET updated_at=$5 FROM changed
+          WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
         [identity.spaceId, projectId, current.id, JSON.stringify(nextState), now],
       );
       const workflow = await this.workflow(identity.spaceId, projectId, current.id);
@@ -1628,12 +1638,11 @@ export class ProjectResearchOrchestrator {
       initial_intake: { max_items: requestedLimit },
       draft: { status: "partial", saved_at: now },
     };
-    await this.db.query(
-      `INSERT INTO project_research_workflows
-        (id,space_id,project_id,workflow_type,status,mode,current_stage,state_json,started_by_user_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'literature_review','not_started','autonomous','initial_intake_setup',$4::jsonb,$5,$6,$6)`,
-      [id, identity.spaceId, projectId, JSON.stringify(state), identity.userId, now],
-    );
+    await createResearchWorkflow(this.db, {
+      id, spaceId: identity.spaceId, projectId, title: "Research workflow",
+      status: "not_started", currentStage: "initial_intake_setup", state,
+      startedByUserId: identity.userId, now,
+    });
     const workflow = await this.workflow(identity.spaceId, projectId, id);
     if (!workflow) throw new HttpError(500, "Failed to save the research item limit");
     return workflowOutput(workflow);
@@ -1661,7 +1670,7 @@ export class ProjectResearchOrchestrator {
     if (!operation || operation.project_id !== projectId) throw new HttpError(404, "Research operation not found");
     const state = researchState(operation.progress_json);
     if (state.run_kind !== "baseline" && state.run_kind !== "historical_backfill") {
-      throw new HttpError(409, "Only literature backfill operations have an item limit");
+      throw new HttpError(409, "Only material backfill operations have an item limit");
     }
     const planIds = state.source_backfill_plan_ids?.length
       ? state.source_backfill_plan_ids
@@ -1720,14 +1729,14 @@ export class ProjectResearchOrchestrator {
     const state = researchState(operation.progress_json);
     await this.assertResearchQuestionAligned(identity.spaceId, projectId, state.workflow_id ? (await this.workflow(identity.spaceId, projectId, state.workflow_id))?.state_json : null);
     if (!(state.run_kind === "baseline" || state.run_kind === "historical_backfill")) {
-      throw new HttpError(409, "Only a literature intake or historical backfill operation can be rescanned");
+      throw new HttpError(409, "Only a material intake or historical backfill operation can be rescanned");
     }
     if (state.partial) {
       throw new HttpError(409, "This partial backfill must be resumed by increasing the item limit in Project Settings");
     }
     const stage = state.failed_stage ?? state.current_stage;
     if (stage === "monitor_setup") {
-      throw new HttpError(409, "This operation hasn't started importing literature yet");
+      throw new HttpError(409, "This operation hasn't started importing material yet");
     }
     const active = await this.activeResearchOperation(identity.spaceId, projectId, state.workflow_id);
     if (active && active.id !== operation.id) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
@@ -1833,32 +1842,31 @@ export class ProjectResearchOrchestrator {
     const workflow = await this.createOrReuseWorkflow(identity.spaceId, projectId, identity.userId, input);
     if (!workflow) throw new HttpError(500, "Failed to create research workflow");
     await this.db.query(
-      `SELECT id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE`,
+      `SELECT object_id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2 AND object_id=$3 FOR UPDATE`,
       [identity.spaceId, projectId, workflow.id],
     );
     const active = await this.activeResearchOperation(identity.spaceId, projectId, workflow.id);
     if (active) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
     if (objectValue(objectValue(workflow.state_json).monitoring).active === true) {
-      throw new HttpError(409, "This Project Research workflow already has an active initial literature intake");
+      throw new HttpError(409, "This Project Research workflow already has an active initial material intake");
     }
+    const workflowStartedAt = new Date().toISOString();
     await this.db.query(
-      `UPDATE project_research_workflows
-          SET state_json=COALESCE(state_json,'{}'::jsonb) || $4::jsonb,updated_at=$5
-        WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+      `WITH changed AS (UPDATE project_research_workflows
+          SET state_json=COALESCE(state_json,'{}'::jsonb) || $4::jsonb,status='active'
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$5,title=$6 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [identity.spaceId, projectId, workflow.id, JSON.stringify({
         research_question: input.researchQuestion,
         thread_scope: input.threadScope,
         source_channel_ids: input.sourceChannelIds,
         query_strategy_id: input.queryStrategyId,
         research_scope: input.researchScope,
-      }), new Date().toISOString()],
-    );
-    await this.db.query(
-      `UPDATE project_research_workflows SET status='active', updated_at=$4 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [identity.spaceId, projectId, workflow.id, new Date().toISOString()],
+      }), workflowStartedAt, input.researchQuestion.slice(0, 512)],
     );
     const operation = await this.createOperation(identity, projectId, {
-      title: "Start initial literature intake",
+      title: "Start initial material intake",
       intentText: `Initialize research workflow for: ${input.researchQuestion}`,
       steps: operationSteps(),
       state: initialState(input, workflow.id, fingerprint),
@@ -1891,10 +1899,11 @@ export class ProjectResearchOrchestrator {
       { seq: 4, status: "pending" },
     ]);
     await this.db.query(
-      `UPDATE project_research_workflows
-          SET state_json = COALESCE(state_json, '{}'::jsonb) || $4::jsonb,
-              updated_at=$5
-        WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+      `WITH changed AS (UPDATE project_research_workflows
+          SET state_json = COALESCE(state_json, '{}'::jsonb) || $4::jsonb
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$5 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [identity.spaceId, projectId, workflow.id, JSON.stringify({
         channel_ids: state.channel_ids,
         project_source_binding_id: state.project_source_binding_id,
@@ -1936,7 +1945,7 @@ export class ProjectResearchOrchestrator {
     const workflowState = objectValue(workflow.state_json);
     const historyMode = state.history.mode ?? "bounded_range";
     if (historyMode === "bounded_range" && (!state.history.from || !state.history.to)) {
-      throw new HttpError(409, "The failed initial literature intake is missing its historical range and cannot be retried");
+      throw new HttpError(409, "The failed initial material intake is missing its historical range and cannot be retried");
     }
     const input: ResearchInput = {
       workflowId: workflow.id,
@@ -1983,13 +1992,7 @@ export class ProjectResearchOrchestrator {
     const primaryThreadId = input.threadScope[0]?.thread_id;
     if (!primaryThreadId) throw new HttpError(422, "A research Thread scope is required");
     if (input.workflowId) {
-      const selected = await this.db.query<WorkflowRow>(
-        `SELECT * FROM project_research_workflows
-          WHERE space_id=$1 AND project_id=$2 AND id=$3
-          LIMIT 1`,
-        [spaceId, projectId, input.workflowId],
-      );
-      const workflow = selected.rows[0];
+      const workflow = await this.workflow(spaceId, projectId, input.workflowId, false, true);
       if (!workflow) throw new HttpError(404, "Research workflow not found");
       if (!["active", "paused", "not_started"].includes(workflow.status)) {
         throw new HttpError(409, "This research workflow can no longer be started");
@@ -1999,15 +2002,7 @@ export class ProjectResearchOrchestrator {
       }
       return workflow;
     }
-    const existingResult = await this.db.query<WorkflowRow>(
-      `SELECT * FROM project_research_workflows
-        WHERE space_id=$1 AND project_id=$2
-          AND status<>'archived'
-          AND primary_thread_id=$3
-        LIMIT 1`,
-      [spaceId, projectId, primaryThreadId],
-    );
-    const existing = existingResult.rows[0] ?? null;
+    const existing = await this.workflowByThread(spaceId, projectId, primaryThreadId, false);
     if (existing && ["active", "paused", "not_started"].includes(existing.status)) return existing;
     if (existing) throw new HttpError(409, "This Inquiry Thread already has a completed research workflow; open its operation or rescan it instead");
     const id = randomUUID();
@@ -2027,11 +2022,10 @@ export class ProjectResearchOrchestrator {
       coverage_ranges: [],
       monitoring: { field: input.monitoringField, schedule: input.schedule, overlap_hours: OVERLAP_HOURS, active: false },
     };
-    await this.db.query(
-      `INSERT INTO project_research_workflows (id,space_id,project_id,workflow_type,status,mode,state_json,started_by_user_id,primary_thread_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'literature_review','active','autonomous',$4::jsonb,$5,$6,$7,$7)`,
-      [id, spaceId, projectId, JSON.stringify(state), userId, primaryThreadId, now],
-    );
+    await createResearchWorkflow(this.db, {
+      id, spaceId, projectId, title: input.researchQuestion, status: "active", state,
+      startedByUserId: userId, primaryThreadId, now,
+    });
     const workflow = await this.workflow(spaceId, projectId, id);
     if (!workflow) throw new HttpError(500, "Failed to create research workflow");
     return workflow;
@@ -2186,8 +2180,9 @@ export class ProjectResearchOrchestrator {
     // jsonb_set silently no-ops when an intermediate path key is missing, and
     // reused workflows (created by draft/item-limit paths) may have no
     // `monitoring` object at all — merge with || so the object is created.
+    const workflowUpdatedAt = new Date().toISOString();
     await this.db.query(
-      `UPDATE project_research_workflows
+      `WITH changed AS (UPDATE project_research_workflows
           SET state_json=COALESCE(state_json,'{}'::jsonb) || jsonb_build_object(
                 'monitoring',
                 COALESCE(state_json->'monitoring','{}'::jsonb) || jsonb_build_object(
@@ -2195,16 +2190,17 @@ export class ProjectResearchOrchestrator {
                   'channel_ids', $4::jsonb,
                   'watermark_after', $5::jsonb
                 )
-              ),
-              updated_at=$6
-        WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+              )
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$6 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [
         spaceId,
         projectId,
         workflowId,
         JSON.stringify(state.channel_ids),
         JSON.stringify(state.watermark.after),
-        new Date().toISOString(),
+        workflowUpdatedAt,
       ],
     );
     for (const channelId of state.channel_ids ?? []) {
@@ -2274,9 +2270,30 @@ export class ProjectResearchOrchestrator {
   }
 
   private async workflow(spaceId: string, projectId: string, workflowId: string | null, forUpdate = false, includeDraft = false): Promise<WorkflowRow | null> {
+    const projection = researchWorkflowProjection();
     const result = await this.db.query<WorkflowRow>(
-      `SELECT * FROM project_research_workflows WHERE space_id=$1 AND project_id=$2 ${workflowId ? "AND id=$3" : includeDraft ? "AND status IN ('active','paused','not_started')" : "AND status IN ('active','paused')"} ORDER BY updated_at DESC LIMIT 1${forUpdate ? " FOR UPDATE" : ""}`,
+      `SELECT ${projection.columns} FROM ${projection.from}
+        WHERE w.space_id=$1 AND w.project_id=$2
+          ${workflowId ? "AND w.object_id=$3" : includeDraft ? "AND w.status IN ('active','paused','not_started')" : "AND w.status IN ('active','paused')"}
+        ORDER BY workflow_object.updated_at DESC LIMIT 1${forUpdate ? " FOR UPDATE OF w" : ""}`,
       workflowId ? [spaceId, projectId, workflowId] : [spaceId, projectId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private async workflowByThread(
+    spaceId: string,
+    projectId: string,
+    threadId: string,
+    forUpdate: boolean,
+  ): Promise<WorkflowRow | null> {
+    const projection = researchWorkflowProjection();
+    const result = await this.db.query<WorkflowRow>(
+      `SELECT ${projection.columns} FROM ${projection.from}
+        WHERE w.space_id=$1 AND w.project_id=$2 AND w.status<>'archived'
+          AND pin.primary_thread_id=$3
+        ORDER BY workflow_object.updated_at DESC LIMIT 1${forUpdate ? " FOR UPDATE OF w" : ""}`,
+      [spaceId, projectId, threadId],
     );
     return result.rows[0] ?? null;
   }
@@ -2367,9 +2384,14 @@ export class ProjectResearchOrchestrator {
     const state = objectValue(workflow.state_json);
     const ranges = historyCoverage(state).filter((item) => item.operation_id !== range.operation_id);
     ranges.push(range);
+    const now = new Date().toISOString();
     await this.db.query(
-      `UPDATE project_research_workflows SET state_json=jsonb_set(COALESCE(state_json,'{}'::jsonb),'{coverage_ranges}',$4::jsonb,true),updated_at=$5 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [spaceId, projectId, workflowId, JSON.stringify(ranges), new Date().toISOString()],
+      `WITH changed AS (UPDATE project_research_workflows
+        SET state_json=jsonb_set(COALESCE(state_json,'{}'::jsonb),'{coverage_ranges}',$4::jsonb,true)
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$5 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+      [spaceId, projectId, workflowId, JSON.stringify(ranges), now],
     );
   }
 
@@ -2385,9 +2407,14 @@ export class ProjectResearchOrchestrator {
     const ranges = historyCoverage(workflow.state_json).map((range) =>
       range.operation_id === operationId ? { ...range, status } : range,
     );
+    const now = new Date().toISOString();
     await this.db.query(
-      `UPDATE project_research_workflows SET state_json=jsonb_set(COALESCE(state_json,'{}'::jsonb),'{coverage_ranges}',$4::jsonb,true),updated_at=$5 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [spaceId, projectId, workflowId, JSON.stringify(ranges), new Date().toISOString()],
+      `WITH changed AS (UPDATE project_research_workflows
+        SET state_json=jsonb_set(COALESCE(state_json,'{}'::jsonb),'{coverage_ranges}',$4::jsonb,true)
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$5 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+      [spaceId, projectId, workflowId, JSON.stringify(ranges), now],
     );
   }
 
@@ -2432,9 +2459,14 @@ export class ProjectResearchOrchestrator {
     if (!workflow) return;
     const state = objectValue(workflow.state_json);
     const pending = unique([...stringArray(state.pending_incremental_source_item_ids), ...itemIds]);
+    const now = new Date().toISOString();
     await this.db.query(
-      `UPDATE project_research_workflows SET state_json=jsonb_set(COALESCE(state_json,'{}'::jsonb),'{pending_incremental_source_item_ids}',$4::jsonb,true),updated_at=$5 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-      [spaceId, projectId, workflowId, JSON.stringify(pending), new Date().toISOString()],
+      `WITH changed AS (UPDATE project_research_workflows
+        SET state_json=jsonb_set(COALESCE(state_json,'{}'::jsonb),'{pending_incremental_source_item_ids}',$4::jsonb,true)
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$5 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+      [spaceId, projectId, workflowId, JSON.stringify(pending), now],
     );
   }
 
@@ -2633,6 +2665,18 @@ export function registerProjectResearchHandler(registry: JobHandlerRegistry, con
       userId: job.user_id,
     });
   });
+  registry.register(STANDING_COMPARISON_JOB_TYPE, async (job): Promise<JobHandlerResult> => {
+    const batchId = optionalString(job.payload.batch_id);
+    if (!batchId) throw new Error(`${STANDING_COMPARISON_JOB_TYPE} requires batch_id`);
+    return new ProjectResearchStandingComparisonService(getDbPool(config.databaseUrl!), config)
+      .dispatchBatch(job.space_id, batchId);
+  });
+  registry.register(STANDING_COMPARISON_RECONCILE_JOB_TYPE, async (job): Promise<JobHandlerResult> => {
+    const runId = optionalString(job.payload.run_id);
+    if (!runId) throw new Error(`${STANDING_COMPARISON_RECONCILE_JOB_TYPE} requires run_id`);
+    return new ProjectResearchStandingComparisonService(getDbPool(config.databaseUrl!), config)
+      .reconcileRun(job.space_id, runId);
+  });
 }
 
 function normalizeInitialIntakeInput(body: Record<string, unknown>, profileQuestion: string | null): ResearchInput {
@@ -2656,7 +2700,7 @@ function normalizeInitialIntakeInput(body: Record<string, unknown>, profileQuest
     from = ARXIV_HISTORY_FLOOR;
     to = new Date().toISOString();
   } else {
-    if (!requestedFrom || !requestedTo) throw new HttpError(422, "from and to are required for bounded_range initial literature intake");
+    if (!requestedFrom || !requestedTo) throw new HttpError(422, "from and to are required for bounded_range initial material intake");
     if (Number.isNaN(Date.parse(requestedFrom)) || Number.isNaN(Date.parse(requestedTo)) || Date.parse(requestedFrom) >= Date.parse(requestedTo)) throw new HttpError(422, "from must be earlier than to");
     from = new Date(requestedFrom).toISOString();
     to = new Date(requestedTo).toISOString();
@@ -2819,10 +2863,8 @@ function workflowOutput(row: WorkflowRow): Record<string, unknown> {
   return {
     id: row.id,
     project_id: row.project_id,
-    workflow_type: row.workflow_type,
     current_stage: row.current_stage ?? null,
     status: row.status,
-    mode: row.mode,
     state_json: objectValue(row.state_json),
     primary_thread_id: row.primary_thread_id ?? null,
     started_by_user_id: row.started_by_user_id ?? null,

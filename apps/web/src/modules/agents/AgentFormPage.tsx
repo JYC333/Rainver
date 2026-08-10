@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
-import { ChevronDown, ChevronRight, FileCode2, Loader2, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentTemplatesApi, agentsApi, providersApi, runtimeToolsApi, type ModelProviderOut } from '../../api/client'
 import type {
@@ -27,18 +27,13 @@ import {
 import {
   allowedInputContexts,
   allowedOutputTypes,
-  buildCondenserConfigContextPolicy,
   buildContextPolicy,
   buildOutputPolicy,
-  CONDENSER_PROFILE_OPTIONS,
   defaultInputContexts,
   inputContextLabel,
   isMemoryOutput,
   outputTypeLabel,
-  sessionCondenserConfig,
-  type SessionCondenserProfile,
 } from './policyMap'
-import { promptLibraryPath } from '../prompts/paths'
 
 const CREATE_NOTE: Record<string, string> = {
   activity_reflector: 'This agent processes captures / activity records into typed proposals and a reflection summary for review.',
@@ -111,10 +106,6 @@ function scheduleFromConfig(config: Record<string, unknown> | null | undefined) 
   }
 }
 
-function condenserPromptAssetKey(profile: SessionCondenserProfile): string {
-  return `session.condenser.${profile}`
-}
-
 export default function AgentFormPage() {
   const { templateId } = useParams()
   const navigate = useNavigate()
@@ -141,7 +132,6 @@ export default function AgentFormPage() {
   const [outputs, setOutputs] = useState<Record<string, boolean>>({})
   const [maxTokens, setMaxTokens] = useState('')
   const [temperature, setTemperature] = useState('')
-  const [condenseProfile, setCondenseProfile] = useState<SessionCondenserProfile>('adaptive')
   const [retrievalToolDomains, setRetrievalToolDomains] = useState<RetrievalToolDomainState>({
     memory: false,
     project_public_summary: false,
@@ -199,8 +189,6 @@ export default function AgentFormPage() {
         const enabledCtx = new Set(defaultInputContexts(v))
         setInputs(Object.fromEntries(allowedInputContexts(v).map(id => [id, enabledCtx.has(id)])))
         setOutputs(Object.fromEntries(allowedOutputTypes(v).map(id => [id, true])))
-        const condenser = sessionCondenserConfig(v)
-        setCondenseProfile(condenser.profile)
         setRetrievalToolDomains({ memory: false, project_public_summary: false, source: false })
       })
       .catch(err => toast.error(errMsg(err)))
@@ -233,8 +221,6 @@ export default function AgentFormPage() {
   const isCodexCli = runtime === 'codex_cli'
   const providerRequired = !isCli
   const showProviderSelector = !isCli || isClaudeCli || isCodexCli
-  const selectedCondenseProfile = CONDENSER_PROFILE_OPTIONS.find(option => option.value === condenseProfile)
-
   function buildScheduleConfig(): Record<string, unknown> {
     if (scheduleMode === 'manual') return { enabled: false, cron: null }
     if (scheduleMode === 'daily') return { enabled: scheduleEnabled, cron: `0 ${Number(dailyHour)} * * *` }
@@ -244,9 +230,7 @@ export default function AgentFormPage() {
   function buildContextConfig(): Record<string, unknown> {
     const base = version?.context_policy_json ?? {}
     const enabledInputs = Object.entries(inputs).filter(([, on]) => on).map(([key]) => key)
-    return buildCondenserConfigContextPolicy(buildContextPolicy(base, enabledInputs), {
-      profile: condenseProfile,
-    })
+    return buildContextPolicy(base, enabledInputs)
   }
 
   function buildOutputConfig(): Record<string, unknown> {
@@ -447,42 +431,10 @@ export default function AgentFormPage() {
           <button type="button" onClick={() => setAdvancedOpen(o => !o)} className="flex w-full items-center gap-2 text-sm font-medium">
             {advancedOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
             Advanced settings
-            <span className="text-xs font-normal text-muted-foreground">summary, inputs, outputs &amp; limits</span>
+            <span className="text-xs font-normal text-muted-foreground">inputs, outputs &amp; limits</span>
           </button>
           {advancedOpen && (
             <div className="mt-4 space-y-5">
-              <div>
-                <label className="space-y-1.5 block">
-                  <span className="text-sm font-medium">Session summary profile</span>
-                  <select
-                    value={condenseProfile}
-                    onChange={e => setCondenseProfile(e.target.value as SessionCondenserProfile)}
-                    className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-                  >
-                    {CONDENSER_PROFILE_OPTIONS.map(option => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-                {selectedCondenseProfile && (
-                  <p className="mt-1 text-xs text-muted-foreground">{selectedCondenseProfile.detail}</p>
-                )}
-                <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-muted-foreground">Prompt asset</div>
-                      <div className="truncate font-mono text-xs">{condenserPromptAssetKey(condenseProfile)}</div>
-                    </div>
-                    <Button asChild type="button" size="sm" variant="outline">
-                      <Link to={promptLibraryPath(condenserPromptAssetKey(condenseProfile))}>
-                        <FileCode2 className="size-4 mr-1" />
-                        Open prompt
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
               <div>
                 <p className="text-sm font-medium mb-1">Inputs</p>
                 {version && allowedInputContexts(version).length > 0 ? (

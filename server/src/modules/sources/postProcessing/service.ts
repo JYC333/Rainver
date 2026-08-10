@@ -32,15 +32,10 @@ import { memoryRetrievalRegistry } from "../../memory/retrievalAdapter";
 import { projectRetrievalRegistry } from "../../projects/retrievalAdapter";
 import { RetrievalSearchService, type RetrievalRegistry } from "../../retrieval";
 import { ProviderQueryEmbedder } from "../../retrieval/embedding/queryEmbedder";
-import {
-  retrievalEgressAllowed,
-  retrievalProviderEgressDestination,
-  type RetrievalEgressDestination,
-} from "../../retrieval/egress/egressPolicy";
 import { ProviderReranker } from "../../retrieval/rerankProvider/providerReranker";
 import { readSpaceRetrievalSettings } from "../../retrieval/settings";
 import { resolveProviderCommandStore } from "../../providers/commands/store";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../../runtimeAdapters/specs";
+import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress";
 import { ITEM_COLUMNS, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows";
 import { sourceRetrievalRegistry } from "../retrievalAdapter";
 import { contentReadSql } from "../../access/contentAccessSql";
@@ -74,7 +69,7 @@ import {
   type SourcePostProcessingTriggerType,
 } from "./repository";
 import { ProjectResearchAreaService } from "../../projectResearch/areaService";
-import { resolveProjectResearchPaperCardPrompt } from "../../projectResearch/promptRegistry";
+import { resolveProjectResearchEvidenceCardPrompt } from "../../projectResearch/promptRegistry";
 import {
   buildRetrievalContextQuery,
   renderInstruction,
@@ -885,10 +880,11 @@ export class SourcePostProcessingService {
   private async researchQuestionDrift(rule: SourcePostProcessingRuleRow): Promise<boolean> {
     if (!rule.project_id || !rule.name.startsWith("Auto Research:")) return false;
     const result = await this.db.query<{ workflow_state_json: unknown }>(
-      `SELECT state_json AS workflow_state_json
-         FROM project_research_workflows
-        WHERE space_id=$1 AND project_id=$2 AND status IN ('active','paused')
-        ORDER BY updated_at DESC
+      `SELECT workflow.state_json AS workflow_state_json
+         FROM project_research_workflows workflow
+         JOIN space_objects object ON object.id=workflow.object_id AND object.space_id=workflow.space_id
+        WHERE workflow.space_id=$1 AND workflow.project_id=$2 AND workflow.status IN ('active','paused')
+        ORDER BY object.updated_at DESC
         LIMIT 1`,
       [rule.space_id, rule.project_id],
     );
@@ -951,18 +947,18 @@ export class SourcePostProcessingService {
       input.inputConfig.retrieval_context.domains,
     );
     let agentOutputPreview: string | null = null;
-    let paperCardPromptHash: string | null = null;
+    let evidenceCardPromptHash: string | null = null;
     try {
-      await this.enforceSourcePromptEgress(input.connection, input.agentId);
-      const paperCardPrompt = input.projectId && input.inputConfig.processing_phase === "deep_analysis"
-        ? await resolveProjectResearchPaperCardPrompt(this.db, {
+      await assertSourcePromptEgressAllowed(this.db, input.connection, input.agentId);
+      const evidenceCardPrompt = input.projectId && input.inputConfig.processing_phase === "deep_analysis"
+        ? await resolveProjectResearchEvidenceCardPrompt(this.db, {
             spaceId: input.connection.space_id,
             userId: input.actorUserId,
             projectId: input.projectId,
             agentId: input.agentId,
           })
         : null;
-      paperCardPromptHash = paperCardPrompt?.resolveResult.rendered_hash ?? null;
+      evidenceCardPromptHash = evidenceCardPrompt?.resolveResult.rendered_hash ?? null;
       retrievalContext = await this.buildRetrievalContext({
         connection: input.connection,
         projectId: input.projectId,
@@ -997,7 +993,7 @@ export class SourcePostProcessingService {
           retrievalContext,
           extractedTextSnippets,
           candidatePrefilter: prefilter.metadata,
-        }), paperCardPrompt?.instruction].filter(Boolean).join("\n\n"),
+        }), evidenceCardPrompt?.instruction].filter(Boolean).join("\n\n"),
         runtimeProfileId: input.inputConfig.runtime_profile_id ?? null,
         structuredOutputContract: input.inputConfig.structured_output_schema_id === "source_post_processing.result.v1"
           ? SOURCE_POST_PROCESSING_OUTPUT_CONTRACT
@@ -1063,7 +1059,7 @@ export class SourcePostProcessingService {
         cursorAfter: batch.cursorAfter,
         retrievalContext,
         result,
-        paperCardPromptHash,
+        evidenceCardPromptHash,
       });
       if (input.rule && input.inputConfig.window !== "explicit") {
         await repo.advanceRuleCursor({
@@ -1495,7 +1491,7 @@ export class SourcePostProcessingService {
     cursorAfter: SourcePostProcessingInputBatch["cursorAfter"];
     retrievalContext: SourcePostProcessingRetrievalContextSnapshot;
     result: ParsedPostProcessingResult;
-    paperCardPromptHash: string | null;
+    evidenceCardPromptHash: string | null;
   }): Promise<{ artifactIds: string[]; proposalIds: string[]; jobIds: string[] }> {
     const repo = new PgSourcePostProcessingRepository(this.db);
     const artifactIds: string[] = [];
@@ -1560,11 +1556,11 @@ export class SourcePostProcessingService {
         artifactIds.push(artifactId);
       }
       if (projectId && input.inputConfig.processing_phase === "deep_analysis" && input.result.item_summaries.length) {
-        await new ProjectResearchAreaService(this.db).materializePaperCardsFromDeepAnalysis({
+        await new ProjectResearchAreaService(this.db).materializeEvidenceCardsFromDeepAnalysis({
           spaceId: input.connection.space_id,
           projectId,
           runId: input.agentRun.id,
-          promptHash: input.paperCardPromptHash,
+          promptHash: input.evidenceCardPromptHash,
           summaries: input.result.item_summaries,
         });
       }
@@ -1732,147 +1728,6 @@ export class SourcePostProcessingService {
     }
   }
 
-  private async enforceSourcePromptEgress(connection: SourceConnectionRow, agentId: string): Promise<void> {
-    const destination = await this.resolveAgentPromptEgressDestination(connection.space_id, agentId);
-    const governance = normalizeSourceConnectionReadGovernance(connection);
-    const retrievalSettings = await readSpaceRetrievalSettings(this.db, connection.space_id);
-    if (destination === "external_provider" && !retrievalSettings.externalEgressEnabled) {
-      throw new HttpError(
-        403,
-        "Space settings disable external model egress. Enable external egress in Space Settings or use a local model provider.",
-      );
-    }
-    const allowed = retrievalEgressAllowed(
-      {
-        object_type: "source_connection",
-        object_id: connection.id,
-        source_connection_ids: [connection.id],
-      },
-      {
-        externalEgressEnabled: retrievalSettings.externalEgressEnabled,
-        destination,
-        sourcePolicies: {
-          [connection.id]: {
-            source_egress_class: governance.policy.source_egress_class,
-            allow_local_provider_egress: governance.consent.allow_local_provider_egress,
-            allow_external_model_egress: governance.consent.allow_external_model_egress,
-          },
-        },
-      },
-    );
-    if (!allowed) {
-      const label = destination === "local_provider" ? "local provider" : "external model";
-      throw new HttpError(
-        403,
-        `This source has not allowed ${label} processing. Enable model egress for the source or choose an allowed provider.`,
-      );
-    }
-  }
-
-  private async resolveAgentPromptEgressDestination(
-    spaceId: string,
-    agentId: string,
-  ): Promise<RetrievalEgressDestination> {
-    const result = await this.db.query<{
-      adapter_type: string | null;
-      model_provider_id: string | null;
-      runtime_config_json: unknown;
-      runtime_policy_json: unknown;
-      provider_type: string | null;
-      base_url: string | null;
-    }>(
-      `SELECT arp.adapter_type,
-              arp.model_provider_id,
-              arp.runtime_config_json,
-              arp.runtime_policy_json,
-              p.provider_type,
-              p.base_url
-         FROM agent_runtime_profiles arp
-         LEFT JOIN model_provider_space_grants g
-           ON g.space_id = arp.space_id
-          AND g.provider_id = arp.model_provider_id
-          AND g.enabled = TRUE
-         LEFT JOIN model_providers p
-           ON p.id = g.provider_id
-          AND p.enabled = TRUE
-        WHERE arp.space_id = $1
-          AND arp.agent_id = $2
-          AND arp.enabled = TRUE
-        ORDER BY arp.is_default DESC, arp.created_at ASC, arp.id ASC
-        LIMIT 1`,
-      [spaceId, agentId],
-    );
-    const profile = result.rows[0];
-    if (!profile) throw new HttpError(409, "Selected agent has no enabled runtime profile.");
-    const runtimeConfig = recordValue(profile.runtime_config_json);
-    const runtimePolicy = recordValue(profile.runtime_policy_json);
-    const adapterType = stringValue(profile.adapter_type) ||
-      stringValue(runtimeConfig.adapter_type) ||
-      stringValue(runtimePolicy.default_adapter_type) ||
-      "model_api";
-    const mode = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType]?.model.model_provider_mode ?? "none";
-    if (profile.model_provider_id) {
-      if (!profile.provider_type) {
-        throw new HttpError(409, "Selected agent model provider is not available in this space.");
-      }
-      return retrievalProviderEgressDestination({
-        provider_type: profile.provider_type,
-        base_url: profile.base_url,
-      });
-    }
-    if (mode === "required") {
-      const fallback = await this.resolveDefaultProviderForEgress(spaceId, adapterType);
-      if (!fallback) {
-        throw new HttpError(
-          409,
-          `adapter_type ${JSON.stringify(adapterType)} requires a model provider; set default_model_provider_id.`,
-        );
-      }
-      return retrievalProviderEgressDestination(fallback);
-    }
-    return adapterType === "ts_agent_host" ? "internal_process" : "external_provider";
-  }
-
-  private async resolveDefaultProviderForEgress(
-    spaceId: string,
-    adapterType: string,
-  ): Promise<{ provider_type: string; base_url: string | null } | null> {
-    const result = await this.db.query<{
-      provider_type: string;
-      base_url: string | null;
-      config_json: unknown;
-    }>(
-      `SELECT p.provider_type,
-              p.base_url,
-              jsonb_set(
-                COALESCE(p.config_json, '{}'::jsonb),
-                '{is_default}',
-                to_jsonb(g.is_default),
-                true
-              ) AS config_json
-         FROM model_provider_space_grants g
-         JOIN model_providers p ON p.id = g.provider_id
-        WHERE g.space_id = $1
-          AND g.enabled = TRUE
-          AND p.enabled = TRUE`,
-      [spaceId],
-    );
-    let spaceDefault: { provider_type: string; base_url: string | null } | null = null;
-    for (const row of result.rows) {
-      const cfg = recordValue(row.config_json);
-      const provider = { provider_type: row.provider_type, base_url: row.base_url };
-      if (cfg.runtime_default_for === adapterType) return provider;
-      if (cfg.runtime_default_adapter_type === adapterType) return provider;
-      const types = cfg.runtime_default_adapter_types;
-      if (Array.isArray(types) && types.includes(adapterType)) return provider;
-      const defaults = cfg.runtime_defaults;
-      if (defaults && typeof defaults === "object" && (defaults as Record<string, unknown>)[adapterType] === true) {
-        return provider;
-      }
-      if (spaceDefault === null && cfg.is_default === true) spaceDefault = provider;
-    }
-    return spaceDefault;
-  }
 
   private validateInputContextBinding(
     projectId: string | null,

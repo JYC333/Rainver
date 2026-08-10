@@ -25,14 +25,13 @@ interface RelationEdgeRow {
 }
 
 /**
- * Inquiry graph producer and Combined Project graph composer (plan section
- * graph projection). Threads are never `space_objects` rows (ADR 0011), so this
- * producer queries `inquiry_threads`/`inquiry_thread_relations` directly
- * instead of going through `GraphProjectionRepository`, which only knows
- * about `space_objects`/`object_relations`. The composer simply unions this
- * producer's projection with the existing `space_objects`-based one — Graph
- * remains a reusable renderer/projection contract, never a write authority,
- * and this module never writes to either substrate.
+ * Inquiry graph producer (plan section graph projection).
+ *
+ * Threads are `space_objects` rows and their edges are `object_relations`
+ * (ADR 0011 decision 1/3), so this reads the same substrate as every other
+ * domain. It still exists as a producer because Inquiry adds domain metadata to
+ * each node — lifecycle and attention state — that the generic projection has
+ * no reason to know about. It never writes.
  */
 export class InquiryGraphService {
   constructor(private readonly db: Queryable) {}
@@ -50,10 +49,11 @@ export class InquiryGraphService {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const [threads, total] = await Promise.all([
       this.db.query<ThreadNodeRow>(
-      `SELECT id, kind, statement, lifecycle_status, attention_state, updated_at
-         FROM inquiry_threads
-        WHERE space_id = $1 AND project_id = $2 AND lifecycle_status <> 'superseded'
-        ORDER BY created_at ASC, id ASC
+      `SELECT t.object_id AS id, t.kind, t.statement, t.lifecycle_status, t.attention_state, so.updated_at
+         FROM inquiry_threads t
+         JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+        WHERE t.space_id = $1 AND t.project_id = $2 AND t.lifecycle_status <> 'superseded'
+        ORDER BY so.created_at ASC, t.object_id ASC
         LIMIT $3`,
       [identity.spaceId, projectId, options.limit],
       ),
@@ -65,9 +65,13 @@ export class InquiryGraphService {
     ]);
     const threadIds = new Set(threads.rows.map((row) => row.id));
     const relations = await this.db.query<RelationEdgeRow>(
-      `SELECT id, from_thread_id, to_thread_id, relation_kind
-         FROM inquiry_thread_relations
-        WHERE space_id = $1 AND project_id = $2`,
+      `SELECT r.id, r.from_object_id AS from_thread_id, r.to_object_id AS to_thread_id,
+              r.link_type AS relation_kind
+         FROM object_relations r
+         JOIN inquiry_threads ft ON ft.object_id = r.from_object_id AND ft.space_id = r.space_id
+         JOIN inquiry_threads tt ON tt.object_id = r.to_object_id AND tt.space_id = r.space_id
+        WHERE r.space_id = $1 AND r.status = 'active'
+          AND ft.project_id = $2 AND tt.project_id = $2`,
       [identity.spaceId, projectId],
     );
 
@@ -108,63 +112,31 @@ export class InquiryGraphService {
       layout: { mode: "force" },
     };
   }
-
-  // Unions this producer's projection with the existing Project-scoped
-  // space_objects/object_relations projection (e.g. academic sources,
-  // Notes, Knowledge). Both domains use the repository-wide globally unique
-  // id convention, so the union preserves their canonical ids.
+  /**
+   * The Project graph.
+   *
+   * This used to union an Inquiry-specific projection with the
+   * `space_objects`/`object_relations` one, because Threads lived outside the
+   * ontology and the generic projection could not see them. They are ontology
+   * objects now, so the generic projection already covers them — keeping the
+   * union would double every Thread node.
+   */
   async getCombinedProjectGraph(
     identity: SpaceUserIdentity,
     projectId: string,
     options: { limit: number },
   ): Promise<GraphProjection> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const inquiryGraph = await this.getInquiryGraph(identity, projectId, {
-      limit: options.limit,
-    });
-    const objectBudget = Math.max(0, options.limit - inquiryGraph.nodes.length);
     const objectRepository = new GraphProjectionRepository(this.db);
-    const objectGraph = objectBudget === 0
-      ? emptyObjectGraph(await objectRepository.countVisibleObjects(identity, { projectId }))
-      : await new GraphProjectionBuilder(objectRepository).build(identity, {
-        mode: "global",
-        projectId,
-        limit: objectBudget,
-        includeClusters: false,
-      });
-    const nodes = [...inquiryGraph.nodes, ...objectGraph.nodes];
-    const edges = [...inquiryGraph.edges, ...objectGraph.edges];
-    return {
-      nodes,
-      edges,
-      view: {
-        mode: "global",
-        limit: options.limit,
-        generatedAt: new Date().toISOString(),
-        truncated: Boolean(inquiryGraph.view.truncated || objectGraph.view.truncated),
-        totalNodeCount:
-          (inquiryGraph.view.totalNodeCount ?? inquiryGraph.nodes.length)
-          + (objectGraph.view.totalNodeCount ?? objectGraph.nodes.length),
-      },
-      layout: { mode: "force" },
-    };
+    return new GraphProjectionBuilder(objectRepository).build(identity, {
+      mode: "global",
+      projectId,
+      limit: options.limit,
+      includeClusters: false,
+    });
   }
 }
 
-function emptyObjectGraph(totalNodeCount: number): GraphProjection {
-  return {
-    nodes: [],
-    edges: [],
-    view: {
-      mode: "global",
-      limit: 0,
-      generatedAt: new Date().toISOString(),
-      truncated: totalNodeCount > 0,
-      totalNodeCount,
-    },
-    layout: { mode: "force" },
-  };
-}
 
 function isoOrNull(value: unknown): string | null {
   if (!value) return null;

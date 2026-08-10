@@ -180,11 +180,14 @@ describe("artifact routes", () => {
       visibility: "space_shared",
       project_folder_id: "ws-1",
     });
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall?.sql).toContain("visibility = 'space_shared'");
-    expect(lastCall?.sql).toContain("content_access_grants");
-    expect(lastCall?.sql).toContain("project_folders");
-    expect(lastCall?.sql).toContain("project_members");
+    // The read is followed by a cross-person audit write (ADR 0013 decision 18),
+    // so assert on the SELECT that gated the read rather than on call order.
+    const readCall = calls.find((call) => call.sql.includes("FROM artifacts"));
+    expect(readCall?.sql).toContain("visibility = 'space_shared'");
+    expect(readCall?.sql).toContain("content_access_grants");
+    expect(readCall?.sql).toContain("project_folders");
+    expect(readCall?.sql).toContain("project_members");
+    expect(calls.some((call) => call.sql.includes("INSERT INTO content_access_logs"))).toBe(true);
   });
 
   it("rejects path traversal, absolute paths, null bytes, and sandbox paths in file-backed export", async () => {

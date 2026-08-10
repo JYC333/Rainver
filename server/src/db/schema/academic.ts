@@ -6,7 +6,7 @@ import { sources } from "./knowledge";
 // Academic object extensions. A paper is backed by the *existing*
 // `sources` extension (object_type='source', source_type='paper' — already
 // whitelisted by ck_sources_source_type), not a new space_objects object_type
-// or a new space_object_kinds entry. This table adds only the fields generic
+// or a new space_object_profiles entry. This table adds only the fields generic
 // `sources` doesn't carry. See .agent/modules/relations.md for the reusable
 // relationship foundation and .agent/architecture/PROJECTS.md for preset use.
 export const academicPapers = pgTable("academic_papers", {

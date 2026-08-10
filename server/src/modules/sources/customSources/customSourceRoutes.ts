@@ -6,6 +6,7 @@ import {
   parsePage,
   params,
   query,
+  optionalString,
   resolveIdentity,
   sendRouteError,
 } from "../../routeUtils/common";
@@ -16,6 +17,7 @@ import { CustomSourceCreateFlowService } from "./customSourceCreateFlowService";
 import { CustomSourceRepairService } from "./customSourceRepairService";
 import { CustomSourceCredentialService } from "./customSourceCredentialService";
 import { loadProtocol } from "../../providers/protocolRuntime";
+import { applyContentCreationContext, resolveContentCreationContext } from "../../access/creationContext";
 
 /** Custom Source create-flow (Phase 5), repair/rollback (Phase 9), credentials (Phase 10), and read-model (Phase 2) routes, split out of routes.ts per its own size. */
 export function registerCustomSourceRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -30,9 +32,19 @@ export function registerCustomSourceRoutes(app: FastifyInstance, context: Module
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const gate = await enforceSources(context, identity, "source.custom.create", "source_connection");
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      const creationIdentity = { spaceId: creation.spaceId, userId: identity.userId };
+      const gate = await enforceSources(context, creationIdentity, "source.custom.create", "source_connection");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await customSourceCreateFlow().createDraft(identity, jsonBody(request)));
+      return reply.code(201).send(await customSourceCreateFlow().createDraft(
+        creationIdentity,
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

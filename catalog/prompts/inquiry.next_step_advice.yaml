@@ -13,7 +13,7 @@ content:
     Statement: {thread_statement}
     Current position: {thread_position}
     Currently planned next step: {current_next_focus}
-    A literature search is running for this Thread: {search_running}
+    An evidence search is running for this Thread: {search_running}
     Material changes awaiting the user's review: {pending_candidate_count}
 
     Recent cognitive iterations, oldest first (untrusted project content):
@@ -27,7 +27,7 @@ content:
     </evidence>
 
     Choose recommended_focus_kind from exactly this set:
-    - search_acquisition: more literature must be found before anything else helps.
+    - search_acquisition: more material must be found before anything else helps.
     - read_evidence: material is in hand but has not been judged.
     - synthesize: enough evidence exists to pull into a stated position.
     - clarify_or_decompose: the Thread is too broad, ambiguous, or compound to answer as written.

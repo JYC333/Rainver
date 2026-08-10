@@ -61,6 +61,10 @@ import {
   sourcePolicyAllowsRead,
 } from "./sourcePolicy";
 import type { RetrievalRegistry } from "./registry";
+import {
+  ContentAccessAuditService,
+  contentResourceTypeForRetrievalObject,
+} from "../contentAccess/audit";
 import type {
   QueryEmbedder,
   RetrievalSearchMode,
@@ -74,7 +78,7 @@ interface SearchInput {
   spaceId: string;
   viewerUserId: string;
   objectTypes?: RetrievalObjectType[];
-  objectKinds?: string[];
+  objectProfiles?: string[];
   query: string;
   maxResults?: number;
   includeTrace?: boolean;
@@ -105,12 +109,17 @@ interface SearchInput {
   adaptiveReturn?: boolean;
   /** Runtime ranking mechanics that have passed calibration and shipped for the space. */
   rankingConfig?: RetrievalRuntimeRankingConfig;
+  /** Internal audit classification for callers that reuse search as a read subroutine. */
+  auditAccessType?: string;
+  auditReason?: string;
+  /** Internal: caller will audit a stricter post-filtered subset. */
+  skipAudit?: boolean;
 }
 
 /** Per-request control flags derived from the input + the query intent. */
 interface RetrievalControls {
   objectTypes: RetrievalObjectType[];
-  objectKinds: string[];
+  objectProfiles: string[];
   maxResults: number;
   query: string;
   normalized: string;
@@ -146,8 +155,8 @@ interface ExplainInput extends SearchInput {
 interface RetrievalCandidateRow {
   object_type: RetrievalObjectType;
   object_id: string;
-  object_kind: string | null;
-  object_kind_label: string | null;
+  object_profile: string | null;
+  object_profile_label: string | null;
   title: string;
   snippet: string | null;
   matched_text: string | null;
@@ -160,11 +169,11 @@ interface RetrievalCandidateRow {
 interface GraphCandidateRow {
   object_type: RetrievalObjectType;
   object_id: string;
-  object_kind: string | null;
-  object_kind_label: string | null;
+  object_profile: string | null;
+  object_profile_label: string | null;
   title: string;
   snippet: string | null;
-  relation_type: string;
+  link_type: string;
   edge_origin: string;
   edge_confidence: number | null;
   updated_at: string | null;
@@ -175,8 +184,8 @@ interface GraphCandidateRow {
 interface VectorCandidateRow {
   object_type: RetrievalObjectType;
   object_id: string;
-  object_kind: string | null;
-  object_kind_label: string | null;
+  object_profile: string | null;
+  object_profile_label: string | null;
   title: string;
   snippet: string | null;
   distance: number | string;
@@ -194,7 +203,7 @@ interface GraphWalkOptions {
   spaceId: string;
   expandObjectTypes: RetrievalObjectType[];
   returnObjectTypes: RetrievalObjectType[];
-  returnObjectKinds: string[];
+  returnObjectProfiles: string[];
   seeds: SearchCandidate[];
   initialVisitedRefs: string[];
   maxResults: number;
@@ -291,13 +300,21 @@ export class RetrievalSearchService {
         input,
         c.query,
         c.objectTypes,
-        c.objectKinds,
+        c.objectProfiles,
         c.maxResults,
         c.runVector,
         c.useCache,
         primaryKeys,
         c.rankingCfg,
         trace,
+      );
+    }
+    if (!input.skipAudit) {
+      await this.recordReturnedReads(
+        input,
+        [...items, ...rewriteItems],
+        input.auditAccessType ?? "search_hit",
+        input.auditReason ?? "retrieval search",
       );
     }
 
@@ -350,6 +367,7 @@ export class RetrievalSearchService {
     trace.synthesis = { sources: candidates.length, synthesized: brief.synthesized };
 
     const items = buildItems(visible, revalidationCache, c.query, c.maxResults, input.includeTrace);
+    await this.recordReturnedReads(input, items, "search_hit", "retrieval brief");
     return {
       brief,
       items,
@@ -421,7 +439,7 @@ export class RetrievalSearchService {
    */
   private deriveControls(input: SearchInput): RetrievalControls {
     const objectTypes = this.sanitizeObjectTypes(input.objectTypes);
-    const objectKinds = sanitizeObjectKinds(input.objectKinds);
+    const objectProfiles = sanitizeObjectProfiles(input.objectProfiles);
     const maxResults = clamp(input.maxResults ?? 10, 1, 50);
     const query = input.query.trim();
     const normalized = normalizeAlias(query);
@@ -438,7 +456,7 @@ export class RetrievalSearchService {
     const rankingCfg = rankingConfigForIntent(intent);
     const runtimeRankingConfig = input.rankingConfig;
     return {
-      objectTypes, objectKinds, maxResults, query, normalized, mode,
+      objectTypes, objectProfiles, maxResults, query, normalized, mode,
       runLexical, runVector, runRerankStage, doRewrite, useCache, adaptiveReturn, intent, rankingCfg, runtimeRankingConfig,
     };
   }
@@ -456,14 +474,14 @@ export class RetrievalSearchService {
     controls: RetrievalControls,
     trace: RetrievalTrace,
   ): Promise<{ visible: ScoredCandidate[]; revalidationCache: Map<string, RevalidatedObject | null> }> {
-    const { objectTypes, objectKinds, maxResults, query, normalized, runLexical, runVector, runRerankStage, useCache, rankingCfg } = controls;
+    const { objectTypes, objectProfiles, maxResults, query, normalized, runLexical, runVector, runRerankStage, useCache, rankingCfg } = controls;
 
     const exact = normalized
-      ? await this.exactAliasArm(input.spaceId, objectTypes, objectKinds, normalized, maxResults)
+      ? await this.exactAliasArm(input.spaceId, objectTypes, objectProfiles, normalized, maxResults)
       : [];
 
     const lexical = runLexical
-      ? await this.lexicalArm(input.spaceId, objectTypes, objectKinds, query, maxResults)
+      ? await this.lexicalArm(input.spaceId, objectTypes, objectProfiles, query, maxResults)
       : [];
 
     // Vector recall (hybrid tiers only, and only when an embedder is injected). It
@@ -471,7 +489,7 @@ export class RetrievalSearchService {
     // gate below, so an embedded-but-unreadable object can never be returned. Run
     // it before the graph arm so a semantic match can also seed graph traversal.
     const vector = runVector
-      ? await this.vectorArm(input.spaceId, input.viewerUserId, objectTypes, objectKinds, query, maxResults, useCache)
+      ? await this.vectorArm(input.spaceId, input.viewerUserId, objectTypes, objectProfiles, query, maxResults, useCache)
       : [];
 
     // Graph recall seeds from every DIRECT match the viewer can actually read
@@ -493,7 +511,7 @@ export class RetrievalSearchService {
       ? await this.graphArm(
           input.spaceId,
           objectTypes,
-          objectKinds,
+          objectProfiles,
           visibleSeeds,
           maxResults,
           input.viewerUserId,
@@ -717,6 +735,12 @@ export class RetrievalSearchService {
       if (result && excludeSelf(result)) exactItems.push(result);
     }
     if (exactItems.length > 0) {
+      await this.recordReturnedReads(
+        { spaceId: input.spaceId, viewerUserId: input.viewerUserId },
+        exactItems,
+        "create_safety_hit",
+        "retrieval create-safety",
+      );
       return {
         create_safety: "exists",
         matches: exactItems,
@@ -730,14 +754,23 @@ export class RetrievalSearchService {
       spaceId: input.spaceId,
       viewerUserId: input.viewerUserId,
       objectTypes: [input.objectType],
-      objectKinds: [],
+      objectProfiles: [],
       query,
       maxResults,
       // Duplicate detection stays on the deterministic tier: no vector/rerank/
       // rewrite even if this service was constructed with those stages.
       mode: "lexical",
+      auditAccessType: "create_safety_hit",
+      auditReason: "retrieval create-safety",
+      skipAudit: true,
     });
     const matches = search.items.filter(excludeSelf);
+    await this.recordReturnedReads(
+      { spaceId: input.spaceId, viewerUserId: input.viewerUserId },
+      matches,
+      "create_safety_hit",
+      "retrieval create-safety",
+    );
     const createSafety: CreateSafety = matches.length > 0 ? "probable_duplicate" : "unknown";
     return {
       create_safety: createSafety,
@@ -746,21 +779,47 @@ export class RetrievalSearchService {
     };
   }
 
+  private async recordReturnedReads(
+    input: Pick<SearchInput, "spaceId" | "viewerUserId" | "agentId">,
+    items: readonly Pick<RetrievalSearchResult, "object_type" | "object_id">[],
+    accessType: string,
+    reason: string,
+  ): Promise<void> {
+    const grouped = new Map<string, string[]>();
+    for (const item of items) {
+      const resourceType = contentResourceTypeForRetrievalObject(item.object_type);
+      if (!resourceType) continue;
+      grouped.set(resourceType, [...(grouped.get(resourceType) ?? []), item.object_id]);
+    }
+    const audit = new ContentAccessAuditService(this.db);
+    for (const [resourceType, resourceIds] of grouped) {
+      await audit.recordReads({
+        spaceId: input.spaceId,
+        resourceType,
+        resourceIds,
+        viewerUserId: input.viewerUserId,
+        agentId: input.agentId ?? null,
+        accessType,
+        reason,
+      });
+    }
+  }
+
   private async exactAliasArm(
     spaceId: string,
     objectTypes: RetrievalObjectType[],
-    objectKinds: string[],
+    objectProfiles: string[],
     normalized: string,
     maxResults: number,
     normalizedMany?: string[],
   ): Promise<SearchCandidate[]> {
     const aliases = normalizedMany?.length ? [...new Set(normalizedMany)] : [normalized];
-    const objectKindParam = objectKindFilterParam(objectKinds);
+    const objectProfileParam = objectProfileFilterParam(objectProfiles);
     const result = await this.db.query<RetrievalCandidateRow>(
       `WITH matches AS (
          SELECT ro.object_type, ro.object_id,
-                CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_kind END AS object_kind,
-                sok.label AS object_kind_label,
+                CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
+                sok.label AS object_profile_label,
                 ro.title, ro.source_connection_ids_json,
                 rc.plain_text AS snippet,
                 ra.alias AS matched_text,
@@ -772,10 +831,10 @@ export class RetrievalSearchService {
              ON ro.space_id = ra.space_id
             AND ro.object_type = ra.object_type
             AND ro.object_id = ra.object_id
-           LEFT JOIN space_object_kinds sok
+           LEFT JOIN space_object_profiles sok
              ON sok.space_id = ro.space_id
             AND sok.base_object_type = ro.object_type
-            AND sok.key = ro.object_kind
+            AND sok.key = ro.object_profile
             AND sok.status = 'active'
            LEFT JOIN LATERAL (
              SELECT plain_text
@@ -787,28 +846,28 @@ export class RetrievalSearchService {
           WHERE ra.space_id = $1
             AND ro.object_type = ANY($2::retrieval_object_type[])
             AND ra.normalized_alias = ANY($3::text[])
-            AND ($4::varchar[] IS NULL OR (ro.object_kind = ANY($4::varchar[]) AND sok.id IS NOT NULL))
+            AND ($4::varchar[] IS NULL OR (ro.object_profile = ANY($4::varchar[]) AND sok.id IS NOT NULL))
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
-                object_type, object_id, object_kind, object_kind_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at, confidence
+                object_type, object_id, object_profile, object_profile_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at, confidence
            FROM matches
           ORDER BY object_type, object_id, confidence DESC, updated_at DESC, object_id ASC
        )
-       SELECT object_type, object_id, object_kind, object_kind_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at,
+       SELECT object_type, object_id, object_profile, object_profile_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at,
               row_number() OVER (
                 ORDER BY confidence DESC, updated_at DESC, object_id ASC
               ) AS rank
          FROM best
         ORDER BY rank
         LIMIT $5`,
-      [spaceId, objectTypes, aliases, objectKindParam, armFetchLimit(maxResults)],
+      [spaceId, objectTypes, aliases, objectProfileParam, armFetchLimit(maxResults)],
     );
     return result.rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
-      objectKind: row.object_kind ?? null,
-      objectKindLabel: row.object_kind_label ?? null,
+      objectProfile: row.object_profile ?? null,
+      objectProfileLabel: row.object_profile_label ?? null,
       title: row.title,
       snippet: row.snippet,
       matchedFields: [row.matched_field ?? "alias"],
@@ -823,7 +882,7 @@ export class RetrievalSearchService {
   private async lexicalArm(
     spaceId: string,
     objectTypes: RetrievalObjectType[],
-    objectKinds: string[],
+    objectProfiles: string[],
     query: string,
     maxResults: number,
   ): Promise<SearchCandidate[]> {
@@ -831,7 +890,7 @@ export class RetrievalSearchService {
     if (!trimmed) return [];
     const tokens = tokenizeSimple(query);
     const like = `%${trimmed}%`;
-    const objectKindParam = objectKindFilterParam(objectKinds);
+    const objectProfileParam = objectProfileFilterParam(objectProfiles);
     // ts_rank_cd normalization flag 1 divides the rank by 1 + log(document
     // length): a BM25-style length penalty so a long page that merely mentions
     // the terms does not outrank a focused page (W5 interim BM25 stance — full
@@ -840,8 +899,8 @@ export class RetrievalSearchService {
     const result = await this.db.query<RetrievalCandidateRow>(
       `WITH matches AS (
          SELECT ro.object_type, ro.object_id,
-                CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_kind END AS object_kind,
-                sok.label AS object_kind_label,
+                CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
+                sok.label AS object_profile_label,
                 ro.title, ro.source_connection_ids_json,
                 rc.plain_text AS snippet,
                 rc.plain_text AS matched_text,
@@ -852,14 +911,14 @@ export class RetrievalSearchService {
            JOIN retrieval_objects ro
              ON ro.id = rc.retrieval_object_id
             AND ro.space_id = rc.space_id
-           LEFT JOIN space_object_kinds sok
+           LEFT JOIN space_object_profiles sok
              ON sok.space_id = ro.space_id
             AND sok.base_object_type = ro.object_type
-            AND sok.key = ro.object_kind
+            AND sok.key = ro.object_profile
             AND sok.status = 'active'
           WHERE rc.space_id = $1
             AND ro.object_type = ANY($2::retrieval_object_type[])
-            AND ($5::varchar[] IS NULL OR (ro.object_kind = ANY($5::varchar[]) AND sok.id IS NOT NULL))
+            AND ($5::varchar[] IS NULL OR (ro.object_profile = ANY($5::varchar[]) AND sok.id IS NOT NULL))
             AND (
               rc.tsv @@ plainto_tsquery('simple', $4)
               OR rc.plain_text ILIKE $3
@@ -867,24 +926,24 @@ export class RetrievalSearchService {
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
-                object_type, object_id, object_kind, object_kind_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at, lexical_score
+                object_type, object_id, object_profile, object_profile_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at, lexical_score
            FROM matches
           ORDER BY object_type, object_id, lexical_score DESC, updated_at DESC, object_id ASC
        )
-       SELECT object_type, object_id, object_kind, object_kind_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at,
+       SELECT object_type, object_id, object_profile, object_profile_label, title, source_connection_ids_json, snippet, matched_text, matched_field, updated_at,
               row_number() OVER (
                 ORDER BY lexical_score DESC, updated_at DESC, object_id ASC
               ) AS rank
          FROM best
         ORDER BY rank
         LIMIT $6`,
-      [spaceId, objectTypes, like, tokens.join(" "), objectKindParam, armFetchLimit(maxResults)],
+      [spaceId, objectTypes, like, tokens.join(" "), objectProfileParam, armFetchLimit(maxResults)],
     );
     return result.rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
-      objectKind: row.object_kind ?? null,
-      objectKindLabel: row.object_kind_label ?? null,
+      objectProfile: row.object_profile ?? null,
+      objectProfileLabel: row.object_profile_label ?? null,
       title: row.title,
       snippet: row.snippet,
       matchedFields: ["plain_text"],
@@ -917,7 +976,7 @@ export class RetrievalSearchService {
   private async graphArm(
     spaceId: string,
     objectTypes: RetrievalObjectType[],
-    objectKinds: string[],
+    objectProfiles: string[],
     seeds: SearchCandidate[],
     maxResults: number,
     viewerUserId: string,
@@ -929,7 +988,7 @@ export class RetrievalSearchService {
       spaceId,
       expandObjectTypes: objectTypes,
       returnObjectTypes: objectTypes,
-      returnObjectKinds: objectKinds,
+      returnObjectProfiles: objectProfiles,
       seeds,
       initialVisitedRefs: seeds.map(candidateKey),
       maxResults,
@@ -994,7 +1053,7 @@ export class RetrievalSearchService {
     const targetOnlySeedSearch = this.usesOnlyTargetSeedTypes(intent, seedTypes);
     if (targetOnlySeedSearch) {
       const directTargets = seeds
-        .filter((seed) => returnObjectTypes.includes(seed.objectType) && objectKindMatches(seed, controls.objectKinds))
+        .filter((seed) => returnObjectTypes.includes(seed.objectType) && objectProfileMatches(seed, controls.objectProfiles))
         .map((seed, index) => ({
           ...seed,
           arm: "relational",
@@ -1046,7 +1105,7 @@ export class RetrievalSearchService {
       spaceId: input.spaceId,
       expandObjectTypes: registeredTypes,
       returnObjectTypes,
-      returnObjectKinds: controls.objectKinds,
+      returnObjectProfiles: controls.objectProfiles,
       seeds,
       initialVisitedRefs: seeds.map(candidateKey),
       maxResults: controls.maxResults,
@@ -1102,7 +1161,7 @@ export class RetrievalSearchService {
     viewerUserId: string,
     agentId: string | null | undefined,
     objectTypes: RetrievalObjectType[],
-    objectKinds: string[],
+    objectProfiles: string[],
     phrases: string[],
     maxResults: number,
     cache: Map<string, RevalidatedObject | null>,
@@ -1111,9 +1170,9 @@ export class RetrievalSearchService {
     for (const phrase of phrases) {
       const normalized = normalizeAlias(phrase);
       if (normalized) {
-        candidates.push(...await this.exactAliasArm(spaceId, objectTypes, objectKinds, normalized, maxResults));
+        candidates.push(...await this.exactAliasArm(spaceId, objectTypes, objectProfiles, normalized, maxResults));
       }
-      candidates.push(...await this.lexicalArm(spaceId, objectTypes, objectKinds, phrase, maxResults));
+      candidates.push(...await this.lexicalArm(spaceId, objectTypes, objectProfiles, phrase, maxResults));
     }
     await this.revalidateCandidates(candidates, viewerUserId, spaceId, cache, agentId);
     return pickGraphSeeds(candidates, cache);
@@ -1154,7 +1213,7 @@ export class RetrievalSearchService {
 
         const canReturn =
           returnTypes.has(neighbor.objectType) &&
-          objectKindMatches(neighbor, options.returnObjectKinds) &&
+          objectProfileMatches(neighbor, options.returnObjectProfiles) &&
           (!options.returnRefs || options.returnRefs.has(key));
         if (canReturn && out.length < fetchLimit) {
           rank += 1;
@@ -1191,11 +1250,11 @@ export class RetrievalSearchService {
     const result = await this.db.query<GraphCandidateRow>(
       `WITH neighbors AS (
          SELECT ro.object_type, ro.object_id,
-                CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_kind END AS object_kind,
-                sok.label AS object_kind_label,
+                CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
+                sok.label AS object_profile_label,
                 ro.title, ro.source_connection_ids_json,
                 rc.plain_text AS snippet,
-                e.relation_type,
+                e.link_type,
                 e.edge_origin,
                 e.confidence AS edge_confidence,
                 COALESCE(ro.source_updated_at, ro.updated_at) AS updated_at
@@ -1206,10 +1265,10 @@ export class RetrievalSearchService {
               (ro.object_type = e.to_object_type AND ro.object_id = e.to_object_id)
               OR (ro.object_type = e.from_object_type AND ro.object_id = e.from_object_id)
             )
-           LEFT JOIN space_object_kinds sok
+           LEFT JOIN space_object_profiles sok
              ON sok.space_id = ro.space_id
             AND sok.base_object_type = ro.object_type
-            AND sok.key = ro.object_kind
+            AND sok.key = ro.object_profile
             AND sok.status = 'active'
            LEFT JOIN LATERAL (
              SELECT plain_text
@@ -1229,11 +1288,11 @@ export class RetrievalSearchService {
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
-                object_type, object_id, object_kind, object_kind_label, title, source_connection_ids_json, snippet, relation_type, edge_origin, edge_confidence, updated_at
+                object_type, object_id, object_profile, object_profile_label, title, source_connection_ids_json, snippet, link_type, edge_origin, edge_confidence, updated_at
            FROM neighbors
           ORDER BY object_type, object_id, edge_confidence DESC NULLS LAST, updated_at DESC, object_id ASC
        )
-       SELECT object_type, object_id, object_kind, object_kind_label, title, source_connection_ids_json, snippet, relation_type, edge_origin, edge_confidence, updated_at,
+       SELECT object_type, object_id, object_profile, object_profile_label, title, source_connection_ids_json, snippet, link_type, edge_origin, edge_confidence, updated_at,
               row_number() OVER (
                 ORDER BY edge_confidence DESC NULLS LAST, updated_at DESC, object_id ASC
               ) AS rank
@@ -1245,14 +1304,14 @@ export class RetrievalSearchService {
     return result.rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
-      objectKind: row.object_kind ?? null,
-      objectKindLabel: row.object_kind_label ?? null,
+      objectProfile: row.object_profile ?? null,
+      objectProfileLabel: row.object_profile_label ?? null,
       title: row.title,
       snippet: row.snippet,
-      matchedFields: ["retrieval_edge", `relation:${row.relation_type}`],
+      matchedFields: ["retrieval_edge", `relation:${row.link_type}`],
       evidence: {
         kind: "graph_neighbor",
-        field: row.relation_type,
+        field: row.link_type,
         source: row.edge_origin,
         confidence: typeof row.edge_confidence === "number" ? row.edge_confidence : 0.65,
       },
@@ -1267,7 +1326,7 @@ export class RetrievalSearchService {
     spaceId: string,
     viewerUserId: string,
     objectTypes: RetrievalObjectType[],
-    objectKinds: string[],
+    objectProfiles: string[],
     query: string,
     maxResults: number,
     useCache: boolean,
@@ -1299,12 +1358,12 @@ export class RetrievalSearchService {
       ? `rc.embedding::halfvec(${queryDimensions}) <=> $3::halfvec(${queryDimensions})`
       : `rc.embedding <=> $3::vector`;
     const dimPredicate = useAnn ? `rc.embedding_dimensions = ${queryDimensions}` : `rc.embedding_dimensions = $4`;
-    const objectKindParamIndex = useAnn ? "$4" : "$5";
+    const objectProfileParamIndex = useAnn ? "$4" : "$5";
     const limitParam = useAnn ? "$5" : "$6";
-    const objectKindParam = objectKindFilterParam(objectKinds);
+    const objectProfileParam = objectProfileFilterParam(objectProfiles);
     const params = useAnn
-      ? [spaceId, objectTypes, toVectorLiteral(queryVector), objectKindParam, fetchLimit]
-      : [spaceId, objectTypes, toVectorLiteral(queryVector), queryDimensions, objectKindParam, fetchLimit];
+      ? [spaceId, objectTypes, toVectorLiteral(queryVector), objectProfileParam, fetchLimit]
+      : [spaceId, objectTypes, toVectorLiteral(queryVector), queryDimensions, objectProfileParam, fetchLimit];
     const result = await this.db.query<VectorCandidateRow>(
        `WITH nearest AS (
          SELECT rc.retrieval_object_id, rc.object_type, rc.object_id, rc.plain_text,
@@ -1313,16 +1372,16 @@ export class RetrievalSearchService {
            JOIN retrieval_objects ro_filter
              ON ro_filter.id = rc.retrieval_object_id
             AND ro_filter.space_id = rc.space_id
-           LEFT JOIN space_object_kinds sok_filter
+           LEFT JOIN space_object_profiles sok_filter
              ON sok_filter.space_id = ro_filter.space_id
             AND sok_filter.base_object_type = ro_filter.object_type
-            AND sok_filter.key = ro_filter.object_kind
+            AND sok_filter.key = ro_filter.object_profile
             AND sok_filter.status = 'active'
           WHERE rc.space_id = $1
             AND rc.object_type = ANY($2::retrieval_object_type[])
             AND rc.embedding IS NOT NULL
             AND ${dimPredicate}
-            AND (${objectKindParamIndex}::varchar[] IS NULL OR (ro_filter.object_kind = ANY(${objectKindParamIndex}::varchar[]) AND sok_filter.id IS NOT NULL))
+            AND (${objectProfileParamIndex}::varchar[] IS NULL OR (ro_filter.object_profile = ANY(${objectProfileParamIndex}::varchar[]) AND sok_filter.id IS NOT NULL))
           ORDER BY ${distanceExpr}
           LIMIT ${limitParam}
        ),
@@ -1333,28 +1392,28 @@ export class RetrievalSearchService {
           ORDER BY object_type, object_id, distance ASC
        )
        SELECT b.object_type, b.object_id,
-              CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_kind END AS object_kind,
-              sok.label AS object_kind_label,
+              CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
+              sok.label AS object_profile_label,
               ro.title, ro.source_connection_ids_json, b.plain_text AS snippet, b.distance,
               COALESCE(ro.source_updated_at, ro.updated_at) AS updated_at,
               row_number() OVER (ORDER BY b.distance ASC, b.object_id ASC) AS rank
          FROM best b
          JOIN retrieval_objects ro
            ON ro.id = b.retrieval_object_id AND ro.space_id = $1
-         LEFT JOIN space_object_kinds sok
+         LEFT JOIN space_object_profiles sok
            ON sok.space_id = ro.space_id
           AND sok.base_object_type = ro.object_type
-          AND sok.key = ro.object_kind
+          AND sok.key = ro.object_profile
           AND sok.status = 'active'
-        WHERE (${objectKindParamIndex}::varchar[] IS NULL OR (ro.object_kind = ANY(${objectKindParamIndex}::varchar[]) AND sok.id IS NOT NULL))
+        WHERE (${objectProfileParamIndex}::varchar[] IS NULL OR (ro.object_profile = ANY(${objectProfileParamIndex}::varchar[]) AND sok.id IS NOT NULL))
         ORDER BY rank`,
       params,
     );
     return result.rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
-      objectKind: row.object_kind ?? null,
-      objectKindLabel: row.object_kind_label ?? null,
+      objectProfile: row.object_profile ?? null,
+      objectProfileLabel: row.object_profile_label ?? null,
       title: row.title,
       snippet: row.snippet,
       matchedFields: ["embedding"],
@@ -1382,8 +1441,8 @@ export class RetrievalSearchService {
     if (!this.registry.objectTypes().includes(objectType)) return null;
     const result = await this.db.query<RetrievalCandidateRow>(
       `SELECT ro.object_type, ro.object_id,
-              CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_kind END AS object_kind,
-              sok.label AS object_kind_label,
+              CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
+              sok.label AS object_profile_label,
               ro.title, ro.source_connection_ids_json,
               rc.plain_text AS snippet,
               NULL::text AS matched_text,
@@ -1391,10 +1450,10 @@ export class RetrievalSearchService {
               COALESCE(ro.source_updated_at, ro.updated_at) AS updated_at,
               1 AS rank
          FROM retrieval_objects ro
-         LEFT JOIN space_object_kinds sok
+         LEFT JOIN space_object_profiles sok
            ON sok.space_id = ro.space_id
           AND sok.base_object_type = ro.object_type
-          AND sok.key = ro.object_kind
+          AND sok.key = ro.object_profile
           AND sok.status = 'active'
          LEFT JOIN LATERAL (
            SELECT plain_text
@@ -1414,8 +1473,8 @@ export class RetrievalSearchService {
     return {
       objectType: row.object_type,
       objectId: row.object_id,
-      objectKind: row.object_kind ?? null,
-      objectKindLabel: row.object_kind_label ?? null,
+      objectProfile: row.object_profile ?? null,
+      objectProfileLabel: row.object_profile_label ?? null,
       title: row.title,
       snippet: row.snippet,
       matchedFields: [],
@@ -1441,7 +1500,7 @@ export class RetrievalSearchService {
     input: SearchInput,
     query: string,
     objectTypes: RetrievalObjectType[],
-    objectKinds: string[],
+    objectProfiles: string[],
     maxResults: number,
     runVector: boolean,
     useCache: boolean,
@@ -1462,7 +1521,7 @@ export class RetrievalSearchService {
 
     const lexical = (
       await Promise.all(
-        variantQueries.map((q) => this.lexicalArm(input.spaceId, objectTypes, objectKinds, q, maxResults)),
+        variantQueries.map((q) => this.lexicalArm(input.spaceId, objectTypes, objectProfiles, q, maxResults)),
       )
     ).flat();
     const vector = runVector
@@ -1472,7 +1531,7 @@ export class RetrievalSearchService {
               input.spaceId,
               input.viewerUserId,
               objectTypes,
-              objectKinds,
+              objectProfiles,
               q,
               maxResults,
               useCache,
@@ -1659,11 +1718,11 @@ export class RetrievalSearchService {
   }
 }
 
-function sanitizeObjectKinds(objectKinds: string[] | undefined): string[] {
-  if (!objectKinds?.length) return [];
+function sanitizeObjectProfiles(objectProfiles: string[] | undefined): string[] {
+  if (!objectProfiles?.length) return [];
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const value of objectKinds) {
+  for (const value of objectProfiles) {
     if (typeof value !== "string") continue;
     const key = value.trim();
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(key)) continue;
@@ -1675,16 +1734,16 @@ function sanitizeObjectKinds(objectKinds: string[] | undefined): string[] {
   return out;
 }
 
-function objectKindFilterParam(objectKinds: readonly string[]): string[] | null {
-  return objectKinds.length > 0 ? [...objectKinds] : null;
+function objectProfileFilterParam(objectProfiles: readonly string[]): string[] | null {
+  return objectProfiles.length > 0 ? [...objectProfiles] : null;
 }
 
-function objectKindMatches(
-  candidate: Pick<SearchCandidate, "objectKind">,
-  objectKinds: readonly string[],
+function objectProfileMatches(
+  candidate: Pick<SearchCandidate, "objectProfile">,
+  objectProfiles: readonly string[],
 ): boolean {
-  if (objectKinds.length === 0) return true;
-  return Boolean(candidate.objectKind && objectKinds.includes(candidate.objectKind));
+  if (objectProfiles.length === 0) return true;
+  return Boolean(candidate.objectProfile && objectProfiles.includes(candidate.objectProfile));
 }
 
 /** Aggregate-safe histogram of the visible candidates' final scores (§2.8). */

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import type {
@@ -15,6 +14,7 @@ import { contentResourceDefinition } from "../access/contentAccessRegistry";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
 import { resolveOversightLevel } from "../access/oversightResolver";
 import { memorySensitivityReadSql } from "./memorySensitivitySql";
+import { ContentAccessAuditService } from "../contentAccess/audit";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -33,9 +33,7 @@ export interface MemoryListFilters {
   namespace?: string | null;
   memoryType?: string | null;
   status?: string | null;
-  projectFolderId?: string | null;
   projectId?: string | null;
-  includeSystem?: boolean;
   limit: number;
   offset: number;
 }
@@ -45,20 +43,7 @@ export interface MemorySearchFilters {
   scope?: string | null;
   namespace?: string | null;
   memoryType?: string | null;
-  projectFolderId?: string | null;
-  includeSystem?: boolean;
   limit: number;
-}
-
-/**
- * Whether `scope=system` seed memories (system policy rows) should be visible.
- * The user-facing read surface hides them by default so they do not show up as
- * user memory hits; an explicit `scope=system` filter or `includeSystem` opts in.
- */
-function includeSystemScopeFor(
-  filters: { scope?: string | null; includeSystem?: boolean },
-): boolean {
-  return filters.includeSystem === true || filters.scope === "system";
 }
 
 /** Raised when a filter references a project that is not in the space. */
@@ -66,7 +51,7 @@ export class MemoryReadValidationError extends Error {}
 
 // All columns the read model needs: the MemoryOut wire fields plus the columns
 // canReadMemory inspects.
-export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id, project_folder_id,
+export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id,
   scope_type, namespace, memory_type, title, content, status, visibility, access_level,
   sensitivity_level, last_confirmed_at, confidence, importance,
   source_id, created_by, created_at, updated_at, deleted_at, version, tags,
@@ -108,7 +93,7 @@ const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
  *
  * Read-access logging: `get` writes one `explicit_read` trace and `search`
  * writes one `search_hit` trace per
- * returned row into `memory_access_logs`, and bumps the accessed memory's
+ * returned cross-person row into `content_access_logs`, and bumps the accessed memory's
  * `access_count` / `last_accessed_at` (column-scoped UPDATE; the read role never
  * gets table-wide `memory_entries` write). `list` is never logged.
  */
@@ -165,15 +150,11 @@ export class PgMemoryReadRepository {
         ORDER BY importance DESC, updated_at DESC`,
       params,
     );
-    // System-scope seed memories are hidden unless explicitly opted in.
-    const includeSystem = includeSystemScopeFor(filters);
     const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
     const readable = result.rows.filter((row) =>
       canReadMemory(row, {
         userId,
         spaceId,
-        projectFolderId: filters.projectFolderId ?? null,
-        includeSystemScope: includeSystem && row.scope_type === "system",
         oversightLevel,
       }),
     );
@@ -196,7 +177,6 @@ export class PgMemoryReadRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    projectFolderId: string | null,
   ): Promise<MemoryOut | null> {
     const result = await this.db.query<MemoryRow>(
       `SELECT ${MEMORY_COLUMNS},
@@ -209,10 +189,9 @@ export class PgMemoryReadRepository {
     );
     const row = result.rows[0];
     if (!row) return null;
-    const includeSystemScope = row.scope_type === "system";
     const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
     if (
-      !canReadMemory(row, { userId, spaceId, projectFolderId, includeSystemScope, oversightLevel })
+      !canReadMemory(row, { userId, spaceId, oversightLevel })
     ) {
       return null;
     }
@@ -262,16 +241,11 @@ export class PgMemoryReadRepository {
         ORDER BY importance DESC, confidence DESC`,
       params,
     );
-    // System-scope seed memories are hidden from search unless explicitly
-    // opted in (an `include_system` flag or an explicit `scope=system` filter).
-    const includeSystem = includeSystemScopeFor(filters);
     const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
     const readable = result.rows.filter((row) =>
       canReadMemory(row, {
         userId,
         spaceId,
-        projectFolderId: filters.projectFolderId ?? null,
-        includeSystemScope: includeSystem && row.scope_type === "system",
         oversightLevel,
       }),
     );
@@ -285,35 +259,6 @@ export class PgMemoryReadRepository {
       "memory search",
     );
     return returned.map((row) => this.serialize(row, userId));
-  }
-
-  /**
-   * Log the memories surfaced by a retrieval create-safety / duplicate check.
-   * Create-safety only returns rows the viewer could already read, so it is a
-   * read and must stay auditable like `search`. Only the final returned matches
-   * are logged — never the candidates the engine over-fetched and then dropped
-   * during revalidation (those can be cross-space/private rows the caller cannot
-   * read, so logging their ids would leak existence).
-   */
-  async recordCreateSafetyReads(
-    memoryIds: readonly string[],
-    spaceId: string,
-    userId: string,
-  ): Promise<void> {
-    await this.recordReads(memoryIds, spaceId, userId, "create_safety_hit", "memory create-safety");
-  }
-
-  /**
-   * Log the memories returned by the retrieval-backed memory search. Like the
-   * legacy `search`, this is a `search_hit`; only the final returned rows are
-   * logged, never candidates dropped during revalidation.
-   */
-  async recordRetrievalSearchReads(
-    memoryIds: readonly string[],
-    spaceId: string,
-    userId: string,
-  ): Promise<void> {
-    await this.recordReads(memoryIds, spaceId, userId, "search_hit", "memory retrieval search");
   }
 
   /**
@@ -349,7 +294,7 @@ export class PgMemoryReadRepository {
   }
 
   /**
-   * Append `memory_access_logs` traces for the returned rows and bump each
+   * Append cross-person `content_access_logs` traces for the returned rows and bump each
    * memory's `access_count` / `last_accessed_at`: one trace row per read,
    * viewer user only (no agent/run), and a column-scoped counter UPDATE.
    * `last_retrieved_at` is left untouched; context injection owns that field.
@@ -362,33 +307,15 @@ export class PgMemoryReadRepository {
     reason: string | null,
   ): Promise<void> {
     if (memoryIds.length === 0) return;
-    const now = new Date().toISOString();
+    await new ContentAccessAuditService(this.db).recordReads({
+      spaceId,
+      resourceType: "memory",
+      resourceIds: memoryIds,
+      viewerUserId: userId,
+      accessType,
+      reason,
+    });
 
-    const logCols =
-      "id, space_id, memory_id, user_id, agent_id, run_id, access_type, reason, accessed_at";
-    const logGroups: string[] = [];
-    const logParams: unknown[] = [];
-    for (const memoryId of memoryIds) {
-      const base = logParams.length;
-      logGroups.push(
-        `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, NULL, NULL, ` +
-          `$${base + 5}, $${base + 6}, $${base + 7})`,
-      );
-      logParams.push(randomUUID(), spaceId, memoryId, userId, accessType, reason, now);
-    }
-    await this.db.query(
-      `INSERT INTO memory_access_logs (${logCols}) VALUES ${logGroups.join(", ")}`,
-      logParams,
-    );
-
-    const idPlaceholders = memoryIds.map((_, i) => `$${i + 3}`).join(", ");
-    await this.db.query(
-      `UPDATE memory_entries
-          SET access_count = COALESCE(access_count, 0) + 1,
-              last_accessed_at = $1
-        WHERE space_id = $2 AND id IN (${idPlaceholders})`,
-      [now, spaceId, ...memoryIds],
-    );
   }
 
   /**
@@ -432,13 +359,15 @@ export class PgMemoryReadRepository {
  * redaction (shared by the read model and the apply accept-result builder). */
 export function serializeMemoryRow(row: MemoryRow, viewerUserId: string): MemoryOut {
   const redact = shouldRedactMemoryContent(row, viewerUserId);
+  if (row.scope_type !== "user" && row.scope_type !== "project") {
+    throw new MemoryReadValidationError("memory scope must be user or project");
+  }
   return {
     id: row.id,
       space_id: row.space_id,
       subject_user_id: row.subject_user_id,
       owner_user_id: row.owner_user_id,
-      project_folder_id: row.project_folder_id,
-      scope: row.scope_type ?? "",
+      scope: row.scope_type,
       namespace: row.namespace,
       type: row.memory_type,
       title: row.title,

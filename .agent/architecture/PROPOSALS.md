@@ -142,7 +142,7 @@ Proposals are the product review and application boundary for durable mutations.
 - Agent-generated Knowledge proposals use the same review boundary:
   Activity, Run, or Artifact source -> `knowledge_*` proposal -> human
   acceptance -> active Knowledge record. They must not auto-activate and must
-  not auto-enter Memory or ContextBuilder.
+  not auto-enter Memory or an accepted Runtime Context Delivery.
 - Knowledge proposal apply is implemented through the server
   `ProposalApplierRegistry`. Source monitoring has an explicit code boundary
   for Knowledge, but the full evaluator for external or untrusted

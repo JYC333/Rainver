@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Save, Share2, Shield } from 'lucide-react'
+import { ExternalLink, Save, Share2, Shield } from 'lucide-react'
+import { SpaceLink as Link } from '../core/spaceNav'
 import { toast } from 'sonner'
 import type { PublicationResourceType } from '@agent-space/protocol'
 import { contentAccessApi, publicationsApi, spacesApi } from '../api/client'
@@ -7,7 +8,9 @@ import { useSpace } from '../contexts/SpaceContext'
 import { errMsg } from '../lib/utils'
 import type {
   ContentAccessLevel,
+  ContentAccessLogEntry,
   ContentAccessPolicy,
+  ContentDemotionDisclosure,
   ContentVisibility,
   SpaceMember,
 } from '../types/api'
@@ -29,12 +32,6 @@ interface ContentAccessControlProps {
   resourceId: string
   ownerUserId: string | null
 }
-
-const VISIBILITY_OPTIONS: Array<{ value: ContentVisibility; label: string }> = [
-  { value: 'private', label: 'Private' },
-  { value: 'space_shared', label: 'Space members' },
-  { value: 'selected_users', label: 'Selected members' },
-]
 
 const ACCESS_OPTIONS: Array<{ value: ContentAccessLevel; label: string }> = [
   { value: 'full', label: 'Full' },
@@ -60,10 +57,13 @@ export function ContentAccessControl({
   const [policy, setPolicy] = useState<ContentAccessPolicy | null>(null)
   const [members, setMembers] = useState<SpaceMember[]>([])
   const [visibility, setVisibility] = useState<ContentVisibility>('private')
+  const [projectId, setProjectId] = useState<string | null>(null)
   const [accessLevel, setAccessLevel] = useState<ContentAccessLevel>('full')
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set())
   const [grantLevels, setGrantLevels] = useState<Record<string, ContentAccessLevel>>({})
   const [targetSpaces, setTargetSpaces] = useState<Set<string>>(new Set())
+  const [demotionDisclosure, setDemotionDisclosure] = useState<ContentDemotionDisclosure | null>(null)
+  const [accessLogs, setAccessLogs] = useState<ContentAccessLogEntry[] | null>(null)
 
   const activeSpace = spaces.find(space => space.id === activeSpaceId)
   const role = activeSpace?.role
@@ -88,9 +88,12 @@ export function ContentAccessControl({
       setPolicy(nextPolicy)
       setMembers(nextMembers)
       setVisibility(nextPolicy.visibility)
+      setProjectId(nextPolicy.project_id)
       setAccessLevel(nextPolicy.access_level)
       setSelectedUsers(new Set(nextPolicy.grants.map(grant => grant.user_id)))
       setGrantLevels(Object.fromEntries(nextPolicy.grants.map(grant => [grant.user_id, grant.access_level])))
+      setDemotionDisclosure(null)
+      setAccessLogs(null)
     }).catch(error => {
       if (!cancelled) toast.error(errMsg(error))
     }).finally(() => {
@@ -123,22 +126,47 @@ export function ContentAccessControl({
   async function savePolicy() {
     setSaving(true)
     try {
+      const demoting = policy ? narrowsVisibility(policy.visibility, visibility) : false
+      if (demoting && demotionDisclosure?.target_visibility !== visibility) {
+        const disclosure = await contentAccessApi.discloseDemotion(
+          resourceType,
+          resourceId,
+          visibility as Exclude<ContentVisibility, 'space_shared'>,
+        )
+        setDemotionDisclosure(disclosure)
+        toast.info('Review the exposure summary before confirming')
+        return
+      }
       const updated = await contentAccessApi.update(resourceType, resourceId, {
         visibility,
         access_level: accessLevel,
+        project_id: projectId,
         grants: visibility === 'selected_users' || visibility === 'space_shared'
           ? [...selectedUsers].map(memberId => ({
             user_id: memberId,
             access_level: grantLevels[memberId] ?? 'full',
           }))
           : [],
+        ...(demoting && demotionDisclosure
+          ? { demotion_confirmation_id: demotionDisclosure.confirmation_id }
+          : {}),
       })
       setPolicy(updated)
+      setDemotionDisclosure(null)
       toast.success('Access updated')
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function loadAccessLogs() {
+    try {
+      const page = await contentAccessApi.accessLogs(resourceType, resourceId)
+      setAccessLogs(page.items)
+    } catch (error) {
+      toast.error(errMsg(error))
     }
   }
 
@@ -162,6 +190,7 @@ export function ContentAccessControl({
 
   const grantableMembers = members.filter(member => member.user_id !== policy?.owner_user_id)
   const invalidPolicy = visibility === 'selected_users' && selectedUsers.size === 0
+  const hasProjectScope = Boolean(policy?.project_id)
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -183,25 +212,81 @@ export function ContentAccessControl({
         ) : (
           <div className="space-y-6">
             <section className="space-y-3">
-              <Label>Visibility</Label>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="group" aria-label="Visibility">
-                {VISIBILITY_OPTIONS.map(option => (
-                  <Button
-                    key={option.value}
-                    type="button"
-                    variant={visibility === option.value ? 'secondary' : 'outline'}
-                    onClick={() => setVisibility(option.value)}
-                  >
-                    {option.label}
-                  </Button>
-                ))}
+              <Label>Sharing</Label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="group" aria-label="Sharing scope">
+                <Button type="button" variant={visibility === 'private' ? 'secondary' : 'outline'} onClick={() => setVisibility('private')}>
+                  Only me
+                </Button>
+                <Button type="button" disabled={!hasProjectScope} variant={visibility === 'space_shared' && projectId !== null ? 'secondary' : 'outline'} onClick={() => { setVisibility('space_shared'); setProjectId(policy?.project_id ?? null) }}>
+                  In this project
+                </Button>
+                <Button type="button" variant={visibility === 'space_shared' && projectId === null ? 'secondary' : 'outline'} onClick={() => { setVisibility('space_shared'); setProjectId(null) }}>
+                  Whole Space
+                </Button>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Creation context determines Project scope. Publishing to the whole Space is an explicit boundary change.
+              </p>
               {oversightMode !== 'none' && visibility !== 'space_shared' && (
                 <p className="text-xs text-muted-foreground">
                   Space admins can view this content (oversight: {oversightMode}).
                 </p>
               )}
             </section>
+
+            <section className="space-y-2">
+              <Label>Explicit share</Label>
+              <Button type="button" variant={visibility === 'selected_users' ? 'secondary' : 'outline'} onClick={() => setVisibility('selected_users')}>
+                Selected people
+              </Button>
+            </section>
+
+            {ownerUserId === userId && (
+              <section className="space-y-3 border-t border-border pt-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label>Cross-person access history</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">Only reads by another person are recorded. This history is visible only to you.</p>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void loadAccessLogs()}>Load</Button>
+                </div>
+                {accessLogs && (
+                  <div className="space-y-2 rounded-md border border-border p-3">
+                    {accessLogs.length === 0 && <p className="text-sm text-muted-foreground">No cross-person reads recorded.</p>}
+                    {accessLogs.map(log => (
+                      <div key={log.id} className="flex flex-wrap justify-between gap-2 text-sm">
+                        <span>{log.viewer_display_name} · {log.access_type}</span>
+                        <span className="text-xs text-muted-foreground">{new Date(log.accessed_at).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {demotionDisclosure && demotionDisclosure.target_visibility === visibility && (
+              <section className="space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
+                <div>
+                  <Label>Exposure cannot be retracted</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">Making this content private only changes future access. Review everything that may retain information from it.</p>
+                </div>
+                <ExposureList title="Readers" empty="No cross-person reads recorded." items={demotionDisclosure.exposure.readers.map(reader => ({
+                  key: reader.user_id,
+                  label: `${reader.display_name} (${reader.access_count} read${reader.access_count === 1 ? '' : 's'})`,
+                  link: reader.link,
+                }))} />
+                <ExposureList title="Runs that consumed it" empty="No consuming Runs recorded." items={demotionDisclosure.exposure.consuming_runs.map(run => ({
+                  key: run.run_id,
+                  label: `${run.title} (${run.status})`,
+                  link: run.link,
+                }))} />
+                <ExposureList title="Derived outputs still shared" empty="No shared derived outputs found." items={demotionDisclosure.exposure.shared_derived_outputs.map(output => ({
+                  key: `${output.resource_type}:${output.id}`,
+                  label: `${output.title} (${output.visibility})`,
+                  link: output.link,
+                }))} />
+              </section>
+            )}
 
             <section className="space-y-3">
               <Label>Disclosure</Label>
@@ -305,10 +390,32 @@ export function ContentAccessControl({
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
           <Button disabled={loading || !policy || saving || invalidPolicy} onClick={savePolicy}>
-            <Save className="size-4" />{saving ? 'Saving...' : 'Save access'}
+            <Save className="size-4" />{saving ? 'Saving...' : demotionDisclosure?.target_visibility === visibility ? 'Confirm demotion' : 'Save access'}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
+}
+
+function ExposureList({ title, empty, items }: {
+  title: string
+  empty: string
+  items: Array<{ key: string; label: string; link: string }>
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium">{title}</p>
+      {items.length === 0 ? <p className="text-xs text-muted-foreground">{empty}</p> : items.map(item => (
+        <Link key={item.key} to={item.link} className="flex items-center gap-1 text-xs text-accent-foreground hover:underline">
+          {item.label}<ExternalLink className="size-3" />
+        </Link>
+      ))}
+    </div>
+  )
+}
+
+function narrowsVisibility(current: ContentVisibility, requested: ContentVisibility) {
+  const rank: Record<ContentVisibility, number> = { private: 0, selected_users: 1, space_shared: 2 }
+  return rank[requested] < rank[current]
 }

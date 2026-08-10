@@ -4,7 +4,6 @@ import {
   getRuntimeAdapterSpec,
   isVendorCliAdapter,
   listRuntimeAdapterSpecs,
-  targetFormatForAdapter,
 } from "../src/modules/runtimeAdapters";
 
 describe("runtime adapter catalog", () => {
@@ -33,9 +32,7 @@ describe("runtime adapter catalog", () => {
     expect(getLocalCliRuntimeAdapterSpec("opencode")?.implementation_status).toBe("implemented");
   });
 
-  it("owns adapter context target semantics outside providers", () => {
-    expect(targetFormatForAdapter("claude_code")).toBe("claude");
-    expect(targetFormatForAdapter("codex_cli")).toBe("codex_cli");
+  it("owns adapter execution semantics outside providers", () => {
     expect(getRuntimeAdapterSpec("model_api")?.runtime_kind).toBe("managed_api");
   });
 

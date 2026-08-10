@@ -20,7 +20,7 @@ content:
     concept's synonyms. Qualifiers are ANDed together when the query compiles,
     so a qualifier with too few synonyms can collapse the result set on its
     own — give every qualifier at least 2 synonyms (distinct real phrasings a
-    paper might actually use, not near-duplicates of the value), even if that
+    source might actually use, not near-duplicates of the value), even if that
     means fewer synonyms for core or expansion concepts. Return exactly the
     four required arrays. The server adds schema_version and time_window and
     deterministically compiles provider syntax.

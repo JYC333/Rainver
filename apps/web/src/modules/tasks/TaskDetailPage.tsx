@@ -18,7 +18,6 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../../components/ui/dialog'
 import { PreviewBadge, DryRunBanner } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
-import { ContextArtifactPicker } from '../artifacts/ContextArtifactPicker'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import TaskContractEditor from './TaskContractEditor'
 
@@ -50,7 +49,6 @@ export default function TaskDetailPage() {
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState<string>('live')
   const [agentPick, setAgentPick] = useState<string>('')
-  const [contextArtifactIds, setContextArtifactIds] = useState<string[]>([])
   const [creatingRun, setCreatingRun] = useState(false)
   const [requestingPlan, setRequestingPlan] = useState(false)
   const [activeTab, setActiveTab] = useState<TaskDetailTab>('overview')
@@ -105,7 +103,6 @@ export default function TaskDetailPage() {
       const body: TaskRunCreateBody = { mode }
       const aid = task.assigned_agent_id || agentPick || undefined
       if (aid) body.agent_id = aid
-      if (contextArtifactIds.length > 0) body.context_artifact_ids = contextArtifactIds
       await tasksApi.createRun(taskId, body)
       toast.success('Queued run created')
       await load()
@@ -242,14 +239,6 @@ export default function TaskDetailPage() {
             {creatingRun ? 'Creating…' : 'Create queued run'}
           </Button>
         </div>
-        <ContextArtifactPicker
-          className="pt-2"
-          title="Run context artifacts"
-          description="Selected artifacts will be attached to the queued task run."
-          selectedArtifactIds={contextArtifactIds}
-          onChange={setContextArtifactIds}
-          projectFolderId={task.project_folder_id}
-        />
         {task.task_role === 'source' && (
           <Card className="mt-3 border-primary/30 bg-primary/5 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

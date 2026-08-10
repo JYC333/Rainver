@@ -50,13 +50,15 @@ describe("Project source composite command idempotency", () => {
 
   it("rejects a backfill key owned by another Project binding before creating an operation", async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes("effective_access_level")) return { rows: [{ effective_access_level: "full" }] };
       if(sql.includes("FROM projects"))return{rows:[{id:"project-1",owner_user_id:"user-1",status:"active"}],rowCount:1};
       if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}] };
       if (sql.includes("FROM project_source_bindings") && sql.includes("status='active'")) {
-        return { rows: [{ source_connection_id: "connection-1" }] };
+        return { rows: [{ source_channel_id: "channel-1" }] };
       }
-      if (sql.includes("JOIN source_connectors")) return { rows: [{ connector_key: "arxiv_api" }] };
-      if (sql.includes("effective_access_level")) return { rows: [{ effective_access_level: "full" }] };
+      if (sql.includes("JOIN source_connectors")) {
+        return { rows: [{ connector_key: "arxiv_api", source_connection_id: "connection-1" }] };
+      }
       if (sql.includes("FROM source_backfill_plans") && sql.includes("idempotency_key") && sql.includes("FOR UPDATE")) {
         return { rows: [{
           id: "plan-old",
@@ -67,7 +69,7 @@ describe("Project source composite command idempotency", () => {
           proposal_id: "proposal-old",
         }] };
       }
-      return { rows: [] };
+      throw new Error(`Unexpected SQL: ${sql}`);
     });
     const service = new ProjectSourceProposalService({ query } as unknown as Queryable, loadConfig({}));
 

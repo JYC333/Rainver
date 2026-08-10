@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import type { GraphProjection, GraphProjectionNode } from '@agent-space/protocol'
 import { AlertTriangle, Ban, FlaskConical, HelpCircle } from 'lucide-react'
 import { inquiryApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
 import { useTheme } from '../../../contexts/ThemeContext'
 import type { InquiryCandidate, InquiryThread } from '../../../types/api'
-import { GraphView } from '../../../components/graph'
 import { Badge } from '../../../components/ui/badge'
 import { Card } from '../../../components/ui/card'
 import { EmptyState } from '../../../components/ui/empty-state'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { flattenThreadTree } from './threadGrouping'
+
+const GraphView = lazy(async () => {
+  const graph = await import('../../../components/graph')
+  return { default: graph.GraphView }
+})
 
 /** A blocked Thread shows its blocker instead, so the two never both appear. */
 function nextFocusLabel(thread: InquiryThread): string | null {
@@ -104,12 +108,14 @@ function RelationGraph({ projectId, onSelect }: { projectId: string; onSelect: (
 
   return (
     <div className="py-2">
-      <GraphView
-        projection={projection}
-        themeMode={theme}
-        onNodeSelect={handleNodeSelect}
-        className="h-[520px] w-full"
-      />
+      <Suspense fallback={<Skeleton className="h-[520px] w-full" />}>
+        <GraphView
+          projection={projection}
+          themeMode={theme}
+          onNodeSelect={handleNodeSelect}
+          className="h-[520px] w-full"
+        />
+      </Suspense>
       <p className="mt-2 text-xs text-muted-foreground">
         Select a Thread to open it in the Focus view. Edges are working Project relations, not canonical Ontology relations.
       </p>

@@ -657,24 +657,5 @@
       "message": "No rule matched; registry default for 'source.item_create' is allow",
       "action": "source.item_create"
     }
-  },
-  {
-    "request": {
-      "action": "context.select_evidence",
-      "space_id": "s1"
-    },
-    "decision": {
-      "decision": "allow",
-      "risk_level": "low",
-      "reason_code": "registry_default",
-      "required_approver_role": null,
-      "policy_rule_id": "registry_default",
-      "policy_source": "registry",
-      "approval_capability": null,
-      "audit_code": null,
-      "resource_type": "evidence",
-      "message": "No rule matched; registry default for 'context.select_evidence' is allow",
-      "action": "context.select_evidence"
-    }
   }
 ]

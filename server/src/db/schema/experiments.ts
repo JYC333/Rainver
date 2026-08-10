@@ -4,6 +4,7 @@ import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
 import { projects } from "./projects";
+import { spaceObjects } from "./knowledge";
 import { inquiryThreads } from "./inquiry";
 
 // Experiment Domain. Replaces the earlier, narrower
@@ -15,10 +16,12 @@ import { inquiryThreads } from "./inquiry";
 // conclusion, convertible to an Inquiry Evidence Signal).
 
 export const experimentDefinitions = pgTable("experiment_definitions", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
+	// Ontology object (ADR 0012 / ADR 0011 decision 1). The former `name` is the
+	// root's `title`; identity, visibility, ownership, provenance, and timestamps
+	// live on `space_objects`.
+	objectId: varchar("object_id", { length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
-	name: varchar({ length: 256 }).notNull(),
 	objective: text(),
 	// The primary Hypothesis Thread this Experiment tests. Nullable:
 	// an Experiment may be drafted before a formal Hypothesis Thread exists,
@@ -27,18 +30,15 @@ export const experimentDefinitions = pgTable("experiment_definitions", {
 	status: varchar({ length: 16 }).default('draft').notNull(),
 	baselineRunId: varchar("baseline_run_id", { length: 36 }),
 	bestRunId: varchar("best_run_id", { length: 36 }),
-	createdByUserId: varchar("created_by_user_id", { length: 36 }),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_experiment_definitions_project_id").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
 	index("ix_experiment_definitions_thread_id").using("btree", table.primaryHypothesisThreadId.asc().nullsLast()),
-	unique("uq_experiment_definitions_id_space_id").on(table.id, table.spaceId),
-	unique("uq_experiment_definitions_id_project_space").on(table.id, table.projectId, table.spaceId),
+	unique("uq_experiment_definitions_id_space_id").on(table.objectId, table.spaceId),
+	foreignKey({ columns: [table.objectId, table.spaceId], foreignColumns: [spaceObjects.id, spaceObjects.spaceId], name: "experiment_definitions_object_id_fkey" }).onDelete("cascade"),
+	unique("uq_experiment_definitions_id_project_space").on(table.objectId, table.projectId, table.spaceId),
 	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "experiment_definitions_project_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "experiment_definitions_space_id_fkey" }),
-	foreignKey({ columns: [table.primaryHypothesisThreadId, table.projectId, table.spaceId], foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId], name: "experiment_definitions_thread_fkey" }),
-	foreignKey({ columns: [table.createdByUserId], foreignColumns: [users.id], name: "experiment_definitions_created_by_user_id_fkey" }).onDelete("set null"),
+	foreignKey({ columns: [table.primaryHypothesisThreadId, table.projectId, table.spaceId], foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId], name: "experiment_definitions_thread_fkey" }),
 	foreignKey({ columns: [table.baselineRunId], foreignColumns: [experimentRuns.id], name: "experiment_definitions_baseline_run_delete_fkey" }).onDelete("set null"),
 	foreignKey({ columns: [table.baselineRunId, table.spaceId], foreignColumns: [experimentRuns.id, experimentRuns.spaceId], name: "experiment_definitions_baseline_run_id_fkey" }),
 	foreignKey({ columns: [table.bestRunId], foreignColumns: [experimentRuns.id], name: "experiment_definitions_best_run_delete_fkey" }).onDelete("set null"),
@@ -67,7 +67,7 @@ export const experimentVersions = pgTable("experiment_versions", {
 	index("ix_experiment_versions_definition_id").using("btree", table.spaceId.asc().nullsLast(), table.definitionId.asc().nullsLast()),
 	unique("uq_experiment_versions_id_space_id").on(table.id, table.spaceId),
 	uniqueIndex("uq_experiment_versions_definition_version").using("btree", table.definitionId.asc().nullsLast(), table.version.asc().nullsLast()),
-	foreignKey({ columns: [table.definitionId, table.spaceId], foreignColumns: [experimentDefinitions.id, experimentDefinitions.spaceId], name: "experiment_versions_definition_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.definitionId, table.spaceId], foreignColumns: [experimentDefinitions.objectId, experimentDefinitions.spaceId], name: "experiment_versions_definition_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "experiment_versions_space_id_fkey" }),
 	foreignKey({ columns: [table.createdByUserId], foreignColumns: [users.id], name: "experiment_versions_created_by_user_id_fkey" }).onDelete("set null"),
 	check("ck_experiment_versions_executor_type", sql`(executor_type)::text = ANY (ARRAY[('manual'::character varying)::text, ('managed_code_comparison'::character varying)::text])`),
@@ -154,7 +154,7 @@ export const experimentInterpretations = pgTable("experiment_interpretations", {
 	index("ix_experiment_interpretations_project_id").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
 	unique("uq_experiment_interpretations_id_space_id").on(table.id, table.spaceId),
 	unique("uq_experiment_interpretations_id_project_space").on(table.id, table.projectId, table.spaceId),
-	foreignKey({ columns: [table.definitionId, table.spaceId], foreignColumns: [experimentDefinitions.id, experimentDefinitions.spaceId], name: "experiment_interpretations_definition_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.definitionId, table.spaceId], foreignColumns: [experimentDefinitions.objectId, experimentDefinitions.spaceId], name: "experiment_interpretations_definition_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "experiment_interpretations_project_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "experiment_interpretations_space_id_fkey" }),
 	foreignKey({ columns: [table.reviewedByUserId], foreignColumns: [users.id], name: "experiment_interpretations_reviewed_by_user_id_fkey" }).onDelete("set null"),

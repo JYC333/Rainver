@@ -2,12 +2,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for reconcileOperation refreshing screening_progress
 // ("Papers classified" / "Batches" on the research operation card) on every
@@ -43,6 +44,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-screening-progress-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -107,11 +109,10 @@ beforeEach(async () => {
      ) VALUES ($1,$2,$3,$4,'Monitor','search','https://export.arxiv.org/api/query','{}'::jsonb,'{}'::jsonb,'fp-a','active','daily',$5,$5)`,
     [CHANNEL, SPACE, CONNECTION, OWNER, now],
   );
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','backfill','active','agent_assisted','{}'::jsonb,$4,$4)`,
-    [WORKFLOW, SPACE, PROJECT, now],
-  );
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "backfill", now,
+  });
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Screening Agent','active',NULL,$4,$4,'space_shared')`,
@@ -309,7 +310,7 @@ async function seedIncrementalOperation(sourceItemIds: string[]): Promise<void> 
 }
 
 describe("ProjectResearchRepository checkpointReview classified count (real Postgres)", () => {
-  it("reflects papers classified after the screening_gate checkpoint was first created, not just at creation time", async () => {
+  it("reflects material classified after the screening_gate checkpoint was first created, not just at creation time", async () => {
     if (!available || !pool) return;
     await seedSourceItem("item-1", "Paper one");
     await seedSourceItem("item-2", "Paper two");

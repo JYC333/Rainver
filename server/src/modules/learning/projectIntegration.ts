@@ -1,9 +1,11 @@
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 import {
+  projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
   type ModeOverviewProjection,
-  type ProjectModeAreaAdapter,
-  type ProjectAreaSummary,
+  type ProjectEntitySummary,
+  type ProjectEntitySummaryAdapter,
+  type ProjectModeProjectionAdapter,
 } from "../projects/overviewRegistry";
 import {
   projectAttentionRegistry,
@@ -18,7 +20,7 @@ import { LearningService } from "./service";
 // Attention projections below are scoped to the requesting identity's own
 // mastery state, not a Project-wide aggregate across all members.
 
-const learningModeAdapter: ProjectModeAreaAdapter = {
+const learningModeAdapter: ProjectModeProjectionAdapter = {
   mode: "learning",
 
   async getOverviewProjection(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ModeOverviewProjection> {
@@ -43,14 +45,6 @@ const learningModeAdapter: ProjectModeAreaAdapter = {
     };
   },
 
-  async getAreaSummary(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ProjectAreaSummary> {
-    const items = await db.query<{ total: number }>(
-      `SELECT count(*)::int AS total FROM learning_items WHERE space_id = $1 AND project_id = $2`,
-      [identity.spaceId, projectId],
-    );
-    const summary = await new LearningService(db).getMasterySummary(identity, { projectId });
-    return { count: items.rows[0]?.total ?? 0, status: summary.due_count > 0 ? "attention" : "ok" };
-  },
 };
 
 const learningAttentionAdapter: ProjectAttentionAdapter = {
@@ -76,7 +70,25 @@ const learningAttentionAdapter: ProjectAttentionAdapter = {
   },
 };
 
+/** Learning's entity row: what is being retained, and what is due. */
+const learningSummaryAdapter: ProjectEntitySummaryAdapter = {
+  entityType: "learning_item",
+  label: "Learning items",
+  detail: "Material under spaced review",
+  href: (projectId) => `/projects/${projectId}/learning`,
+
+  async getSummary(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ProjectEntitySummary> {
+    const items = await db.query<{ total: number }>(
+      `SELECT count(*)::int AS total FROM learning_items WHERE space_id = $1 AND project_id = $2`,
+      [identity.spaceId, projectId],
+    );
+    const summary = await new LearningService(db).getMasterySummary(identity, { projectId });
+    return { count: items.rows[0]?.total ?? 0, status: summary.due_count > 0 ? "attention" : "ok" };
+  },
+};
+
 export function registerLearningProjectIntegration(): void {
   projectModeProjectionRegistry.register(learningModeAdapter);
+  projectEntitySummaryRegistry.register(learningSummaryAdapter);
   projectAttentionRegistry.register(learningAttentionAdapter);
 }

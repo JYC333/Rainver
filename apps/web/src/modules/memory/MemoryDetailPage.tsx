@@ -155,7 +155,6 @@ export default function MemoryDetailPage() {
                 <div className="mt-3 grid gap-4 sm:grid-cols-2">
                   <Field label="Memory ID" value={<code className="text-xs">{memory.id}</code>} />
                   <Field label="Space ID" value={<code className="text-xs">{memory.space_id}</code>} />
-                  <Field label="Project Folder ID" value={<code className="text-xs">{val(memory.project_folder_id)}</code>} />
                   <Field label="Project ID" value={<code className="text-xs">{val(memory.project_id)}</code>} />
                   <Field label="Owner user" value={<code className="text-xs">{val(memory.owner_user_id)}</code>} />
                   <Field label="Subject user" value={<code className="text-xs">{val(memory.subject_user_id)}</code>} />

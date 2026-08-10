@@ -55,12 +55,11 @@ describe("command contracts", () => {
     const parsed = AnyCommandSchema.parse({
       ...base,
       type: CommandType.StartRun,
-      payload: { space_id: "s1", agent_id: "ag1", instruction: "go", context_artifact_ids: ["artifact-1"] },
+      payload: { space_id: "s1", agent_id: "ag1", instruction: "go" },
     });
     expect(parsed.type).toBe("run.start");
     if (parsed.type === "run.start") {
       expect(parsed.payload.agent_id).toBe("ag1");
-      expect(parsed.payload.context_artifact_ids).toEqual(["artifact-1"]);
     }
   });
 });

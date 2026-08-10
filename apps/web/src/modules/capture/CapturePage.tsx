@@ -1,16 +1,17 @@
 import { useRef, useState } from 'react'
-import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Send, Paperclip, Mic, Square, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { activityApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import { Button } from '../../components/ui/button'
 import { Textarea } from '../../components/ui/textarea'
-import { WriteTargetPicker, useWriteTarget } from '../../components/WriteTargetPicker'
+import { useSpace } from '../../contexts/SpaceContext'
+import { spacePath } from '../../core/navigation'
 
 export default function CapturePage() {
   const navigate = useNavigate()
-  const { writeTargetSpaceId, hasWriteTarget, label } = useWriteTarget()
+  const { personalSpaceId } = useSpace()
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -22,15 +23,19 @@ export default function CapturePage() {
   async function handleCapture(e: React.FormEvent) {
     e.preventDefault()
     if (!text.trim()) return
+    if (!personalSpaceId) {
+      toast.error('Personal Space is unavailable')
+      return
+    }
     setSubmitting(true)
     try {
       await activityApi.create({
         source_type: 'user_capture',
         content: text,
         title: text.slice(0, 80),
-      }, { spaceId: writeTargetSpaceId ?? undefined })
+      }, { spaceId: personalSpaceId })
       toast.success('Saved to Activity Inbox')
-      navigate('/activity')
+      navigate(spacePath(personalSpaceId, '/activity'))
     } catch (err) {
       toast.error(errMsg(err))
     } finally {
@@ -39,11 +44,15 @@ export default function CapturePage() {
   }
 
   async function doUpload(file: File, kind: 'file' | 'voice') {
+    if (!personalSpaceId) {
+      toast.error('Personal Space is unavailable')
+      return
+    }
     setUploading(true)
     try {
-      await activityApi.upload(file, { kind, spaceId: writeTargetSpaceId ?? undefined })
+      await activityApi.upload(file, { kind, spaceId: personalSpaceId })
       toast.success('Saved to Activity Inbox')
-      navigate('/activity')
+      navigate(spacePath(personalSpaceId, '/activity'))
     } catch (err) {
       toast.error(errMsg(err))
     } finally {
@@ -111,7 +120,9 @@ export default function CapturePage() {
       </div>
 
       <form onSubmit={handleCapture} className="space-y-3">
-        <WriteTargetPicker />
+        <div className="rounded-md border border-border bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
+          Save to: <span className="font-medium text-foreground">Personal Space</span>
+        </div>
         <Textarea
           value={text}
           onChange={e => setText(e.target.value)}
@@ -122,9 +133,9 @@ export default function CapturePage() {
         />
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>
-            {text.length} chars · write target: {label ?? 'none'}
+            {text.length} chars · personal capture
           </span>
-          <Button type="submit" size="sm" disabled={!text.trim() || busy || recording || !hasWriteTarget}>
+          <Button type="submit" size="sm" disabled={!text.trim() || busy || recording || !personalSpaceId}>
             <Send className="size-3.5 mr-1.5" />
             {submitting ? 'Capturing…' : 'Capture'}
           </Button>
@@ -140,7 +151,7 @@ export default function CapturePage() {
             type="button"
             variant="outline"
             size="sm"
-            disabled={!hasWriteTarget || busy || recording}
+            disabled={!personalSpaceId || busy || recording}
             onClick={() => fileInputRef.current?.click()}
           >
             {uploading ? <Loader2 className="size-3.5 mr-1.5 animate-spin" /> : <Paperclip className="size-3.5 mr-1.5" />}
@@ -155,7 +166,7 @@ export default function CapturePage() {
               type="button"
               variant="outline"
               size="sm"
-              disabled={!hasWriteTarget || busy}
+              disabled={!personalSpaceId || busy}
               onClick={() => void startRecording()}
             >
               <Mic className="size-3.5 mr-1.5" /> Record voice

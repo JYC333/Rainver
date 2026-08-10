@@ -3,8 +3,25 @@
 ## Invariant
 
 A Space is the outer collaboration boundary, not a shared mind. Every Memory
-read first requires active Space membership, then Project Folder/project scope
-access, then canonical content access.
+read first requires active Space membership, then Project scope access, then
+canonical content access.
+
+## Memory layers
+
+| Layer | Carrier | Boundary |
+|---|---|---|
+| Personal | `memory_entries.scope_type=user` | owner-private |
+| Project | `memory_entries.scope_type=project` | `project_members` ACL |
+| Capability | `evolvable_assets` | Agent/capability evolution policy |
+
+`memory_entries.agent_id` is producing-Agent provenance only. It does not make
+a Memory readable through that Agent and is absent from every Memory selection
+and authorization predicate.
+
+The database accepts only `scope_type IN ('user', 'project')`. User Memory has
+no `project_id`; Project Memory requires one. `memory_entries` has no Project
+Folder column: Project is the sole shared Memory attribution layer. System rules
+live in `policies`, and Agent/capability learning lives in `evolvable_assets`.
 
 ## Access model
 
@@ -27,9 +44,8 @@ requires `private` visibility and remains owner-only except for an eligible
 owner/admin in a `full`-oversight Space. It remains excluded from shared context
 blends, digests, public summaries, and maintenance outputs.
 
-Project Folder and project placement are scope gates, not visibility values. A
-Project Folder-scoped `space_shared` memory is only considered after the caller
-passes the Project Folder/project access check.
+Project placement is a scope gate, not a visibility value. Project Memory is
+only considered after the caller passes the Project membership check.
 
 ## Writes
 
@@ -42,5 +58,5 @@ proposal never transfers ownership to the reviewer.
 
 HTTP reads, retrieval revalidation, maintenance, and context injection use the
 same SQL predicate from `server/src/modules/access/contentAccessSql.ts`.
-Memory-specific code may only add sensitivity, system-scope, and redaction
+Memory-specific code may only add sensitivity and redaction
 restrictions. It must not implement a second owner/visibility rule.

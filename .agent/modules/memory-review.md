@@ -32,7 +32,7 @@ The governance UI for long-term memory. Memory review is not just a list — it 
 - Importance / confidence scores
 - Version history (version field)
 - Source: linked session or run that produced this memory
-- Access log: when was this memory last read, by which agent?
+- Owner-only access log: which other people read this memory, and through which Run/Agent?
 - Related proposals (Proposal records)
 
 ### 3. Pending Proposals
@@ -43,11 +43,10 @@ The governance UI for long-term memory. Memory review is not just a list — it 
 - Accept → calls `POST /api/v1/proposals/{id}/accept`
 - Reject → calls `POST /api/v1/proposals/{id}/reject`
 
-### 4. Memory Access Logs
-- Table of `MemoryReadTrace` entries for the selected memory
-- Columns: accessed_at, agent_id, access_type, reason
-- Shows which agents read which memories and when
-- Useful for understanding agent context usage
+### 4. Content Access Logs
+- Owner-only table of cross-person `ContentReadTrace` entries for the selected memory
+- Columns: accessed_at, viewer, agent_id, run_id, access_type, reason
+- Same-owner reads are intentionally absent
 
 ## Invariants
 - Users can only review memories in their own spaces (enforced by API)
@@ -60,7 +59,7 @@ The governance UI for long-term memory. Memory review is not just a list — it 
 ```
 GET  /api/v1/memories?space_id=...&scope=...&type=...
 GET  /api/v1/memories/{id}
-GET  /api/v1/memories/{id}/access-logs
+GET  /api/v1/content-access/memory/{id}/access-logs
 GET  /api/v1/proposals?type=memory_update&status=pending
 POST /api/v1/proposals/{id}/accept
 POST /api/v1/proposals/{id}/reject
@@ -69,7 +68,7 @@ POST /api/v1/proposals/{id}/reject
 ## Related Files
 - `server/src/modules/memory/` — Memory repositories and CRUD/read auth
 - proposal API/service modules — Proposal workflow
-- `server/migrations/` — MemoryEntry, Proposal, MemoryReadTrace tables
+- `server/migrations/` — MemoryEntry, Proposal, and shared ContentReadTrace tables
 - `apps/web/src/pages/` — TODO: memory review page
 
 ## Related Modules

@@ -104,7 +104,7 @@ class ClaimApplyFakeDb {
         space_id: params[1],
         from_object_id: params[2],
         to_object_id: params[3],
-        relation_type: params[4],
+        link_type: params[4],
         status: params[5],
         confidence: params[6],
         evidence_summary: params[7],
@@ -201,7 +201,7 @@ describe("Claim proposal applier", () => {
       operation: "object_relation_create",
       from_object_id: "project-1",
       to_object_id: "task-1",
-      relation_type: "related_to",
+      link_type: "related_to",
     }));
 
     expect(result.result_type).toBe("object_relation");
@@ -220,7 +220,7 @@ describe("Claim proposal applier", () => {
       operation: "object_relation_create",
       from_object_id: "project-1",
       to_object_id: "task-1",
-      relation_type: "affiliated_with",
+      link_type: "affiliated_with",
       metadata: { start_date: "not-a-date" },
     }))).rejects.toThrow(/invalid timestamp value/);
 
@@ -228,7 +228,7 @@ describe("Claim proposal applier", () => {
       operation: "object_relation_create",
       from_object_id: "project-1",
       to_object_id: "task-1",
-      relation_type: "authored_by",
+      link_type: "authored_by",
       metadata: { author_position: "first", is_corresponding: "yes" },
     }))).rejects.toThrow(/author_position must be a positive integer or null/);
 
@@ -242,17 +242,17 @@ describe("Claim proposal applier", () => {
       operation: "object_relation_create",
       from_object_id: "project-1",
       to_object_id: "task-1",
-      relation_type: "affiliated_with",
+      link_type: "affiliated_with",
       metadata: {},
-    }))).rejects.toThrow(/person -> organization/);
+    }))).rejects.toThrow(/affiliated_with does not accept/);
 
     await expect(apply(db, proposal("object_relation_create", {
       operation: "object_relation_create",
       from_object_id: "project-1",
       to_object_id: "task-1",
-      relation_type: "authored_by",
+      link_type: "authored_by",
       metadata: { author_position: 1, is_corresponding: false },
-    }))).rejects.toThrow(/source -> person/);
+    }))).rejects.toThrow(/authored_by does not accept/);
 
     expect(db.writes).toEqual([]);
   });

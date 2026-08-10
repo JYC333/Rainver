@@ -14,14 +14,7 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
 import { errMsg } from '../../lib/utils'
 import { InputsView, OutputsView, ScheduleView, SafetyView } from './ConfigCards'
-import {
-  buildCondenserConfigContextPolicy,
-  CONDENSER_PROFILE_OPTIONS,
-  modelFields,
-  scheduleSummary,
-  sessionCondenserConfig,
-  type SessionCondenserProfile,
-} from './policyMap'
+import { modelFields, scheduleSummary } from './policyMap'
 import AssistantSettingsPanel from './AssistantSettingsPanel'
 import ProviderSelector from '../providers/ProviderSelector'
 import {
@@ -149,7 +142,7 @@ export default function AgentDetailPage() {
           <OverviewTab agent={agent} version={version} runs={runs} proposals={proposals} onSaved={reload} />
         </TabsContent>
         <TabsContent value="inputs">
-          {version ? <InputsTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
+          {version ? <InputsTab version={version} /> : <Card><NoVersion /></Card>}
         </TabsContent>
         <TabsContent value="outputs">
           <Card>{version ? <OutputsView version={version} /> : <NoVersion />}</Card>
@@ -226,96 +219,15 @@ function NoVersion() {
 
 // ── Inputs / context ─────────────────────────────────────────────────────────
 
-function InputsTab({ agentId, version, onSaved }: {
-  agentId: string
+function InputsTab({ version }: {
   version: AgentVersionOut
-  onSaved: () => Promise<void>
 }) {
   return (
     <div className="space-y-4">
       <Card className="space-y-4">
         <InputsView version={version} />
       </Card>
-      <CondenserProfileCard agentId={agentId} version={version} onSaved={onSaved} />
     </div>
-  )
-}
-
-function condenserPromptAssetKey(profile: SessionCondenserProfile): string {
-  return `session.condenser.${profile}`
-}
-
-function CondenserProfileCard({ agentId, version, onSaved }: {
-  agentId: string
-  version: AgentVersionOut
-  onSaved: () => Promise<void>
-}) {
-  const current = sessionCondenserConfig(version)
-  const [profile, setProfile] = useState<SessionCondenserProfile>(current.profile)
-  const [saving, setSaving] = useState(false)
-  const selected = CONDENSER_PROFILE_OPTIONS.find(option => option.value === profile)
-  const changed = profile !== current.profile
-
-  useEffect(() => {
-    setProfile(current.profile)
-  }, [current.profile, version.id])
-
-  async function save() {
-    setSaving(true)
-    try {
-      await agentsApi.updateConfig(agentId, {
-        context_policy_json: buildCondenserConfigContextPolicy(version.context_policy_json, {
-          profile,
-        }),
-      })
-      toast.success('Session summary settings updated (new version created)')
-      await onSaved()
-    } catch (err) {
-      toast.error(errMsg(err))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Card className="space-y-3">
-      <div>
-        <CardTitle>Session summary</CardTitle>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Controls how older chat turns are condensed for this agent.
-        </p>
-      </div>
-      <label className="space-y-1.5 block">
-        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Profile</span>
-        <select
-          value={profile}
-          onChange={event => setProfile(event.target.value as SessionCondenserProfile)}
-          className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-        >
-          {CONDENSER_PROFILE_OPTIONS.map(option => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-      </label>
-      {selected && <p className="text-xs text-muted-foreground">{selected.detail}</p>}
-      <div className="rounded-md border border-border bg-muted/20 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-muted-foreground">Prompt asset</div>
-            <div className="truncate font-mono text-xs">{condenserPromptAssetKey(profile)}</div>
-          </div>
-          <Button asChild type="button" size="sm" variant="outline">
-            <Link to={promptLibraryPath(condenserPromptAssetKey(profile))}>
-              <FileCode2 className="size-4 mr-1" />
-              Open prompt
-            </Link>
-          </Button>
-        </div>
-      </div>
-      <Button size="sm" onClick={save} disabled={saving || !changed}>
-        {saving ? <Loader2 className="size-4 animate-spin" /> : 'Save summary settings'}
-      </Button>
-    </Card>
   )
 }
 

@@ -157,7 +157,7 @@ for decomposition/delegation instead of direct fan-out.
 ## Runtime-neutral input contract
 
 `RunOrchestrationService` computes a protocol-owned `run_input.v1` envelope
-from the immutable Run contract, Context Snapshot reference, Run binding, and
+from the immutable Run contract, Run binding, and
 permission snapshot. The envelope is not persisted as a second authority.
 
 It carries the semantic instruction/task goal, canonical conversation
@@ -246,7 +246,7 @@ must resolve to an approved version under an active Workflow Asset whose
 version scope is valid in the current Space and allowed by the parent Asset's
 ownership/user-override rules, and missing or foreign references fail closed. A direct Workflow Run
 uses the same transaction for source validation, advisory-lock admission,
-context snapshot, Run row, and initial attempt; a rejected cap therefore
+execution-control snapshot, Run row, and initial attempt; a rejected cap therefore
 cannot return a queued Run that will fail only when dispatched. Dispatch
 repeats invalid-source detection and turns a malformed historical snapshot
 into a failed Run rather than treating it as zero prior executions.
@@ -256,7 +256,6 @@ RunStep records the coarse execution spine of a run:
 | Step kind | Meaning |
 |---|---|
 | `queued` | Run created, not yet started |
-| `context_prepared` | Context assembled for adapter |
 | `adapter_started` | Runtime adapter began execution |
 | `adapter_completed` | Adapter returned a result |
 | `artifact_created` | Artifact persisted from run output |
@@ -271,7 +270,7 @@ RunEvent records the structured phase-level evidence spine of a run:
 
 | event_type | Meaning |
 |---|---|
-| `context_compiled` | `ContextPrepareService` completed successfully |
+| `context_compiled` | Legacy evidence name retained by the closed event taxonomy; current managed execution records accepted Runtime Context Delivery and Invocation Snapshot evidence instead |
 | `runtime_selected` | Runtime adapter resolved; sandbox level decided |
 | `credential_granted` | Credentials resolved for adapter |
 | `sandbox_created` | Worktree sandbox created |
@@ -324,15 +323,16 @@ through the session, task group, and every recipient/delegated Run. Terminal top
 projected back into the Room session, while task trace and lifecycle evidence
 remain available on the canonical Run/group read surfaces.
 
-Each recipient backend resolves from the signed-in speaker's
-user × session × agent binding. Local CLI recipients use hybrid resume:
-the first turn uses a condensed summary plus a bounded recent tail; later turns
-resume and inject every message after that binding's cursor. Only output from
-the same recipient agent instructed by the same human is excluded as
-already-known; output from the same agent under another human's binding remains
-part of the increment. Missing cursor, backend/context change, or invalidation
-falls back to replay. `room_conversation.v1` keeps the persistent CLI HOME and
-vendor session while retaining context, governed tool grants, and Run Exchange.
+Each local CLI recipient resolves a durable Space × Room-recipient work scope ×
+user × Agent binding. A new or rotated binding reconstructs from the active
+Semantic Checkpoint and uncovered Context Event tail; a healthy binding resumes
+the opaque vendor session and receives only context after its acknowledged CLI
+cursor plus the current turn. Adapter acceptance advances that cursor;
+delivery failure does not. Hard runtime or authority changes rotate the binding
+with a persisted reason, while ordinary selected-reference changes remain
+deltas. A durable execution lease serializes parallel users of the same
+binding through session persistence, and context/current phases are distinct
+vendor turns. Vendor state remains a disposable cache rather than a replay authority.
 Folder-backed work keeps normal Project sandbox preparation. A Room without a
 Project Folder uses the persistent conversation cwd so cwd-partitioned vendors
 such as Claude can resume reliably without introducing a second execution path.
@@ -360,25 +360,28 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   internal `POST /internal/runs/execute` port, server execution locks, and
   `agent_run` job dispatch (the server entrypoint runs the worker loop;
   The agents module owns run creation subresources (`POST /agents/{id}/runs`
-  and the singular legacy alias). Runtime context preparation, Project Folder
+  compatibility alias). Runtime Context Gateway delivery, Project Folder
   sandbox preparation, artifact/proposal materialization, and finalization are
   native server.
 - **Generic local CLI execution:** server `runs/vendorCliAdapter.ts`
   renders commands, grants CLI credential profiles through the server broker,
-  prepares the server sandbox/worktree, invokes the local CLI process, parses
-  output, and materializes produced artifacts/proposals. Runtime instruction
-  files are rendered by server context preparation into the sandbox only.
+  prepares the server sandbox/worktree, sends the typed launch request to the
+  dedicated Sandbox Runner, parses streamed output, and materializes produced
+  artifacts/proposals. Runtime Context arrives only as ordered protocol
+  messages; vendor instruction files are not a context transport.
   OpenCode may instead use a ModelProvider: the server writes a run-scoped
   OpenAI-compatible provider entry to the sandbox `opencode.json` and routes
   requests through the expiring provider proxy lease; provider API keys are
   not ambient subprocess environment variables.
-- **Sandbox execution status:** `one_shot_docker` is the executor mode for
-  critical local-CLI runs. `DockerCliCommandExecutor` mounts only the
-  server-owned run sandbox, the read-only runtime-tools root, and at most one
-  read-only credential profile. It enforces `--network none`, read-only root,
-  dropped capabilities, no-new-privileges, PID/CPU/memory limits, and bounded
-  tmpfs mounts. If Docker or the configured image is unavailable, execution
-  fails closed; it never silently falls back to a worktree subprocess.
+- **Sandbox execution status:** read-only, ephemeral, worktree, and critical
+  local-CLI runs all execute in the dedicated `sandbox-runner` service. The
+  Runner accepts managed mount ids and typed egress/credential/tool channels,
+  resolves one selected runtime-tool version, and starts a fresh empty-root
+  bubblewrap mount/PID namespace. Only workspace/Delivery/tool/runtime-home/
+  Exchange targets are mounted. Runner and namespace failure are fail-closed;
+  the application server has no local, Docker-CLI, or bubblewrap fallback.
+  `one_shot_docker` remains the immutable routing/risk value for critical Runs,
+  not a process-launch implementation.
   `RunOrchestrationService.enforceRuntimePolicy` derives this upgrade from the
   immutable run contract's `risk_level`, so manual, plan, task, and automation
   entry points share the same critical-risk boundary.
@@ -442,7 +445,7 @@ may call it only for non-mutating dry-run simulation, which does not persist a
 
 Policy gates run in this order inside server run orchestration:
 
-1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, context snapshot population, and `adapter.execute()`. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `adapter_type`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
+1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and `adapter.execute()`. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `adapter_type`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
 
 2. **`runtime.use_credential`** — called after adapter type resolution but
    **before** any ModelProvider key fetch or CLI profile release. The resource
@@ -452,9 +455,15 @@ Policy gates run in this order inside server run orchestration:
    hard DENY (CRITICAL). Automation origin → REQUIRE_APPROVAL. Same-space
    manual/api/delegation → ALLOW. DENY → `error_code=policy_denied_runtime_use_credential`.
 
-3. **`context.inject_memory`** — called by server `ContextPrepareService` **before** memory context retrieval. Cross-space without grant → hard DENY. DENY → run context preparation fails closed.
+3. **`context.inject_memory`** — resolved into the immutable execution-control snapshot before Runtime Context acquires Memory candidates. Cross-space without grant → hard DENY. DENY → Delivery preparation fails closed.
 
-4. **`context.render_for_runtime`** — called after context snapshot is assembled, **before** `adapter.execute()`. Cross-space without grant → hard DENY. DENY → `error_code=policy_denied_context_render_for_runtime`.
+4. **`context.render_for_runtime`** — enforced by execution-control preflight and live Gateway authorization before an accepted Delivery reaches `adapter.execute()`. Cross-space drift hard denies.
+
+Context assembly also freezes each selected item's owner and visibility and
+updates the Run's `context_taint_json`. Materialization treats that summary as
+an output ceiling: cross-owner inputs produce selected-user outputs and require
+owner-approved `egress_review` before Space-wide publication. This is a durable
+data-flow boundary, independent of adapter behavior or prompt compliance.
 
 5. **`run.spawn_child`** — called by `AgentGroupRunService` before creating a
    delegated child run. The service proves same-space group membership, active
@@ -488,7 +497,7 @@ canonical runtime credential resolver.
 
 `GET /api/v1/runs/{id}/trace` is the preferred reconstruction endpoint. It
 aggregates the safe replay spine for a run in one response: Run,
-AgentVersion, RuntimeAdapter, ModelProvider, ContextSnapshot metadata,
+AgentVersion, RuntimeAdapter, ModelProvider, safe Invocation Snapshot metadata,
 RunSteps, RunEvents, Artifacts, Proposals, parent, and children. It does not
 inline artifact content, raw rendered context text, raw system prompt text, or
 secret material.
@@ -614,7 +623,7 @@ Calling `POST /finalize` on a non-terminal run (queued, running, waiting_for_rev
 
 - **Append-only.** Each run finalization evaluation creates a new row. Existing evaluations are never deleted or overwritten. `GET /runs/{id}/evaluation` returns the most recent row.
 - **Classifier-version auditable.** `evaluator_version` (e.g. `harness_eval.v1`) is stored per row, so classification history is preserved across version upgrades.
-- **Harness-boundary evidence only.** Uses Run.status/error_json/output_json/exit_code, ordered RunSteps, RunEvents, ContextSnapshot metadata, Artifacts, Proposals, ValidationRecipe, and linked Task/TaskRun. No LLM-as-judge. No parsing of vendor CLI internal tool calls.
+- **Harness-boundary evidence only.** Uses Run.status/error_json/output_json/exit_code, ordered RunSteps, RunEvents, safe Invocation Snapshot metadata, Artifacts, Proposals, ValidationRecipe, and linked Task/TaskRun. No LLM-as-judge. No parsing of vendor CLI internal tool calls.
 - **RunEvent as primary classification source.** RunEvent structured `error_code` fields are the canonical classification input for patch, artifact, adapter, and materialization event evidence. `output_json.materialization_errors` is never parsed as classifier evidence — it is a debug/summary field only.
 - **Materialization outcomes are RunEvent-covered.** `RunMaterializationService` returns materialization items and failures. `RunOrchestrationService` emits `artifact_ingested` / `proposal_created` RunEvents for each output JSON artifact and proposal success and failure. Runtime output text persistence emits `artifact_ingested` on success and failure. All materialization error codes map to the `tool` failure_layer via `_EXACT_ERROR_CODE_MAP`. Activity materialization failures are represented as artifact_ingested warning events with metadata_json.kind="activity" to avoid expanding the RunEvent enum.
 - **Evidence-only for CLI runtimes.** Local CLI runtimes are black-box at the harness. No internal tool-call trajectory is reconstructed from stdout/stderr.
@@ -651,7 +660,7 @@ Calling `POST /finalize` on a non-terminal run (queued, running, waiting_for_rev
 **B. failure_layer** (ordered rules, exact error-code mapping first):
 1. outcome passed/unknown → null
 2. Exact error-code mapping (canonical list in `server/src/modules/runs/finalizationService.ts::EXACT_ERROR_CODE_MAP`) — overrides all heuristics
-3. Missing context snapshot (for runs that require one) → `context`
+3. Missing required Runtime Context Delivery/Invocation Snapshot evidence → `context`
 4. Validation failure signals → `validation`
 5. `sandbox` keyword in failed step error_type → `sandbox`
 6. Missing adapter completion → `orchestration`

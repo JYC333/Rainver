@@ -85,6 +85,8 @@ export class CustomSourceCreateFlowService {
     const config = objectValue(body.config);
     return withDbTransaction(this.pool, async (client) => {
       const channel = await new SourceChannelService(client, this.config).create(identity, {
+        project_id: optionalString(body.project_id),
+        visibility: optionalString(body.visibility),
         provider_key: "custom_source",
         name: requiredString(body.name, "name"),
         endpoint_url: endpointUrl,

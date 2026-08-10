@@ -5,9 +5,9 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 // memory_entry is owned by the Memory domain adapter. project_public_summary is
 // owned by the Projects domain adapter. source_item / extracted_evidence are
 // owned by the Source domain adapter. inquiry_thread is owned by the Inquiry
-// domain adapter (ADR 0011 — inquiry_threads are never `space_objects` rows,
-// so this is a Phase 4 addition to the read plane only, not a change to the
-// canonical object root). The contract is shared but each domain registers
+// domain adapter; Threads are `space_objects` rows (ADR 0011 decision 1), and
+// the adapter exists for the domain fields the generic projection has no reason
+// to know about. The contract is shared but each domain registers
 // its own adapter into its own registry, so the surfaces stay isolated.
 export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "knowledge_item",
@@ -24,13 +24,13 @@ export const RETRIEVAL_OBJECT_TYPE_VALUES = [
 export const RetrievalObjectTypeSchema = z.enum(RETRIEVAL_OBJECT_TYPE_VALUES);
 export type RetrievalObjectType = z.infer<typeof RetrievalObjectTypeSchema>;
 
-export const RetrievalObjectKindSchema = z
+export const RetrievalObjectProfileSchema = z
   .string()
   .trim()
   .min(1)
   .max(64)
   .regex(/^[a-z][a-z0-9_]*$/);
-export type RetrievalObjectKind = z.infer<typeof RetrievalObjectKindSchema>;
+export type RetrievalObjectProfile = z.infer<typeof RetrievalObjectProfileSchema>;
 
 export const EvidenceKindSchema = z.enum([
   "alias_hit",
@@ -62,8 +62,8 @@ export const RetrievalSearchResultSchema = z
   .object({
     object_type: RetrievalObjectTypeSchema,
     object_id: IdSchema,
-    object_kind: RetrievalObjectKindSchema.nullish(),
-    object_kind_label: z.string().min(1).max(160).nullish(),
+    object_profile: RetrievalObjectProfileSchema.nullish(),
+    object_profile_label: z.string().min(1).max(160).nullish(),
     title: z.string(),
     snippet: z.string().nullable(),
     score: z.number(),
@@ -97,7 +97,7 @@ export const RETRIEVAL_EMBEDDING_DIMENSIONS_MAX = 4096;
 export const RetrievalSearchRequestSchema = z.object({
   query: z.string().trim().min(1).max(RETRIEVAL_QUERY_MAX_CHARS),
   object_types: z.array(RetrievalObjectTypeSchema).optional(),
-  object_kinds: z.array(RetrievalObjectKindSchema).max(20).optional(),
+  object_profiles: z.array(RetrievalObjectProfileSchema).max(20).optional(),
   // Result budget. The compute/token budget is the `mode` tier above.
   max_results: z.number().int().positive().max(50).optional(),
   include_trace: z.boolean().optional(),
@@ -138,8 +138,8 @@ export const RetrievalCitationSchema = z
   .object({
     object_type: RetrievalObjectTypeSchema,
     object_id: IdSchema,
-    object_kind: RetrievalObjectKindSchema.nullish(),
-    object_kind_label: z.string().min(1).max(160).nullish(),
+    object_profile: RetrievalObjectProfileSchema.nullish(),
+    object_profile_label: z.string().min(1).max(160).nullish(),
     title: z.string(),
   })
   .passthrough();
@@ -151,8 +151,8 @@ export const RetrievalGapItemSchema = z
   .object({
     object_type: RetrievalObjectTypeSchema,
     object_id: IdSchema,
-    object_kind: RetrievalObjectKindSchema.nullish(),
-    object_kind_label: z.string().min(1).max(160).nullish(),
+    object_profile: RetrievalObjectProfileSchema.nullish(),
+    object_profile_label: z.string().min(1).max(160).nullish(),
     title: z.string(),
     reason: z.string(),
   })
@@ -188,7 +188,7 @@ export type RetrievalBrief = z.infer<typeof RetrievalBriefSchema>;
 export const RetrievalBriefRequestSchema = z.object({
   query: z.string().trim().min(1).max(RETRIEVAL_QUERY_MAX_CHARS),
   object_types: z.array(RetrievalObjectTypeSchema).optional(),
-  object_kinds: z.array(RetrievalObjectKindSchema).max(20).optional(),
+  object_profiles: z.array(RetrievalObjectProfileSchema).max(20).optional(),
   max_results: z.number().int().positive().max(50).optional(),
   mode: RetrievalSearchModeSchema.optional(),
   include_trace: z.boolean().optional(),

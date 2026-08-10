@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { InvocationAuditRefs } from "@agent-space/protocol" with { "resolution-mode": "import" };
 
 export interface ProviderProxyLeaseInput {
   run_id: string;
@@ -19,6 +20,7 @@ export interface ProviderProxyLeaseInput {
   project_id?: string | null;
   project_folder_id?: string | null;
   trigger_origin?: string | null;
+  invocation_audit_refs?: InvocationAuditRefs | null;
   ttl_ms: number;
 }
 
@@ -45,6 +47,7 @@ export interface ProviderProxyLease {
   project_id: string | null;
   project_folder_id: string | null;
   trigger_origin: string | null;
+  invocation_audit_refs: InvocationAuditRefs | null;
   expires_at: string;
 }
 
@@ -69,6 +72,8 @@ export interface ResolvedProviderProxyLease {
   project_id: string | null;
   project_folder_id: string | null;
   trigger_origin: string | null;
+  invocation_audit_refs: InvocationAuditRefs | null;
+  usage_sequence: number;
   expires_at_ms: number;
 }
 
@@ -120,6 +125,8 @@ export class ProviderProxyLeaseRegistry {
       project_id: input.project_id ?? null,
       project_folder_id: input.project_folder_id ?? null,
       trigger_origin: input.trigger_origin ?? null,
+      invocation_audit_refs: input.invocation_audit_refs ?? null,
+      usage_sequence: 0,
       expires_at_ms: Date.now() + Math.max(input.ttl_ms, 1_000),
     };
     this.leases.set(record.id, record);
@@ -144,6 +151,7 @@ export class ProviderProxyLeaseRegistry {
       project_id: record.project_id,
       project_folder_id: record.project_folder_id,
       trigger_origin: record.trigger_origin,
+      invocation_audit_refs: record.invocation_audit_refs,
       expires_at: new Date(record.expires_at_ms).toISOString(),
     };
   }

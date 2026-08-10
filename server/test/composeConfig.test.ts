@@ -11,7 +11,7 @@ function serverServiceBlock(mode: "dev" | "test" | "prod"): string {
   );
   const start = text.indexOf("\n  server:");
   expect(start).toBeGreaterThanOrEqual(0);
-  const nextService = text.indexOf("\n  frontend:", start + 1);
+  const nextService = text.indexOf("\n  sandbox-runner:", start + 1);
   return text.slice(start, nextService === -1 ? undefined : nextService);
 }
 
@@ -20,6 +20,14 @@ function frontendServiceBlock(mode: "dev" | "test" | "prod"): string {
   const start = text.indexOf("\n  frontend:");
   expect(start).toBeGreaterThanOrEqual(0);
   const nextService = text.indexOf("\n  deployer:", start + 1);
+  return text.slice(start, nextService === -1 ? undefined : nextService);
+}
+
+function runnerServiceBlock(mode: "dev" | "test" | "prod"): string {
+  const text = composeText(mode);
+  const start = text.indexOf("\n  sandbox-runner:");
+  expect(start).toBeGreaterThanOrEqual(0);
+  const nextService = text.indexOf("\n  frontend:", start + 1);
   return text.slice(start, nextService === -1 ? undefined : nextService);
 }
 
@@ -96,6 +104,19 @@ describe("compose server config", () => {
     }
   });
 
+  it("builds the local protocol package before installing frontend dependencies", () => {
+    const dockerfile = readFileSync(
+      join(repoRoot, "apps", "web", "Dockerfile"),
+      "utf8",
+    );
+    const protocolBuild = dockerfile.indexOf("WORKDIR /repo/packages/protocol");
+    const webInstall = dockerfile.indexOf("WORKDIR /repo/apps/web");
+
+    expect(protocolBuild).toBeGreaterThanOrEqual(0);
+    expect(dockerfile.slice(protocolBuild, webInstall)).toContain("RUN npm run build");
+    expect(webInstall).toBeGreaterThan(protocolBuild);
+  });
+
   it("keeps the privileged deployer socket private to the deployer container", () => {
     for (const mode of ["dev", "test", "prod"] as const) {
       expect(deployerServiceBlock(mode)).toContain(
@@ -105,14 +126,37 @@ describe("compose server config", () => {
     }
   });
 
-  it("permits rootless namespace creation without granting server capabilities", () => {
+  it("keeps namespace privileges and the narrow token on the dedicated Runner", () => {
     for (const mode of ["dev", "test", "prod"] as const) {
-      const block = serverServiceBlock(mode);
-      expect(block).toContain("seccomp=unconfined");
-      expect(block).not.toContain("privileged:");
-      expect(block).not.toContain("cap_add:");
+      const server = serverServiceBlock(mode);
+      const runner = runnerServiceBlock(mode);
+      expect(server).not.toContain("seccomp=unconfined");
+      expect(runner).toContain("seccomp=unconfined");
+      expect(runner).toContain("no-new-privileges=true");
+      expect(runner).toContain("cap_drop:");
+      expect(runner).toContain("read_only: true");
+      expect(runner).toContain(".runner.env");
+      expect(runner).not.toContain(".server.env");
+      expect(runner).not.toContain(":/aspace");
+      expect(runner).not.toContain("docker.sock");
+      expect(runner).not.toContain("../../:/repo");
+      expect(runner).not.toMatch(/\/cache:\/runner\//);
+      expect(runner).toContain("cache/runtime-homes:/runner/run-homes");
+      expect(runner).toContain("cache/conversation-runtime-homes:/runner/conversation-homes");
+      expect(runner).toContain("cache/login-homes:/runner/login-homes");
+      expect(server).toContain("runner-control");
+      expect(runner).toContain("networks:\n      - runner-control");
+      expect(composeText(mode)).toContain("runner-control:\n    internal: true");
     }
-    expect(readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8"))
+    expect(readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8"))
       .toContain("bubblewrap");
+    const startScript = readFileSync(join(repoRoot, "ops", "scripts", "start.sh"), "utf8");
+    expect(startScript).toContain(
+      'docker build --network=host -f "$REPO_ROOT/sandbox/Dockerfile" -t "$SANDBOX_IMAGE" "$REPO_ROOT"',
+    );
+    expect(startScript).not.toContain('"$REPO_ROOT/sandbox/"');
+    for (const path of ["workspaces", "runtime-tools", "cache/runtime-homes", "cache/conversation-runtime-homes", "cache/login-homes"]) {
+      expect(startScript).toContain(`\"$MODE_ROOT/${path}\"`);
+    }
   });
 });

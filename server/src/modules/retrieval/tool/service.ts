@@ -24,7 +24,8 @@ import { enforceRetrievalToolCallPolicy, type RetrievalToolPolicyAction } from "
  *    agent/run (pointer metadata only — counts, mode, surface; never the query
  *    or content).
  *  - **Results are returned, not injected.** The tool hands results back to the
- *    caller; the context compiler decides what (if anything) enters run context.
+ *    caller; a later Runtime Context turn may acquire them only through its
+ *    typed Retrieval channel and live reauthorization.
  *
  * It wraps an already-constructed `RetrievalSearchService`, so whatever egress
  * (W9) / rerank / synthesis configuration the caller built is honored
@@ -46,7 +47,7 @@ export interface RetrievalToolActor {
 export interface RetrievalToolSearchParams {
   query: string;
   objectTypes?: RetrievalObjectType[];
-  objectKinds?: string[];
+  objectProfiles?: string[];
   maxResults?: number;
   mode?: RetrievalSearchMode;
   includeTrace?: boolean;
@@ -95,7 +96,7 @@ export class RetrievalToolService {
       viewerUserId: actor.instructedByUserId, // non-bypassable: the run's user
       query: params.query,
       objectTypes: params.objectTypes,
-      objectKinds: params.objectKinds,
+      objectProfiles: params.objectProfiles,
       maxResults: params.maxResults,
       mode: params.mode,
       includeTrace: params.includeTrace,
@@ -116,7 +117,7 @@ export class RetrievalToolService {
       viewerUserId: actor.instructedByUserId, // non-bypassable: the run's user
       query: params.query,
       objectTypes: params.objectTypes,
-      objectKinds: params.objectKinds,
+      objectProfiles: params.objectProfiles,
       maxResults: params.maxResults,
       mode: params.mode,
       includeTrace: params.includeTrace,
@@ -139,7 +140,7 @@ export class RetrievalToolService {
       mode: params.mode,
       maxResults: params.maxResults,
       objectTypes: params.objectTypes,
-      objectKinds: params.objectKinds,
+      objectProfiles: params.objectProfiles,
       includeTrace: params.includeTrace,
       surface: this.surface,
     });

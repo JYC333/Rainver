@@ -350,7 +350,10 @@ local_compose_ensure_server_database_env() {
 # start.sh having generated this file first.
 local_compose_generate_server_env() {
   local server_env="$MODE_ROOT/.server.env"
+  local runner_env="$MODE_ROOT/.runner.env"
   grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL)[[:space:]]*=' \
     "$ENV_FILE" > "$server_env"
-  chmod 600 "$server_env"
+  printf 'SANDBOX_RUNNER_TOKEN=%s\n' \
+    "$(local_compose_setting SERVER_INTERNAL_TOKEN)" > "$runner_env"
+  chmod 600 "$server_env" "$runner_env"
 }

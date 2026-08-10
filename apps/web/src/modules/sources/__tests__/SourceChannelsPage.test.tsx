@@ -20,6 +20,8 @@ vi.mock('../../../api/client', () => ({
   sourcesApi: {
     providers: vi.fn(),
     channels: vi.fn(),
+    recommendations: vi.fn(),
+    decideRecommendation: vi.fn(),
     createChannel: vi.fn(),
     previewQuery: vi.fn(),
     updateChannel: vi.fn(),
@@ -98,6 +100,7 @@ describe('Sources page', () => {
     vi.clearAllMocks()
     vi.mocked(sourcesApi.providers).mockResolvedValue(providers)
     vi.mocked(sourcesApi.channels).mockResolvedValue([source()])
+    vi.mocked(sourcesApi.recommendations).mockResolvedValue([])
     vi.mocked(sourcesApi.createChannel).mockResolvedValue(source())
     vi.mocked(sourcesApi.previewQuery).mockResolvedValue({
       provider_key: 'arxiv', compiled_query: 'all:"agent memory"', approximate_hit_count: 42,
@@ -114,6 +117,26 @@ describe('Sources page', () => {
     expect(screen.getByText('Agent memory')).toBeInTheDocument()
     expect(screen.queryByText(/source channel/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/connection-1/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps discovered sources pending until the reader decides to follow them', async () => {
+    vi.mocked(sourcesApi.recommendations).mockResolvedValue([{
+      ...source({ id: 'recommended-channel', source_name: 'Outside Review', name: 'Systems monitor' }),
+      subscription_status: 'pending',
+      recommendation_message: 'Recommended to broaden coverage into systems.',
+      last_notified_at: null,
+    }])
+    vi.mocked(sourcesApi.decideRecommendation).mockResolvedValue({
+      source_channel_id: 'recommended-channel', status: 'subscribed', updated_at: '2026-08-06T12:00:00Z',
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('Sources to broaden your coverage')).toBeInTheDocument()
+    expect(screen.getByText('These remain suggestions until you choose to follow them.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Follow' }))
+    await waitFor(() => expect(sourcesApi.decideRecommendation).toHaveBeenCalledWith('recommended-channel', 'subscribed'))
+    await waitFor(() => expect(screen.queryByText('Outside Review · Systems monitor')).not.toBeInTheDocument())
   })
 
   it('configures an academic source through the provider-aware setup dialog', async () => {

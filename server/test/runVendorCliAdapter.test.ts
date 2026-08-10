@@ -1,11 +1,10 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import {
   buildSubprocessEnv,
-  DockerCliCommandExecutor,
   createVendorEventStream,
   createVendorTextDeltaStream,
   executeVendorCliAdapter,
@@ -21,6 +20,8 @@ import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
 import type { RunRecord } from "../src/modules/runs/repository";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope";
 import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol";
+import type { InvocationDelivery } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts";
 
 const tmpPaths: string[] = [];
 
@@ -158,6 +159,7 @@ class TempCodexBroker extends FakeBroker {
 }
 
 class FakeExecutor implements CliCommandExecutor {
+  protocolMessages: Record<string, unknown>[] = [];
   calls: Array<{
     command: string[];
     cwd: string | null;
@@ -216,13 +218,21 @@ class FakeExecutor implements CliCommandExecutor {
     this.calls.push(input);
     const controller = (input as Parameters<CliCommandExecutor["runCommand"]>[0]).stdio_controller;
     if (controller) {
-      const send = () => {};
+      const send = (message: Record<string, unknown>) => { this.protocolMessages.push(message); };
       const close = () => {};
       controller.start(send);
       if (input.command.includes("app-server")) {
         controller.receive({ id: 1, result: {} }, send, close);
         controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
         controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
+        controller.receive({
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item: { id: "bootstrap-command", type: "commandExecution", command: "bootstrap command" },
+          },
+        }, send, close);
         controller.receive({
           method: "thread/tokenUsage/updated",
           params: {
@@ -271,6 +281,48 @@ class FakeExecutor implements CliCommandExecutor {
             turn: { id: "turn-1", status: "completed" },
           },
         }, send, close);
+        await Promise.resolve();
+        if (this.protocolMessages.filter((message) => message.method === "turn/start").length > 1) {
+          controller.receive({ id: 4, result: { turn: { id: "turn-2" } } }, send, close);
+          controller.receive({
+            method: "item/started",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-2",
+              item: { id: "current-command", type: "commandExecution", command: "current command" },
+            },
+          }, send, close);
+          controller.receive({
+            method: "item/agentMessage/delta",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-2",
+              itemId: "item-2",
+              delta: "cli output",
+            },
+          }, send, close);
+          controller.receive({
+            method: "thread/tokenUsage/updated",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-2",
+              tokenUsage: {
+                total: {
+                  inputTokens: 24, outputTokens: 6, totalTokens: 30,
+                  cachedInputTokens: 8, cacheWriteInputTokens: 0,
+                  reasoningOutputTokens: 2,
+                },
+              },
+            },
+          }, send, close);
+          controller.receive({
+            method: "turn/completed",
+            params: {
+              threadId: "thread-1",
+              turn: { id: "turn-2", status: "completed" },
+            },
+          }, send, close);
+        }
       } else {
         controller.receive(
           {
@@ -359,7 +411,7 @@ describe("executeVendorCliAdapter", () => {
       .rejects.toThrow();
   });
 
-  it("runs codex_cli with credential grant, safe env, redacted command log, and AGENserver context", async () => {
+  it("runs codex_cli with credential grant, safe env, and no vendor instruction file", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
@@ -379,7 +431,7 @@ describe("executeVendorCliAdapter", () => {
       { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
     );
 
-    expect(await readFile(join(sandbox, "AGENTS.md"), "utf8")).toBe("Repo instructions");
+    await expect(readFile(join(sandbox, "AGENTS.md"), "utf8")).rejects.toThrow();
     expect(broker.grants).toEqual([
       {
         runId: "run-1",
@@ -420,8 +472,6 @@ describe("executeVendorCliAdapter", () => {
       },
       metadata_json: {
         credential_profile_id: "11111111-1111-4111-8111-111111111111",
-        context_file_type: "AGENTS.md",
-        rendered_in_sandbox: true,
         external_session_id: "thread-1",
       },
       adapter_log_json: {
@@ -433,6 +483,192 @@ describe("executeVendorCliAdapter", () => {
         timeout_seconds: 120,
       },
     });
+  });
+
+  it("renders scoped CLI bootstrap before the current user item without a vendor context file", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-delivery-"));
+    tmpPaths.push(sandbox);
+    const executor = new FakeExecutor();
+    const capturedEvents: Array<{ type: string; metadata_json?: unknown }> = [];
+    const invocationAttempts: RunInvocationAttemptLifecycle = {
+      prepare: async () => { throw new Error("not used"); },
+      acknowledge: async () => ({} as never),
+      finalize: async () => ({} as never),
+      acknowledgeContext: vi.fn(async () => undefined),
+    };
+    const delivery: InvocationDelivery = {
+      id: "delivery-1",
+      invocation_id: "run-1",
+      delivery_kind: "agent_task",
+      adapter_type: "codex_cli",
+      provider_id: null,
+      model: null,
+      renderer_version: "runtime-context-managed.v1",
+      mode: "full",
+      planned_items: [
+        { item_id: "context-1", semantic_role: "reference_data", required: true },
+        { item_id: "current-1", semantic_role: "user_input", required: true },
+      ],
+      message_blocks: [
+        {
+          semantic_role: "reference_data",
+          content: "Validated checkpoint and canonical tail.",
+          source_item_ids: ["context-1"],
+          delivery_phase: "bootstrap_context",
+        },
+        {
+          semantic_role: "user_input",
+          content: "Continue the task.",
+          source_item_ids: ["current-1"],
+          delivery_phase: "current_user",
+        },
+      ],
+      cli_session: {
+        binding_ref: { type: "runtime_context_cli_binding", id: "binding-1", version: "1" },
+        runtime_state_key: "state-1",
+        vendor_session_id: null,
+        cursor_from: 0,
+        cursor_through: 2,
+        generation: 1,
+        rotation_reason: "new_scope",
+      },
+      control_ref: { type: "execution_control_snapshot", id: "control-1" },
+      sandbox_ref: null,
+      tool_grant_refs: [],
+      output_contract_ref: null,
+      expected_prompt_tokens: 20,
+      max_output_tokens: null,
+      snapshot_draft_ref: { type: "invocation_snapshot", id: "snapshot-1" },
+      audit_refs: {
+        delivery_id: "delivery-1",
+        invocation_snapshot_id: "snapshot-1",
+        execution_control_snapshot_id: "control-1",
+        usage_source_id: "usage-1",
+      },
+    };
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run(),
+        sandbox_cwd: sandbox,
+        invocation_delivery: delivery,
+        invocation_attempts: invocationAttempts,
+        adapter_config: { credential_profile_id: "11111111-1111-4111-8111-111111111111" },
+        runtime_event_sink: (event) => { capturedEvents.push(event); },
+      },
+      { credentialBroker: new FakeBroker(), executor, toolRegistry: new FakeTools() },
+    );
+
+    expect(result.success).toBe(true);
+    const turns = executor.protocolMessages.filter((message) => message.method === "turn/start") as Array<{
+      params: { input: Array<{ text: string }> };
+    }>;
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.params.input[0]?.text).toContain("[Agent Space context bootstrap — ordinary context message]");
+    expect(turns[0]?.params.input[0]?.text).toContain("Validated checkpoint and canonical tail.");
+    expect(turns[0]?.params.input[0]?.text).not.toContain("Continue the task.");
+    expect(turns[1]?.params.input[0]?.text).toBe("Continue the task.");
+    expect(invocationAttempts.acknowledgeContext).toHaveBeenCalledWith(delivery, "thread-1");
+    expect(capturedEvents.map((event) => event.type)).toEqual(["tool_call_started"]);
+    expect(JSON.stringify(capturedEvents)).toContain("current command");
+    expect(JSON.stringify(capturedEvents)).not.toContain("bootstrap command");
+    await expect(readFile(join(sandbox, "AGENTS.md"), "utf8")).rejects.toThrow();
+  });
+
+  it("discards unterminated Claude bootstrap parser state before current-turn capture", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-delivery-"));
+    tmpPaths.push(sandbox);
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    const outputs = [
+      JSON.stringify({
+        type: "assistant",
+        session_id: sessionId,
+        message: { content: [{ type: "tool_use", id: "bootstrap-tool", name: "BootstrapTool" }] },
+      }),
+      `\n${JSON.stringify({
+        type: "assistant",
+        session_id: sessionId,
+        message: { content: [{ type: "tool_use", id: "current-tool", name: "CurrentTool" }] },
+      })}\n${JSON.stringify({ type: "result", session_id: sessionId, result: "done" })}\n`,
+    ];
+    let callIndex = 0;
+    const executor: CliCommandExecutor = {
+      async runCommand(input) {
+        const stdout = outputs[callIndex++] ?? "";
+        input.on_stdout_chunk?.(stdout);
+        return { returncode: 0, stdout, stderr: "", timed_out: false };
+      },
+    };
+    const capturedEvents: Array<{ type: string; metadata_json?: unknown }> = [];
+    const delivery: InvocationDelivery = {
+      id: "delivery-claude",
+      invocation_id: "run-1",
+      delivery_kind: "agent_task",
+      adapter_type: "claude_code",
+      provider_id: null,
+      model: null,
+      renderer_version: "runtime-context-managed.v1",
+      mode: "full",
+      planned_items: [
+        { item_id: "context-1", semantic_role: "reference_data", required: true },
+        { item_id: "current-1", semantic_role: "user_input", required: true },
+      ],
+      message_blocks: [
+        {
+          semantic_role: "reference_data",
+          content: "Bootstrap context.",
+          source_item_ids: ["context-1"],
+          delivery_phase: "bootstrap_context",
+        },
+        {
+          semantic_role: "user_input",
+          content: "Current request.",
+          source_item_ids: ["current-1"],
+          delivery_phase: "current_user",
+        },
+      ],
+      cli_session: {
+        binding_ref: { type: "runtime_context_cli_binding", id: "binding-claude", version: "1" },
+        runtime_state_key: "state-claude",
+        vendor_session_id: null,
+        cursor_from: 0,
+        cursor_through: 1,
+        generation: 1,
+        rotation_reason: "new_scope",
+      },
+      control_ref: { type: "execution_control_snapshot", id: "control-1" },
+      sandbox_ref: null,
+      tool_grant_refs: [],
+      output_contract_ref: null,
+      expected_prompt_tokens: 10,
+      max_output_tokens: null,
+      snapshot_draft_ref: { type: "invocation_snapshot", id: "snapshot-claude" },
+      audit_refs: {
+        delivery_id: "delivery-claude",
+        invocation_snapshot_id: "snapshot-claude",
+        execution_control_snapshot_id: "control-1",
+        usage_source_id: "usage-claude",
+      },
+    };
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run({ adapter_type: "claude_code" }),
+        sandbox_cwd: sandbox,
+        invocation_delivery: delivery,
+        adapter_config: { credential_profile_id: "11111111-1111-4111-8111-111111111111" },
+        runtime_event_sink: (event) => { capturedEvents.push(event); },
+      },
+      { credentialBroker: new FakeBroker(), executor, toolRegistry: new FakeTools() },
+    );
+
+    expect(result.success).toBe(true);
+    expect(callIndex).toBe(2);
+    expect(capturedEvents.map((event) => event.type)).toEqual(["tool_call_started"]);
+    expect(JSON.stringify(capturedEvents)).toContain("CurrentTool");
+    expect(JSON.stringify(capturedEvents)).not.toContain("BootstrapTool");
   });
 
   it("stages context outside a read-only Project Folder and passes one write-scoped HOME", async () => {
@@ -490,8 +726,7 @@ describe("executeVendorCliAdapter", () => {
       { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
     );
 
-    await expect(readFile(join(contextCwd, "AGENTS.md"), "utf8"))
-      .resolves.toBe("Generated read-only instructions");
+    await expect(readFile(join(contextCwd, "AGENTS.md"), "utf8")).rejects.toThrow();
     await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).rejects.toThrow();
     expect(await readFile(join(workspace, "source.txt"), "utf8")).toBe("project source");
     expect(executor.calls[0]).toMatchObject({
@@ -532,7 +767,7 @@ describe("executeVendorCliAdapter", () => {
       error_code: null,
     });
     expect(executor.calls[0]).toMatchObject({ cwd: sandbox, run_id: "run-1" });
-    expect(await readFile(join(sandbox, "AGENTS.md"), "utf8")).toBe("Daily organize");
+    await expect(readFile(join(sandbox, "AGENTS.md"), "utf8")).rejects.toThrow();
   });
 
   it("writes run-scoped Codex provider config for an OpenAI-compatible provider", async () => {
@@ -888,7 +1123,6 @@ describe("executeVendorCliAdapter", () => {
       adapter_type: "claude_code",
       permission_bypass_requested: true,
       permission_bypass_used: true,
-      context_file_type: "CLAUDE.md",
     });
     const claudeSettings = JSON.parse(await readFile(join(sandbox, ".claude", "settings.json"), "utf8")) as {
       permissions?: { deny?: string[] };
@@ -999,7 +1233,7 @@ describe("executeVendorCliAdapter", () => {
     );
     expect(result.success).toBe(true);
     expect(executor.calls[0].env.AGENT_SPACE_MCP_URL)
-      .toBe("http://127.0.0.1:8010/internal/runs/run-1/mcp");
+      .toBe("http://server:8010/internal/runs/run-1/mcp");
     expect(executor.calls[0].env.AGENT_SPACE_TOOL_TOKEN).toBeTruthy();
     expect(executor.calls[0].command).toContain("--mcp-config");
     const configPath = executor.calls[0].command[
@@ -1038,7 +1272,7 @@ describe("executeVendorCliAdapter", () => {
     });
   });
 
-  it("uses the isolated Docker executor for critical CLI runs", async () => {
+  it("routes critical CLI runs through the same scoped Runner credential mode", async () => {
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
 
@@ -1061,49 +1295,8 @@ describe("executeVendorCliAdapter", () => {
       { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
     );
     expect(result).toMatchObject({ success: true });
-    expect(broker.grants[0]?.executorMode).toBe("docker");
-    expect(executor.calls[0]?.docker).toMatchObject({
-      image: "agent-space-sandbox",
-      sandbox_cwd: sandbox,
-      cli_tools_root: "/aspace/runtime-tools",
-    });
-  });
-
-  it("assembles a fail-closed Docker command with read-only credentials and resource limits", async () => {
-    const launcher = new FakeExecutor();
-    const executor = new DockerCliCommandExecutor(launcher);
-    await executor.runCommand({
-      command: ["/tmp/aspace/runtime-tools/codex_cli/versions/v1/bin/codex", "--dir", "/tmp/aspace/sandboxes/run-1"],
-      cwd: "/tmp/aspace/sandboxes/run-1",
-      timeout_seconds: 30,
-      env: { PATH: "/usr/bin", HOME: "/host/home", ANTHROPIC_AUTH_TOKEN: "must-not-enter" },
-      run_id: "run-1",
-      stdin: null,
-      docker: {
-        image: "agent-space-sandbox",
-        sandbox_cwd: "/tmp/aspace/sandboxes/run-1",
-        sandbox_root: "/tmp/aspace/sandboxes",
-        cli_tools_root: "/tmp/aspace/runtime-tools",
-        credential_root: "/tmp/aspace/secrets",
-        credential_source_path: "/tmp/aspace/secrets/codex",
-        credential_target_path: "/home/agent/.codex",
-        exchange_input_cwd: "/tmp/aspace/sandboxes/exchange/space-1/run-1/input",
-        exchange_output_cwd: "/tmp/aspace/sandboxes/exchange/space-1/run-1/output",
-      },
-    });
-    const command = launcher.calls[0]?.command ?? [];
-    expect(command).toContain("--network");
-    expect(command).toContain("none");
-    expect(command).toContain("--read-only");
-    expect(command).toContain("--cap-drop");
-    expect(command).toContain("ALL");
-    expect(command).toContain("--pids-limit");
-    expect(command).toContain("256");
-    expect(command).toContain("--volume");
-    expect(command).toContain("/tmp/aspace/secrets/codex:/home/sandbox/.codex:ro");
-    expect(command).toContain("/tmp/aspace/sandboxes/exchange/space-1/run-1/input:/run-exchange/input:ro");
-    expect(command).toContain("/tmp/aspace/sandboxes/exchange/space-1/run-1/output:/run-exchange/output:rw");
-    expect(command).not.toContain("must-not-enter");
+    expect(broker.grants[0]?.executorMode).toBe("worktree");
+    expect(executor.calls[0]?.read_only).toBeUndefined();
   });
 
   it("runs OpenCode with a sandbox config that denies Task and locks tools", async () => {
@@ -2093,6 +2286,18 @@ describe("vendor structured event normalization", () => {
       "tool_call_completed",
     ]);
     expect(JSON.stringify(parsed?.runtime_events)).not.toContain("hidden body");
+  });
+
+  it("normalizes vendor compaction without persisting token deltas", () => {
+    const stream = createVendorEventStream("claude_code");
+    expect(stream.push(
+      '{"type":"system","subtype":"compact_boundary","metadata":{"private":"ignored"}}\n',
+    )).toEqual([
+      expect.objectContaining({
+        type: "provider_compacted",
+        summary: "Provider compacted its session context.",
+      }),
+    ]);
   });
 
   it("normalizes OpenCode tool lifecycle across chunk boundaries", () => {

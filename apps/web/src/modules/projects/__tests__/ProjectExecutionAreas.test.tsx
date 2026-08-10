@@ -42,7 +42,6 @@ beforeEach(() => {
     status: 'active',
     current_focus: null,
     settings_json: null,
-    template_key: 'blank',
     primary_mode: 'delivery',
     active_brief_version_id: null,
     created_at: '2026-07-24T00:00:00.000Z',
@@ -50,20 +49,19 @@ beforeEach(() => {
     archived_at: null,
   })
   vi.mocked(projectsApi.getOverview).mockResolvedValue({
-    project: { id: 'project-1', name: 'Execution Project', primary_mode: 'delivery', template_key: 'blank', status: 'active' },
+    project: { id: 'project-1', name: 'Execution Project', primary_mode: 'delivery', status: 'active' },
     brief: null,
     mode_projection: { mode: 'delivery', current_state_summary: '', progress_indicators: [], focus_set: [], next_actions: [] },
-    available_modes: ['inquiry', 'decision', 'delivery', 'operations', 'learning'],
+    available_modes: ['research', 'delivery', 'operations', 'learning'],
     attention: [
       { id: 'task:task-1', title: 'Ship release', summary: null, href: '/tasks/task-1', source_type: 'task', source_id: 'task-1' },
       { id: 'operational_alert:alert-1', title: 'Health check failed', summary: 'Deployment is unhealthy', href: '/projects/project-1/operations?alert=alert-1', source_type: 'operational_alert', source_id: 'alert-1' },
     ],
-    template: { key: 'blank', name: 'Blank', description: 'General purpose', starter_workflow_template_keys: [] },
     setup_checklist: [
       { id: 'brief', label: 'Project Brief goal', status: 'missing', required: true, href: '/projects/project-1/inquiry?setup=goal', detail: 'Add the intended outcome' },
       { id: 'folder', label: 'Execution-enabled Folder', status: 'missing', required: false, href: '/projects/project-1/files', detail: 'Optional for file/code work' },
     ],
-    area_summaries: [],
+    entity_summaries: [],
   })
   vi.mocked(tasksApi.list).mockResolvedValue({
     items: [{
@@ -130,10 +128,12 @@ describe('Project execution Areas', () => {
     expect(screen.getByText('Execute')).toBeInTheDocument()
     const destinations = [
       ['Overview', ''],
+      ['Notes', '/notes'],
       ['Rooms', '/rooms'],
       ['Inquiry', '/inquiry'],
       ['Research', '/research'],
       ['Sources', '/sources'],
+      ['Digest', '/digest'],
       ['Files & Code', '/files'],
       ['Experiments', '/experiments'],
       ['Decisions', '/decisions'],
@@ -148,7 +148,11 @@ describe('Project execution Areas', () => {
       })).toHaveAttribute('href', `/spaces/space-1/projects/project-1${suffix}`)
     }
     expect(screen.getByText('Delivery content')).toBeInTheDocument()
-    expect(screen.getByText('Blank template')).toBeInTheDocument()
+    // The shell shows how the Project advances. It used to also badge the
+    // Template it was created from — a provenance label for a concept that
+    // presets nothing.
+    expect(screen.getByText('delivery mode')).toBeInTheDocument()
+    expect(screen.queryByText(/template/i)).toBeNull()
     expect(screen.getByText('Project Brief goal *')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Project Brief goal/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/inquiry?setup=goal')
     expect(screen.getByRole('link', { name: /Execution-enabled Folder/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/files')
@@ -264,8 +268,8 @@ describe('Project execution Areas', () => {
       },
     ])
     vi.mocked(projectResearchApi.workflows).mockResolvedValue([{
-      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'screening',
-      status: 'active', mode: 'autonomous', state_json: { research_question: 'Does batching improve throughput?' },
+      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
+      status: 'active', state_json: { research_question: 'Does batching improve throughput?' },
       primary_thread_id: 'thread-1', started_by_user_id: null, started_run_id: null,
       created_at: '', updated_at: '',
     }])
@@ -317,8 +321,8 @@ describe('Project execution Areas', () => {
       created_at: '', updated_at: '', steps: [],
     }])
     vi.mocked(projectResearchApi.workflows).mockResolvedValue([{
-      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'screening',
-      status: 'active', mode: 'autonomous', state_json: { research_question: 'Does batching improve throughput?' },
+      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
+      status: 'active', state_json: { research_question: 'Does batching improve throughput?' },
       primary_thread_id: 'thread-1', started_by_user_id: null, started_run_id: null,
       created_at: '', updated_at: '',
     }])

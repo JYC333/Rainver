@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   RETRIEVAL_OBJECT_TYPE_VALUES,
   RetrievalObjectTypeSchema,
-  SpaceObjectKindCreateProposalRequestSchema,
+  SpaceObjectProfileCreateProposalRequestSchema,
   ObjectSchemaExportManifestSchema,
   ObjectSchemaImportRequestSchema,
   ObjectSchemaSuggestionScanRequestSchema,
   ObjectSchemaSuggestionReportSchema,
-  SpaceObjectKindOutSchema,
-  SpaceObjectKindUpdateProposalRequestSchema,
+  SpaceObjectProfileOutSchema,
+  SpaceObjectProfileUpdateProposalRequestSchema,
 } from "../src/index";
 
 describe("object schema / object kind protocol contracts", () => {
@@ -26,12 +26,12 @@ describe("object schema / object kind protocol contracts", () => {
     ]);
     expect(RetrievalObjectTypeSchema.parse("source_item")).toBe("source_item");
     expect(RetrievalObjectTypeSchema.parse("extracted_evidence")).toBe("extracted_evidence");
-    expect(RetrievalObjectTypeSchema.safeParse("object_kind").success).toBe(false);
+    expect(RetrievalObjectTypeSchema.safeParse("object_profile").success).toBe(false);
     expect(RetrievalObjectTypeSchema.safeParse("schema_pack").success).toBe(false);
   });
 
   it("parses object kind create proposals under a fixed base object type", () => {
-    const request = SpaceObjectKindCreateProposalRequestSchema.parse({
+    const request = SpaceObjectProfileCreateProposalRequestSchema.parse({
       key: "decision",
       label: "Decision",
       base_object_type: "knowledge_item",
@@ -50,12 +50,12 @@ describe("object schema / object kind protocol contracts", () => {
   });
 
   it("parses source object kind create proposals under fixed source base types", () => {
-    const itemKind = SpaceObjectKindCreateProposalRequestSchema.parse({
+    const itemKind = SpaceObjectProfileCreateProposalRequestSchema.parse({
       key: "feed_entry",
       label: "Feed entry",
       base_object_type: "source_item",
     });
-    const evidenceKind = SpaceObjectKindCreateProposalRequestSchema.parse({
+    const evidenceKind = SpaceObjectProfileCreateProposalRequestSchema.parse({
       key: "excerpt",
       label: "Excerpt",
       base_object_type: "extracted_evidence",
@@ -66,13 +66,13 @@ describe("object schema / object kind protocol contracts", () => {
   });
 
   it("parses relation hints as declarative object schema config", () => {
-    const request = SpaceObjectKindCreateProposalRequestSchema.parse({
+    const request = SpaceObjectProfileCreateProposalRequestSchema.parse({
       key: "decision",
       label: "Decision",
       base_object_type: "knowledge_item",
       relation_hints: [{
         endpoint_object_type: "source",
-        relation_type: "references",
+        link_type: "references",
         direction: "from",
         confidence_default: 0.7,
         required: true,
@@ -82,7 +82,7 @@ describe("object schema / object kind protocol contracts", () => {
     expect(request.relation_hints).toEqual([
       expect.objectContaining({
         endpoint_object_type: "source",
-        relation_type: "references",
+        link_type: "references",
         direction: "from",
         confidence_default: 0.7,
         required: true,
@@ -92,7 +92,7 @@ describe("object schema / object kind protocol contracts", () => {
 
   it("rejects unknown base object types for object kinds", () => {
     expect(
-      SpaceObjectKindCreateProposalRequestSchema.safeParse({
+      SpaceObjectProfileCreateProposalRequestSchema.safeParse({
         key: "person",
         label: "Person",
         base_object_type: "person",
@@ -102,7 +102,7 @@ describe("object schema / object kind protocol contracts", () => {
 
   it("rejects object kind keys that do not match the canonical domain subtype", () => {
     expect(
-      SpaceObjectKindCreateProposalRequestSchema.safeParse({
+      SpaceObjectProfileCreateProposalRequestSchema.safeParse({
         key: "vendor_profile",
         label: "Vendor profile",
         base_object_type: "knowledge_item",
@@ -112,7 +112,7 @@ describe("object schema / object kind protocol contracts", () => {
 
   it("rejects executable object schema config", () => {
     expect(
-      SpaceObjectKindCreateProposalRequestSchema.safeParse({
+      SpaceObjectProfileCreateProposalRequestSchema.safeParse({
         key: "concept",
         label: "Bad kind",
         base_object_type: "knowledge_item",
@@ -122,14 +122,14 @@ describe("object schema / object kind protocol contracts", () => {
   });
 
   it("allows update proposals to activate drafts only", () => {
-    expect(SpaceObjectKindUpdateProposalRequestSchema.parse({ status: "active" }).status).toBe("active");
-    expect(SpaceObjectKindUpdateProposalRequestSchema.safeParse({ status: "archived" }).success).toBe(false);
-    expect(SpaceObjectKindUpdateProposalRequestSchema.safeParse({ status: "deprecated" }).success).toBe(false);
+    expect(SpaceObjectProfileUpdateProposalRequestSchema.parse({ status: "active" }).status).toBe("active");
+    expect(SpaceObjectProfileUpdateProposalRequestSchema.safeParse({ status: "archived" }).success).toBe(false);
+    expect(SpaceObjectProfileUpdateProposalRequestSchema.safeParse({ status: "deprecated" }).success).toBe(false);
   });
 
   it("serializes object kind rows without secret fields", () => {
     expect(
-      SpaceObjectKindOutSchema.parse({
+      SpaceObjectProfileOutSchema.parse({
         id: "kind-1",
         space_id: "space-1",
         key: "decision",
@@ -156,21 +156,21 @@ describe("object schema / object kind protocol contracts", () => {
       format: "agent_space.object_schema.v1",
       exported_at: "2026-06-27T00:00:00.000Z",
       object_schema_version: 3,
-      object_kinds: [{
+      object_profiles: [{
         key: "decision",
         label: "Decision",
         base_object_type: "knowledge_item",
         field_schema: {},
         relation_hints: [{
           endpoint_object_type: "source",
-          relation_type: "references",
+          link_type: "references",
         }],
       }],
     });
 
     expect(ObjectSchemaImportRequestSchema.parse({ manifest }).manifest.format).toBe("agent_space.object_schema.v1");
     expect(manifest).not.toHaveProperty("schema_pack");
-    expect(manifest.object_kinds[0]!.relation_hints[0]).toMatchObject({ direction: "from", confidence_default: 0.55 });
+    expect(manifest.object_profiles[0]!.relation_hints[0]).toMatchObject({ direction: "from", confidence_default: 0.55 });
   });
 
   it("parses deterministic object schema suggestion reports", () => {
@@ -182,16 +182,16 @@ describe("object schema / object kind protocol contracts", () => {
     const report = ObjectSchemaSuggestionReportSchema.parse({
       findings: [{
         id: "finding-1",
-        kind: "missing_object_kind",
+        kind: "missing_object_profile",
         base_object_type: "knowledge_item",
-        object_kind: "decision",
+        object_profile: "decision",
         title: "Create object kind draft: decision",
         reason: "Visible rows use decision.",
         confidence_tier: "high",
         visible_usage_count: 2,
-        proposed_action: { proposal_type: "object_kind_create", status: "draft" },
+        proposed_action: { proposal_type: "object_profile_create", status: "draft" },
       }],
-      counts: { missing_object_kind: 1 },
+      counts: { missing_object_profile: 1 },
       scanned: { visible_usage_rows: 1, registry_rows: 0 },
       access_safety: {
         only_visible_usage: true,

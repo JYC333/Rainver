@@ -10,7 +10,6 @@ import { ReaderSelectionToolbar } from './ReaderSelectionToolbar'
 import { ReaderShortcutsDialog } from './ReaderShortcutsDialog'
 import { activeAnnotationsInDocumentOrder, type ReaderAnnotationType } from './readerModel'
 
-type Visibility = 'private' | 'space_shared'
 export interface ReaderWorkspaceControls { panelOpen: boolean; togglePanel: () => void }
 
 export function ReaderWorkspace({ document, annotations, onAnnotationsChange, header, banner, onReferenceClick }: {
@@ -26,7 +25,6 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
   const [selection, setSelection] = useState<TextSelection | null>(null)
   const [selectedAnnotation, setSelectedAnnotation] = useState<ReaderAnnotation | null>(null)
   const [pendingType, setPendingType] = useState<ReaderAnnotationType | null>(null)
-  const [visibility, setVisibility] = useState<Visibility>('private')
   const [label, setLabel] = useState('')
   const [focusedBlock, setFocusedBlock] = useState<number | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -62,14 +60,14 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
       }
       const body: ReaderAnnotationCreate = {
         document_type: document.document_type as ReaderAnnotationCreate['document_type'], document_id: document.document_id,
-        annotation_type: type, quote_text: selected.quoteText, anchor_json: anchor, visibility, label: label.trim() || undefined,
+        annotation_type: type, quote_text: selected.quoteText, anchor_json: anchor, label: label.trim() || undefined,
       }
       const created = await readerApi.createAnnotation(body)
       onAnnotationsChange([...annotations, created]); setSelection(null); setSelectedAnnotation(created); setThreads([]); setPanelOpen(true); setLabel('')
       if (type === 'comment') setFocusCommentId(created.id)
       toast.success('Annotation saved')
     } catch (error) { toast.error(errMsg(error)) } finally { setPendingType(null) }
-  }, [annotations, document, label, onAnnotationsChange, pendingType, visibility])
+  }, [annotations, document, label, onAnnotationsChange, pendingType])
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -110,7 +108,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
         </div>
       </div>
       {panelOpen && <ReaderInspector annotations={ordered} selection={selection} selectedAnnotation={selectedAnnotation} threads={threads}
-        createVisibility={visibility} onCreateVisibilityChange={setVisibility} createLabel={label} onCreateLabelChange={setLabel}
+        createLabel={label} onCreateLabelChange={setLabel}
         commentInputRef={commentInputRef} onSelectAnnotation={annotation => selectAnnotation(annotation, true)}
         onAnnotationArchived={id => { onAnnotationsChange(annotations.filter(item => item.id !== id)); setSelectedAnnotation(null); setThreads([]) }}
         onThreadsUpdated={setThreads} onClose={() => setPanelOpen(false)} />}

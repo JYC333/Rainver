@@ -46,8 +46,6 @@ import {
 import {
   MemoryReadValidationError,
   PgMemoryReadRepository,
-  type MemoryRow,
-  type Queryable,
 } from "./repository";
 import {
   MemoryProposalForbiddenError,
@@ -56,14 +54,10 @@ import {
   MemoryProposalValidationError,
   PgMemoryProposalRepository,
 } from "./proposalRepository";
-import { canReadMemory } from "./memoryReadAuth";
-import { accessibleProjectIds } from "./projectAccess";
-import { memorySensitivityReadSql } from "./memorySensitivitySql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { resolveOversightLevel } from "../access/oversightResolver";
-
-const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
+import {
+  applyContentCreationContext,
+  resolveContentCreationContext,
+} from "../access/creationContext";
 
 /**
  * server memory model.
@@ -87,27 +81,6 @@ type MemoryIdentity = { spaceId: string; userId: string };
 type MemoryIdentityOverride =
   | MemoryIdentity
   | ((request: FastifyRequest) => Promise<MemoryIdentity | null> | MemoryIdentity | null);
-
-interface MemoryAccessLogJoinedRow extends MemoryRow {
-  log_id: string;
-  log_space_id: string;
-  log_memory_id: string;
-  log_user_id: string | null;
-  log_agent_id: string | null;
-  log_run_id: string | null;
-  log_access_type: string;
-  log_reason: string | null;
-  log_accessed_at: unknown;
-}
-
-const MEMORY_ACCESS_LOG_MEMORY_COLUMNS = `m.id, m.space_id, m.subject_user_id,
-  m.owner_user_id, m.project_folder_id, m.scope_type, m.namespace, m.memory_type,
-  m.title, NULL::text AS content, m.status, m.visibility, m.access_level, m.sensitivity_level,
-  m.last_confirmed_at, m.confidence, m.importance,
-  m.source_id, m.created_by, m.created_at, m.updated_at, m.deleted_at,
-  m.version, m.tags, m.memory_layer, m.source_trust,
-  m.created_from_proposal_id, m.root_memory_id, m.supersedes_memory_id,
-  m.project_id`;
 
 let servicesFactoryOverride: MemoryServicesFactory | null = null;
 let identityOverride: MemoryIdentityOverride | null = null;
@@ -160,9 +133,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           namespace: optionalString(q.namespace),
           memoryType: optionalString(q.type),
           status: q.status === undefined ? "active" : q.status,
-          projectFolderId: optionalString(q.project_folder_id),
           projectId: optionalString(q.project_id),
-          includeSystem: boolQuery(q.include_system),
           limit,
           offset,
         },
@@ -176,53 +147,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get("/api/v1/memory/access-logs", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    if (!context.config.databaseUrl) {
-      return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
-    }
-    const q = query(request);
-    const limit = intQuery(q.limit, 50);
-    if (limit === null || limit < 1 || limit > 200) {
-      return reply.code(422).send({ detail: "limit must be between 1 and 200" });
-    }
-    const offset = intQuery(q.offset, 0);
-    if (offset === null || offset < 0 || offset > 1000) {
-      return reply.code(422).send({ detail: "offset must be between 0 and 1000" });
-    }
-    const memoryId = optionalString(q.memory_id);
-    const accessType = optionalString(q.access_type);
-    const projectFolderId = optionalString(q.project_folder_id);
-    const projectId = optionalString(q.project_id);
-    try {
-      const db = getDbPool(context.config.databaseUrl);
-      const page = await loadVisibleMemoryAccessLogs(db, {
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        limit,
-        offset,
-        memoryId,
-        accessType,
-        projectFolderId,
-        projectId,
-      });
-      return reply.send(page);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
   app.get("/api/v1/memory/:memoryId", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
-    const projectFolderId = optionalString(query(request).project_folder_id);
     const memory = await memoryServices(context).repository.get(
       identity.spaceId,
       identity.userId,
       memoryId,
-      projectFolderId,
     );
     if (!memory) return reply.code(404).send({ detail: "Memory not found" });
     return reply.send(memory);
@@ -243,8 +175,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         scope: body.scope ?? null,
         namespace: body.namespace ?? null,
         memoryType: body.type ?? null,
-        projectFolderId: body.project_folder_id ?? null,
-        includeSystem: body.include_system,
         limit: body.limit,
       });
       return reply.send(rows);
@@ -291,14 +221,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         excludeObjectId: body.exclude_object_id ?? null,
         maxResults: body.max_results,
       });
-      const matchedIds = response.matches.map((match) => match.object_id);
-      if (matchedIds.length > 0) {
-        await PgMemoryReadRepository.fromConfig(context.config).recordCreateSafetyReads(
-          matchedIds,
-          identity.spaceId,
-          identity.userId,
-        );
-      }
       return reply.send(response);
     } catch (error) {
       return sendDomainError(reply, error);
@@ -309,7 +231,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // space only. Cross-space is fail-closed (not implemented here). The single
   // read-access gate is the memory adapter's revalidate: canReadMemory +
   // summary-only redaction + project-membership gating. Only the returned rows
-  // are logged to memory_access_logs (search_hit).
+  // are logged to content_access_logs (search_hit) when another member reads
+  // owner-attributed content.
   app.post("/api/v1/memory/retrieval/search", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -360,7 +283,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         viewerUserId: identity.userId,
         // Scoped to memory objects; the memory registry only resolves memory_entry.
         objectTypes: ["memory_entry"],
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         query: body.query,
         maxResults: controls.maxResults,
         includeTrace: controls.includeTrace,
@@ -371,14 +294,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         adaptiveReturn: controls.adaptiveReturn,
         rankingConfig: controls.rankingConfig,
       });
-      const ids = response.items.map((item) => item.object_id);
-      if (ids.length > 0) {
-        await PgMemoryReadRepository.fromConfig(context.config).recordRetrievalSearchReads(
-          ids,
-          identity.spaceId,
-          identity.userId,
-        );
-      }
       return reply.send(response);
     } catch (error) {
       return sendDomainError(reply, error);
@@ -436,7 +351,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         spaceId: identity.spaceId,
         viewerUserId: identity.userId,
         objectTypes: ["memory_entry"],
-        objectKinds: body.object_kinds,
+        objectProfiles: body.object_profiles,
         query: body.query,
         maxResults,
         includeTrace,
@@ -445,14 +360,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         adaptiveReturn,
         rankingConfig: retrievalSettings.rankingConfig,
       });
-      const ids = response.items.map((item) => item.object_id);
-      if (ids.length > 0) {
-        await PgMemoryReadRepository.fromConfig(context.config).recordRetrievalSearchReads(
-          ids,
-          identity.spaceId,
-          identity.userId,
-        );
-      }
       if (!body.persist_artifact) return reply.send(response);
       try {
         const artifactId = await persistRetrievalBriefArtifact(pool, {
@@ -462,7 +369,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           projectId: null,
           query: body.query,
           objectTypes: ["memory_entry"],
-          objectKinds: body.object_kinds,
+          objectProfiles: body.object_profiles,
           maxResults,
           includeTrace,
           mode,
@@ -762,14 +669,24 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/memory", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
+    if (!context.config.databaseUrl) {
+      return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
+    }
     try {
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(getDbPool(context.config.databaseUrl), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
       const protocol = await loadProtocol();
       const command = protocol.MemoryProposalCreateCommandSchema.parse({
-        ...jsonBody(request),
+        ...applyContentCreationContext(body, creation),
         operation: "create",
+        scope: creation.projectId ? "project" : "user",
       });
       const proposal = await memoryServices(context).repository.createMemoryProposal(
-        identity.spaceId,
+        creation.spaceId,
         identity.userId,
         command,
       );
@@ -783,7 +700,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
-    const projectFolderId = optionalString(query(request).project_folder_id);
     try {
       const protocol = await loadProtocol();
       const command = protocol.MemoryProposalUpdateCommandSchema.parse({
@@ -795,7 +711,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         identity.spaceId,
         identity.userId,
         memoryId,
-        projectFolderId,
         command,
       );
       return reply.code(202).send(proposal);
@@ -808,19 +723,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
-    const projectFolderId = optionalString(query(request).project_folder_id);
     try {
       const protocol = await loadProtocol();
       const command = protocol.MemoryProposalArchiveCommandSchema.parse({
         operation: "archive",
         target_memory_id: memoryId,
-        project_folder_id: projectFolderId,
       });
       const proposal = await memoryServices(context).repository.archiveMemoryProposal(
         identity.spaceId,
         identity.userId,
         memoryId,
-        projectFolderId,
         command,
       );
       return reply.code(202).send(proposal);
@@ -855,119 +767,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 }
 
-async function loadVisibleMemoryAccessLogs(
-  db: Queryable,
-  input: {
-    spaceId: string;
-    userId: string;
-    limit: number;
-    offset: number;
-    memoryId?: string | null;
-    accessType?: string | null;
-    projectFolderId?: string | null;
-    projectId?: string | null;
-  },
-): Promise<{
-  items: Array<Record<string, unknown>>;
-  limit: number;
-  offset: number;
-  returned: number;
-  has_more: boolean;
-}> {
-  const where = ["l.space_id = $1"];
-  const values: unknown[] = [input.spaceId];
-  if (input.memoryId) {
-    values.push(input.memoryId);
-    where.push(`l.memory_id = $${values.length}`);
-  }
-  if (input.accessType) {
-    values.push(input.accessType);
-    where.push(`l.access_type = $${values.length}`);
-  }
-  if (input.projectId) {
-    values.push(input.projectId);
-    where.push(`m.project_id = $${values.length}`);
-  }
-  values.push(input.userId);
-  const userExpr = `$${values.length}`;
-  where.push(contentReadSql("memory", "m", userExpr));
-  where.push(memorySensitivityReadSql("m", userExpr));
-  const overfetchLimit = Math.min((input.offset + input.limit + 1) * 5, 5000);
-  values.push(overfetchLimit);
-
-  const result = await db.query<MemoryAccessLogJoinedRow>(
-    `SELECT
-        l.id AS log_id,
-        l.space_id AS log_space_id,
-        l.memory_id AS log_memory_id,
-        l.user_id AS log_user_id,
-        l.agent_id AS log_agent_id,
-        l.run_id AS log_run_id,
-        l.access_type AS log_access_type,
-        l.reason AS log_reason,
-        l.accessed_at AS log_accessed_at,
-        ${MEMORY_ACCESS_LOG_MEMORY_COLUMNS},
-        ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "m", userExpr })} AS effective_access_level
-       FROM memory_access_logs l
-       JOIN memory_entries m
-         ON m.id = l.memory_id
-        AND m.space_id = l.space_id
-      WHERE ${where.join(" AND ")}
-      ORDER BY l.accessed_at DESC, l.id DESC
-      LIMIT $${values.length}`,
-    values,
-  );
-
-  const oversightLevel = await resolveOversightLevel(db, input.spaceId, input.userId);
-  const readableRows = result.rows.filter((row) =>
-    canReadMemory(row, {
-      spaceId: input.spaceId,
-      userId: input.userId,
-      projectFolderId: input.projectFolderId ?? null,
-      oversightLevel,
-    }),
-  );
-  const accessibleProjects = await accessibleProjectIds(
-    db,
-    input.spaceId,
-    input.userId,
-    readableRows.map((row) => row.project_id),
-  );
-  const visibleRows = readableRows
-    .filter((row) => !row.project_id || accessibleProjects.has(row.project_id))
-    .map((row) => ({
-      id: row.log_id,
-      space_id: row.log_space_id,
-      memory_id: row.log_memory_id,
-      user_id: row.log_user_id,
-      agent_id: row.log_agent_id,
-      run_id: row.log_run_id,
-      access_type: row.log_access_type,
-      reason: row.log_reason,
-      accessed_at: isoString(row.log_accessed_at),
-      memory_title: row.title,
-      memory_scope: row.scope_type,
-      memory_visibility: row.visibility,
-      project_id: row.project_id,
-    }));
-  const items = visibleRows.slice(input.offset, input.offset + input.limit);
-  return {
-    items,
-    limit: input.limit,
-    offset: input.offset,
-    returned: items.length,
-    has_more: visibleRows.length > input.offset + input.limit,
-  };
-}
-
-function isoString(value: unknown): string {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
-  if (typeof value === "string" && value.trim()) {
-    const date = new Date(value);
-    if (!Number.isNaN(date.getTime())) return date.toISOString();
-  }
-  return new Date(0).toISOString();
-}
 
 async function resolveIdentity(
   context: ModuleContext,
@@ -1045,10 +844,6 @@ function jsonBody(request: FastifyRequest): Record<string, unknown> {
 
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function boolQuery(value: string | undefined): boolean {
-  return value === "true" || value === "1";
 }
 
 function intQuery(value: string | undefined, fallback: number): number | null {

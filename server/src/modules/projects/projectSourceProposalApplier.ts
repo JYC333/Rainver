@@ -1,5 +1,5 @@
 import type { ProposalApplierRegistry } from "../proposals/applierRegistry";
-import { ProjectSourceBindingRepository } from "./projectSourceBindingRepository";
+import { ProjectSourceBindingService } from "./projectSourceBindingService";
 import { HttpError } from "../routeUtils/common";
 
 export function registerProjectSourceProposalAppliers(registry: ProposalApplierRegistry): void {
@@ -18,7 +18,7 @@ export function registerProjectSourceProposalAppliers(registry: ProposalApplierR
       );
       if (!ready.rows[0]) throw new HttpError(409, "Source activation must be accepted before the Project binding");
     }
-    const binding = await new ProjectSourceBindingRepository(db).createProjectSourceBinding(
+    const binding = await new ProjectSourceBindingService(db).createBinding(
       { spaceId: proposal.space_id, userId }, payload,
     );
     return { result_type: "project_source_binding", result: { binding } };

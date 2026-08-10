@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import * as poolModule from "../src/db/pool";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
@@ -27,6 +27,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[graph-projection-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -457,23 +458,37 @@ async function seedSpaceObject(
   const id = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (
-       id, space_id, object_type, title, summary, status, visibility,
-       owner_user_id, created_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
     [
       id,
       identity.spaceId,
       input.objectType,
       input.title,
       `${input.title} summary`,
-      input.status,
       input.visibility ?? "space_shared",
       input.ownerUserId ?? identity.userId,
       input.createdByUserId ?? identity.userId,
       now,
     ],
   );
+  // Domain status lives on the extension table (B12D), and a real object
+  // always has one — seeding a root row alone would not be a shape the
+  // application can produce.
+  if (input.objectType === "knowledge_item") {
+    await pool!.query(
+      `INSERT INTO knowledge_items (object_id, space_id, status, knowledge_kind, content, content_format, content_schema_version, verification_status, reflection_status, tags_json, version)
+       VALUES ($1, $2, $3, 'concept', $4, 'markdown', 1, 'unverified', 'unreviewed', '[]'::jsonb, 1)`,
+      [id, identity.spaceId, input.status, `${input.title} body`],
+    );
+  } else if (input.objectType === "note") {
+    await pool!.query(
+      `INSERT INTO notes (object_id, space_id, status, content_format, content_schema_version, plain_text, version)
+       VALUES ($1, $2, $3, 'markdown', 1, $4, 1)`,
+      [id, identity.spaceId, input.status, `${input.title} body`],
+    );
+  } else {
+    throw new Error(`seedSpaceObject: add an extension insert for ${input.objectType}`);
+  }
   return id;
 }
 
@@ -481,7 +496,7 @@ async function seedRelation(
   identity: SpaceUserIdentity,
   fromObjectId: string,
   toObjectId: string,
-  relationType: string,
+  linkType: string,
   options: { confidence?: number | null; updatedAt?: string } = {},
 ): Promise<string> {
   const id = randomUUID();
@@ -489,10 +504,10 @@ async function seedRelation(
   const confidence = options.confidence === undefined ? 0.8 : options.confidence;
   await pool!.query(
     `INSERT INTO object_relations (
-       id, space_id, from_object_id, to_object_id, relation_type,
+       id, space_id, from_object_id, to_object_id, link_type,
        status, confidence, evidence_summary, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, $5, 'active', $6, 'seeded relation', $7, $7)`,
-    [id, identity.spaceId, fromObjectId, toObjectId, relationType, confidence, now],
+    [id, identity.spaceId, fromObjectId, toObjectId, linkType, confidence, now],
   );
   return id;
 }

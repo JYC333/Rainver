@@ -729,9 +729,10 @@ export class ContextOpsService {
       `SELECT count(*)::int AS recent_access_count,
               count(*) FILTER (WHERE access_type = 'context_injection')::int AS context_injection_count,
               count(*) FILTER (WHERE access_type = 'maintenance_scan')::int AS maintenance_scan_count
-         FROM memory_access_logs
+         FROM content_access_logs
         WHERE space_id = $1
-          AND user_id = $2
+          AND resource_type = 'memory'
+          AND viewer_user_id = $2
           AND accessed_at >= $3`,
       [spaceId, userId, windowStart.toISOString()],
     );

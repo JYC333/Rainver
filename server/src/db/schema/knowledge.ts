@@ -73,6 +73,7 @@ export const evidenceLinks = pgTable("evidence_links", {
 export const extractedEvidence = pgTable("extracted_evidence", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	visibility: varchar({ length: 32 }).default('private').notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
@@ -113,6 +114,7 @@ export const extractedEvidence = pgTable("extracted_evidence", {
 	index("ix_extracted_evidence_extraction_job_id").using("btree", table.extractionJobId.asc().nullsLast()),
 	index("ix_extracted_evidence_occurred_at").using("btree", table.occurredAt.asc().nullsLast()),
 	index("ix_extracted_evidence_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_extracted_evidence_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_extracted_evidence_origin_source_item_id").using("btree", table.originSourceItemId.asc().nullsLast()),
 	index("ix_extracted_evidence_source_item_id").using("btree", table.sourceItemId.asc().nullsLast()),
 	index("ix_extracted_evidence_source_object").using("btree", table.spaceId.asc().nullsLast(), table.sourceObjectType.asc().nullsLast(), table.sourceObjectId.asc().nullsLast()),
@@ -177,10 +179,15 @@ export const extractedEvidence = pgTable("extracted_evidence", {
 			name: "extracted_evidence_source_snapshot_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "extracted_evidence_space_id_fkey"
-		}),
+		columns: [table.spaceId],
+		foreignColumns: [spaces.id],
+		name: "extracted_evidence_space_id_fkey"
+	}),
+	foreignKey({
+		columns: [table.projectId, table.spaceId],
+		foreignColumns: [projects.id, projects.spaceId],
+		name: "extracted_evidence_project_id_fkey"
+	}),
 	check("ck_extracted_evidence_evidence_type", sql`(evidence_type)::text = ANY (ARRAY[('document'::character varying)::text, ('excerpt'::character varying)::text, ('event'::character varying)::text, ('log'::character varying)::text, ('artifact'::character varying)::text, ('claim'::character varying)::text, ('summary'::character varying)::text])`),
 	check("ck_extracted_evidence_status", sql`(status)::text = ANY (ARRAY[('candidate'::character varying)::text, ('active'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_extracted_evidence_trust_level", sql`(trust_level)::text = ANY (ARRAY[('trusted'::character varying)::text, ('normal'::character varying)::text, ('untrusted'::character varying)::text])`),
@@ -195,6 +202,10 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	rootItemId: varchar("root_item_id", { length: 36 }),
 	supersedesItemId: varchar("supersedes_item_id", { length: 36 }),
 	knowledgeKind: varchar("knowledge_kind", { length: 32 }).notNull(),
+	// Domain lifecycle state, moved off `space_objects` (B12D). The default
+	// matches what every writer already passes explicitly; it exists so a new
+	// caller cannot create a status-less row.
+	status: varchar({ length: 32 }).default('active').notNull(),
 	slug: varchar({ length: 512 }),
 	aliasesJson: jsonb("aliases_json"),
 	content: text().notNull(),
@@ -219,6 +230,7 @@ export const knowledgeItems = pgTable("knowledge_items", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_knowledge_items_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),
 	index("ix_knowledge_items_knowledge_kind").using("btree", table.knowledgeKind.asc().nullsLast()),
+	index("ix_knowledge_items_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_knowledge_items_redirect_to_item_id").using("btree", table.redirectToItemId.asc().nullsLast()),
 	index("ix_knowledge_items_root_item_id").using("btree", table.rootItemId.asc().nullsLast()),
 	index("ix_knowledge_items_slug").using("btree", table.slug.asc().nullsLast()),
@@ -279,6 +291,7 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	check("ck_knowledge_items_confidence", sql`(confidence IS NULL) OR ((confidence >= (0)::double precision) AND (confidence <= (1)::double precision))`),
 	check("ck_knowledge_items_content_format", sql`(content_format)::text = ANY (ARRAY[('markdown'::character varying)::text, ('plain'::character varying)::text, ('prosemirror_json'::character varying)::text])`),
 	check("ck_knowledge_items_knowledge_kind", sql`(knowledge_kind)::text = ANY (ARRAY[('concept'::character varying)::text, ('lesson'::character varying)::text, ('procedure'::character varying)::text, ('decision'::character varying)::text, ('question'::character varying)::text, ('answer'::character varying)::text, ('summary'::character varying)::text])`),
+	check("ck_knowledge_items_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('superseded'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
 	check("ck_knowledge_items_reflection_status", sql`(reflection_status)::text = ANY (ARRAY[('unreviewed'::character varying)::text, ('reviewed'::character varying)::text, ('distilled'::character varying)::text])`),
 	check("ck_knowledge_items_verification_status", sql`(verification_status)::text = ANY (ARRAY[('unverified'::character varying)::text, ('needs_review'::character varying)::text, ('verified'::character varying)::text])`),
 ]);
@@ -289,7 +302,9 @@ export const spaceObjects = pgTable("space_objects", {
 	objectType: varchar("object_type", { length: 32 }).notNull(),
 	title: varchar({ length: 512 }).notNull(),
 	summary: text(),
-	status: varchar({ length: 32 }).notNull(),
+	// No `status` column: domain lifecycle state belongs to the owning
+	// extension table (B12D). The root carries only presence — `archived_at`
+	// and `deleted_at` — which is what cross-domain readers actually filter on.
 	visibility: varchar({ length: 32 }).default('space_shared').notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
@@ -308,7 +323,6 @@ export const spaceObjects = pgTable("space_objects", {
 	index("ix_space_objects_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
 	index("ix_space_objects_primary_project_id").using("btree", table.primaryProjectId.asc().nullsLast()),
 	index("ix_space_objects_space_type").using("btree", table.spaceId.asc().nullsLast(), table.objectType.asc().nullsLast()),
-	index("ix_space_objects_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_space_objects_visibility").using("btree", table.visibility.asc().nullsLast()),
 	index("ix_space_objects_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
@@ -347,21 +361,19 @@ export const spaceObjects = pgTable("space_objects", {
 			name: "space_objects_project_folder_id_fkey"
 		}),
 	unique("space_objects_id_space_id_key").on(table.id, table.spaceId),
-	check("ck_space_objects_object_type", sql`(object_type)::text = ANY (ARRAY[('knowledge_item'::character varying)::text, ('note'::character varying)::text, ('source'::character varying)::text, ('person'::character varying)::text, ('organization'::character varying)::text, ('relationship'::character varying)::text, ('claim'::character varying)::text])`),
-	check("ck_space_objects_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('disputed'::character varying)::text, ('superseded'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text, ('raw'::character varying)::text, ('processing'::character varying)::text, ('processed'::character varying)::text, ('error'::character varying)::text])`),
-	check("ck_space_objects_status_by_type", sql`CASE (object_type)::text
-    WHEN 'knowledge_item'::text THEN ((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('superseded'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text]))
-    WHEN 'note'::text THEN ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text]))
-    WHEN 'source'::text THEN ((status)::text = ANY (ARRAY[('raw'::character varying)::text, ('processing'::character varying)::text, ('processed'::character varying)::text, ('archived'::character varying)::text, ('error'::character varying)::text]))
-    WHEN 'claim'::text THEN ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('disputed'::character varying)::text, ('superseded'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text]))
-    ELSE true
-END`),
+	// B12E/B12F: subtype membership is validated by the entity registry at the
+	// only root writer. A closed list here would make the root know every subtype.
+	check("ck_space_objects_object_type_format", sql`(object_type)::text ~ '^[a-z][a-z0-9_]{0,31}$'::text`),
+	// The former `ck_space_objects_status` / `ck_space_objects_status_by_type`
+	// pair branched on `object_type`, so every new domain had to edit a
+	// root-table constraint. B12E forbids that: the root is ignorant of its
+	// subtypes. Each extension table now carries its own status constraint.
 	check("ck_space_objects_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_space_objects_access_level", sql`access_level IN ('full', 'summary')`),
 	check("ck_space_objects_private_owner", sql`visibility = 'space_shared' OR owner_user_id IS NOT NULL`),
 ]);
 
-export const spaceObjectKinds = pgTable("space_object_kinds", {
+export const spaceObjectProfiles = pgTable("space_object_profiles", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	key: varchar({ length: 64 }).notNull(),
@@ -380,35 +392,35 @@ export const spaceObjectKinds = pgTable("space_object_kinds", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-	index("ix_space_object_kinds_base_object_type").using("btree", table.baseObjectType.asc().nullsLast()),
-	index("ix_space_object_kinds_created_by_user_id").using("btree", table.createdByUserId.asc().nullsLast()),
-	index("ix_space_object_kinds_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_space_object_kinds_status").using("btree", table.status.asc().nullsLast()),
+	index("ix_space_object_profiles_base_object_type").using("btree", table.baseObjectType.asc().nullsLast()),
+	index("ix_space_object_profiles_created_by_user_id").using("btree", table.createdByUserId.asc().nullsLast()),
+	index("ix_space_object_profiles_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	index("ix_space_object_profiles_status").using("btree", table.status.asc().nullsLast()),
 	foreignKey({
 			columns: [table.createdByUserId],
 			foreignColumns: [users.id],
-			name: "space_object_kinds_created_by_user_id_fkey"
+			name: "space_object_profiles_created_by_user_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.createdFromProposalId],
 			foreignColumns: [proposals.id],
-			name: "space_object_kinds_created_from_proposal_id_fkey"
+			name: "space_object_profiles_created_from_proposal_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
-			name: "space_object_kinds_space_id_fkey"
+			name: "space_object_profiles_space_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.updatedFromProposalId],
 			foreignColumns: [proposals.id],
-			name: "space_object_kinds_updated_from_proposal_id_fkey"
+			name: "space_object_profiles_updated_from_proposal_id_fkey"
 		}),
-	unique("space_object_kinds_space_base_key_key").on(table.baseObjectType, table.key, table.spaceId),
-	check("ck_space_object_kinds_extraction_policy_object", sql`jsonb_typeof(extraction_policy_json) = 'object'::text`),
-	check("ck_space_object_kinds_field_schema_object", sql`jsonb_typeof(field_schema_json) = 'object'::text`),
-	check("ck_space_object_kinds_key", sql`(key)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
-	check("ck_space_object_kinds_key_by_base_object_type", sql`CASE (base_object_type)::text
+	unique("space_object_profiles_space_base_key_key").on(table.baseObjectType, table.key, table.spaceId),
+	check("ck_space_object_profiles_extraction_policy_object", sql`jsonb_typeof(extraction_policy_json) = 'object'::text`),
+	check("ck_space_object_profiles_field_schema_object", sql`jsonb_typeof(field_schema_json) = 'object'::text`),
+	check("ck_space_object_profiles_key", sql`(key)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
+	check("ck_space_object_profiles_key_by_base_object_type", sql`CASE (base_object_type)::text
     WHEN 'knowledge_item'::text THEN ((key)::text = ANY (ARRAY[('concept'::character varying)::text, ('lesson'::character varying)::text, ('procedure'::character varying)::text, ('decision'::character varying)::text, ('question'::character varying)::text, ('answer'::character varying)::text, ('summary'::character varying)::text]))
     WHEN 'note'::text THEN ((key)::text = 'note'::text)
     WHEN 'source'::text THEN ((key)::text = ANY (ARRAY[('activity_record'::character varying)::text, ('chat_capture'::character varying)::text, ('webpage'::character varying)::text, ('article'::character varying)::text, ('paper'::character varying)::text, ('pdf'::character varying)::text, ('file'::character varying)::text, ('email'::character varying)::text, ('manual_reference'::character varying)::text, ('external_note'::character varying)::text]))
@@ -419,45 +431,45 @@ export const spaceObjectKinds = pgTable("space_object_kinds", {
     WHEN 'extracted_evidence'::text THEN ((key)::text = ANY (ARRAY[('document'::character varying)::text, ('excerpt'::character varying)::text, ('event'::character varying)::text, ('log'::character varying)::text, ('artifact'::character varying)::text, ('claim'::character varying)::text, ('summary'::character varying)::text]))
     ELSE false
 END`),
-	check("ck_space_object_kinds_retrieval_policy_object", sql`jsonb_typeof(retrieval_policy_json) = 'object'::text`),
-	check("ck_space_object_kinds_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('deprecated'::character varying)::text, ('archived'::character varying)::text])`),
-	check("ck_space_object_kinds_ui_config_object", sql`jsonb_typeof(ui_config_json) = 'object'::text`),
-	check("ck_space_object_kinds_version_positive", sql`version >= 1`),
+	check("ck_space_object_profiles_retrieval_policy_object", sql`jsonb_typeof(retrieval_policy_json) = 'object'::text`),
+	check("ck_space_object_profiles_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('deprecated'::character varying)::text, ('archived'::character varying)::text])`),
+	check("ck_space_object_profiles_ui_config_object", sql`jsonb_typeof(ui_config_json) = 'object'::text`),
+	check("ck_space_object_profiles_version_positive", sql`version >= 1`),
 ]);
 
-export const spaceObjectKindRelationHints = pgTable("space_object_kind_relation_hints", {
+export const spaceObjectProfileRelationHints = pgTable("space_object_profile_relation_hints", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	objectKindId: varchar("object_kind_id", { length: 36 }).notNull(),
+	objectProfileId: varchar("object_profile_id", { length: 36 }).notNull(),
 	endpointObjectType: retrievalObjectType("endpoint_object_type").notNull(),
-	endpointObjectKindId: varchar("endpoint_object_kind_id", { length: 36 }),
-	relationType: varchar("relation_type", { length: 64 }).notNull(),
+	endpointObjectProfileId: varchar("endpoint_object_profile_id", { length: 36 }),
+	linkType: varchar("link_type", { length: 64 }).notNull(),
 	direction: varchar({ length: 16 }).default('from').notNull(),
 	confidenceDefault: doublePrecision("confidence_default").default(0.55).notNull(),
 	required: boolean().default(false).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-	index("ix_space_object_kind_relation_hints_endpoint_kind").using("btree", table.endpointObjectKindId.asc().nullsLast()),
-	index("ix_space_object_kind_relation_hints_object_kind").using("btree", table.objectKindId.asc().nullsLast()),
-	index("ix_space_object_kind_relation_hints_required").using("btree", table.spaceId.asc().nullsLast(), table.required.asc().nullsLast()),
+	index("ix_space_object_profile_relation_hints_endpoint_kind").using("btree", table.endpointObjectProfileId.asc().nullsLast()),
+	index("ix_space_object_profile_relation_hints_object_profile").using("btree", table.objectProfileId.asc().nullsLast()),
+	index("ix_space_object_profile_relation_hints_required").using("btree", table.spaceId.asc().nullsLast(), table.required.asc().nullsLast()),
 	foreignKey({
-			columns: [table.endpointObjectKindId],
-			foreignColumns: [spaceObjectKinds.id],
-			name: "space_object_kind_relation_hints_endpoint_kind_fkey"
+			columns: [table.endpointObjectProfileId],
+			foreignColumns: [spaceObjectProfiles.id],
+			name: "space_object_profile_relation_hints_endpoint_kind_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
-			columns: [table.objectKindId],
-			foreignColumns: [spaceObjectKinds.id],
-			name: "space_object_kind_relation_hints_object_kind_fkey"
+			columns: [table.objectProfileId],
+			foreignColumns: [spaceObjectProfiles.id],
+			name: "space_object_profile_relation_hints_object_profile_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
-			name: "space_object_kind_relation_hints_space_id_fkey"
+			name: "space_object_profile_relation_hints_space_id_fkey"
 		}),
-	check("ck_space_object_kind_relation_hints_confidence", sql`(confidence_default >= (0)::double precision) AND (confidence_default <= (1)::double precision)`),
-	check("ck_space_object_kind_relation_hints_direction", sql`(direction)::text = ANY (ARRAY[('from'::character varying)::text, ('to'::character varying)::text, ('either'::character varying)::text])`),
-	check("ck_space_object_kind_relation_hints_relation_type", sql`(relation_type)::text = ANY (ARRAY[('related_to'::character varying)::text, ('explains'::character varying)::text, ('depends_on'::character varying)::text, ('prerequisite_of'::character varying)::text, ('part_of'::character varying)::text, ('example_of'::character varying)::text, ('applies_to'::character varying)::text, ('supports'::character varying)::text, ('contradicts'::character varying)::text, ('derived_from'::character varying)::text, ('summarizes'::character varying)::text, ('updates'::character varying)::text, ('references'::character varying)::text, ('source_for'::character varying)::text, ('about'::character varying)::text, ('supersedes'::character varying)::text, ('refines'::character varying)::text, ('same_as'::character varying)::text])`),
+	check("ck_space_object_profile_relation_hints_confidence", sql`(confidence_default >= (0)::double precision) AND (confidence_default <= (1)::double precision)`),
+	check("ck_space_object_profile_relation_hints_direction", sql`(direction)::text = ANY (ARRAY[('from'::character varying)::text, ('to'::character varying)::text, ('either'::character varying)::text])`),
+	check("ck_space_object_profile_relation_hints_link_type_format", sql`(link_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 ]);
 
 export const knowledgeItemSources = pgTable("knowledge_item_sources", {
@@ -465,6 +477,9 @@ export const knowledgeItemSources = pgTable("knowledge_item_sources", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	knowledgeItemId: varchar("knowledge_item_id", { length: 36 }).notNull(),
 	sourceId: varchar("source_id", { length: 36 }).notNull(),
+	// Deliberately NOT `link_type`: this is citation lineage, not a semantic
+	// graph edge (B12A). Renaming it would merge two vocabularies the
+	// boundaries file exists to keep apart.
 	relationType: varchar("relation_type", { length: 32 }).notNull(),
 	locator: varchar({ length: 1024 }),
 	quote: text(),
@@ -506,6 +521,8 @@ export const sources = pgTable("sources", {
 	objectId: varchar("object_id", { length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	sourceType: varchar("source_type", { length: 64 }).notNull(),
+	// See the note on `knowledge_items.status`.
+	status: varchar({ length: 32 }).default('raw').notNull(),
 	uri: text(),
 	contentRef: varchar("content_ref", { length: 1024 }),
 	rawText: text("raw_text"),
@@ -515,6 +532,7 @@ export const sources = pgTable("sources", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_sources_source_activity_id").using("btree", table.sourceActivityId.asc().nullsLast()),
 	index("ix_sources_source_type").using("btree", table.sourceType.asc().nullsLast()),
+	index("ix_sources_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_sources_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.sourceActivityId],
@@ -533,6 +551,7 @@ export const sources = pgTable("sources", {
 		}).onDelete("cascade"),
 	unique("sources_object_id_space_id_key").on(table.objectId, table.spaceId),
 	check("ck_sources_source_type", sql`(source_type)::text = ANY (ARRAY[('activity_record'::character varying)::text, ('chat_capture'::character varying)::text, ('webpage'::character varying)::text, ('article'::character varying)::text, ('paper'::character varying)::text, ('pdf'::character varying)::text, ('file'::character varying)::text, ('email'::character varying)::text, ('manual_reference'::character varying)::text, ('external_note'::character varying)::text])`),
+	check("ck_sources_status", sql`(status)::text = ANY (ARRAY[('raw'::character varying)::text, ('processing'::character varying)::text, ('processed'::character varying)::text, ('archived'::character varying)::text, ('error'::character varying)::text])`),
 ]);
 
 // Canonical bridge from an ingested SourceItem to the Knowledge Reference it
@@ -564,6 +583,9 @@ export const claims = pgTable("claims", {
 	subjectObjectId: varchar("subject_object_id", { length: 36 }),
 	subjectText: text("subject_text"),
 	claimKind: varchar("claim_kind", { length: 32 }).notNull(),
+	// Domain lifecycle state, moved off `space_objects` (B12D). The claim
+	// status transition rules stay in `claimStatusRules.ts`.
+	status: varchar({ length: 32 }).default('active').notNull(),
 	claimText: text("claim_text").notNull(),
 	normalizedClaimHash: varchar("normalized_claim_hash", { length: 128 }).notNull(),
 	holderObjectId: varchar("holder_object_id", { length: 36 }),
@@ -580,6 +602,7 @@ export const claims = pgTable("claims", {
 	approvedByUserId: varchar("approved_by_user_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_claims_claim_kind").using("btree", table.claimKind.asc().nullsLast()),
+	index("ix_claims_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_claims_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),
 	index("ix_claims_holder_object_id").using("btree", table.holderObjectId.asc().nullsLast()),
 	index("ix_claims_normalized_claim_hash").using("btree", table.normalizedClaimHash.asc().nullsLast()),
@@ -623,6 +646,7 @@ export const claims = pgTable("claims", {
 	check("ck_claims_holder_ref", sql`((holder_object_id IS NOT NULL) AND (holder_type IS NULL) AND (holder_id IS NULL)) OR ((holder_object_id IS NULL) AND (((holder_type IS NULL) AND (holder_id IS NULL)) OR ((holder_type IS NOT NULL) AND (holder_id IS NOT NULL))))`),
 	check("ck_claims_metadata_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),
 	check("ck_claims_resolution_state", sql`(resolution_state)::text = ANY (ARRAY[('unreviewed'::character varying)::text, ('confirmed'::character varying)::text, ('contradicted'::character varying)::text, ('stale'::character varying)::text, ('needs_source'::character varying)::text])`),
+	check("ck_claims_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('disputed'::character varying)::text, ('superseded'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_claims_subject", sql`(subject_object_id IS NOT NULL) OR ((subject_text IS NOT NULL) AND (btrim(subject_text) <> ''::text))`),
 	check("ck_claims_valid_range", sql`(valid_from IS NULL) OR (valid_until IS NULL) OR (valid_from <= valid_until)`),
 ]);
@@ -690,7 +714,7 @@ export const objectRelations = pgTable("object_relations", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	fromObjectId: varchar("from_object_id", { length: 36 }).notNull(),
 	toObjectId: varchar("to_object_id", { length: 36 }).notNull(),
-	relationType: varchar("relation_type", { length: 64 }).notNull(),
+	linkType: varchar("link_type", { length: 64 }).notNull(),
 	status: varchar({ length: 32 }).notNull(),
 	confidence: doublePrecision(),
 	evidenceSummary: text("evidence_summary"),
@@ -704,13 +728,23 @@ export const objectRelations = pgTable("object_relations", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_object_relations_from_object_id").using("btree", table.fromObjectId.asc().nullsLast()),
-	index("ix_object_relations_relation_type").using("btree", table.relationType.asc().nullsLast()),
+	index("ix_object_relations_link_type").using("btree", table.linkType.asc().nullsLast()),
 	index("ix_object_relations_source_claim_id").using("btree", table.sourceClaimId.asc().nullsLast()),
 	index("ix_object_relations_source_object_id").using("btree", table.sourceObjectId.asc().nullsLast()),
 	index("ix_object_relations_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_object_relations_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_object_relations_to_object_id").using("btree", table.toObjectId.asc().nullsLast()),
-	uniqueIndex("ix_object_relations_unique_active").using("btree", table.spaceId.asc().nullsLast(), table.fromObjectId.asc().nullsLast(), table.toObjectId.asc().nullsLast(), table.relationType.asc().nullsLast()).where(sql`((status)::text = 'active'::text)`),
+	uniqueIndex("ix_object_relations_unique_active").using("btree", table.spaceId.asc().nullsLast(), table.fromObjectId.asc().nullsLast(), table.toObjectId.asc().nullsLast(), table.linkType.asc().nullsLast()).where(sql`((status)::text = 'active'::text)`),
+	// Domain-structural `about` edges identify a Workflow's one pinned Inquiry
+	// Thread. The metadata discriminator keeps ordinary semantic `about` edges
+	// unconstrained while making both sides of this one-to-one relation safe
+	// under concurrent writers.
+	uniqueIndex("uq_object_relations_primary_thread_from").using(
+		"btree", table.spaceId.asc().nullsLast(), table.fromObjectId.asc().nullsLast(), table.linkType.asc().nullsLast(),
+	).where(sql`status = 'active' AND link_type = 'about' AND metadata_json->>'relation_role' = 'primary_inquiry_thread'`),
+	uniqueIndex("uq_object_relations_primary_thread_to").using(
+		"btree", table.spaceId.asc().nullsLast(), table.toObjectId.asc().nullsLast(), table.linkType.asc().nullsLast(),
+	).where(sql`status = 'active' AND link_type = 'about' AND metadata_json->>'relation_role' = 'primary_inquiry_thread'`),
 	foreignKey({
 			columns: [table.createdByAgentId],
 			foreignColumns: [agents.id],
@@ -754,7 +788,10 @@ export const objectRelations = pgTable("object_relations", {
 	check("ck_object_relations_confidence", sql`(confidence IS NULL) OR ((confidence >= (0)::double precision) AND (confidence <= (1)::double precision))`),
 	check("ck_object_relations_metadata_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),
 	check("ck_object_relations_no_self", sql`(from_object_id)::text <> (to_object_id)::text`),
-	check("ck_object_relations_relation_type", sql`(relation_type)::text = ANY (ARRAY[('related_to'::character varying)::text, ('references'::character varying)::text, ('depends_on'::character varying)::text, ('part_of'::character varying)::text, ('source_for'::character varying)::text, ('derived_from'::character varying)::text, ('about'::character varying)::text, ('supports'::character varying)::text, ('contradicts'::character varying)::text, ('supersedes'::character varying)::text, ('refines'::character varying)::text, ('same_as'::character varying)::text, ('affiliated_with'::character varying)::text, ('cites'::character varying)::text, ('authored_by'::character varying)::text])`),
+	// B12F: the vocabulary is owned by `modules/ontology/linkTypes.ts`, which
+	// also declares endpoints and governance. A second closed set here could
+	// only drift from it — and did, for three values, before this change.
+	check("ck_object_relations_link_type_format", sql`(link_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 	check("ck_object_relations_status", sql`(status)::text = ANY (ARRAY[('candidate'::character varying)::text, ('active'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
 
@@ -840,15 +877,34 @@ export const notes = pgTable("notes", {
 	contentFormat: varchar("content_format", { length: 32 }).notNull(),
 	contentSchemaVersion: integer("content_schema_version").notNull(),
 	plainText: text("plain_text"),
+	// See the note on `knowledge_items.status`.
+	status: varchar({ length: 32 }).default('active').notNull(),
 	createdFromActivityId: varchar("created_from_activity_id", { length: 36 }),
 	version: integer().default(1).notNull(),
 	contentHash: varchar("content_hash", { length: 64 }),
 	updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
 	updatedByRunId: varchar("updated_by_run_id", { length: 36 }),
-	refsJson: jsonb("refs_json").default([]).notNull(),
+	// N2/N3: the system-reserved role this note plays in its Project's
+	// notebook, replacing the title-string binding the research baseline used
+	// to resolve by. Membership is owned by the registry in
+	// `modules/knowledge/noteProjectRoles.ts` (B12F), so the constraint below
+	// is a format check, not a closed set.
+	//
+	// `role_project_id` is the Project the role is scoped to. It duplicates the
+	// root's `primary_project_id` — deliberately, and the way
+	// `inquiry_threads.project_id` does: a partial unique index cannot span two
+	// tables, and "one role, one note per Project" (N3) is exactly what has to
+	// be enforced by an index rather than remembered by a service. The pair is
+	// written together and cleared together; nothing sets one without the other.
+	roleProjectId: varchar("role_project_id", { length: 36 }),
+	projectRole: varchar("project_role", { length: 64 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_notes_created_from_activity_id").using("btree", table.createdFromActivityId.asc().nullsLast()),
+	index("ix_notes_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_notes_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	uniqueIndex("ix_notes_one_note_per_project_role")
+		.using("btree", table.spaceId.asc().nullsLast(), table.roleProjectId.asc().nullsLast(), table.projectRole.asc().nullsLast())
+		.where(sql`(project_role IS NOT NULL)`),
 	foreignKey({
 			columns: [table.createdFromActivityId],
 			foreignColumns: [activityRecords.id],
@@ -879,10 +935,21 @@ export const notes = pgTable("notes", {
 			foreignColumns: [runs.id, runs.spaceId],
 			name: "notes_updated_by_run_id_fkey"
 		}),
+	foreignKey({
+			columns: [table.roleProjectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "notes_role_project_id_fkey"
+		}).onDelete("cascade"),
 	unique("notes_object_id_space_id_key").on(table.objectId, table.spaceId),
 	check("ck_notes_content_format", sql`(content_format)::text = ANY (ARRAY[('markdown'::character varying)::text, ('plain'::character varying)::text, ('prosemirror_json'::character varying)::text])`),
+	check("ck_notes_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
 	check("ck_notes_version", sql`version >= 1`),
-	check("ck_notes_refs_array", sql`jsonb_typeof(refs_json) = 'array'`),
+	// B12F: the role vocabulary belongs to the registry, so the database only
+	// constrains the token's shape. What it does still enforce is the pairing —
+	// a role without the Project it is scoped to would leave the unique index
+	// grouping every space's roleless-project notes together.
+	check("ck_notes_project_role_format", sql`(project_role IS NULL) OR ((project_role)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text)`),
+	check("ck_notes_project_role_pairing", sql`(project_role IS NULL) = (role_project_id IS NULL)`),
 ]);
 
 export const noteRevisions = pgTable("note_revisions", {

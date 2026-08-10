@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { PgAuthRepository } from "../src/modules/auth/identity";
 
 const SCHEMA = `
@@ -21,6 +21,7 @@ CREATE TABLE spaces (
   type varchar(32) NOT NULL,
   created_by_user_id varchar(36),
   oversight_mode varchar(16) NOT NULL DEFAULT 'none',
+  egress_notifications_enabled boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL
 );
@@ -84,6 +85,40 @@ CREATE TABLE note_collections (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL
 );
+CREATE TABLE runtime_context_policy_versions (
+  id varchar(36) PRIMARY KEY,
+  space_id varchar(36) NOT NULL REFERENCES spaces(id),
+  scope_type varchar(32) NOT NULL,
+  scope_id varchar(36) NOT NULL,
+  version integer NOT NULL,
+  policy_json jsonb NOT NULL,
+  base_version_id varchar(36),
+  typed_diff_json jsonb NOT NULL,
+  reason varchar(2000) NOT NULL,
+  created_by_user_id varchar(36) NOT NULL REFERENCES users(id),
+  created_at timestamptz NOT NULL
+);
+CREATE TABLE runtime_context_policy_bindings (
+  space_id varchar(36) NOT NULL REFERENCES spaces(id),
+  scope_type varchar(32) NOT NULL,
+  scope_id varchar(36) NOT NULL,
+  active_version_id varchar(36) NOT NULL REFERENCES runtime_context_policy_versions(id),
+  updated_by_user_id varchar(36) NOT NULL REFERENCES users(id),
+  updated_at timestamptz NOT NULL,
+  PRIMARY KEY (space_id, scope_type, scope_id)
+);
+CREATE TABLE runtime_context_policy_audits (
+  id varchar(36) PRIMARY KEY,
+  space_id varchar(36) NOT NULL REFERENCES spaces(id),
+  scope_type varchar(32) NOT NULL,
+  scope_id varchar(36) NOT NULL,
+  actor_user_id varchar(36) NOT NULL REFERENCES users(id),
+  base_version_id varchar(36),
+  new_version_id varchar(36) NOT NULL REFERENCES runtime_context_policy_versions(id),
+  typed_diff_json jsonb NOT NULL,
+  reason varchar(2000) NOT NULL,
+  created_at timestamptz NOT NULL
+);
 `;
 
 let container: TestPostgresDatabase | undefined;
@@ -99,6 +134,7 @@ beforeAll(async () => {
     repo = new PgAuthRepository(pool);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[auth-repository] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -115,7 +151,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    "TRUNCATE note_collections, memory_entries, auth_accounts, user_sessions, space_memberships, spaces, users CASCADE",
+    "TRUNCATE runtime_context_policy_audits, runtime_context_policy_bindings, runtime_context_policy_versions, note_collections, memory_entries, auth_accounts, user_sessions, space_memberships, spaces, users CASCADE",
   );
   await pool.query(
     `INSERT INTO users
@@ -236,8 +272,9 @@ describe("PgAuthRepository", () => {
       [user.id, spaceId],
     );
     expect(membership.rows[0]).toEqual({ role: "owner", status: "active" });
-    expect((await pool.query("SELECT count(*)::int AS count FROM memory_entries WHERE space_id = $1 AND scope_type = 'system'", [spaceId])).rows[0].count).toBe(3);
+    expect((await pool.query("SELECT count(*)::int AS count FROM memory_entries WHERE space_id = $1", [spaceId])).rows[0].count).toBe(0);
     expect((await pool.query("SELECT count(*)::int AS count FROM note_collections WHERE space_id = $1", [spaceId])).rows[0].count).toBe(5);
+    expect((await pool.query("SELECT count(*)::int AS count FROM runtime_context_policy_versions WHERE space_id = $1", [spaceId])).rows[0].count).toBe(1);
     expect((await pool.query("SELECT count(*)::int AS count FROM user_sessions WHERE user_id = $1", [user.id])).rows[0].count).toBe(1);
   });
 });

@@ -6,11 +6,13 @@ import {
   parsePage,
   params,
   query,
+  optionalString,
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common";
 import { enforceSources } from "./enforceSources";
 import { SourceRecipeService } from "./sourceRecipeService";
+import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext";
 
 /** Level 2 Source recipe routes (plan/create, dry-run preview, activation, and the recipe-version read model), split out of routes.ts like customSourceRoutes.ts. */
 export function registerSourceRecipeRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -38,9 +40,19 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const gate = await enforceSources(context, identity, "source.recipe.create", "source_connection");
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      const creationIdentity = { spaceId: creation.spaceId, userId: identity.userId };
+      const gate = await enforceSources(context, creationIdentity, "source.recipe.create", "source_connection");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await recipeService().createSource(identity, jsonBody(request)));
+      return reply.code(201).send(await recipeService().createSource(
+        creationIdentity,
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

@@ -16,6 +16,7 @@ function makeConnection(overrides: Partial<SourceConnectionRow> = {}): SourceCon
   return {
     id: "conn-1",
     space_id: "space-1",
+    project_id: null,
     owner_user_id: "user-1",
     credential_id: null,
     visibility: "space_shared",
@@ -43,6 +44,7 @@ function makeItem(overrides: Partial<SourceItemRow> = {}): SourceItemRow {
   return {
     id: "item-1",
     space_id: "space-1",
+    project_id: null,
     owner_user_id: "user-1",
     visibility: "space_shared",
     access_level: "full",
@@ -158,6 +160,54 @@ describe("renderInstruction relevance screening section", () => {
     expect(instruction).toContain("Exclude: pure hardware optimization");
     expect(instruction).toContain("Custom relevant wording");
     expect(instruction).toContain("Every input source item must get exactly one item_decisions entry.");
+  });
+
+  it("renders Project criteria that automated screening must apply", () => {
+    const inputConfig = normalizeInputConfig({
+      relevance_profile: {
+        enabled: true,
+        objective: "Find useful studies.",
+        project_criteria: {
+          include_keywords: ["agent memory"],
+          exclude_keywords: ["survey"],
+          domain_criteria: { methods: ["randomized"] },
+          date_range_start: "2024-01-01",
+          date_range_end: "2026-12-31",
+          source_restrictions: ["arxiv.org"],
+          required_evidence_fields: ["sample size"],
+        },
+      },
+    });
+    const instruction = renderInstruction({
+      connection: makeConnection(),
+      items: [makeItem()],
+      evidence: [],
+      actions,
+      inputConfig,
+      triggerConfig,
+      retrievalContext: disabledRetrievalContext(),
+    });
+
+    expect(instruction).toContain("Project screening criteria:");
+    expect(instruction).toContain("Include keywords/concepts: agent memory");
+    expect(instruction).toContain("Exclude keywords/concepts: survey");
+    expect(instruction).toContain("methods: randomized");
+    expect(instruction).toContain("2024-01-01 to 2026-12-31");
+    expect(instruction).toContain("Allowed journals, outlets, or sites: arxiv.org");
+    expect(instruction).toContain("Required evidence fields: sample size");
+  });
+
+  it("rejects a reversed Project screening date range", () => {
+    expect(() => normalizeInputConfig({
+      relevance_profile: {
+        enabled: true,
+        objective: "Find useful studies.",
+        project_criteria: {
+          date_range_start: "2026-12-31",
+          date_range_end: "2024-01-01",
+        },
+      },
+    })).toThrow(/date_range_start must be before date_range_end/);
   });
 
   it("still renders the screening section with default wording when mark_items is on but no profile is set", () => {

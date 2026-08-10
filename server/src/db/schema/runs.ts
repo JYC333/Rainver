@@ -10,7 +10,6 @@ import { agentRunGroups, runDelegations } from "./agentGroups";
 import { artifacts } from "./artifacts";
 import { proposals } from "./proposals";
 import { projects } from "./projects";
-import { contextSnapshots } from "./context";
 import { tasks } from "./tasks";
 import { jobs } from "./jobs";
 import { evolvableAssetVersions } from "./evolvableAssets";
@@ -24,7 +23,6 @@ export const runs = pgTable("runs", {
 	requestedRuntimeProfileId: varchar("requested_runtime_profile_id", { length: 36 }),
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
 	runtimeProfileSelectionSource: varchar("runtime_profile_selection_source", { length: 16 }),
-	contextSnapshotId: varchar("context_snapshot_id", { length: 36 }),
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	parentRunId: varchar("parent_run_id", { length: 36 }),
@@ -63,8 +61,8 @@ export const runs = pgTable("runs", {
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	visibility: varchar({ length: 32 }).default('space_shared').notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
-	hasPersonalGrantContext: boolean("has_personal_grant_context").default(false).notNull(),
-	personalGrantContextJson: jsonb("personal_grant_context_json"),
+	hasContextTaint: boolean("has_context_taint").default(false).notNull(),
+	contextTaintJson: jsonb("context_taint_json"),
 	source: varchar({ length: 32 }),
 	observabilityLevel: varchar("observability_level", { length: 64 }),
 	dataExposureLevel: varchar("data_exposure_level", { length: 64 }),
@@ -77,7 +75,6 @@ export const runs = pgTable("runs", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_runs_agent_id").using("btree", table.agentId.asc().nullsLast()),
 	index("ix_runs_agent_version_id").using("btree", table.agentVersionId.asc().nullsLast()),
-	index("ix_runs_context_snapshot_id").using("btree", table.contextSnapshotId.asc().nullsLast()),
 	index("ix_runs_delegation_id").using("btree", table.spaceId.asc().nullsLast(), table.delegationId.asc().nullsLast()),
 	index("ix_runs_group_id").using("btree", table.spaceId.asc().nullsLast(), table.runGroupId.asc().nullsLast()),
 	index("ix_runs_instructed_by_agent_id").using("btree", table.spaceId.asc().nullsLast(), table.instructedByAgentId.asc().nullsLast()),
@@ -123,11 +120,6 @@ export const runs = pgTable("runs", {
 			columns: [table.agentVersionId, table.agentId, table.spaceId],
 			foreignColumns: [agentVersions.id, agentVersions.agentId, agentVersions.spaceId],
 			name: "runs_agent_version_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.contextSnapshotId],
-			foreignColumns: [contextSnapshots.id],
-			name: "runs_context_snapshot_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.delegationId],
@@ -484,7 +476,7 @@ export const runSteps = pgTable("run_steps", {
 		}),
 	unique("uq_run_steps_run_step_index").on(table.runId, table.stepIndex),
 	check("ck_run_steps_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('cancelled'::character varying)::text])`),
-	check("ck_run_steps_step_type", sql`(step_type)::text = ANY (ARRAY[('run_created'::character varying)::text, ('queued'::character varying)::text, ('context_prepared'::character varying)::text, ('runtime_selected'::character varying)::text, ('adapter_started'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_created'::character varying)::text, ('proposal_created'::character varying)::text, ('failed'::character varying)::text, ('completed'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('cancelled'::character varying)::text])`),
+	check("ck_run_steps_step_type", sql`(step_type)::text = ANY (ARRAY[('run_created'::character varying)::text, ('queued'::character varying)::text, ('runtime_selected'::character varying)::text, ('adapter_started'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_created'::character varying)::text, ('proposal_created'::character varying)::text, ('failed'::character varying)::text, ('completed'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('cancelled'::character varying)::text])`),
 ]);
 
 export const runEvaluations = pgTable("run_evaluations", {
@@ -592,7 +584,7 @@ export const runEvents = pgTable("run_events", {
 		}),
 	unique("uq_run_events_space_run_event_index").on(table.eventIndex, table.runId, table.spaceId),
 	check("ck_run_events_data_exposure_level", sql`(data_exposure_level IS NULL) OR ((data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))`),
-	check("ck_run_events_event_type", sql`(event_type)::text = ANY (ARRAY[('context_compiled'::character varying)::text, ('runtime_selected'::character varying)::text, ('credential_granted'::character varying)::text, ('sandbox_created'::character varying)::text, ('policy_checked'::character varying)::text, ('adapter_invoked'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_ingested'::character varying)::text, ('patch_collected'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('proposal_created'::character varying)::text, ('evaluation_created'::character varying)::text, ('run_finalized'::character varying)::text, ('chat_completed'::character varying)::text, ('delegation_requested'::character varying)::text, ('delegation_policy_denied'::character varying)::text, ('delegation_queued'::character varying)::text, ('delegation_started'::character varying)::text, ('delegation_completed'::character varying)::text, ('action_invoked'::character varying)::text, ('action_completed'::character varying)::text, ('assistant_message_completed'::character varying)::text, ('tool_call_started'::character varying)::text, ('tool_call_completed'::character varying)::text, ('tool_call_failed'::character varying)::text, ('approval_requested'::character varying)::text, ('approval_resolved'::character varying)::text, ('artifact_produced'::character varying)::text, ('output_validation_completed'::character varying)::text, ('warning'::character varying)::text, ('error'::character varying)::text, ('state_transition'::character varying)::text])`),
+	check("ck_run_events_event_type", sql`(event_type)::text = ANY (ARRAY[('context_compiled'::character varying)::text, ('runtime_selected'::character varying)::text, ('credential_granted'::character varying)::text, ('sandbox_created'::character varying)::text, ('policy_checked'::character varying)::text, ('adapter_invoked'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_ingested'::character varying)::text, ('patch_collected'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('proposal_created'::character varying)::text, ('evaluation_created'::character varying)::text, ('run_finalized'::character varying)::text, ('chat_completed'::character varying)::text, ('delegation_requested'::character varying)::text, ('delegation_policy_denied'::character varying)::text, ('delegation_queued'::character varying)::text, ('delegation_started'::character varying)::text, ('delegation_completed'::character varying)::text, ('action_invoked'::character varying)::text, ('action_completed'::character varying)::text, ('assistant_message_completed'::character varying)::text, ('tool_call_started'::character varying)::text, ('tool_call_completed'::character varying)::text, ('tool_call_failed'::character varying)::text, ('approval_requested'::character varying)::text, ('approval_resolved'::character varying)::text, ('artifact_produced'::character varying)::text, ('output_validation_completed'::character varying)::text, ('provider_compacted'::character varying)::text, ('warning'::character varying)::text, ('error'::character varying)::text, ('state_transition'::character varying)::text])`),
 	check("ck_run_events_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('warning'::character varying)::text, ('cancelled'::character varying)::text])`),
 	check("ck_run_events_trust_level", sql`(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))`),
 ]);

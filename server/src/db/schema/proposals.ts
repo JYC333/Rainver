@@ -123,6 +123,7 @@ export const proposalApprovals = pgTable("proposal_approvals", {
 	index("ix_proposal_approvals_proposal_id").using("btree", table.proposalId.asc().nullsLast()),
 	index("ix_proposal_approvals_target_space_id").using("btree", table.targetSpaceId.asc().nullsLast()),
 	uniqueIndex("ix_proposal_approvals_unique_active").using("btree", table.proposalId.asc().nullsLast(), table.approvalType.asc().nullsLast(), table.approverUserId.asc().nullsLast(), table.grantId.asc().nullsLast()).where(sql`((status)::text = 'approved'::text)`),
+	uniqueIndex("uq_proposal_approvals_taint_owner").on(table.proposalId, table.approvalType, table.approverUserId).where(sql`status = 'approved' AND grant_id IS NULL AND approval_type = 'egress_granting_user'`),
 	uniqueIndex("ix_proposal_approvals_unique_action_grant").on(table.proposalId, table.actionGrantId).where(sql`status = 'approved' AND action_grant_id IS NOT NULL`),
 	foreignKey({
 			columns: [table.approverUserId],

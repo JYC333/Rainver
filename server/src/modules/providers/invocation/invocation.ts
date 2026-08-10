@@ -18,7 +18,7 @@
  *                   back to the provider's configured fallback chain.
  *                   Fallback is PER REQUEST: nothing sticky is stored, so the
  *                   next user turn always restarts on the primary provider.
- *   3. Task chain — auxiliary tasks (reflector, condenser, …) may carry a
+ *   3. Task chain — auxiliary tasks (reflector, checkpoint extractor, …) may carry a
  *                   ProviderTaskPolicy chain that takes precedence over the
  *                   caller's provider, which then acts as the safety net.
  *
@@ -30,12 +30,14 @@ import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { createHash } from "node:crypto";
 import type {
   InvocationTarget,
   PoolKeyCandidate,
   ProviderCommandStore,
   ProviderInfo,
 } from "../commands/store";
+import type { ProviderTaskAttemptRefs } from "../commands/types";
 import type { UsageAttribution, UsageObservation } from "../../usage";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience";
@@ -78,6 +80,8 @@ export interface ProviderChatRequestBody {
   on_text_delta?: (delta: string) => void;
   abort_signal?: AbortSignal;
   egressPolicy?: RetrievalEgressPolicy | null;
+  /** Managed Runtime Context deliveries authorize one physical provider only. */
+  allow_provider_fallback?: boolean;
   metering: ProviderMeteringContext;
 }
 
@@ -90,6 +94,11 @@ export interface ProviderChatResponseBody {
   structured_output?: Record<string, unknown> | null;
   finish_reason?: string | null;
 }
+
+export type ProviderChatInvocationResult = ProviderChatResponseBody & {
+  /** The configured ModelProvider row that actually served the request. */
+  provider_id: string;
+};
 
 /**
  * Safe diagnostics for a structured-output failure.
@@ -1303,6 +1312,137 @@ function meteringContext(
   };
 }
 
+async function beginProviderTaskAttempt(
+  store: ProviderCommandStore,
+  target: InvocationTarget,
+  metering: ProviderMeteringContext,
+  input: {
+    eventType: UsageObservation["event_type"];
+    model: string | null | undefined;
+    input: unknown;
+  },
+): Promise<ProviderTaskAttemptRefs | null> {
+  if (!store.beginProviderTaskAttempt) return null;
+  const existingAudit = recordValue(metering.metadata).runtime_context_audit_refs;
+  if (existingAudit && typeof existingAudit === "object") return null;
+  const task = metering.task?.trim() || "provider_task";
+  const ownerDomain = providerTaskOwnerDomain(task);
+  return store.beginProviderTaskAttempt({
+    space_id: target.provider.space_id,
+    task,
+    owner_domain: ownerDomain,
+    provider_id: target.provider.id,
+    model: input.model ?? null,
+    input_fingerprint: createHash("sha256").update(JSON.stringify({
+      event_type: input.eventType,
+      task,
+      provider_id: target.provider.id,
+      model: input.model ?? null,
+      input: input.input,
+    })).digest("hex"),
+    metering: {
+      ...metering,
+      space_id: target.provider.space_id,
+      event_type: input.eventType,
+      source_type: metering.source_type ?? "local_run",
+      execution_channel: metering.execution_channel ?? "managed_api",
+    },
+  });
+}
+
+function meteringWithProviderTaskRefs(
+  metering: ProviderMeteringContext,
+  refs: ProviderTaskAttemptRefs | null,
+): ProviderMeteringContext {
+  if (!refs) {
+    const runtimeRefs = recordValue(recordValue(metering.metadata).runtime_context_audit_refs);
+    const usageSourceId = typeof runtimeRefs.usage_source_id === "string"
+      ? runtimeRefs.usage_source_id
+      : null;
+    if (!usageSourceId) return metering;
+    return { ...metering, idempotency_key: usageSourceId };
+  }
+  return {
+    ...metering,
+    idempotency_key: refs.usage_source_id,
+    dimensions: {
+      ...recordValue(metering.dimensions),
+      provider_task_control_id: refs.control_id,
+      delivery_id: refs.delivery_id,
+      invocation_snapshot_id: refs.invocation_snapshot_id,
+      usage_source_id: refs.usage_source_id,
+    },
+    metadata: {
+      ...recordValue(metering.metadata),
+      provider_task_audit_refs: refs,
+    },
+  };
+}
+
+function providerTaskOwnerDomain(task: string): string {
+  if (task === "daily_report") return "dailyReports";
+  if (task.startsWith("inquiry_")) return "inquiry";
+  if (task.startsWith("project_research_")) return "projectResearch";
+  if (task.startsWith("project_public_summary")) return "projects";
+  if (task.startsWith("research_query_")) return "research";
+  if (task.startsWith("retrieval_")) return "retrieval";
+  if (task === "context.checkpoint.extract") return "runtimeContext";
+  return "providers";
+}
+
+async function recordFailedProviderAttemptUsage(
+  store: ProviderCommandStore,
+  target: InvocationTarget,
+  input: {
+    eventType: UsageObservation["event_type"];
+    model: string | null | undefined;
+    metering: ProviderMeteringContext;
+    attribution: UsageAttribution;
+    refs: ProviderTaskAttemptRefs | null;
+    error: unknown;
+  },
+): Promise<void> {
+  const errorCode = providerErrorCode(input.error);
+  const metering = meteringWithProviderTaskRefs(input.metering, input.refs);
+  await recordProviderUsage(store, target, {
+    spaceId: target.provider.space_id,
+    eventType: input.eventType,
+    model: input.model,
+    usage: {},
+    metering: {
+      ...metering,
+      dimensions: {
+        ...recordValue(metering.dimensions),
+        provider_attempt_status: "failed",
+        provider_attempt_error_code: errorCode,
+      },
+    },
+    attribution: input.attribution,
+  });
+}
+
+async function completeProviderTaskAttempt(
+  store: ProviderCommandStore,
+  refs: ProviderTaskAttemptRefs | null,
+  status: "accepted" | "failed",
+  errorCode: string | null,
+): Promise<void> {
+  if (!refs || !store.completeProviderTaskAttempt) return;
+  await store.completeProviderTaskAttempt(refs, { status, error_code: errorCode });
+}
+
+function providerErrorCode(error: unknown): string {
+  return error instanceof ProviderInvocationError
+    ? error.code ?? `provider_http_${error.statusCode}`
+    : "provider_invocation_failed";
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 function assertMeteringContext(context: ProviderMeteringContext): void {
   const sourceType = Boolean(context.source_resource_type?.trim());
   const sourceId = Boolean(context.source_resource_id?.trim());
@@ -1478,6 +1618,17 @@ async function invokeProviderWithPool(
             },
           }
         : body;
+      const providerTask = await beginProviderTaskAttempt(store, target, body.metering, {
+        eventType: "llm.generation",
+        model: body.model ?? target.provider.default_model,
+        input: {
+          system: body.system ?? null,
+          messages: body.messages,
+          tools: body.tools ?? null,
+          output_format: body.output_format ?? null,
+          max_tokens: body.max_tokens ?? null,
+        },
+      });
       try {
         const result = await attemptOnce(target, candidate.api_key, attemptBody);
         if (candidate.member_id) {
@@ -1488,11 +1639,21 @@ async function invokeProviderWithPool(
           eventType: "llm.generation",
           model: result.model,
           usage: result.usage,
-          metering: body.metering,
+          metering: meteringWithProviderTaskRefs(body.metering, providerTask),
           attribution,
         });
+        await completeProviderTaskAttempt(store, providerTask, "accepted", null);
         return result;
       } catch (error) {
+        await completeProviderTaskAttempt(store, providerTask, "failed", providerErrorCode(error));
+        await recordFailedProviderAttemptUsage(store, target, {
+          eventType: "llm.generation",
+          model: body.model ?? target.provider.default_model,
+          metering: body.metering,
+          attribution,
+          refs: providerTask,
+          error,
+        });
         if (emittedText) {
           throw new ProviderInvocationError(
             502,
@@ -1547,7 +1708,7 @@ export async function completeProviderChat(
   store: ProviderCommandStore,
   spaceId: string,
   body: ProviderChatRequestBody,
-): Promise<ProviderChatResponseBody> {
+): Promise<ProviderChatInvocationResult> {
   assertMeteringContext(body.metering);
   const attribution = await resolveProviderUsageAttribution(
     store,
@@ -1560,7 +1721,7 @@ export async function completeProviderChat(
     throw structuredOutputUnsupportedError(primary.provider.provider_type);
   }
   const chain: InvocationTarget[] = [primary];
-  for (const fallbackId of primary.fallback_provider_ids) {
+  for (const fallbackId of body.allow_provider_fallback === false ? [] : primary.fallback_provider_ids) {
     try {
       chain.push(await store.getInvocationTarget(spaceId, fallbackId));
     } catch {
@@ -1579,14 +1740,16 @@ export async function completeProviderChat(
       // name from the request only binds to the provider it was meant for.
       const effectiveBody = index === 0 ? body : { ...body, model: null };
       try {
-        return await invokeProviderWithPool(store, target, effectiveBody, attribution);
+        const result = await invokeProviderWithPool(store, target, effectiveBody, attribution);
+        return { ...result, provider_id: target.provider.id };
       } catch (error) {
         // Weak instruction followers often fix their JSON when shown the
         // exact validation failure; one corrective round-trip is far cheaper
         // than failing the whole task.
         const corrective = structuredOutputCorrectionBody(effectiveBody, error);
         if (!corrective) throw error;
-        return await invokeProviderWithPool(store, target, corrective, attribution);
+        const corrected = await invokeProviderWithPool(store, target, corrective, attribution);
+        return { ...corrected, provider_id: target.provider.id };
       }
     } catch (error) {
       if (isUsageMeteringFailure(error)) throw error;
@@ -1660,6 +1823,7 @@ export interface ProviderMessagesCompletionInput {
   /** Auxiliary-task name; resolves a ProviderTaskPolicy chain when present. */
   task?: string | null;
   egressPolicy?: RetrievalEgressPolicy | null;
+  allow_provider_fallback?: boolean;
   metering: ProviderMeteringContext;
 }
 
@@ -1693,6 +1857,7 @@ export async function completeProviderMessages(
 ): Promise<{
   text: string;
   provider: string;
+  provider_id: string;
   model: string;
   usage: Record<string, unknown>;
   tool_calls?: CanonicalToolCall[];
@@ -1711,13 +1876,16 @@ export async function completeProviderMessages(
     on_text_delta: input.on_text_delta,
     abort_signal: input.abort_signal,
     egressPolicy: input.egressPolicy,
+    allow_provider_fallback: input.allow_provider_fallback,
     metering: meteringContext(input.metering, input.task),
   });
 
   // A structured contract is bound to the selected Research provider/model.
   // Auxiliary task policies may intentionally reroute generic work, but they
   // must not silently replace a Research execution contract.
-  const taskChain = input.output_format || !input.task ? null : await store.getTaskChain(spaceId, input.task);
+  const taskChain = input.output_format || !input.task || input.allow_provider_fallback === false
+    ? null
+    : await store.getTaskChain(spaceId, input.task);
   let lastError: unknown = null;
   if (taskChain) {
     for (const entry of taskChain) {
@@ -1726,6 +1894,7 @@ export async function completeProviderMessages(
         return {
           text: result.content,
           provider: result.provider,
+          provider_id: result.provider_id,
           model: result.model,
           usage: result.usage,
           tool_calls: result.tool_calls,
@@ -1755,6 +1924,7 @@ export async function completeProviderMessages(
   return {
     text: result.content,
     provider: result.provider,
+    provider_id: result.provider_id,
     model: result.model,
     usage: result.usage,
     tool_calls: result.tool_calls,
@@ -1949,6 +2119,11 @@ async function invokeEmbeddingProviderWithPool(
   for (const candidate of target.candidates) {
     let retriedSameKey = false;
     for (;;) {
+      const providerTask = await beginProviderTaskAttempt(store, target, metering ?? {}, {
+        eventType: "llm.embedding",
+        model: model ?? target.provider.default_model,
+        input: { inputs, dimensions: dimensions ?? null, input_type: inputType ?? null },
+      });
       try {
         const result = await embedOnce(target, candidate.api_key, model, inputs, dimensions, inputType);
         if (candidate.member_id) {
@@ -1959,11 +2134,21 @@ async function invokeEmbeddingProviderWithPool(
           eventType: "llm.embedding",
           model: result.model,
           usage: result.usage,
-          metering,
+          metering: meteringWithProviderTaskRefs(metering ?? {}, providerTask),
           attribution: requiredAttribution(attribution),
         });
+        await completeProviderTaskAttempt(store, providerTask, "accepted", null);
         return result;
       } catch (error) {
+        await completeProviderTaskAttempt(store, providerTask, "failed", providerErrorCode(error));
+        await recordFailedProviderAttemptUsage(store, target, {
+          eventType: "llm.embedding",
+          model: model ?? target.provider.default_model,
+          metering: metering ?? {},
+          attribution: requiredAttribution(attribution),
+          refs: providerTask,
+          error,
+        });
         lastError = error;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
           throw error;
@@ -2271,6 +2456,11 @@ async function invokeRerankProviderWithPool(
   for (const candidate of target.candidates) {
     let retriedSameKey = false;
     for (;;) {
+      const providerTask = await beginProviderTaskAttempt(store, target, metering ?? {}, {
+        eventType: "llm.rerank",
+        model: model ?? target.provider.default_model,
+        input: { query, documents, top_n: topN ?? null },
+      });
       try {
         const result = await rerankOnce(target, candidate.api_key, model, query, documents, topN);
         if (candidate.member_id) {
@@ -2281,11 +2471,21 @@ async function invokeRerankProviderWithPool(
           eventType: "llm.rerank",
           model: result.model,
           usage: result.usage,
-          metering,
+          metering: meteringWithProviderTaskRefs(metering ?? {}, providerTask),
           attribution: requiredAttribution(attribution),
         });
+        await completeProviderTaskAttempt(store, providerTask, "accepted", null);
         return result;
       } catch (error) {
+        await completeProviderTaskAttempt(store, providerTask, "failed", providerErrorCode(error));
+        await recordFailedProviderAttemptUsage(store, target, {
+          eventType: "llm.rerank",
+          model: model ?? target.provider.default_model,
+          metering: metering ?? {},
+          attribution: requiredAttribution(attribution),
+          refs: providerTask,
+          error,
+        });
         lastError = error;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
           throw error;

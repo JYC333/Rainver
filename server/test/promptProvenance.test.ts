@@ -4,7 +4,7 @@ import type { PromptResolveResult } from "@agent-space/protocol" with { "resolut
 
 function resolveResult(overrides: Partial<PromptResolveResult> = {}): PromptResolveResult {
   return {
-    asset_key: "session.condenser.adaptive",
+    asset_key: "runtime.context.checkpoint",
     version_id: "version-1",
     content_hash: "hash-1",
     scope_type: "system",
@@ -24,7 +24,7 @@ describe("promptProvenanceOf", () => {
   it("keeps references and hashes but drops rendered content", () => {
     const provenance = promptProvenanceOf(resolveResult());
     expect(provenance).toEqual({
-      asset_key: "session.condenser.adaptive",
+      asset_key: "runtime.context.checkpoint",
       version_id: "version-1",
       content_hash: "hash-1",
       scope_type: "system",
@@ -38,12 +38,12 @@ describe("promptProvenanceOf", () => {
 
 describe("withPromptProvenance", () => {
   it("nests provenance under metadata.prompts[key] and preserves other metadata", () => {
-    const metadata = withPromptProvenance({ existing: "value" }, "condenser", resolveResult());
+    const metadata = withPromptProvenance({ existing: "value" }, "checkpoint_extract", resolveResult());
     expect(metadata).toEqual({
       existing: "value",
       prompts: {
-        condenser: {
-          asset_key: "session.condenser.adaptive",
+        checkpoint_extract: {
+          asset_key: "runtime.context.checkpoint",
           version_id: "version-1",
           content_hash: "hash-1",
           scope_type: "system",
@@ -55,12 +55,12 @@ describe("withPromptProvenance", () => {
   });
 
   it("preserves previously recorded prompt provenance under other keys", () => {
-    const withFirst = withPromptProvenance({}, "condenser", resolveResult());
+    const withFirst = withPromptProvenance({}, "checkpoint_extract", resolveResult());
     const withSecond = withPromptProvenance(
       withFirst,
       "query_rewrite",
       resolveResult({ asset_key: "retrieval.query_rewrite", version_id: "version-2" }),
     );
-    expect(Object.keys(withSecond.prompts as Record<string, unknown>)).toEqual(["condenser", "query_rewrite"]);
+    expect(Object.keys(withSecond.prompts as Record<string, unknown>)).toEqual(["checkpoint_extract", "query_rewrite"]);
   });
 });

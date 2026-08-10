@@ -55,11 +55,19 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
   };
 }
 
+function continuity(onFinalize?: () => void) {
+  return {
+    async finalizeChatTurn() {
+      onFinalize?.();
+      return { space_id: "space-1", work_context_scope_id: "run-1" } as never;
+    },
+  };
+}
+
 describe("finalizeChatTurn", () => {
   it("persists one idempotent assistant message before publishing completion", async () => {
     const calls: string[] = [];
     const events: RunEventInput[] = [];
-    let condenseInput: Record<string, unknown> | undefined;
     const completion = await finalizeChatTurn(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
       {
@@ -95,18 +103,11 @@ describe("finalizeChatTurn", () => {
             };
           },
         },
-        async enqueueCondense(_config, input) {
-          calls.push("condense");
-          condenseInput = input;
-        },
+        continuity: continuity(() => calls.push("continuity")),
       },
     );
 
-    expect(calls).toEqual(["message", "condense", "event"]);
-    expect(condenseInput).toMatchObject({
-      session_id: "session-1",
-      source_run_id: "run-1",
-    });
+    expect(calls).toEqual(["message", "continuity", "event"]);
     expect(completion).toMatchObject({
       schema_version: "chat_turn_completion.v1",
       session_id: "session-1",
@@ -135,7 +136,7 @@ describe("finalizeChatTurn", () => {
     const events: RunEventInput[] = [];
     let roomWrites = 0;
     let genericWrites = 0;
-    let condenseEnqueues = 0;
+    let checkpoints = 0;
     const repository = {
       async listRunEventsPage() {
         return {
@@ -194,9 +195,7 @@ describe("finalizeChatTurn", () => {
           };
         },
       },
-      async enqueueCondense() {
-        condenseEnqueues += 1;
-      },
+      continuity: continuity(() => { checkpoints += 1; }),
       async loadActionPreviews() {
         return [];
       },
@@ -218,10 +217,10 @@ describe("finalizeChatTurn", () => {
       deps,
     )).resolves.toBeNull();
 
-    expect({ roomWrites, genericWrites, condenseEnqueues }).toEqual({
+    expect({ roomWrites, genericWrites, checkpoints }).toEqual({
       roomWrites: 1,
       genericWrites: 0,
-      condenseEnqueues: 1,
+      checkpoints: 1,
     });
     expect(events).toHaveLength(1);
   });
@@ -255,6 +254,7 @@ describe("finalizeChatTurn", () => {
             return null;
           },
         },
+        continuity: continuity(),
       },
     );
 
@@ -320,9 +320,7 @@ describe("finalizeChatTurn", () => {
             return null;
           },
         },
-        async enqueueCondense() {
-          sideEffects += 1;
-        },
+        continuity: continuity(() => { sideEffects += 1; }),
       },
     );
 

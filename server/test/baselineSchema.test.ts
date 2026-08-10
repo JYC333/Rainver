@@ -1,8 +1,13 @@
 import { join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Every test here drops and reapplies the whole baseline, so each one costs
+// 5-10s alone and considerably more under parallel load. The global 30s ceiling
+// was failing them on contention rather than on anything being wrong.
+vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { loadMigrations, migrate } from "../src/db/migrator";
 
 // Empty-DB migration test. Applies the committed consolidated baseline
@@ -29,8 +34,8 @@ const REPRESENTATIVE_TABLES = [
   "claims",
   "claim_sources",
   "object_relations",
-  "space_object_kinds",
-  "space_object_kind_relation_hints",
+  "space_object_profiles",
+  "space_object_profile_relation_hints",
   "retrieval_objects",
   "retrieval_aliases",
   "retrieval_chunks",
@@ -58,6 +63,7 @@ beforeAll(async () => {
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[baseline-schema] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -74,7 +80,9 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public; RESET search_path;");
-}, 30_000);
+// Dropping and recreating the whole schema per test is slow under parallel
+// load; the old 30s ceiling was tight enough to fail on contention alone.
+}, 120_000);
 
 async function baselineTableNames(p: Pool): Promise<string[]> {
   const res = await p.query<{ table_name: string }>(
@@ -113,13 +121,30 @@ describe("server runner applies the baseline schema", () => {
     expect(migrationFiles).toEqual(["0001_baseline.sql"]);
   });
 
-  it("keeps space object statuses constrained by concrete object type", () => {
+  // B12D/B12E: domain lifecycle state belongs to the owning extension table,
+  // and the root must not carry a constraint that branches on `object_type` —
+  // that shape forced every new domain to edit a root-table constraint.
+  it("keeps the object root ignorant of domain status", () => {
     const baseline = baselineSql();
-    expect(baseline).toContain("ck_space_objects_status_by_type");
-    expect(baseline).toContain("WHEN 'note'::text THEN");
-    expect(baseline).toContain("WHEN 'source'::text THEN");
-    expect(baseline).toContain("WHEN 'knowledge_item'::text THEN");
-    expect(baseline).toContain("WHEN 'claim'::text THEN");
+    expect(baseline).not.toContain("ck_space_objects_status_by_type");
+    expect(baseline).not.toContain("ck_space_objects_status");
+    expect(tableDefinition(baseline, "space_objects")).not.toContain("status character varying");
+  });
+
+  it("constrains status on each extension table that owns one", () => {
+    const baseline = baselineSql();
+    for (const [table, constraint, sample] of [
+      ["knowledge_items", "ck_knowledge_items_status", "'superseded'"],
+      ["notes", "ck_notes_status", "'archived'"],
+      ["sources", "ck_sources_status", "'processing'"],
+      ["claims", "ck_claims_status", "'disputed'"],
+      ["relation_people", "ck_relation_people_status", "'archived'"],
+      ["relation_organizations", "ck_relation_organizations_status", "'archived'"],
+    ] as const) {
+      expect(tableDefinition(baseline, table)).toContain("status character varying");
+      expect(baseline).toContain(constraint);
+      expect(baseline.slice(baseline.indexOf(constraint))).toContain(sample);
+    }
   });
 
   it("keeps Activity Inbox pointer aggregation schema in the baseline", () => {
@@ -159,6 +184,9 @@ describe("server runner applies the baseline schema", () => {
     const knowledgeItems = tableDefinition(baseline, "knowledge_items");
     expect(knowledgeItemSources).toContain("knowledge_item_id character varying(36) NOT NULL");
     expect(knowledgeItemSources).toContain("source_id character varying(36) NOT NULL");
+    // Citation lineage keeps `relation_type` on purpose (B12A): it is not an
+    // ontology edge, and merging its vocabulary with link types is exactly
+    // what the boundaries file forbids.
     expect(knowledgeItemSources).toContain("relation_type character varying(32) NOT NULL");
     expect(knowledgeItems).toContain("created_from_proposal_id character varying(36)");
     expect(baseline).toContain("knowledge_item_sources_source_id_fkey");
@@ -170,6 +198,8 @@ describe("server runner applies the baseline schema", () => {
     expect(memoryEntries).toContain("memory_layer character varying(32)");
     expect(memoryEntries).toContain("created_from_proposal_id character varying(36)");
     expect(baseline).toContain("ck_memory_entries_memory_layer");
+    expect(baseline).toContain("ck_memory_entries_scope_type");
+    expect(baseline).toContain("scope_type IN ('user', 'project')");
     expect(baseline).toContain("ix_memory_entries_memory_type");
     expect(baseline).toContain("memory_entries_created_from_proposal_id_fkey");
   });
@@ -178,15 +208,15 @@ describe("server runner applies the baseline schema", () => {
     const baseline = baselineSql();
     expect(baseline).toContain("CREATE EXTENSION IF NOT EXISTS vector");
     expect(baseline).toContain("CREATE TYPE public.retrieval_object_type AS ENUM");
-    expect(baseline).toContain("CREATE TABLE public.space_object_kinds");
-    expect(baseline).toContain("CREATE TABLE public.space_object_kind_relation_hints");
+    expect(baseline).toContain("CREATE TABLE public.space_object_profiles");
+    expect(baseline).toContain("CREATE TABLE public.space_object_profile_relation_hints");
     expect(baseline).toContain("base_object_type retrieval_object_type NOT NULL");
     expect(baseline).toContain("endpoint_object_type retrieval_object_type NOT NULL");
     expect(baseline).toContain("object_type retrieval_object_type NOT NULL");
     expect(baseline).toContain("from_object_type retrieval_object_type NOT NULL");
     expect(baseline).toContain("to_object_type retrieval_object_type NOT NULL");
-    expect(baseline).not.toContain("ck_space_object_kinds_base_object_type");
-    expect(baseline).not.toContain("ck_space_object_kind_relation_hints_endpoint_type");
+    expect(baseline).not.toContain("ck_space_object_profiles_base_object_type");
+    expect(baseline).not.toContain("ck_space_object_profile_relation_hints_endpoint_type");
     expect(baseline).not.toContain("ck_note_links_endpoint_type");
     expect(baseline).not.toContain("ck_retrieval_objects_object_type");
     expect(baseline).not.toContain("ck_retrieval_aliases_object_type");
@@ -194,7 +224,7 @@ describe("server runner applies the baseline schema", () => {
     expect(baseline).not.toContain("ck_retrieval_edges_from_object_type");
     expect(baseline).not.toContain("ck_retrieval_edges_to_object_type");
     expect(baseline).not.toContain("ck_retrieval_feedback_events_object_type");
-    expect(baseline).toContain("ck_space_object_kind_relation_hints_relation_type");
+    expect(baseline).toContain("ck_space_object_profile_relation_hints_link_type_format");
     expect(baseline).toContain(
       "'knowledge_item', 'note', 'source', 'claim', 'memory_entry', 'project_public_summary', 'source_item', 'extracted_evidence'",
     );
@@ -308,9 +338,9 @@ describe("server runner applies the baseline schema", () => {
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }
-  }, 15_000);
+  }, 120_000);
 
-  it("rejects unknown user states and unimplemented space-object types", async () => {
+  it("rejects unknown user states, and constrains object_type by format only", async () => {
     if (!available || !pool) return;
     await migrate(pool, MIGRATIONS_DIR);
 
@@ -327,16 +357,38 @@ describe("server runner applies the baseline schema", () => {
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('space-1', 'Space', 'team', 'user-1', now(), now())`,
     );
+
     await expect(pool.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, status, visibility, access_level,
-         owner_user_id, created_at, updated_at
-       ) VALUES (
-         'object-1', 'space-1', 'project', 'Duplicate Project', 'active',
+      `INSERT INTO memory_entries (
+         id, space_id, scope_type, memory_type, content, status, visibility,
+         access_level, sensitivity_level, confidence, importance, version,
+         access_count, created_at, updated_at
+       ) VALUES ('memory-invalid-scope', 'space-1', 'agent', 'semantic', 'x',
+                 'active', 'space_shared', 'full', 'normal', 1, 0.5, 1, 0, now(), now())`,
+    )).rejects.toMatchObject({ code: "23514" });
+
+    // `object_type` used to carry a closed-set CHECK. ADR 0012 moved definition
+    // authority into the registerable entity registry and demoted the column to
+    // a format constraint (B12F), because a database CHECK cannot express that
+    // a type needs a registered implementation — and every new domain would
+    // otherwise need a migration to declare itself.
+    await expect(pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES (
+         'object-bad', 'space-1', 'Not A Type', 'Bad format',
          'private', 'full', 'user-1', now(), now()
        )`,
     )).rejects.toMatchObject({ code: "23514" });
-  }, 15_000);
+
+    // A registered domain root is accepted at the database level; whether a
+    // given string names a registered entity is the registry's decision, and
+    // `ontologyRegistryGuard` is where that is enforced.
+    await pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES (
+         'object-1', 'space-1', 'project', 'A Project',
+         'private', 'full', 'user-1', now(), now()
+       )`,
+    );
+  }, 120_000);
 
   it("enforces object kind registry constraints in Postgres", async () => {
     if (!available || !pool) return;
@@ -357,12 +409,12 @@ describe("server runner applies the baseline schema", () => {
          id, space_id, proposal_type, status, risk_level, urgency, title,
          payload_json, created_by_user_id, created_at, updated_at
        ) VALUES
-         ('proposal-1', 'space-1', 'object_kind_create', 'accepted', 'high', 'normal', 'Create kind', '{}'::jsonb, 'user-1', now(), now()),
-         ('proposal-2', 'space-2', 'object_kind_create', 'accepted', 'high', 'normal', 'Create kind', '{}'::jsonb, 'user-1', now(), now())`,
+         ('proposal-1', 'space-1', 'object_profile_create', 'accepted', 'high', 'normal', 'Create kind', '{}'::jsonb, 'user-1', now(), now()),
+         ('proposal-2', 'space-2', 'object_profile_create', 'accepted', 'high', 'normal', 'Create kind', '{}'::jsonb, 'user-1', now(), now())`,
     );
 
     await pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status,
          created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
          created_at, updated_at
@@ -373,7 +425,7 @@ describe("server runner applies the baseline schema", () => {
     );
 
     await expect(pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
          'kind-dup', 'space-1', 'question', 'Duplicate', 'knowledge_item', 'active', now(), now()
@@ -381,7 +433,7 @@ describe("server runner applies the baseline schema", () => {
     )).rejects.toThrow();
 
     await pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status,
          created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
          created_at, updated_at
@@ -391,7 +443,7 @@ describe("server runner applies the baseline schema", () => {
        )`,
     );
     await pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status,
          created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
          created_at, updated_at
@@ -402,7 +454,7 @@ describe("server runner applies the baseline schema", () => {
     );
 
     await expect(pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
          'kind-invalid-base', 'space-1', 'person', 'Person', 'person', 'active', now(), now()
@@ -410,7 +462,7 @@ describe("server runner applies the baseline schema", () => {
     )).rejects.toThrow();
 
     await expect(pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_from_proposal_id, created_at, updated_at
        ) VALUES (
          'kind-bad-fk', 'space-1', 'lesson', 'Bad FK', 'knowledge_item', 'active', 'missing-proposal', now(), now()
@@ -418,20 +470,20 @@ describe("server runner applies the baseline schema", () => {
     )).rejects.toThrow();
 
     await pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
          'kind-archived', 'space-1', 'email', 'Email', 'source', 'archived', now(), now()
        )`,
     );
     await expect(pool.query(
-      `INSERT INTO space_object_kinds (
+      `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
          'kind-archived-reuse', 'space-1', 'email', 'Email replacement', 'source', 'active', now(), now()
        )`,
     )).rejects.toThrow();
-  }, 15_000);
+  }, 120_000);
 
   it("is idempotent on an already-migrated database", async () => {
     if (!available || !pool) return;
@@ -444,5 +496,5 @@ describe("server runner applies the baseline schema", () => {
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }
-  }, 15_000);
+  }, 120_000);
 });

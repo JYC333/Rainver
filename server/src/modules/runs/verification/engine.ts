@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { promisify } from "node:util";
+import { stat } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
 import type { RunMaterializationItemSummary } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../../config";
@@ -19,10 +17,10 @@ import {
 } from "./types";
 import { PgVerificationRepository, type VerificationPlanReader } from "./repository";
 import type { Queryable } from "../runRepositoryTypes";
+import { SandboxRunnerVerificationExecutor } from "../../sandboxRunner/client";
+import type { CliExecutionResult } from "../localCliExecution";
 
-const execFileAsync = promisify(execFile);
 const MAX_COMMAND_TIMEOUT_SECONDS = 300;
-const MAX_COMMAND_OUTPUT_BYTES = 8_000;
 const KNOWN_VERIFIER_TYPES = new Set<string>([
   "command",
   "test",
@@ -61,11 +59,19 @@ interface ChangedFiles {
   error: string | null;
 }
 
+export interface VerificationCommandExecutor {
+  run(input: { runId: string; cwd: string; command: string[]; timeoutSeconds: number }): Promise<CliExecutionResult>;
+}
+
 export class PgVerificationEngine {
   private readonly planReader: VerificationPlanReader;
   private readonly resultRepository: PgVerificationRepository;
 
-  constructor(db: Queryable, planReader: VerificationPlanReader = new PgVerificationRepository(db)) {
+  constructor(
+    db: Queryable,
+    planReader: VerificationPlanReader = new PgVerificationRepository(db),
+    private readonly commandExecutor?: VerificationCommandExecutor,
+  ) {
     this.planReader = planReader;
     this.resultRepository = planReader instanceof PgVerificationRepository
       ? planReader
@@ -74,7 +80,11 @@ export class PgVerificationEngine {
 
   static fromConfig(config: ServerConfig): PgVerificationEngine {
     if (!config.databaseUrl) throw new Error("Verification engine requires SERVER_DATABASE_URL");
-    return new PgVerificationEngine(getDbPool(config.databaseUrl));
+    return new PgVerificationEngine(
+      getDbPool(config.databaseUrl),
+      undefined,
+      new SandboxRunnerVerificationExecutor(config),
+    );
   }
 
   async verify(
@@ -97,10 +107,15 @@ export class PgVerificationEngine {
     });
     if (declarations.length === 0) return [];
 
-    const changed = await changedFiles(input.sandbox_cwd, input.base_commit_sha);
+    const changed = await changedFiles(
+      input.run.id,
+      input.sandbox_cwd,
+      input.base_commit_sha,
+      this.commandExecutor,
+    );
     const rawResults: RawVerificationResult[] = [];
     for (const declaration of declarations) {
-      rawResults.push(await evaluateDeclaration(input, declaration, changed));
+      rawResults.push(await evaluateDeclaration(input, declaration, changed, this.commandExecutor));
     }
     const results = aggregateResults(rawResults);
     return this.resultRepository.upsertResults(input.run.space_id, input.run.id, results);
@@ -425,12 +440,13 @@ async function evaluateDeclaration(
   input: VerificationInput,
   declaration: VerificationDeclaration,
   changed: ChangedFiles,
+  commandExecutor?: VerificationCommandExecutor,
 ): Promise<RawVerificationResult> {
   const startedAt = new Date().toISOString();
   const type = declaration.verifier_type;
   let result: Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">;
   try {
-    result = await evaluateByType(input, declaration, changed);
+    result = await evaluateByType(input, declaration, changed, commandExecutor);
   } catch (error) {
     result = {
       status: "error",
@@ -452,10 +468,11 @@ async function evaluateByType(
   input: VerificationInput,
   declaration: VerificationDeclaration,
   changed: ChangedFiles,
+  commandExecutor?: VerificationCommandExecutor,
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
   const type = declaration.verifier_type;
   if (["command", "test", "lint", "typecheck"].includes(type)) {
-    return evaluateCommand(input.sandbox_cwd, declaration);
+    return evaluateCommand(input.run.id, input.sandbox_cwd, declaration, commandExecutor);
   }
   if (type === "file_exists") return evaluateFileExistsAsync(input.sandbox_cwd, declaration.config);
   if (type === "file_changed") return evaluateFileChanged(changed, declaration.config);
@@ -490,10 +507,13 @@ async function evaluateByType(
 }
 
 async function evaluateCommand(
+  runId: string,
   sandboxCwd: string | null,
   declaration: VerificationDeclaration,
+  executor?: VerificationCommandExecutor,
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
   if (!sandboxCwd) return unavailable("A sandbox is required for command verification.");
+  if (!executor) return unavailable("Sandbox Runner verification is unavailable.");
   const command = commandArgv(declaration.config.command);
   if (!command || command.length === 0) return unavailable("Validation command is missing.");
   if (command.some((part) => /[;&|<>]/.test(part))) {
@@ -503,22 +523,10 @@ async function evaluateCommand(
   const timeout = Math.min(
     MAX_COMMAND_TIMEOUT_SECONDS,
     Math.max(1, requestedTimeout ?? MAX_COMMAND_TIMEOUT_SECONDS),
-  ) * 1_000;
+  );
   const started = Date.now();
-  const verificationHome = await mkdtemp(resolve(sandboxCwd, ".verification-home-"));
-  try {
-    await execFileAsync(command[0]!, command.slice(1), {
-      cwd: sandboxCwd,
-      shell: false,
-      timeout,
-      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-      windowsHide: true,
-      env: {
-        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-        HOME: verificationHome,
-        CI: "1",
-      },
-    });
+  const execution = await executor.run({ runId, cwd: sandboxCwd, command, timeoutSeconds: timeout });
+  if (execution.returncode === 0 && !execution.timed_out) {
     return {
       status: "passed",
       summary: `${declaration.verifier_type} command passed.`,
@@ -529,27 +537,22 @@ async function evaluateCommand(
       },
       details_json: { exit_code: 0, duration_ms: Date.now() - started },
     };
-  } catch (error) {
-    const failure = error as { code?: string | number; signal?: string; killed?: boolean };
-    const exitCode = typeof failure.code === "number" ? failure.code : null;
-    return {
-      status: "failed",
-      summary: `${declaration.verifier_type} command failed.`,
-      evidence_refs_json: {
-        source: "validation_recipe",
-        command: command[0],
-        verifier_type: declaration.verifier_type,
-      },
-      details_json: {
-        exit_code: exitCode,
-        signal: failure.signal ?? null,
-        timed_out: failure.killed === true,
-        duration_ms: Date.now() - started,
-      },
-    };
-  } finally {
-    await rm(verificationHome, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
+  const runnerUnavailable = execution.failure_code === "sandbox_runner_unavailable"
+    || execution.failure_code === "sandbox_namespace_unavailable";
+  return {
+    status: runnerUnavailable ? "error" : "failed",
+    summary: runnerUnavailable
+      ? `${declaration.verifier_type} command could not start in Sandbox Runner.`
+      : `${declaration.verifier_type} command failed.`,
+    evidence_refs_json: { source: "validation_recipe", command: command[0], verifier_type: declaration.verifier_type },
+    details_json: {
+      exit_code: execution.returncode,
+      timed_out: execution.timed_out,
+      failure_code: execution.failure_code ?? null,
+      duration_ms: Date.now() - started,
+    },
+  };
 }
 
 async function evaluateFileExistsAsync(
@@ -740,27 +743,22 @@ function matchesJsonType(value: unknown, type: string): boolean {
   return typeof value === type;
 }
 
-async function changedFiles(sandboxCwd: string | null, baseCommitSha: string | null): Promise<ChangedFiles> {
+async function changedFiles(
+  runId: string,
+  sandboxCwd: string | null,
+  baseCommitSha: string | null,
+  executor?: VerificationCommandExecutor,
+): Promise<ChangedFiles> {
   if (!sandboxCwd) return { paths: [], error: "A sandbox is required for git verification." };
+  if (!executor) return { paths: [], error: "Sandbox Runner git verification is unavailable." };
   const base = baseCommitSha && /^[0-9a-f]{7,64}$/i.test(baseCommitSha) ? baseCommitSha : "HEAD";
   try {
-    const diff = await execFileAsync("git", ["diff", "--name-only", base], {
-      cwd: sandboxCwd,
-      shell: false,
-      timeout: 30_000,
-      maxBuffer: 64_000,
-      windowsHide: true,
-    });
-    const status = await execFileAsync("git", ["status", "--porcelain"], {
-      cwd: sandboxCwd,
-      shell: false,
-      timeout: 30_000,
-      maxBuffer: 64_000,
-      windowsHide: true,
-    });
+    const diff = await executor.run({ runId, cwd: sandboxCwd, command: ["git", "diff", "--name-only", base], timeoutSeconds: 30 });
+    const status = await executor.run({ runId, cwd: sandboxCwd, command: ["git", "status", "--porcelain"], timeoutSeconds: 30 });
+    if (diff.returncode !== 0 || status.returncode !== 0) throw new Error("git failed");
     const paths = new Set<string>();
-    for (const value of String(diff.stdout).split(/\r?\n/)) if (value.trim()) paths.add(normalizeGitPath(value.trim()));
-    for (const value of String(status.stdout).split(/\r?\n/)) {
+    for (const value of diff.stdout.split(/\r?\n/)) if (value.trim()) paths.add(normalizeGitPath(value.trim()));
+    for (const value of status.stdout.split(/\r?\n/)) {
       const path = value.slice(3).trim();
       if (path) paths.add(normalizeGitPath(path));
     }

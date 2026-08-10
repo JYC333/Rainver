@@ -1,7 +1,6 @@
 import { getRuntimeAdapterSpec } from "../runtimeAdapters";
 import type {
   ArtifactSummaryRecord,
-  ContextSnapshotRecord,
   ModelProviderSummaryRecord,
   ProposalSummaryRecord,
   RunEventDetailRecord,
@@ -25,7 +24,6 @@ export function runToOut(
     requested_runtime_profile_id: run.requested_runtime_profile_id ?? null,
     selected_runtime_profile_id: run.runtime_profile_id ?? null,
     runtime_profile_selection_source: run.runtime_profile_selection_source ?? null,
-    context_snapshot_id: run.context_snapshot_id ?? null,
     project_folder_id: run.project_folder_id ?? null,
     session_id: run.session_id ?? null,
     parent_run_id: run.parent_run_id ?? null,
@@ -38,8 +36,11 @@ export function runToOut(
     trigger_origin: run.trigger_origin,
     status: run.status,
     mode: run.mode,
-    prompt: run.prompt ?? null,
-    instruction: run.instruction ?? null,
+    // Canonical input remains in its owning Message/Run records. Normal Run
+    // reads expose references and safe Invocation Snapshot metadata, never the
+    // raw task or rendered context body.
+    prompt: null,
+    instruction: null,
     scheduled_at: run.scheduled_at ?? null,
     started_at: run.started_at ?? null,
     ended_at: run.ended_at ?? null,
@@ -150,43 +151,6 @@ export function runFinalizationToOut(row: RunFinalizationRecord): Record<string,
   };
 }
 
-export function contextSnapshotToOut(row: ContextSnapshotRecord | null): Record<string, unknown> | null {
-  if (!row) return null;
-  return {
-    id: row.id,
-    space_id: row.space_id,
-    run_id: row.run_id,
-    agent_id: row.agent_id,
-    session_id: row.session_id,
-    source_refs_json: row.source_refs_json ?? [],
-    compiled_summary: row.compiled_summary,
-    token_estimate: row.token_estimate,
-    relevant_period_start: row.relevant_period_start,
-    relevant_period_end: row.relevant_period_end,
-    compiled_prefix_text: row.compiled_prefix_text,
-    compiled_tail_text: row.compiled_tail_text,
-    compiled_prefix_ref: row.compiled_prefix_ref,
-    compiled_tail_ref: row.compiled_tail_ref,
-    prefix_hash: row.prefix_hash,
-    tail_hash: row.tail_hash,
-    compiler_version: row.compiler_version,
-    retrieval_trace_json: row.retrieval_trace_json ?? null,
-    token_budget_json: row.token_budget_json ?? null,
-    policy_bundle_version: row.policy_bundle_version,
-    memory_digest_version: row.memory_digest_version,
-    project_folder_digest_version: row.project_folder_digest_version,
-    included_memory_refs_json: row.included_memory_refs_json ?? null,
-    included_evidence_refs_json: row.included_evidence_refs_json ?? null,
-    included_file_refs_json: row.included_file_refs_json ?? null,
-    included_doc_refs_json: row.included_doc_refs_json ?? null,
-    redactions_json: row.redactions_json ?? null,
-    data_exposure_level: row.data_exposure_level,
-    rendered_context_uri: row.rendered_context_uri,
-    rendered_context_text: row.rendered_context_text,
-    request_json: row.request_json ?? null,
-    created_at: row.created_at,
-  };
-}
 
 export function runStepToOut(row: RunStepDetailRecord): Record<string, unknown> {
   return {

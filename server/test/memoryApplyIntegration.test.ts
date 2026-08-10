@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import {
   MemoryApplyError,
   MemoryApplyUnsupportedError,
@@ -34,6 +34,7 @@ beforeAll(async () => {
     repo = new PgMemoryApplyRepository(pool);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[memory-apply-integration] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -112,7 +113,8 @@ async function insertActiveMemory(over: Record<string, unknown>): Promise<void> 
     memory_type: "semantic",
     content: "old content",
     status: "active",
-    visibility: "space_shared",
+    visibility: "private",
+    owner_user_id: USER,
     access_level: "full",
     sensitivity_level: "normal",
     namespace: "user.default",
@@ -146,7 +148,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     const out = await repo.applyCreate(
       proposal({
         payload_json: {
-          target_visibility: "space_shared",
+          target_visibility: "private",
           proposed_content: "hello world",
           memory_type: "semantic",
           target_scope: "user",
@@ -163,7 +165,8 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       memory_type: "semantic",
       content: "hello world",
       status: "active",
-      visibility: "space_shared",
+      visibility: "private",
+      owner_user_id: USER,
       namespace: "ns.x",
       version: 1,
       source_trust: "user_confirmed", // dominant over agent_inferred
@@ -189,6 +192,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       proposal({
         project_id: "project-1",
         payload_json: {
+          target_scope: "project",
           target_visibility: "space_shared",
           proposed_content: "project memory",
           provenance_entries: [userConf],
@@ -268,7 +272,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(out.memory.visibility).toBe("private");
   });
 
-  it("promotes an owner-only private memory to space_shared via memory_update", async () => {
+  it("promotes an owner-only private memory into Project memory", async () => {
     if (!available || !repo || !pool) return;
     await pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
     await insertActiveMemory({
@@ -277,12 +281,18 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       owner_user_id: USER,
       content: "personal note",
     });
+    await pool.query(
+      "INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-promotion', $1, NULL)",
+      [SPACE],
+    );
 
     const out = await repo.applyUpdate(
       proposal({
         proposal_type: "memory_update",
+        project_id: "project-promotion",
         payload_json: {
           target_memory_id: "mem-personal",
+          target_scope: "project",
           target_visibility: "space_shared",
           provenance_entries: [userConf],
         },
@@ -291,6 +301,8 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     );
 
     expect(out.memory.visibility).toBe("space_shared");
+    expect(out.memory.scope_type).toBe("project");
+    expect(out.memory.project_id).toBe("project-promotion");
     expect(out.memory.owner_user_id).toBe(USER); // promoter stays steward
     const old = (await pool.query("SELECT status FROM memory_entries WHERE id = 'mem-personal'")).rows[0];
     expect(old.status).toBe("superseded");
@@ -343,36 +355,34 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(kinds).toContain("proposal:prop-1");
   });
 
-  it("applies memory_update: reports both old and new digest targets when scope changes", async () => {
+  it("applies memory_update across the user-to-project attribution boundary", async () => {
     if (!available || !repo || !pool) return;
     await insertActiveMemory({
-      id: "mem-ws",
-      scope_type: "project_folder",
-      project_folder_id: "ws-old",
-      content: "old workspace content",
+      id: "mem-personal-to-project",
+      content: "personal content",
     });
+    await pool.query(
+      "INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-target', $1, NULL)",
+      [SPACE],
+    );
 
     const out = await repo.applyUpdate(
       proposal({
         proposal_type: "memory_update",
-        project_folder_id: null,
+        project_id: "project-target",
         payload_json: {
-          target_memory_id: "mem-ws",
-          target_scope: "agent",
-          agent_id: "agent-1",
-          proposed_content: "agent content",
+          target_memory_id: "mem-personal-to-project",
+          target_scope: "project",
+          target_visibility: "space_shared",
+          proposed_content: "project content",
           provenance_entries: [userConf],
         },
       }),
       USER,
     );
 
-    expect(out.memory.scope_type).toBe("agent");
-    expect(out.memory.agent_id).toBe("agent-1");
-    expect(out.affectedDigestTargets).toEqual([
-      { scopeType: "project_folder", projectFolderId: "ws-old", agentId: null },
-      { scopeType: "agent", projectFolderId: "ws-old", agentId: "agent-1" },
-    ]);
+    expect(out.memory.scope_type).toBe("project");
+    expect(out.memory.project_id).toBe("project-target");
   });
 
   it("applies memory_archive: marks target archived and writes provenance", async () => {
@@ -414,7 +424,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     if (!available || !pool) return;
     const p = proposal({
       payload_json: {
-        target_visibility: "space_shared",
+        target_visibility: "private",
         proposed_content: "orchestrated",
         provenance_entries: [userConf],
       },
@@ -485,20 +495,25 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     await expect(inTx((r) => r.applyOnly(runCtx, USER))).rejects.toBeInstanceOf(MemoryApplyUnsupportedError);
   });
 
-  it("applyOnly: returns affected digest target for workspace-scope memory", async () => {
+  it("applyOnly: returns the Project scope", async () => {
     if (!available || !pool) return;
-    const wsScope = proposal({
-      id: "p-ws",
-      payload_json: { target_scope: "project_folder", proposed_content: "x", provenance_entries: [userConf] },
-      project_folder_id: "ws-1",
+    await pool.query(
+      "INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-scope', $1, NULL)",
+      [SPACE],
+    );
+    const projectScope = proposal({
+      id: "p-project",
+      payload_json: {
+        target_scope: "project",
+        target_visibility: "space_shared",
+        proposed_content: "x",
+        provenance_entries: [userConf],
+      },
+      project_id: "project-scope",
     });
-    await seedProposal(wsScope);
-    const result = await inTx((r) => r.applyOnly(wsScope, USER));
-    expect(result.scopeType).toBe("project_folder");
-    expect(result.projectFolderId).toBe("ws-1");
-    expect(result.affectedDigestTargets).toEqual([
-      { scopeType: "project_folder", projectFolderId: "ws-1", agentId: null },
-    ]);
+    await seedProposal(projectScope);
+    const result = await inTx((r) => r.applyOnly(projectScope, USER));
+    expect(result.scopeType).toBe("project");
     const count = (await pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c;
     expect(count).toBe(1);
   });

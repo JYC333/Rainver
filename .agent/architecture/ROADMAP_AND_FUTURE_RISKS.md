@@ -356,9 +356,8 @@ at the end.
 
 P3 status: fully absorbed into current state and no longer a roadmap item. This
 covers the TS context engine, the chat conversation-window baseline, managed-API
-`messages[]` normalization, and the session condenser — both the deterministic
-`pattern.v1` and the LLM `llm.v1` path (background `session_condense` job with
-scenario profiles, `pattern.v1` fallback). For the implementation see
+`messages[]` normalization, and Runtime Context's canonical event/checkpoint
+continuity. For the implementation see
 [MEMORY_CONTEXT_RUNTIME.md](MEMORY_CONTEXT_RUNTIME.md) and
 [SERVER_OWNERSHIP.md](SERVER_OWNERSHIP.md). The only related deferred item is
 tool-call message preservation in conversation windows, tracked under P6/P7

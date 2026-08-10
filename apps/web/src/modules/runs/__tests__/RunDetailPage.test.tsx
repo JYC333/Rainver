@@ -54,7 +54,7 @@ import RunDetailPage from '../RunDetailPage'
 const run = {
   id: 'run-1', status: 'succeeded', mode: 'live', run_type: 'task',
   trigger_origin: 'user', space_id: 'space-1', project_folder_id: null,
-  agent_id: 'agent-1', agent_version_id: 'agent-version-1', context_snapshot_id: null,
+  agent_id: 'agent-1', agent_version_id: 'agent-version-1',
   instructed_by_user_id: 'user-1', instructed_by_agent_id: null, owner_user_id: 'user-1',
   created_at: '2026-07-12T00:00:00Z', started_at: '2026-07-12T00:00:01Z', ended_at: '2026-07-12T00:00:02Z',
   error_message: null, task_id: null, visibility: 'space_shared',

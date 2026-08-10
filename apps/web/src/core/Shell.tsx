@@ -251,7 +251,7 @@ export default function Shell() {
         <MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} />
       </div>
 
-      <FloatingQuickCapture scope={scope} />
+      <FloatingQuickCapture />
 
       <Toaster
         theme={theme}

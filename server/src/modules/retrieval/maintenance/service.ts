@@ -90,7 +90,7 @@ interface RelationRow {
   from_object_id: string;
   to_object_type: RetrievalObjectType;
   to_object_id: string;
-  relation_type: string;
+  link_type: string;
 }
 
 const EMPTY_COUNTS = (): Record<MaintenanceFindingKind, number> => ({
@@ -201,12 +201,12 @@ export class RetrievalMaintenanceService {
       const from = readable({ object_type: row.from_object_type, object_id: row.from_object_id });
       const to = readable({ object_type: row.to_object_type, object_id: row.to_object_id });
       if (!from || !to) continue; // both endpoints must be readable
-      const reason = `suggested ${row.relation_type} relation from extracted links`;
+      const reason = `suggested ${row.link_type} relation from extracted links`;
       findings.push({
         kind: "relation_suggestion",
         objects: [from, to],
         reason,
-        proposed_action: relationSuggestionAction(from, to, row.relation_type, reason),
+        proposed_action: relationSuggestionAction(from, to, row.link_type, reason),
       });
       counts.relation_suggestion += 1;
     }
@@ -313,7 +313,7 @@ export class RetrievalMaintenanceService {
     limit: number,
   ): Promise<RelationRow[]> {
     const result = await this.db.query<RelationRow>(
-      `SELECT from_object_type, from_object_id, to_object_type, to_object_id, relation_type
+      `SELECT from_object_type, from_object_id, to_object_type, to_object_id, link_type
          FROM retrieval_edges
         WHERE space_id = $1
           AND edge_status = 'suggested'
@@ -406,7 +406,7 @@ export class RetrievalMaintenanceService {
 function relationSuggestionAction(
   from: MaintenanceObjectRef,
   to: MaintenanceObjectRef,
-  relationType: string,
+  linkType: string,
   reason: string,
 ): Record<string, unknown> | null {
   if (from.object_type !== "knowledge_item" || to.object_type !== "knowledge_item") return null;
@@ -417,7 +417,7 @@ function relationSuggestionAction(
       operation: "object_relation_create",
       from_object_id: from.object_id,
       to_object_id: to.object_id,
-      relation_type: relationType,
+      link_type: linkType,
       status: "candidate",
       confidence: null,
       evidence_summary: reason,

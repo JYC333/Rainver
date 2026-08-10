@@ -15,9 +15,9 @@ interface ItemRow {
   title: string;
   slug: string | null;
   aliases_json: unknown;
-  object_kind_id: string | null;
-  object_kind: string | null;
-  object_kind_label: string | null;
+  object_profile_id: string | null;
+  object_profile: string | null;
+  object_profile_label: string | null;
   content: string | null;
   plain_text: string | null;
   visibility: string;
@@ -29,9 +29,9 @@ interface NoteRow {
   title: string
   plain_text: string | null
   status: string
-  object_kind_id?: string | null
-  object_kind?: string | null
-  object_kind_label?: string | null
+  object_profile_id?: string | null
+  object_profile?: string | null
+  object_profile_label?: string | null
 }
 
 interface ActivityRow {
@@ -55,14 +55,14 @@ interface ArtifactRow {
 
 interface HintRow {
   id: string
-  object_kind_id: string
-  object_kind: string
-  object_kind_label: string
+  object_profile_id: string
+  object_profile: string
+  object_profile_label: string
   endpoint_object_type: string
-  endpoint_object_kind_id: string | null
-  endpoint_object_kind: string | null
-  endpoint_object_kind_label: string | null
-  relation_type: string
+  endpoint_object_profile_id: string | null
+  endpoint_object_profile: string | null
+  endpoint_object_profile_label: string | null
+  link_type: string
   direction: string
   confidence_default: number
   required: boolean
@@ -81,7 +81,7 @@ class FakeDiscoveryDb implements Queryable {
     if (/FROM knowledge_items ki/.test(sql)) {
       return { rows: this.items as Row[], rowCount: this.items.length };
     }
-    if (/FROM space_object_kind_relation_hints h/.test(sql)) {
+    if (/FROM space_object_profile_relation_hints h/.test(sql)) {
       return { rows: this.hints as Row[], rowCount: this.hints.length };
     }
     if (/FROM object_relations r/.test(sql)) {
@@ -106,9 +106,9 @@ function item(overrides: Partial<ItemRow> = {}): ItemRow {
     title: "Alpha",
     slug: "alpha",
     aliases_json: [],
-    object_kind_id: null,
-    object_kind: null,
-    object_kind_label: null,
+    object_profile_id: null,
+    object_profile: null,
+    object_profile_label: null,
     content: "",
     plain_text: null,
     visibility: "space_shared",
@@ -146,7 +146,7 @@ describe("runRelationDiscoveryScan", () => {
       proposal_type: "object_relation_create",
       from_object_id: "item-a",
       to_object_id: "item-b",
-      relation_type: "related_to",
+      link_type: "related_to",
     });
   });
 
@@ -161,7 +161,7 @@ describe("runRelationDiscoveryScan", () => {
       userId: "user-1",
       request: { limit: 200, max_candidates: 40, review_scope: "private", include_unresolved_item_candidates: false, llm_extraction_enabled: false, llm_max_sources: 8, create_packet: true },
     });
-    expect(report.candidates[0]!.proposed_action).toMatchObject({ relation_type: "depends_on", to_object_id: "item-b" });
+    expect(report.candidates[0]!.proposed_action).toMatchObject({ link_type: "depends_on", to_object_id: "item-b" });
   });
 
   it("supports richer typed-link syntax beyond relation double-colon prefixes", async () => {
@@ -179,8 +179,8 @@ describe("runRelationDiscoveryScan", () => {
 
     expect(report.candidates.map((candidate) => candidate.proposed_action)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ relation_type: "supports", to_object_id: "item-b" }),
-        expect.objectContaining({ relation_type: "depends_on", to_object_id: "item-c" }),
+        expect.objectContaining({ link_type: "supports", to_object_id: "item-b" }),
+        expect.objectContaining({ link_type: "depends_on", to_object_id: "item-c" }),
       ]),
     );
   });
@@ -201,7 +201,7 @@ describe("runRelationDiscoveryScan", () => {
       proposal_type: "object_relation_create",
       from_object_id: "note-a",
       to_object_id: "item-b",
-      relation_type: "related_to",
+      link_type: "related_to",
     })
   })
 
@@ -229,23 +229,23 @@ describe("runRelationDiscoveryScan", () => {
       item({
         id: "item-a",
         title: "Alpha",
-        object_kind_id: "kind-decision",
-        object_kind: "decision",
-        object_kind_label: "Decision",
+        object_profile_id: "kind-decision",
+        object_profile: "decision",
+        object_profile_label: "Decision",
         content: "Alpha mentions deploy shape without a typed link.",
       }),
       item({ id: "item-b", title: "Beta", slug: "beta" }),
     ]
     const hints: HintRow[] = [{
       id: "hint-1",
-      object_kind_id: "kind-decision",
-      object_kind: "decision",
-      object_kind_label: "Decision",
+      object_profile_id: "kind-decision",
+      object_profile: "decision",
+      object_profile_label: "Decision",
       endpoint_object_type: "knowledge_item",
-      endpoint_object_kind_id: null,
-      endpoint_object_kind: null,
-      endpoint_object_kind_label: null,
-      relation_type: "depends_on",
+      endpoint_object_profile_id: null,
+      endpoint_object_profile: null,
+      endpoint_object_profile_label: null,
+      link_type: "depends_on",
       direction: "from",
       confidence_default: 0.7,
       required: false,
@@ -257,8 +257,8 @@ describe("runRelationDiscoveryScan", () => {
         expect(input.relationHints).toEqual([
           expect.objectContaining({
             id: "hint-1",
-            object_kind: "decision",
-            relation_type: "depends_on",
+            object_profile: "decision",
+            link_type: "depends_on",
             confidence_default: 0.7,
           }),
         ])
@@ -274,7 +274,7 @@ describe("runRelationDiscoveryScan", () => {
               { object_type: "knowledge_item", object_id: "item-a", title: "Alpha", link_origin: "llm", link_text: null },
               { object_type: "knowledge_item", object_id: "item-b", title: "Beta", link_origin: null, link_text: null },
             ],
-            markers: { relation_type: "related_to", llm_extracted: true },
+            markers: { link_type: "related_to", llm_extracted: true },
             proposed_action: null,
           },
         ]
@@ -302,22 +302,22 @@ describe("runRelationDiscoveryScan", () => {
       item({
         id: "item-a",
         title: "Alpha Decision",
-        object_kind_id: "kind-decision",
-        object_kind: "decision",
-        object_kind_label: "Decision",
+        object_profile_id: "kind-decision",
+        object_profile: "decision",
+        object_profile_label: "Decision",
         content: "No explicit relation links here.",
       }),
     ]
     const hints: HintRow[] = [{
       id: "hint-required",
-      object_kind_id: "kind-decision",
-      object_kind: "decision",
-      object_kind_label: "Decision",
+      object_profile_id: "kind-decision",
+      object_profile: "decision",
+      object_profile_label: "Decision",
       endpoint_object_type: "knowledge_item",
-      endpoint_object_kind_id: "kind-summary",
-      endpoint_object_kind: "summary",
-      endpoint_object_kind_label: "Summary",
-      relation_type: "supports",
+      endpoint_object_profile_id: "kind-summary",
+      endpoint_object_profile: "summary",
+      endpoint_object_profile_label: "Summary",
+      link_type: "supports",
       direction: "from",
       confidence_default: 0.55,
       required: true,
@@ -337,8 +337,8 @@ describe("runRelationDiscoveryScan", () => {
       markers: {
         schema_relation_hint_id: "hint-required",
         required_hint_gap: true,
-        relation_type: "supports",
-        endpoint_object_kind: "summary",
+        link_type: "supports",
+        endpoint_object_profile: "summary",
       },
     })
     expect(report.counts.review_only_candidate).toBe(1)
@@ -350,20 +350,20 @@ describe("runRelationDiscoveryScan", () => {
       title: "Daily note",
       plain_text: "No explicit relation links here.",
       status: "active",
-      object_kind_id: "kind-note",
-      object_kind: "note",
-      object_kind_label: "Note",
+      object_profile_id: "kind-note",
+      object_profile: "note",
+      object_profile_label: "Note",
     }]
     const hints: HintRow[] = [{
       id: "hint-note-required",
-      object_kind_id: "kind-note",
-      object_kind: "note",
-      object_kind_label: "Note",
+      object_profile_id: "kind-note",
+      object_profile: "note",
+      object_profile_label: "Note",
       endpoint_object_type: "knowledge_item",
-      endpoint_object_kind_id: null,
-      endpoint_object_kind: null,
-      endpoint_object_kind_label: null,
-      relation_type: "references",
+      endpoint_object_profile_id: null,
+      endpoint_object_profile: null,
+      endpoint_object_profile_label: null,
+      link_type: "references",
       direction: "from",
       confidence_default: 0.55,
       required: true,
@@ -382,9 +382,9 @@ describe("runRelationDiscoveryScan", () => {
       proposed_action: null,
       markers: {
         schema_relation_hint_id: "hint-note-required",
-        object_kind: "note",
-        object_kind_label: "Note",
-        relation_type: "references",
+        object_profile: "note",
+        object_profile_label: "Note",
+        link_type: "references",
         required_hint_gap: true,
       },
     })
@@ -466,7 +466,7 @@ describe("relation_discovery_packet applier", () => {
                 proposal_type: "object_relation_create",
                 from_object_id: "item-a",
                 to_object_id: "item-b",
-                relation_type: "related_to",
+                link_type: "related_to",
                 confidence: 0.6,
                 evidence_summary: "From wikilink.",
               },
@@ -480,7 +480,7 @@ describe("relation_discovery_packet applier", () => {
                 proposal_type: "object_relation_create",
                 from_object_id: "note-a",
                 to_object_id: "item-b",
-                relation_type: "related_to",
+                link_type: "related_to",
                 confidence: 0.6,
                 evidence_summary: "From wikilink.",
               },
@@ -547,7 +547,7 @@ describe("relation_discovery_packet applier", () => {
         proposal_type: "object_relation_create",
         from_object_id: `item-a-${index}`,
         to_object_id: `item-b-${index}`,
-        relation_type: "related_to",
+        link_type: "related_to",
         confidence: 0.6,
         evidence_summary: "From wikilink.",
       },

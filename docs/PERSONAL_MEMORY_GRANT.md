@@ -104,31 +104,31 @@ server-side from the authenticated session. They are not client-writable
 
 ## Runtime Behavior
 
-When `ContextPrepareService` detects a valid grant for the current run:
+When Runtime Context acquisition detects a valid grant for the current Run:
 
 1. Atomically claims the grant (`active → consuming`).
 2. Reads allowed personal memories from `personal_space_id` using the grant's filter.
 3. Generates a `summary_only` digest — no raw memory text is retained.
-4. Constructs an ephemeral `personal_context_block` (in memory only, never persisted).
+4. Constructs an ephemeral aggregate-only reference-data item for Delivery.
 5. Transitions the grant `consuming → used`.
-6. Sets `Run.has_personal_grant_context = True` and `Run.personal_grant_context_json`
-   with safe metadata only (grant ID, space IDs, memory count, boolean safety flags —
-   no memory text, IDs, or generated summary).
+6. Adds the grant ID and private granting-user attribution to the Run's general
+   `has_context_taint` / `context_taint_json` summary. The summary contains safe
+   metadata only (grant IDs, input owners, and narrowest visibility — no memory
+   text, memory IDs, or generated summary).
 
-The `personal_context_block` is appended to the adapter prompt **in memory only**,
-with a reasoning-only warning and delimiters. It is not written to:
+The aggregate-only grant item is rendered into the accepted Delivery **in memory
+only**. It is not written to:
 - `Run.prompt`
 - `AgentVersion.system_prompt`
-- `ContextSnapshot.compiled_prefix_text` / `compiled_tail_text`
+- a vendor instruction file or canonical Memory row
 
-`ContextSnapshot.source_refs_json` / `retrieval_trace_json` may contain only safe
+The safe Invocation Snapshot source refs may contain only safe
 grant metadata (`grant_id`, space ids, access mode, memory count, safety booleans).
-They never contain raw memory, memory IDs, generated summary text, or the
-`personal_context_block`.
+They never contain raw memory, memory IDs, or generated summary text.
 
-Run materialization does not yet automatically route grant-derived outputs through an
-egress review flow. It does not suppress terminal run output solely because a run had
-personal grant context.
+Run materialization narrows grant-derived durable outputs using the same context-taint
+rule as same-Space private inputs. Publishing a tainted Artifact beyond the default
+audience uses an `egress_review` proposal and the existing granting-user approval row.
 
 ---
 
@@ -136,12 +136,13 @@ personal grant context.
 
 Current implementation:
 
-- `Run.has_personal_grant_context` and `Run.personal_grant_context_json` store safe grant
-  metadata for audit/policy context.
+- `Run.has_context_taint` and `Run.context_taint_json` store safe grant and source-owner
+  attribution for audit, policy context, and output narrowing.
 - `proposal_approvals` supports explicit `egress_granting_user` approval rows.
 - Only the granting user may record that approval.
 - Approval rejects payloads marked `raw_private_memory_included = true`.
-- Publication adapters do not accept grant-derived personal-memory context.
+- Tainted Artifact publication revalidates the target taint at apply time and requires
+  every contributing owner named by that summary.
 
 Not implemented yet:
 

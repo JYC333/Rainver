@@ -4,6 +4,7 @@ import type { Queryable } from "../routeUtils/common";
 export interface CanonicalEvidenceInput {
   id?: string;
   spaceId: string;
+  projectId: string | null;
   ownerUserId: string | null;
   visibility: string;
   accessLevel: string;
@@ -59,7 +60,7 @@ export async function upsertCanonicalEvidence(
   };
   const result = await db.query<{ id: string }>(
     `INSERT INTO extracted_evidence (
-       id, space_id, owner_user_id, visibility, access_level,
+       id, space_id, project_id, owner_user_id, visibility, access_level,
        source_item_id, origin_source_item_id, extraction_job_id, source_snapshot_id,
        source_object_type, source_object_id, evidence_type, title,
        content_excerpt, content_hash, artifact_id, source_uri, source_title,
@@ -67,13 +68,13 @@ export async function upsertCanonicalEvidence(
        status, metadata_json, created_by_user_id, created_by_agent_id,
        created_by_run_id, created_at, updated_at
      ) VALUES (
-       $1, $2, $3, $4, $5,
-       $6, $7, $8, $9,
-       $10, $11, $12, $13,
-       $14, $15, $16, $17, $18,
-       $19, $20::timestamptz, $21, $22, $23::float,
-       $24, $25::jsonb, $26, $27,
-       $28, $29, $29
+       $1, $2, $3, $4, $5, $6,
+       $7, $8, $9, $10,
+       $11, $12, $13, $14,
+       $15, $16, $17, $18, $19,
+       $20, $21::timestamptz, $22, $23, $24::float,
+       $25, $26::jsonb, $27, $28,
+       $29, $30, $30
      )
      ON CONFLICT (space_id, source_item_id, content_hash)
        WHERE source_item_id IS NOT NULL AND content_hash IS NOT NULL
@@ -84,11 +85,11 @@ export async function upsertCanonicalEvidence(
          CASE
            WHEN jsonb_typeof(extracted_evidence.metadata_json->'evidence_observations') = 'array'
              THEN CASE
-               WHEN (extracted_evidence.metadata_json->'evidence_observations') @> jsonb_build_array($30::jsonb)
+               WHEN (extracted_evidence.metadata_json->'evidence_observations') @> jsonb_build_array($31::jsonb)
                  THEN extracted_evidence.metadata_json->'evidence_observations'
-               ELSE (extracted_evidence.metadata_json->'evidence_observations') || jsonb_build_array($30::jsonb)
+               ELSE (extracted_evidence.metadata_json->'evidence_observations') || jsonb_build_array($31::jsonb)
              END
-           ELSE jsonb_build_array($30::jsonb)
+           ELSE jsonb_build_array($31::jsonb)
          END,
          true
        ),
@@ -97,6 +98,7 @@ export async function upsertCanonicalEvidence(
     [
       input.id ?? randomUUID(),
       input.spaceId,
+      input.projectId,
       input.ownerUserId,
       input.visibility,
       input.accessLevel,

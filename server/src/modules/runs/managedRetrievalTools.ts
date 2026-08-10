@@ -1,3 +1,4 @@
+import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "../knowledge/retrievalObjectTypes";
 import type {
   CanonicalMessage,
   CanonicalToolCall,
@@ -51,7 +52,9 @@ export interface ResolvedRetrievalToolBinding {
   settingsSnapshot: Record<string, unknown>;
 }
 
-const RETRIEVAL_TOOL_OBJECT_TYPES = ["knowledge_item", "note", "source", "claim"] as const;
+// The Knowledge domain's own retrieval types, not a second copy of them: this
+// list was character-for-character identical and would have drifted silently.
+const RETRIEVAL_TOOL_OBJECT_TYPES = KNOWLEDGE_RETRIEVAL_OBJECT_TYPES;
 const MEMORY_RETRIEVAL_TOOL_OBJECT_TYPES = ["memory_entry"] as const;
 const PROJECT_RETRIEVAL_TOOL_OBJECT_TYPES = ["project_public_summary"] as const;
 const SOURCE_RETRIEVAL_TOOL_OBJECT_TYPES = ["source_item", "extracted_evidence"] as const;
@@ -359,6 +362,10 @@ async function applyRetrievalPreflight(
   dispatch?: (call: CanonicalToolCall) => Promise<{ modelResult: unknown; summary: Record<string, unknown>; artifact?: unknown; suspend?: RuntimeHostExecuteResponse }>,
 ): Promise<void> {
   if (!isRetrievalPreflightMode(binding.toolMode)) return;
+  // Delivery-backed execution has already completed governed acquisition and
+  // planning. Adapter-side preflight would inject model-visible content that
+  // is absent from the immutable Delivery/Snapshot.
+  if (request.invocation_audit_refs) return;
   const query = preflightQuery(request, messages);
   if (!query) return;
   const mode = retrievalSearchModeFromSettings(binding.settingsSnapshot.default_search_mode) ?? "hybrid";
@@ -396,7 +403,7 @@ function retrievalToolInputSchema(
         type: "array",
         items: { type: "string", enum: objectTypes },
       },
-      object_kinds: {
+      object_profiles: {
         type: "array",
         items: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
         maxItems: 20,
@@ -538,7 +545,7 @@ export async function runRetrievalToolCall(
         projectId: run.project_id,
         query: params.query,
         objectTypes: searchParams.objectTypes,
-        objectKinds: searchParams.objectKinds,
+        objectProfiles: searchParams.objectProfiles,
         maxResults: params.maxResults ?? 10,
         mode: params.mode ?? "hybrid",
         includeTrace: params.includeTrace ?? false,
@@ -608,7 +615,7 @@ function parseRetrievalToolArguments(
 ): {
   query: string;
   objectTypes?: RetrievalObjectType[];
-  objectKinds?: string[];
+  objectProfiles?: string[];
   maxResults?: number;
   mode?: RetrievalSearchMode;
   includeTrace?: boolean;
@@ -625,7 +632,7 @@ function parseRetrievalToolArguments(
   const params: {
     query: string;
     objectTypes?: RetrievalObjectType[];
-    objectKinds?: string[];
+    objectProfiles?: string[];
     maxResults?: number;
     mode?: RetrievalSearchMode;
     includeTrace?: boolean;
@@ -639,14 +646,14 @@ function parseRetrievalToolArguments(
     }
     if (values.length) params.objectTypes = values;
   }
-  if (Array.isArray(record.object_kinds)) {
-    const values = record.object_kinds.filter((value): value is string =>
+  if (Array.isArray(record.object_profiles)) {
+    const values = record.object_profiles.filter((value): value is string =>
       typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value),
     );
-    if (values.length !== record.object_kinds.length) {
-      throw new Error("object_kinds may only include slug keys.");
+    if (values.length !== record.object_profiles.length) {
+      throw new Error("object_profiles may only include slug keys.");
     }
-    if (values.length) params.objectKinds = [...new Set(values)].slice(0, 20);
+    if (values.length) params.objectProfiles = [...new Set(values)].slice(0, 20);
   }
   if (typeof record.max_results === "number") {
     if (!Number.isInteger(record.max_results) || record.max_results < 1 || record.max_results > 50) {

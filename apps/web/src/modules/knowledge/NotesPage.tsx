@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
 import { stripSpacePrefix } from '../../core/navigation'
 import { FolderPlus, Plus, Search, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { notesApi, notesCollectionsApi, notesTreeApi } from '../../api/client'
+import { ApiRequestError, notesApi, notesCollectionsApi, notesTreeApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
 import type { Note, NoteCollection, NoteSummary } from '../../types/api'
@@ -17,13 +17,14 @@ import { emptyRichTextDocument, richTextSnapshotFromDocument } from '../../compo
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from '../../components/ui/dialog'
-import KnowledgeSectionHeader from './KnowledgeSectionHeader'
 import { NotesListPane } from './NotesListPane'
+import NoteEditor from './NoteEditor'
 import NotesTree from './notes-tree/NotesTree'
 import {
   applyCollectionMoves,
   applyNoteMoves,
   collectionPath,
+  hoistedCollectionIds,
   nextCollectionSortOrder,
   planCollectionMove,
   removeCollection,
@@ -37,16 +38,13 @@ import {
   activeNoteIdFromPath,
   hideArchivedOrDeletedNotes,
   isNoteToNoteLink,
+  readHoistRoot,
   readTabs,
   restoreStatus,
+  writeHoistRoot,
   writeTabs,
+  type NotesSurfaceScope,
 } from './notesPageModel'
-
-/** Context handed to the open-note editor (NoteEditor) via the Outlet. */
-export interface NotesOutletContext {
-  /** Report the resolved/saved note so the open tab label and list stay in sync. */
-  onNoteResolved: (note: Note) => void
-}
 
 type CollectionDialogState =
   | { mode: 'create-root'; collection?: undefined }
@@ -71,11 +69,21 @@ const TAB_FILL_PATH =
 const TAB_STROKE_PATH =
   'M0 32 C6 32 10 27 10 22 L10 8 Q10 0 18 0 L158 0 Q166 0 166 8 L166 22 C166 27 170 32 176 32'
 
-export default function NotesPage() {
+export interface NotesPageProps {
+  /** Where this surface lives — see {@link NotesSurfaceScope}. */
+  scope: NotesSurfaceScope
+}
+
+/**
+ * The notes surface: collection tree, open-note tabs, list, and editor. It is
+ * mounted once per entry point with a different {@link NotesSurfaceScope}; the
+ * page itself knows nothing about which route it is under.
+ */
+export default function NotesPage({ scope }: NotesPageProps) {
   const navigate = useNavigate()
   const { activeSpaceId } = useSpace()
   const location = useLocation()
-  const noteId = activeNoteIdFromPath(stripSpacePrefix(location.pathname))
+  const noteId = activeNoteIdFromPath(scope.basePath, stripSpacePrefix(location.pathname))
 
   const [collections, setCollections] = useState<NoteCollection[]>([])
   const [collectionsLoading, setCollectionsLoading] = useState(true)
@@ -89,8 +97,37 @@ export default function NotesPage() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
 
-  const [openIds, setOpenIds] = useState<string[]>(() => readTabs(activeSpaceId))
+  // Hoisting (borrowed from Trilium): the tree, the note query and the open
+  // tabs are all scoped to one folder's subtree. It is a mode over the single
+  // tree, not a second page.
+  //
+  // A pinned root is the floor: the user may focus deeper inside it, and
+  // leaving that focus returns here rather than to the whole Space.
+  const pinnedRootId = scope.pinnedRootCollectionId ?? null
+  const [focusRootId, setFocusRootId] = useState<string | null>(() => readHoistRoot(scope.tabsScopeKey))
+  const hoistRootId = focusRootId ?? pinnedRootId
+  // Trilium's per-workspace tab identity: tabs opened inside one hoist root do
+  // not follow the user into another.
+  const tabsScopeKey = `${scope.tabsScopeKey}:${hoistRootId ?? 'all'}`
+
+  const [openIds, setOpenIds] = useState<string[]>(() => readTabs(tabsScopeKey))
   const prevSpace = useRef(activeSpaceId)
+  // Tabs belong to the scope, not to the page instance: switching space (whose
+  // id is part of every scope key), moving between surfaces, or hoisting shows
+  // that scope's own tab set. Adjusted during render rather than in an effect
+  // so the tab-persisting effect below never writes the outgoing scope's ids
+  // under the incoming scope's key.
+  const prevTabsScopeKey = useRef(tabsScopeKey)
+  if (prevTabsScopeKey.current !== tabsScopeKey) {
+    prevTabsScopeKey.current = tabsScopeKey
+    setOpenIds(readTabs(tabsScopeKey))
+  }
+  // A different surface (or a different space) has its own remembered hoist.
+  const prevSurfaceKey = useRef(scope.tabsScopeKey)
+  if (prevSurfaceKey.current !== scope.tabsScopeKey) {
+    prevSurfaceKey.current = scope.tabsScopeKey
+    setFocusRootId(readHoistRoot(scope.tabsScopeKey))
+  }
   const [treeMutationQueue] = useState(() =>
     createOptimisticTreeMutationQueue(error => toast.error(errMsg(error))),
   )
@@ -100,14 +137,33 @@ export default function NotesPage() {
   const [collectionDialog, setCollectionDialog] = useState<CollectionDialogState>(null)
   const [deleteDialog, setDeleteDialog] = useState<LinkedDeleteDialogState | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [shareDialog, setShareDialog] = useState<{ noteId: string; collectionId: string } | null>(null)
+  const [shareBusy, setShareBusy] = useState(false)
   const [collectionName, setCollectionName] = useState('')
   const [collectionParentId, setCollectionParentId] = useState(ROOT_PARENT)
 
   const visibleCollections = useMemo(() => collections.filter(c => !c.is_hidden), [collections])
   const collectionById = useMemo(() => new Map(collections.map(c => [c.id, c])), [collections])
-  const visibleCollectionById = useMemo(() => new Map(visibleCollections.map(c => [c.id, c])), [visibleCollections])
-  const selectedCollection = selectedCollectionId ? visibleCollectionById.get(selectedCollectionId) ?? null : null
+  const visibleCollectionIds = useMemo(() => new Set(visibleCollections.map(c => c.id)), [visibleCollections])
+  // The hoisted subtree, or null when the surface spans every collection. Null
+  // and "the empty set" are different things here — the first means no filter,
+  // the second means nothing matches — so the note query below reads it as such.
+  const hoistedIds = useMemo(
+    () => hoistedCollectionIds(visibleCollections, hoistRootId),
+    [visibleCollections, hoistRootId],
+  )
+  const scopedCollections = useMemo(
+    () => (hoistedIds ? visibleCollections.filter(c => hoistedIds.has(c.id)) : visibleCollections),
+    [hoistedIds, visibleCollections],
+  )
+  const scopedCollectionById = useMemo(() => new Map(scopedCollections.map(c => [c.id, c])), [scopedCollections])
+  const scopeCollectionIds = useMemo(() => (hoistedIds ? [...hoistedIds] : null), [hoistedIds])
+  // Until the collections have loaded the hoisted subtree is unknown, and an
+  // unscoped fetch would briefly pull in notes this surface must not show.
+  const scopeReady = !hoistRootId || !collectionsLoading
+  const selectedCollection = selectedCollectionId ? scopedCollectionById.get(selectedCollectionId) ?? null : null
   const canCreateNote = Boolean(activeSpaceId) && selectedCollection?.system_role !== 'archive'
+  const searchQuery = query.trim()
 
   const parentOptions = useMemo(() => {
     const excluded = collectionDialog?.mode === 'move' ? collectionDialog.collection.id : null
@@ -137,8 +193,16 @@ export default function NotesPage() {
     }
   }, [activeSpaceId])
 
+  /**
+   * Without a query the centre list is one folder's contents, in the user's
+   * manual order. With one it is a search over the whole surface — which is the
+   * half of hoisting that matters: narrowing what is drawn while search still
+   * spans every Project would be the wrong half (U4). `collection_ids` carries
+   * the hoisted subtree; absent, the search spans the Space.
+   */
   const loadNotes = useCallback(async () => {
-    if (!activeSpaceId || !selectedCollectionId) {
+    const inScope = scopeCollectionIds === null || scopeCollectionIds.length > 0
+    if (!activeSpaceId || !scopeReady || !inScope || (!searchQuery && !selectedCollectionId)) {
       setNotes([])
       setLoading(false)
       return
@@ -147,8 +211,9 @@ export default function NotesPage() {
     try {
       const showingArchive = selectedCollection?.system_role === 'archive'
       const page = await notesApi.list({
-        collection_id: selectedCollectionId,
-        q: query.trim() || undefined,
+        ...(searchQuery
+          ? { q: searchQuery, ...(scopeCollectionIds ? { collection_ids: scopeCollectionIds } : {}) }
+          : { collection_id: selectedCollectionId! }),
         status: showingArchive ? 'archived' : undefined,
         limit: 200,
       })
@@ -159,37 +224,57 @@ export default function NotesPage() {
     } finally {
       setLoading(false)
     }
-  }, [activeSpaceId, query, selectedCollection?.system_role, selectedCollectionId])
+  }, [activeSpaceId, scopeCollectionIds, scopeReady, searchQuery, selectedCollection?.system_role, selectedCollectionId])
 
   const loadAllNotes = useCallback(async () => {
-    if (!activeSpaceId) {
+    const inScope = scopeCollectionIds === null || scopeCollectionIds.length > 0
+    if (!activeSpaceId || !scopeReady || !inScope) {
       setAllNotes([])
       return
     }
     try {
-      const page = await notesApi.list({ limit: 200 })
+      const page = await notesApi.list({
+        ...(scopeCollectionIds ? { collection_ids: scopeCollectionIds } : {}),
+        limit: 200,
+      })
       setAllNotes(hideArchivedOrDeletedNotes(page.items))
     } catch {
       // Tree nesting is best-effort; the center list surfaces hard load errors.
     }
-  }, [activeSpaceId])
+  }, [activeSpaceId, scopeCollectionIds, scopeReady])
 
   useEffect(() => { loadCollections() }, [loadCollections])
   useEffect(() => { loadAllNotes() }, [loadAllNotes])
 
+  // The selection follows the scope: hoisting into a folder whose subtree does
+  // not contain the selected folder lands on the hoist root itself.
   useEffect(() => {
     if (!activeSpaceId || collectionsLoading) return
-    if (selectedCollectionId && visibleCollectionById.has(selectedCollectionId)) return
-    const inbox = visibleCollections.find(c => c.system_role === 'inbox')
-    setSelectedCollectionId(inbox?.id ?? visibleCollections[0]?.id ?? null)
-  }, [activeSpaceId, collectionsLoading, selectedCollectionId, visibleCollectionById, visibleCollections])
+    if (selectedCollectionId && scopedCollectionById.has(selectedCollectionId)) return
+    if (hoistRootId && scopedCollectionById.has(hoistRootId)) {
+      setSelectedCollectionId(hoistRootId)
+      return
+    }
+    const inbox = scopedCollections.find(c => c.system_role === 'inbox')
+    setSelectedCollectionId(inbox?.id ?? scopedCollections[0]?.id ?? null)
+  }, [activeSpaceId, collectionsLoading, hoistRootId, scopedCollectionById, scopedCollections, selectedCollectionId])
+
+  // A hoist root can disappear underneath the user — someone deletes or hides
+  // the folder. Falling back to the whole surface is the only honest answer;
+  // staying hoisted to a folder that no longer exists shows nothing at all.
+  useEffect(() => {
+    if (!focusRootId || collectionsLoading) return
+    if (visibleCollectionIds.has(focusRootId)) return
+    setFocusRootId(null)
+  }, [collectionsLoading, focusRootId, visibleCollectionIds])
+
+  useEffect(() => { writeHoistRoot(scope.tabsScopeKey, focusRootId) }, [scope.tabsScopeKey, focusRootId])
 
   useEffect(() => { loadNotes() }, [loadNotes])
 
   useEffect(() => {
     if (prevSpace.current !== activeSpaceId) {
       prevSpace.current = activeSpaceId
-      setOpenIds(readTabs(activeSpaceId))
       setSelectedCollectionId(null)
     }
   }, [activeSpaceId])
@@ -199,7 +284,7 @@ export default function NotesPage() {
     setOpenIds(prev => (prev.includes(noteId) ? prev : [...prev, noteId]))
   }, [noteId])
 
-  useEffect(() => { writeTabs(activeSpaceId, openIds) }, [activeSpaceId, openIds])
+  useEffect(() => { writeTabs(scope.tabsScopeKey, openIds) }, [scope.tabsScopeKey, openIds])
 
   const onNoteResolved = useCallback((n: Note) => {
     setResolvedTitles(prev => (prev[n.id] === n.title ? prev : { ...prev, [n.id]: n.title }))
@@ -228,6 +313,16 @@ export default function NotesPage() {
     })
   }, [])
 
+  // A search spans folders, so a result has to say where it lives; without it
+  // the list is a set of titles with no place in the tree. A note in several
+  // folders names them all rather than picking one arbitrarily.
+  const folderNamesFor = useCallback(
+    (note: NoteSummary) => note.placements
+      .map(placement => collectionById.get(placement.collection_id)?.name)
+      .filter((name): name is string => Boolean(name)),
+    [collectionById],
+  )
+
   const titleFor = useCallback(
     (id: string) => (
       resolvedTitles[id]
@@ -239,24 +334,35 @@ export default function NotesPage() {
   )
 
   const syncSelectedCollection = useCallback((collectionId: string | null | undefined) => {
-    if (!collectionId || !visibleCollectionById.has(collectionId)) return
+    if (!collectionId || !scopedCollectionById.has(collectionId)) return
     setSelectedCollectionId(prev => (prev === collectionId ? prev : collectionId))
-  }, [visibleCollectionById])
+  }, [scopedCollectionById])
 
+  /** Enter or leave hoisting. Leaving the current note as well would be wrong —
+   * the note is still readable; only what the tree and search cover changes.
+   * On a pinned surface, leaving lands back on the pinned root. */
+  const hoist = useCallback((collectionId: string | null) => {
+    setFocusRootId(collectionId)
+    setSelectedCollectionId(collectionId ?? pinnedRootId)
+  }, [pinnedRootId])
+
+  // A note may be in several folders; selecting one of them is only a hint for
+  // the centre list, so the first placement the current scope can show wins.
   const syncSelectedCollectionForNote = useCallback((id: string) => {
     const note = allNotes.find(n => n.id === id) ?? notes.find(n => n.id === id)
-    syncSelectedCollection(note?.collection_id)
-  }, [allNotes, notes, syncSelectedCollection])
+    const inScope = note?.placements.find(placement => scopedCollectionById.has(placement.collection_id))
+    syncSelectedCollection(inScope?.collection_id)
+  }, [allNotes, notes, scopedCollectionById, syncSelectedCollection])
 
   const openNote = useCallback((id: string) => {
     syncSelectedCollectionForNote(id)
-    navigate(`/knowledge/notes/${id}`)
-  }, [navigate, syncSelectedCollectionForNote])
+    navigate(`${scope.basePath}/${id}`)
+  }, [navigate, scope.basePath, syncSelectedCollectionForNote])
 
   const selectCollection = useCallback((id: string) => {
     setSelectedCollectionId(id)
-    if (noteId) navigate('/knowledge/notes')
-  }, [navigate, noteId])
+    if (noteId) navigate(scope.basePath)
+  }, [navigate, noteId, scope.basePath])
 
   useEffect(() => {
     if (!noteId) return
@@ -269,7 +375,7 @@ export default function NotesPage() {
     setOpenIds(next)
     if (id === noteId) {
       const fallback = next[idx] ?? next[idx - 1] ?? null
-      navigate(fallback ? `/knowledge/notes/${fallback}` : '/knowledge/notes')
+      navigate(fallback ? `${scope.basePath}/${fallback}` : scope.basePath)
     }
   }
 
@@ -311,9 +417,9 @@ export default function NotesPage() {
     setOpenIds(nextOpenIds)
     if (noteId && removedIds.has(noteId)) {
       const fallback = nextOpenIds[idx] ?? nextOpenIds[idx - 1] ?? null
-      navigate(fallback ? `/knowledge/notes/${fallback}` : '/knowledge/notes')
+      navigate(fallback ? `${scope.basePath}/${fallback}` : scope.basePath)
     }
-  }, [navigate, noteId, openIds])
+  }, [navigate, noteId, openIds, scope.basePath])
 
   const restoreDeletedNotes = useCallback(async (targetNotes: NoteDeleteTarget[]) => {
     try {
@@ -398,10 +504,6 @@ export default function NotesPage() {
     archiveNotes([note])
   }, [archiveNotes])
 
-  const outletContext: NotesOutletContext = useMemo(() => ({
-    onNoteResolved,
-  }), [onNoteResolved])
-
   async function createNote() {
     if (!canCreateNote) return
     setCreating(true)
@@ -424,16 +526,23 @@ export default function NotesPage() {
     }
   }
 
-  function openCreateRoot() {
-    setCollectionDialog({ mode: 'create-root' })
-    setCollectionName('')
-    setCollectionParentId(ROOT_PARENT)
-  }
-
   function openCreateChild(collection: NoteCollection) {
     setCollectionDialog({ mode: 'create-child', collection })
     setCollectionName('')
     setCollectionParentId(collection.id)
+  }
+
+  /** "New folder" while hoisted means new folder *here*: a folder created at
+   * the top level would land outside the subtree the user is looking at. */
+  function openCreateRoot() {
+    const hoistRoot = hoistRootId ? scopedCollectionById.get(hoistRootId) : null
+    if (hoistRoot) {
+      openCreateChild(hoistRoot)
+      return
+    }
+    setCollectionDialog({ mode: 'create-root' })
+    setCollectionName('')
+    setCollectionParentId(ROOT_PARENT)
   }
 
   function openRename(collection: NoteCollection) {
@@ -569,39 +678,96 @@ export default function NotesPage() {
     enqueueCollectionReorder(updates)
   }
 
+  /**
+   * The additive drop (U5): the note gains a folder and keeps the ones it is
+   * in. Not run through the optimistic queue — unlike a reorder there is no
+   * local answer for the new placement's sort order, and the server's reply is
+   * the note with its placements already correct.
+   */
+  const placeNote = useCallback(async (targetNoteId: string, collectionId: string, shareWithProject = false) => {
+    try {
+      const updated = await notesApi.addPlacement(targetNoteId, collectionId, shareWithProject)
+      onNoteResolved(updated)
+      toast.success(`Also placed in ${collectionById.get(collectionId)?.name ?? 'that folder'}`)
+    } catch (e) {
+      // Dropping a note into another Project's folder is a permission change,
+      // so it is a question rather than an error (U8): the server refuses and
+      // names the case, and the user confirms it in words before it happens.
+      if (e instanceof ApiRequestError && e.code === 'note_cross_project_share_required') {
+        setShareDialog({ noteId: targetNoteId, collectionId })
+        return
+      }
+      toast.error(errMsg(e))
+    }
+  }, [collectionById, onNoteResolved])
+
+  const confirmCrossProjectShare = useCallback(async () => {
+    if (!shareDialog) return
+    setShareBusy(true)
+    try {
+      await placeNote(shareDialog.noteId, shareDialog.collectionId, true)
+      setShareDialog(null)
+    } finally {
+      setShareBusy(false)
+    }
+  }, [placeNote, shareDialog])
+
+  /** Taking a note out of one folder. The server refuses the last placement —
+   * that is a deletion, and has its own action and its own confirmation. */
+  const removePlacement = useCallback(async (targetNoteId: string, collectionId: string) => {
+    try {
+      const updated = await notesApi.removePlacement(targetNoteId, collectionId)
+      onNoteResolved(updated)
+      toast.success(`Removed from ${collectionById.get(collectionId)?.name ?? 'that folder'}`)
+    } catch (e) {
+      toast.error(errMsg(e))
+    }
+  }, [collectionById, onNoteResolved])
+
   function dropNotes(updates: NoteMove[]) {
     const optimisticAllNotes = applyNoteMoves(allNotes, updates)
-    const normalizedQuery = query.trim().toLocaleLowerCase()
     const optimisticVisibleNotes = selectedCollectionId
       ? optimisticAllNotes.filter(note => (
-        note.collection_id === selectedCollectionId
+        note.placements.some(placement => placement.collection_id === selectedCollectionId)
         && (selectedCollection?.system_role === 'archive' ? note.status === 'archived' : note.status === 'active')
-        && (!normalizedQuery || `${note.title} ${note.excerpt ?? ''}`.toLocaleLowerCase().includes(normalizedQuery))
       ))
       : []
     treeMutationQueue.enqueue({
       key: 'notes',
       apply: () => {
-        setNotes(optimisticVisibleNotes)
         setAllNotes(optimisticAllNotes)
+        // While searching, the centre list is a query result over the whole
+        // surface, not the selected folder's contents — there is no local
+        // answer to what a move does to it, so it is left to the reconcile.
+        if (!searchQuery) setNotes(optimisticVisibleNotes)
       },
       persist: async () => {
         await notesTreeApi.reorder({
           kind: 'notes',
           updates: updates.map(update => ({
-            id: update.id,
+            note_id: update.noteId,
+            from_collection_id: update.fromCollectionId,
             collection_id: update.collectionId,
             sort_order: update.sortOrder,
           })),
         })
       },
       reconcile: async () => { await Promise.all([loadNotes(), loadAllNotes()]) },
-      // Full-text queries can match note content that is not present in a
-      // NoteSummary. Reconcile that exceptional view in the background
-      // without blocking the already-updated tree.
-      afterSuccess: normalizedQuery ? () => { void loadNotes() } : undefined,
+      // The search view above was deliberately not updated optimistically, so
+      // refresh it once the move has landed — without blocking the tree, which
+      // is already showing the new position.
+      afterSuccess: searchQuery ? () => { void loadNotes() } : undefined,
     })
   }
+
+  const noteTitleById = useMemo(
+    () => new Map(allNotes.map(note => [note.id, resolvedTitles[note.id] ?? note.title])),
+    [allNotes, resolvedTitles],
+  )
+  const aside = scope.renderAside?.({
+    noteTitleById,
+    onNotesChanged: () => { void Promise.all([loadNotes(), loadAllNotes()]) },
+  })
 
   const headerActions = (
     <div className="flex items-center gap-2">
@@ -626,7 +792,7 @@ export default function NotesPage() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="px-6 pt-5 shrink-0">
-        <KnowledgeSectionHeader section="notes" actions={headerActions} />
+        {scope.renderHeader(headerActions)}
       </div>
 
       <div className="flex-1 min-h-0 flex">
@@ -668,6 +834,11 @@ export default function NotesPage() {
               onDeleteCollection={deleteCollection}
               onDropCollections={dropCollections}
               onDropNotes={dropNotes}
+              onPlaceNote={placeNote}
+              onRemovePlacement={removePlacement}
+              hoistRootId={hoistRootId}
+              onHoist={hoist}
+              canExitHoist={hoistRootId !== pinnedRootId}
             />
           )}
           <Button size="sm" variant="outline" className="mt-2 justify-start" onClick={openCreateRoot} disabled={!activeSpaceId}>
@@ -677,7 +848,7 @@ export default function NotesPage() {
 
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <div className="md:hidden flex gap-1.5 overflow-x-auto border-b border-border px-3 py-2 shrink-0">
-            {visibleCollections.map(c => (
+            {scopedCollections.map(c => (
               <button
                 key={c.id}
                 type="button"
@@ -763,26 +934,36 @@ export default function NotesPage() {
           <div className="flex-1 min-h-0">
             {noteId ? (
               // The editor owns its own scroll so its bottom status bar stays pinned.
-              <Outlet context={outletContext} />
+              <NoteEditor noteId={noteId} onNoteResolved={onNoteResolved} />
             ) : (
               <div className="h-full overflow-y-auto">
                 <NotesListPane
                   loading={loading || collectionsLoading}
                   hasSpace={Boolean(activeSpaceId)}
-                  hasCollections={visibleCollections.length > 0}
+                  hasCollections={scopedCollections.length > 0}
                   collection={selectedCollection}
                   notes={notes}
-                  searching={Boolean(query.trim())}
+                  searching={Boolean(searchQuery)}
                   creating={creating}
                   canCreateNote={canCreateNote}
                   onOpen={openNote}
                   onNew={createNote}
                   titleFor={titleFor}
+                  folderNamesFor={folderNamesFor}
                 />
               </div>
             )}
           </div>
         </div>
+
+        {aside && (
+          <aside
+            aria-label="Notes assistant"
+            className="hidden xl:flex w-[22rem] shrink-0 flex-col border-l border-border bg-card/40 p-3"
+          >
+            {aside}
+          </aside>
+        )}
       </div>
 
       <Dialog
@@ -809,6 +990,32 @@ export default function NotesPage() {
             </Button>
             <Button variant="destructive" size="sm" onClick={confirmLinkedDelete} disabled={deleteBusy}>
               {deleteBusy ? 'Deleting...' : 'Delete anyway'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={shareDialog !== null}
+        onOpenChange={open => { if (!open && !shareBusy) setShareDialog(null) }}
+      >
+        <DialogContent showClose={!shareBusy} className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Also share this note with the project?</DialogTitle>
+            <DialogDescription>
+              {`This note belongs to another project. Placing it in ${shareDialog ? collectionById.get(shareDialog.collectionId)?.name ?? 'this folder' : 'this folder'} also makes it readable by that project's members.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            The note keeps its original project. You can withdraw the share later
+            from the note, which also removes it from this folder again.
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setShareDialog(null)} disabled={shareBusy}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => void confirmCrossProjectShare()} disabled={shareBusy}>
+              {shareBusy ? 'Sharing...' : 'Place and share'}
             </Button>
           </DialogFooter>
         </DialogContent>

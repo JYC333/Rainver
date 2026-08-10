@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { createHash } from "node:crypto";
 import type {
   MessageOut,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
@@ -28,7 +27,6 @@ import {
 import { runToOut } from "../runs/runReadModel";
 import { RunBudgetExceededError, RunBudgetSourceReferenceError } from "../runs/budgetEnforcement";
 import { PgJobQueueRepository } from "../jobs/repository";
-import { PgContextSnapshotRepository } from "../memory/contextSnapshotRepository";
 import {
   dbPool,
   parsePage,
@@ -37,26 +35,12 @@ import {
 } from "../routeUtils/common";
 import { PgProposalRepository } from "../proposals/repository";
 import { PgAgentChatRepository, PgAgentRepository } from "./repository";
-import { assertProjectReadable } from "../projects/access";
 import { getBuiltInWorkflowTemplate } from "../capabilities/workflowRegistry";
 import { resolveWorkflowVersionId } from "../capabilities/workflowAssets";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+import { resolveContentCreationContext } from "../access/creationContext";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker";
 import { workflowContractInput } from "../capabilities/workflowContract";
-import {
-  ChatContextCandidateCollector,
-  ChatContextError,
-} from "../context";
-import { PgChatCandidateRepository } from "../context/candidateRepository";
-import { PgRunContextRepository } from "../context/repository";
-import {
-  buildChatConversationWindow,
-  buildChatContext,
-  composeChatPrompt,
-  conversationWindowToMessages,
-  renderConversationWindow,
-  renderContextPreamble,
-} from "./chatContextBuilder";
 import {
   applyAgentIdentityPatch,
   configPatch,
@@ -67,13 +51,18 @@ import {
   optionalBooleanBody,
   optionalRecordBody,
   params,
-  recordValue,
   requiredBodyString,
   sendDomainError,
   stringValue,
 } from "./agentRouteInputs";
 
 const MAX_MESSAGE_CHARS = 8000;
+class ChatContextError extends Error {
+  constructor(readonly body: string, readonly statusCode: number) {
+    super(body);
+    this.name = "ChatContextError";
+  }
+}
 const PROJECT_CHAT_ACTIONS=["source.connection.propose_create","project.source.propose_bind","source.backfill.propose_start"] as const;
 export function projectChatCapabilities(toolPermissions:Record<string,unknown>|undefined){const allowed=Array.isArray(toolPermissions?.allowed_tools)?new Set(toolPermissions.allowed_tools.filter((item):item is string=>typeof item==="string")):new Set<string>();return PROJECT_CHAT_ACTIONS.filter(action=>allowed.has(action));}
 
@@ -84,8 +73,6 @@ interface AgentChatUnitOfWork {
     | "createSession"
     | "addMessage"
     | "attachRunToUserMessage"
-    | "listRecentMessagesForContext"
-    | "getLatestSummaryForContext"
   >;
   backends: Pick<
     PgConversationBackendRepository,
@@ -96,8 +83,6 @@ interface AgentChatUnitOfWork {
     "claimTurn" | "prepare"
   >;
   runs: Pick<PgRunRepository, "createQueuedRun">;
-  context: Pick<ChatContextCandidateCollector, "fetchCandidates">;
-  snapshots: Pick<PgContextSnapshotRepository, "persistChatSnapshot">;
   jobs: {
     enqueue: (input: {
       run_id: string;
@@ -253,12 +238,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: stringValue(body.project_id),
+      });
       const agent = await agentRepository().create({
-        spaceId: identity.spaceId,
+        spaceId: creation.spaceId,
+        projectId: creation.projectId,
         userId: identity.userId,
         name: requiredBodyString(body, "name"),
         description: nullableBodyString(body, "description") ?? null,
-        visibility: nullableBodyString(body, "visibility") ?? "private",
+        visibility: creation.visibility,
         roleInstruction: nullableBodyString(body, "role_instruction") ?? null,
         systemPrompt: nullableBodyString(body, "system_prompt") ?? null,
         defaultModelProviderId: nullableBodyString(body, "default_model_provider_id") ?? null,
@@ -525,34 +516,38 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const body = jsonBody(request);
     const repository = PgRunRepository.fromConfig(context.config);
     try {
-      const contextArtifactIds = optionalStringArrayBody(body, "context_artifact_ids");
       const projectFolderId = stringValue(body.project_folder_id);
       const projectId = stringValue(body.project_id);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId,
+      });
+      const resolvedProjectFolderId = creation.projectId ? projectFolderId : null;
       const workflowTemplateId = stringValue(body.workflow_template_id);
       const workflowTemplate = workflowTemplateId ? getBuiltInWorkflowTemplate(workflowTemplateId) : null;
       if (workflowTemplateId && !workflowTemplate) {
         throw new RunCreateValidationError(`Workflow template '${workflowTemplateId}' not found`, 422);
       }
       const workflowVersionId = workflowTemplate
-        ? await resolveWorkflowVersionId(dbPool(context.config), {
-            spaceId: identity.spaceId,
+          ? await resolveWorkflowVersionId(dbPool(context.config), {
+            spaceId: creation.spaceId,
             userId: identity.userId,
             projectId,
             agentId,
             workflowId: workflowTemplate.id,
           })
         : null;
-      await validateContextArtifactAttachments(context, identity, contextArtifactIds ?? [], projectFolderId, projectId);
       const run = await repository.createQueuedRunWithBudgetAdmission({
         agent_id: agentId,
-        space_id: identity.spaceId,
+        space_id: creation.spaceId,
         user_id: identity.userId,
         mode: stringValue(body.mode) ?? "live",
         run_type: stringValue(body.run_type) ?? "agent",
         trigger_origin: stringValue(body.trigger_origin) ?? "manual",
         session_id: stringValue(body.session_id),
-        project_folder_id: projectFolderId,
-        project_id: projectId,
+        project_folder_id: resolvedProjectFolderId,
+        project_id: creation.projectId,
         prompt: stringValue(body.prompt),
         instruction: stringValue(body.instruction),
         scheduled_at: stringValue(body.scheduled_at),
@@ -560,8 +555,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         runtime_profile_id: stringValue(body.runtime_profile_id),
         capability_id: stringValue(body.capability_id),
         capabilities_json: optionalArrayBody(body, "capabilities_json"),
-        context_artifact_ids: contextArtifactIds,
         workflow_version_id: workflowVersionId,
+        visibility: creation.visibility,
         contract_snapshot: workflowTemplate
           ? workflowContractInput({
               template: workflowTemplate,
@@ -605,36 +600,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         ...body,
         message: rawMessage,
       });
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: req.project_id,
+      });
       const services = agentChatServices(context);
-      let projectContextPreamble: string | null = null;
-      if (req.project_id) {
-        const database = dbPool(context.config);
-        await assertProjectReadable(
-          database,
-          identity.spaceId,
-          req.project_id,
-          identity.userId,
-        );
-        const project = await database.query<{
-          name: string;
-          description: string | null;
-          current_focus: string | null;
-        }>(
-          `SELECT name, description, current_focus
-             FROM projects
-            WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
-          [req.project_id, identity.spaceId],
-        );
-        const row = project.rows[0];
-        if (!row) return reply.code(404).send({ detail: "Project not found" });
-        projectContextPreamble = [
-          `Project: ${row.name}`,
-          row.description ? `Description: ${row.description}` : null,
-          row.current_focus ? `Current focus: ${row.current_focus}` : null,
-        ].filter(Boolean).join("\n");
-      }
       const agent = await services.agents.getAgentForChat(
-        identity.spaceId,
+        creation.spaceId,
         identity.userId,
         agentId,
       );
@@ -652,12 +625,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const accepted = await services.inTransaction(async (transaction) => {
         const session = req.session_id
           ? await transaction.sessions.getSession(
-              identity.spaceId,
+              creation.spaceId,
               identity.userId,
               req.session_id,
             )
           : await transaction.sessions.createSession(
-              identity.spaceId,
+              creation.spaceId,
               identity.userId,
               {
                 title: `${agent.name || "Assistant"} chat`,
@@ -674,20 +647,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           );
         }
         const backend = await transaction.backends.resolveBinding({
-          space_id: identity.spaceId,
+          space_id: creation.spaceId,
           user_id: identity.userId,
           session_id: session.id,
           agent_id: agent.id,
           requested: req.backend ?? null,
         });
         await transaction.runtimeSessions.claimTurn({
-          space_id: identity.spaceId,
+          space_id: creation.spaceId,
           session_id: session.id,
           user_id: identity.userId,
         });
 
         const userMessage = await transaction.sessions.addMessage(
-          identity.spaceId,
+          creation.spaceId,
           identity.userId,
           session.id,
           { role: "user", content: rawMessage },
@@ -699,20 +672,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         const prepared = await prepareChatRun(transaction, {
           agentId: agent.id,
           agentVersionId: agent.current_version_id!,
-          spaceId: identity.spaceId,
+          spaceId: creation.spaceId,
           userId: identity.userId,
           sessionId: session.id,
           message: rawMessage,
           currentMessage: userMessage,
           projectId: req.project_id,
-          projectContextPreamble,
+          visibility: creation.visibility,
           projectActionCapabilities: projectChatCapabilities(
             agent.tool_permissions_json,
           ),
           backend,
         });
         const linked = await transaction.sessions.attachRunToUserMessage({
-          space_id: identity.spaceId,
+          space_id: creation.spaceId,
           user_id: identity.userId,
           session_id: session.id,
           message_id: userMessage.id,
@@ -728,7 +701,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         try {
           await transaction.jobs.enqueue({
             run_id: prepared.run_id,
-            space_id: identity.spaceId,
+            space_id: creation.spaceId,
             user_id: identity.userId,
             agent_id: agent.id,
           });
@@ -769,7 +742,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       );
     } catch (error) {
       if (error instanceof ChatContextError) {
-        return reply.code(error.statusCode).send(error.body);
+        return reply.code(error.statusCode).send({ detail: error.body });
       }
       if (error instanceof ConversationBackendError) {
         return reply.code(error.statusCode).send({ detail: error.message });
@@ -782,46 +755,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       }
       return sendDomainError(reply, error);
     }
-  });
-}
-
-async function validateContextArtifactAttachments(
-  context: ModuleContext,
-  identity: { spaceId: string; userId: string },
-  artifactIds: readonly string[],
-  projectFolderId?: string | null,
-  projectId?: string | null,
-): Promise<void> {
-  if (artifactIds.length === 0) return;
-  const selections = await PgRunContextRepository
-    .fromConfig(context.config)
-    .selectArtifactAttachments({
-      spaceId: identity.spaceId,
-      userId: identity.userId,
-      projectFolderId: projectFolderId ?? null,
-      projectId: projectId ?? null,
-      artifactIds,
-    });
-  const blocked = selections.find((selection) => (recordValue(selection.item) ?? {}).approved === false);
-  if (!blocked) return;
-  const reason = stringValue((recordValue(blocked.item) ?? {}).rejection_reason) ?? "artifact is not attachable";
-  throw new RunCreateValidationError(`context_artifact_ids invalid: ${reason}`, 422);
-}
-
-function optionalStringArrayBody(
-  body: Record<string, unknown>,
-  key: string,
-): string[] | null | undefined {
-  const value = optionalArrayBody(body, key);
-  if (value === undefined || value === null) return value;
-  if (value.length > 8) {
-    throw new RunCreateValidationError(`${key} must contain at most 8 items`, 422);
-  }
-  return value.map((item) => {
-    if (typeof item !== "string" || !item.trim()) {
-      throw new RunCreateValidationError(`${key} must contain non-empty strings`, 422);
-    }
-    return item.trim();
   });
 }
 
@@ -840,9 +773,9 @@ function rejectRuntimeProfileCredential(body: Record<string, unknown>): void {
 /**
  * Resolve the queued run for a chat turn.
  *
- * The server owns chat context build natively: collect per-source
- * candidates (native server DB reads) → budget/dedup loop → compose prompt →
- * server run creation + snapshot persistence.
+ * Chat turn creation persists only canonical user input and routing metadata.
+ * Runtime Context acquisition, planning, rendering, and snapshot persistence
+ * happen exactly once later in Run orchestration through the Gateway.
  */
 async function prepareChatRun(
   services: AgentChatUnitOfWork,
@@ -855,85 +788,15 @@ async function prepareChatRun(
     message: string;
     currentMessage: MessageOut;
     projectId?: string | null;
-    projectContextPreamble?: string | null;
+    visibility: "private" | "space_shared" | "selected_users";
     projectActionCapabilities?: string[];
     backend: ResolvedConversationBackend;
   },
 ): Promise<PreparedChatRun> {
-  const [candidates, recentMessages, sessionSummary] = await Promise.all([
-    services.context.fetchCandidates({
-      agent_id: input.agentId,
-      space_id: input.spaceId,
-      user_id: input.userId,
-      session_id: input.sessionId,
-      message: input.message,
-      project_id: input.projectId,
-    }),
-    services.sessions.listRecentMessagesForContext(
-      input.spaceId,
-      input.userId,
-      input.sessionId,
-      80,
-    ),
-    services.sessions.getLatestSummaryForContext(input.spaceId, input.sessionId),
-  ]);
-  if (!recentMessages) {
-    throw new ChatContextError("session not found in this space", 404);
-  }
-  const conversationWindow = buildChatConversationWindow({
-    messages: recentMessages,
-    currentMessage: input.currentMessage,
-    summary: sessionSummary,
-  });
-  const bundle = buildChatContext(candidates);
-  const retrievedPreamble = renderContextPreamble(bundle.items);
-  const contextPreamble = [
-    input.projectContextPreamble,
-    retrievedPreamble,
-  ].filter(Boolean).join("\n\n");
-  const projectTokenEstimate = Math.ceil(
-    (input.projectContextPreamble?.length ?? 0) / 4,
-  );
-  const replayPrompt = composeChatPrompt(
-    renderConversationWindow(conversationWindow),
-    contextPreamble,
-  );
   const lightweightCliConversation =
     isLocalCliRuntimeAdapter(input.backend.adapter_type) &&
     !input.projectId &&
     (input.projectActionCapabilities?.length ?? 0) === 0;
-  const runtimeContextFingerprint = createHash("sha256")
-    .update(canonicalJson({
-      agent_version_id: input.agentVersionId,
-      runtime_profile_id: input.backend.runtime_profile_id,
-      adapter_type: input.backend.adapter_type,
-      credential_profile_id: input.backend.credential_profile_id,
-      model_name: input.backend.model_name,
-      model_provider_id: input.backend.model_provider_id,
-      runtime_config_json: input.backend.runtime_config_json,
-      runtime_policy_json: input.backend.runtime_policy_json,
-      summary_id: sessionSummary?.id ?? null,
-      execution_mode: lightweightCliConversation
-        ? "conversation_lightweight.v1"
-        : null,
-    }))
-    .digest("hex");
-  const runtimeSession = lightweightCliConversation
-    ? await services.runtimeSessions.prepare({
-        binding_id: input.backend.binding_id,
-        space_id: input.spaceId,
-        session_id: input.sessionId,
-        user_id: input.userId,
-        agent_id: input.agentId,
-        runtime_state_key: input.backend.runtime_state_key,
-        context_fingerprint: runtimeContextFingerprint,
-      })
-    : null;
-  const resumeRuntimeSession = Boolean(runtimeSession?.runtime_session_id);
-  const composedPrompt = resumeRuntimeSession
-    ? composeChatPrompt(input.message, contextPreamble)
-    : replayPrompt;
-
   const created = await services.runs.createQueuedRun({
     agent_id: input.agentId,
     space_id: input.spaceId,
@@ -945,31 +808,16 @@ async function prepareChatRun(
     runtime_profile_selection_source: "explicit",
     session_id: input.sessionId,
     project_id: input.projectId ?? null,
+    visibility: input.visibility,
     capabilities_json: input.projectId
       ? input.projectActionCapabilities
       : undefined,
-    prompt: composedPrompt,
+    prompt: input.message,
     model_override_json: {
-      messages: conversationWindowToMessages(conversationWindow),
-      chat_context_preamble: contextPreamble || null,
-      conversation_window_version: conversationWindow.version,
       conversation_backend: {
         schema_version: "conversation_backend.v1",
         ...publicConversationBackend(input.backend),
       },
-      ...(runtimeSession
-        ? {
-            conversation_runtime: {
-              schema_version: "conversation_runtime.v1",
-              binding_id: runtimeSession.binding_id,
-              runtime_state_key: runtimeSession.runtime_state_key,
-              runtime_session_id: runtimeSession.runtime_session_id,
-              context_fingerprint: runtimeContextFingerprint,
-              replay_prompt: replayPrompt,
-              message_cursor_id: input.currentMessage.id,
-            },
-          }
-        : {}),
       ...(lightweightCliConversation
         ? { execution_mode: "conversation_lightweight.v1" }
         : {}),
@@ -985,62 +833,11 @@ async function prepareChatRun(
     },
   });
 
-  if (created.context_snapshot_id) {
-    await services.snapshots.persistChatSnapshot({
-      contextSnapshotId: created.context_snapshot_id,
-      spaceId: input.spaceId,
-      runId: created.id,
-      userId: input.userId,
-      agentId: created.agent_id ?? input.agentId,
-      tokenEstimate:
-        bundle.token_count +
-        conversationWindow.token_count +
-        projectTokenEstimate,
-      // Persist request defaults rather than policy-resolved values.
-      requestJson: {
-        space_id: input.spaceId,
-        user_id: input.userId,
-        agent_version_id: input.agentVersionId ?? null,
-        session_id: input.sessionId,
-        project_folder_id: null,
-        project_id: input.projectId ?? null,
-        run_id: created.id,
-        user_message_id: input.currentMessage.id,
-        user_message: input.message,
-        manual_context: [],
-        max_tokens: 4000,
-        max_items: 20,
-        conversation_window: conversationWindow.trace,
-      },
-      retrievalTraceJson: {
-        project_context: input.projectId
-          ? {
-              project_id: input.projectId,
-              included: Boolean(input.projectContextPreamble),
-            }
-          : null,
-        chat_context: bundle.retrieval_trace,
-        conversation_window: conversationWindow.trace,
-      },
-      tokenBudgetJson: {
-        chat_context: {
-          token_count: bundle.token_count + projectTokenEstimate,
-          max_tokens: candidates.max_tokens,
-          max_items: candidates.max_items,
-          truncated: bundle.truncated,
-        },
-        conversation_window: conversationWindow.trace,
-      },
-      items: bundle.items,
-    });
-  }
-
   return {
     run_id: created.id,
     retired_runtime_state_keys: Array.from(
       new Set([
         input.backend.retired_runtime_state_key,
-        runtimeSession?.retired_runtime_state_key,
       ].filter((stateKey): stateKey is string => Boolean(stateKey))),
     ),
   };
@@ -1068,10 +865,6 @@ function agentChatUnitOfWork(
     backends: new PgConversationBackendRepository(db, cliCredentials),
     runtimeSessions: new PgConversationRuntimeSessionRepository(db),
     runs: new PgRunRepository(db),
-    context: new ChatContextCandidateCollector(
-      new PgChatCandidateRepository(db),
-    ),
-    snapshots: new PgContextSnapshotRepository(db),
     jobs: {
       enqueue: async (input) => {
         await jobs.enqueue({
@@ -1101,18 +894,6 @@ function publicConversationBackend(
     adapter_type: backend.adapter_type,
     credential_profile_id: backend.credential_profile_id ?? null,
   };
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
 }
 
 async function resolveIdentity(

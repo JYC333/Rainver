@@ -1,3 +1,4 @@
+import { objectStatusScalarSql } from "../../db/objectStatusSql";
 import { contentReadSql } from "../access/contentAccessSql";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 
@@ -17,7 +18,7 @@ export interface GraphEdgeRow {
   id: string;
   from_object_id: string;
   to_object_id: string;
-  relation_type: string;
+  link_type: string;
   confidence: number | null;
   evidence_summary: string | null;
   updated_at: Date | string;
@@ -31,7 +32,7 @@ export interface KindCountRow {
 export interface ClusterEdgeSummaryRow {
   source_kind: string;
   target_kind: string;
-  relation_type: string;
+  link_type: string;
   weight: number;
 }
 
@@ -58,7 +59,7 @@ export class GraphProjectionRepository {
     const params: unknown[] = [identity.spaceId, identity.userId, objectId];
     const projectCorpusClause = pushProjectCorpusClause(params, "so", options.projectId);
     const rows = await this.db.query<GraphObjectRow>(
-      `SELECT so.id, so.object_type, so.title, so.summary, so.status, so.updated_at,
+      `SELECT so.id, so.object_type, so.title, so.summary, ${objectStatusScalarSql("so")} AS status, so.updated_at,
               0::int AS degree
          FROM space_objects so
         WHERE so.space_id = $1
@@ -119,11 +120,11 @@ export class GraphProjectionRepository {
   ): Promise<GraphObjectRow[]> {
     const params: unknown[] = [identity.spaceId, identity.userId, options.limit];
     const nodeKindClause = pushArrayClause(params, "so.object_type", options.nodeKinds);
-    const edgeKindClause = pushArrayClause(params, "r.relation_type", options.edgeKinds);
+    const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const projectCorpusClause = pushProjectCorpusClause(params, "so", options.projectId);
     const rows = await this.db.query<GraphObjectRow>(
       `WITH visible_objects AS (
-         SELECT so.id, so.object_type, so.title, so.summary, so.status, so.updated_at
+         SELECT so.id, so.object_type, so.title, so.summary, ${objectStatusScalarSql("so")} AS status, so.updated_at
            FROM space_objects so
           WHERE so.space_id = $1
             AND ${activeObjectClause("so")}
@@ -168,7 +169,7 @@ export class GraphProjectionRepository {
     const nodeKindClause = pushArrayClause(params, "so.object_type", options.nodeKinds);
     const projectCorpusClause = pushProjectCorpusClause(params, "so", options.projectId);
     const rows = await this.db.query<GraphObjectRow>(
-      `SELECT so.id, so.object_type, so.title, so.summary, so.status, so.updated_at,
+      `SELECT so.id, so.object_type, so.title, so.summary, ${objectStatusScalarSql("so")} AS status, so.updated_at,
               0::int AS degree
          FROM space_objects so
         WHERE so.space_id = $1
@@ -190,18 +191,18 @@ export class GraphProjectionRepository {
     const params: unknown[] = [identity.spaceId, identity.userId];
     const nodeKindClause = pushArrayClause(params, "from_so.object_type", options.nodeKinds);
     const targetNodeKindClause = pushArrayClause(params, "to_so.object_type", options.nodeKinds);
-    const edgeKindClause = pushArrayClause(params, "r.relation_type", options.edgeKinds);
+    const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const fromProjectCorpusClause = pushProjectCorpusClause(params, "from_so", options.projectId);
     const toProjectCorpusClause = pushProjectCorpusClause(params, "to_so", options.projectId);
     const rows = await this.db.query<{
       source_kind: string;
       target_kind: string;
-      relation_type: string;
+      link_type: string;
       weight: string;
     }>(
       `SELECT from_so.object_type AS source_kind,
               to_so.object_type AS target_kind,
-              r.relation_type,
+              r.link_type,
               count(*)::text AS weight
          FROM object_relations r
          JOIN space_objects from_so
@@ -222,7 +223,7 @@ export class GraphProjectionRepository {
           ${edgeKindClause}
           ${fromProjectCorpusClause}
           ${toProjectCorpusClause}
-        GROUP BY from_so.object_type, to_so.object_type, r.relation_type
+        GROUP BY from_so.object_type, to_so.object_type, r.link_type
         ORDER BY count(*) DESC, from_so.object_type ASC, to_so.object_type ASC
         LIMIT 500`,
       params,
@@ -230,7 +231,7 @@ export class GraphProjectionRepository {
     return rows.rows.map((row) => ({
       source_kind: row.source_kind,
       target_kind: row.target_kind,
-      relation_type: row.relation_type,
+      link_type: row.link_type,
       weight: numberFromPg(row.weight),
     }));
   }
@@ -242,9 +243,9 @@ export class GraphProjectionRepository {
   ): Promise<GraphEdgeRow[]> {
     if (nodeIds.length === 0) return [];
     const params: unknown[] = [identity.spaceId, identity.userId, nodeIds, options.limit];
-    const edgeKindClause = pushArrayClause(params, "r.relation_type", options.edgeKinds);
+    const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const rows = await this.db.query<GraphEdgeRow>(
-      `SELECT r.id, r.from_object_id, r.to_object_id, r.relation_type,
+      `SELECT r.id, r.from_object_id, r.to_object_id, r.link_type,
               r.confidence, r.evidence_summary, r.updated_at
          FROM object_relations r
          JOIN space_objects from_so
@@ -283,12 +284,12 @@ export class GraphProjectionRepository {
       options.limit,
       perHopLimit,
     ];
-    const edgeKindClause = pushArrayClause(params, "r.relation_type", options.edgeKinds);
+    const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const nodeKindClause = pushArrayClause(params, "so.object_type", options.nodeKinds);
     const projectCorpusClause = pushProjectCorpusClause(params, "so", options.projectId);
     const rows = await this.db.query<GraphObjectRow & { total_count: string; cap_hit: boolean }>(
       `WITH visible_objects AS (
-         SELECT so.id, so.object_type, so.title, so.summary, so.status, so.updated_at
+         SELECT so.id, so.object_type, so.title, so.summary, ${objectStatusScalarSql("so")} AS status, so.updated_at
            FROM space_objects so
           WHERE so.space_id = $1
             AND ${activeObjectClause("so")}
@@ -395,10 +396,10 @@ export class GraphProjectionRepository {
   ): Promise<PagedRows<GraphObjectRow>> {
     const params: unknown[] = [identity.spaceId, identity.userId, kind, options.limit];
     const projectCorpusClause = pushProjectCorpusClause(params, "so", options.projectId);
-    const edgeKindClause = pushArrayClause(params, "r.relation_type", options.edgeKinds);
+    const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const rows = await this.db.query<GraphObjectRow & { total_count: string }>(
       `WITH visible_objects AS (
-         SELECT so.id, so.object_type, so.title, so.summary, so.status, so.updated_at
+         SELECT so.id, so.object_type, so.title, so.summary, ${objectStatusScalarSql("so")} AS status, so.updated_at
            FROM space_objects so
           WHERE so.space_id = $1
             AND so.object_type = $3
@@ -453,12 +454,12 @@ export class GraphProjectionRepository {
       matchLimit,
       neighborLimit,
     ];
-    const edgeKindClause = pushArrayClause(params, "r.relation_type", options.edgeKinds);
+    const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const nodeKindClause = pushArrayClause(params, "so.object_type", options.nodeKinds);
     const projectCorpusClause = pushProjectCorpusClause(params, "so", options.projectId);
     const rows = await this.db.query<GraphObjectRow & { total_count: string; cap_hit: boolean }>(
       `WITH visible_objects AS (
-         SELECT so.id, so.object_type, so.title, so.summary, so.status, so.updated_at
+         SELECT so.id, so.object_type, so.title, so.summary, ${objectStatusScalarSql("so")} AS status, so.updated_at
            FROM space_objects so
           WHERE so.space_id = $1
             AND ${activeObjectClause("so")}
@@ -563,18 +564,26 @@ function pushProjectCorpusClause(
   const normalized = projectId?.trim();
   if (!normalized) return "";
   params.push(normalized);
-  return ` AND EXISTS (
+  // An object belongs to a Project either by being in its corpus or by
+  // declaring it as its own Project. Only the first was checked, which was
+  // invisible while every Project-scoped object was corpus material — Inquiry
+  // Threads are the first that are not.
+  return ` AND (${objectAlias}.primary_project_id = $${params.length} OR EXISTS (
     SELECT 1
       FROM project_corpus_items pci
      WHERE pci.space_id = ${objectAlias}.space_id
        AND pci.project_id = $${params.length}
        AND pci.object_id = ${objectAlias}.id
        AND pci.status = 'active'
-  )`;
+  ))`;
 }
 
 function activeObjectClause(alias: string): string {
-  return `${alias}.deleted_at IS NULL AND ${alias}.status NOT IN ('archived', 'deleted')`;
+  // Graph projection is polymorphic over every object type, so it reads status
+  // through the shared scalar helper rather than joining one extension table.
+  // Note this is deliberately not `archived_at IS NULL`: those are not
+  // equivalent (ADR 0012 / P1 notes).
+  return `${alias}.deleted_at IS NULL AND ${objectStatusScalarSql(alias)} NOT IN ('archived', 'deleted')`;
 }
 
 function perHopCap(limit: number): number {

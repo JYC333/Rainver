@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectKernelService } from "../src/modules/projects/kernelService";
@@ -12,6 +12,8 @@ import { projectAttentionRegistry } from "../src/modules/projects/attentionRegis
 import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry";
 import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration";
 import { OperationalAlertService } from "../src/modules/notifications/operationalAlerts";
+import { WorkContextService } from "../src/modules/runtimeContext/workContextService";
+import { PgRuntimeContextAcquisitionRepository } from "../src/modules/runtimeContext/acquisitionRepository";
 
 // Real-Postgres coverage for the Project Kernel: Profile application at
 // creation, Brief versioning, Primary Mode transitions, Attention
@@ -34,6 +36,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[project-kernel-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -63,12 +66,9 @@ beforeEach(async () => {
   );
   registerBuiltInAttentionAdapters();
   projectModeProjectionRegistry.register({
-    mode: "inquiry",
+    mode: "research",
     async getOverviewProjection() {
-      return { mode: "inquiry", current_state_summary: "Inquiry ready.", progress_indicators: [], focus_set: [], next_actions: [] };
-    },
-    async getAreaSummary() {
-      return { count: 0, status: "ok" };
+      return { mode: "research", current_state_summary: "Research ready.", progress_indicators: [], focus_set: [], next_actions: [] };
     },
   });
 });
@@ -83,17 +83,17 @@ const outsiderIdentity = { spaceId: SPACE, userId: OUTSIDER };
 const viewerIdentity = { spaceId: SPACE, userId: VIEWER };
 
 describe("Project Kernel (real Postgres)", () => {
-  it("creates a Blank Template project with Inquiry as the default Primary Mode and records the initial Mode Transition", async () => {
+  it("creates a Project with Research as the default Primary Mode and an initial Mode Transition", async () => {
     if (!available || !pool) return;
     const repo = new PgProjectRepository(pool);
-    const project = await repo.create(ownerIdentity, { name: "Blank Project" });
-    expect(project.template_key).toBe("blank");
-    expect(project.primary_mode).toBe("inquiry");
+    const project = await repo.create(ownerIdentity, { name: "Fresh Project" });
+    // How the Project advances is the only thing creation presets.
+    expect(project.primary_mode).toBe("research");
     expect(project.active_brief_version_id).toBeTruthy();
 
     const transitions = await new ProjectKernelService(pool).listModeTransitions(ownerIdentity, project.id as string);
     expect(transitions).toHaveLength(1);
-    expect(transitions[0]).toMatchObject({ from_mode: null, to_mode: "inquiry", reason: "template_applied" });
+    expect(transitions[0]).toMatchObject({ from_mode: null, to_mode: "research", reason: "project_created" });
   });
 
   it("loads a newly created Project summary when it has no Project Folders", async () => {
@@ -107,39 +107,596 @@ describe("Project Kernel (real Postgres)", () => {
     });
   });
 
-  it("creates an Academic Research Template project successfully", async () => {
+  /** Creation binds no Sources. The Project Template that used to do so is
+   *  gone, and a Space's Sources are bound from the Project's Sources Area. */
+  it("binds no Project Source at creation", async () => {
     if (!available || !pool) return;
     const repo = new PgProjectRepository(pool);
-    const project = await repo.create(ownerIdentity, { name: "Lit Review", template_key: "academic_research" });
-    expect(project.template_key).toBe("academic_research");
-    expect(project.primary_mode).toBe("inquiry");
+    const project = await repo.create(ownerIdentity, { name: "Lit Review" });
+    const bindings = await pool.query(
+      `SELECT id FROM project_source_bindings WHERE space_id = $1 AND project_id = $2`,
+      [SPACE, project.id],
+    );
+    expect(bindings.rows).toHaveLength(0);
   });
 
-  it("rejects an unknown template_key with 422", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    await expect(repo.create(ownerIdentity, { name: "Bad", template_key: "not_a_template" })).rejects.toMatchObject({ statusCode: 422 });
-  });
-
-  it("versions the Project Brief and moves the active pointer on each write", async () => {
+  it("moves the active Brief pointer only after review and publish", async () => {
     if (!available || !pool) return;
     const repo = new PgProjectRepository(pool);
     const kernel = new ProjectKernelService(pool);
-    const project = await repo.create(ownerIdentity, { name: "Brief Project" });
+    const project = await repo.create(ownerIdentity, {
+      name: "Brief Project",
+      current_focus: "Ship the context cutover",
+    });
 
     const initial = await kernel.getActiveBriefVersion(ownerIdentity, project.id as string);
-    expect(initial).toMatchObject({ version: "v1", goal: null });
+    expect(initial).toMatchObject({
+      version: "v1",
+      goal: null,
+      project_status: "active",
+      current_focus: "Ship the context cutover",
+      confirmed_decisions: [],
+      primary_mode: "research",
+      workspace_identity: {},
+      workspace_boundary: {},
+      source_refs: [],
+      created_by_user_id: OWNER,
+    });
+    await expect(kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: 123 }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    await expect(kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Valid", embedded_context: "not allowed" }))
+      .rejects.toMatchObject({ statusCode: 422 });
 
-    const v2 = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Understand X" });
+    const v2 = await kernel.createBriefVersion(ownerIdentity, project.id as string, {
+      goal: "Understand X",
+      confirmed_decisions: ["Use one runtime gateway"],
+      workspace_identity: { project_folder_id: "folder-1" },
+      workspace_boundary: { mode: "read_write_worktree" },
+      source_refs: [{ type: "decision", id: "adr-14" }],
+    });
     expect(v2.version).toBe("v2");
+    expect(v2).toMatchObject({
+      project_status: "active",
+      current_focus: "Ship the context cutover",
+      confirmed_decisions: ["Use one runtime gateway"],
+      primary_mode: "research",
+      workspace_identity: { project_folder_id: "folder-1" },
+      workspace_boundary: { mode: "read_write_worktree" },
+      source_refs: [{ type: "decision", id: "adr-14" }],
+    });
+    expect(await kernel.getActiveBriefVersion(ownerIdentity, project.id as string)).toMatchObject({ id: initial!.id, version: "v1" });
+    const submittedV2 = await kernel.submitBriefForReview(ownerIdentity, project.id as string, v2.id as string);
+    expect(submittedV2).toMatchObject({ status: "in_review", reviewed_by_user_id: null, reviewed_at: null });
+    const publishedV2 = await kernel.publishBrief(ownerIdentity, project.id as string, v2.id as string);
+    expect(publishedV2).toMatchObject({ status: "published", reviewed_by_user_id: OWNER, published_by_user_id: OWNER });
     expect(await kernel.getActiveBriefVersion(ownerIdentity, project.id as string)).toMatchObject({ id: v2.id, version: "v2" });
 
     const v3 = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Understand X and Y" });
     expect(v3.version).toBe("v3");
+    await kernel.submitBriefForReview(ownerIdentity, project.id as string, v3.id as string);
+    await kernel.publishBrief(ownerIdentity, project.id as string, v3.id as string);
     expect(await kernel.getActiveBriefVersion(ownerIdentity, project.id as string)).toMatchObject({ id: v3.id, version: "v3" });
 
+    const stale = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Stale candidate" });
+    const newest = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Newest candidate" });
+    await kernel.submitBriefForReview(ownerIdentity, project.id as string, stale.id as string);
+    await kernel.submitBriefForReview(ownerIdentity, project.id as string, newest.id as string);
+    await kernel.publishBrief(ownerIdentity, project.id as string, newest.id as string);
+    await expect(kernel.publishBrief(ownerIdentity, project.id as string, stale.id as string))
+      .rejects.toMatchObject({ statusCode: 409 });
+    expect(await kernel.getActiveBriefVersion(ownerIdentity, project.id as string)).toMatchObject({ id: newest.id, version: "v5" });
+
     const history = await kernel.listBriefVersions(ownerIdentity, project.id as string);
-    expect(history.map((v) => v.version)).toEqual(["v3", "v2", "v1"]);
+    expect(history.map((v) => v.version)).toEqual(["v5", "v4", "v3", "v2", "v1"]);
+  });
+
+  it("binds Work Context Setup to published Project context only", async () => {
+    if (!available || !pool) return;
+    const repo = new PgProjectRepository(pool);
+    const kernel = new ProjectKernelService(pool);
+    const work = new WorkContextService(pool);
+    const project = await repo.create(ownerIdentity, { name: "Runtime Context Project" });
+    const privateAgentId = randomUUID();
+    await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Private Agent','active',$4,$4,'private','full')`, [privateAgentId, SPACE, OWNER, new Date().toISOString()]);
+    await expect(work.create(viewerIdentity, {
+      base_version: null, reason: "test setup",
+      work_context_scope_id: randomUUID(), scope_kind: "direct_session", project_id: null,
+      project_folder_id: null, agent_id: privateAgentId, runtime_ref: null, pinned_refs: [],
+      excluded_refs: [], retrieval_preferences: {}, continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 404 });
+    const instruction = await kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "Delivery rules", instruction_text: "Use the approved release checklist." });
+    expect(await kernel.getActiveInstructionVersion(ownerIdentity, project.id as string)).toBeNull();
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, instruction.id as string, false);
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, instruction.id as string, true);
+
+    const policyId = randomUUID();
+    await pool.query(`INSERT INTO runtime_context_policy_versions (id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,reason,created_by_user_id,created_at) VALUES ($1,$2,'space',$2,1,'{"constraints":{},"preferences":{}}','{}','test',$3,$4)`, [policyId, SPACE, OWNER, new Date().toISOString()]);
+    await pool.query(`INSERT INTO runtime_context_policy_bindings (space_id,scope_type,scope_id,active_version_id,updated_by_user_id,updated_at) VALUES ($1,'space',$1,$2,$3,$4)`, [SPACE, policyId, OWNER, new Date().toISOString()]);
+    const unboundDirectSession = randomUUID();
+    await pool.query(
+      `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'active',$4,$4)`,
+      [unboundDirectSession, SPACE, OWNER, new Date().toISOString()],
+    );
+    const bootstrappedDirect = await work.ensureForInvocation(
+      ownerIdentity,
+      unboundDirectSession,
+      { agentId: privateAgentId, runtimeProfileId: null },
+    );
+    expect(bootstrappedDirect).toMatchObject({
+      version: 1,
+      scope_kind: "direct_session",
+      work_context_scope_id: unboundDirectSession,
+      agent_id: privateAgentId,
+      runtime_ref: null,
+    });
+    await expect(work.ensureForInvocation(
+      ownerIdentity,
+      unboundDirectSession,
+      { agentId: privateAgentId, runtimeProfileId: null },
+    )).resolves.toMatchObject({ id: bootstrappedDirect.id, version: 1 });
+    const initiallyInstructionlessProject = await repo.create(ownerIdentity, { name: "Initially Instructionless" });
+    const initiallyInstructionlessSession = randomUUID();
+    await pool.query(
+      `INSERT INTO sessions (id,space_id,user_id,project_id,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'active',$5,$5)`,
+      [initiallyInstructionlessSession, SPACE, OWNER, initiallyInstructionlessProject.id, new Date().toISOString()],
+    );
+    const instructionlessSetup = await work.create(ownerIdentity, {
+      base_version: null,
+      reason: "test setup",
+      work_context_scope_id: initiallyInstructionlessSession,
+      scope_kind: "direct_session",
+      project_id: initiallyInstructionlessProject.id,
+      project_folder_id: null,
+      agent_id: null,
+      runtime_ref: null,
+      pinned_refs: [],
+      excluded_refs: [],
+      retrieval_preferences: {},
+      continuity_preferences: {},
+    });
+    expect(instructionlessSetup).toMatchObject({
+      project_instruction_version_id: null,
+      project_instruction_enabled: true,
+    });
+    const firstInstruction = await kernel.createInstructionVersion(
+      ownerIdentity,
+      initiallyInstructionlessProject.id as string,
+      { title: "First authority", instruction_text: "Apply this authority." },
+    );
+    await kernel.transitionInstruction(ownerIdentity, initiallyInstructionlessProject.id as string, firstInstruction.id as string, false);
+    await kernel.transitionInstruction(ownerIdentity, initiallyInstructionlessProject.id as string, firstInstruction.id as string, true);
+    await expect(new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE,
+      initiallyInstructionlessProject.id as string,
+      initiallyInstructionlessSession,
+      OWNER,
+      { type: "work_context_setup", id: instructionlessSetup.id as string, version: String(instructionlessSetup.version) },
+      { brief: null, instruction: null },
+    )).rejects.toMatchObject({ statusCode: 409 });
+    const boundFolderId = randomUUID();
+    const otherFolderId = randomUUID();
+    await pool.query(
+      `INSERT INTO project_folders
+         (id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
+          execution_enabled,protected,system_managed,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'Bound Folder','active','code',false,true,false,false,$6,$6),
+              ($5,$2,$3,$4,'Other Folder','active','code',false,true,false,false,$6,$6)`,
+      [boundFolderId, SPACE, project.id, OWNER, otherFolderId, new Date().toISOString()],
+    );
+    const otherPrivateAgentId = randomUUID();
+    await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Other Private Agent','active',$4,$4,'private','full')`, [otherPrivateAgentId, SPACE, OWNER, new Date().toISOString()]);
+    const sessionId = randomUUID();
+    await pool.query(
+      `INSERT INTO sessions
+         (id,space_id,user_id,project_id,project_folder_id,agent_id,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$7)`,
+      [sessionId, SPACE, OWNER, project.id, boundFolderId, privateAgentId, new Date().toISOString()],
+    );
+    await expect(work.create(viewerIdentity, {
+      base_version: null, reason: "test setup",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: null,
+      project_folder_id: null, agent_id: null, runtime_ref: null, pinned_refs: [], excluded_refs: [],
+      retrieval_preferences: {}, continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 404 });
+    await expect(work.create(ownerIdentity, {
+      base_version: null, reason: "test setup",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: otherFolderId, agent_id: privateAgentId, runtime_ref: null,
+      pinned_refs: [], excluded_refs: [], retrieval_preferences: {}, continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(work.create(ownerIdentity, {
+      base_version: null, reason: "test setup",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: boundFolderId, agent_id: otherPrivateAgentId, runtime_ref: null,
+      pinned_refs: [], excluded_refs: [], retrieval_preferences: {}, continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 422 });
+    const initialBrief = await kernel.getActiveBriefVersion(ownerIdentity, project.id as string);
+    const setup = await work.create(ownerIdentity, {
+      base_version: null, reason: "test setup",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: null, agent_id: privateAgentId, runtime_ref: null,
+      pinned_refs: [{ type: "project_brief_version", id: initialBrief!.id as string }], excluded_refs: [],
+      retrieval_preferences: {}, continuity_preferences: {},
+    });
+    expect(setup).toMatchObject({
+      version: 1,
+      base_version: null,
+      reason: "test setup",
+      project_id: project.id,
+      project_folder_id: boundFolderId,
+      agent_id: privateAgentId,
+      project_instruction_version_id: instruction.id,
+    });
+    expect(setup.project_brief_version_id).toBeTruthy();
+    expect(setup.typed_diff).toMatchObject({ project_id: { before: null, after: project.id } });
+    await expect(work.create(ownerIdentity, {
+      base_version: null,
+      reason: "stale editor",
+      work_context_scope_id: sessionId,
+      scope_kind: "direct_session",
+      project_id: project.id,
+      project_folder_id: null,
+      agent_id: privateAgentId,
+      runtime_ref: null,
+      pinned_refs: [],
+      excluded_refs: [],
+      retrieval_preferences: {},
+      continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 409 });
+    const foreignInstructionProject = await repo.create(ownerIdentity, { name: "Foreign Instruction Project" });
+    const foreignInstruction = await kernel.createInstructionVersion(ownerIdentity, foreignInstructionProject.id as string, {
+      title: "Foreign authority",
+      instruction_text: "This must not govern another Project.",
+    });
+    await kernel.transitionInstruction(ownerIdentity, foreignInstructionProject.id as string, foreignInstruction.id as string, false);
+    await kernel.transitionInstruction(ownerIdentity, foreignInstructionProject.id as string, foreignInstruction.id as string, true);
+    await expect(work.create(ownerIdentity, {
+      base_version: 1, reason: "test setup",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: boundFolderId, agent_id: privateAgentId, runtime_ref: null,
+      pinned_refs: [{ type: "project_instruction_version", id: foreignInstruction.id as string }],
+      excluded_refs: [], retrieval_preferences: {}, continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 422 });
+    const replacementBrief = await kernel.createBriefVersion(ownerIdentity, project.id as string, {
+      goal: "Replacement goal",
+      confirmed_decisions: ["Use the canonical Context Engine"],
+      workspace_identity: { repository: "agent-space" },
+      workspace_boundary: { writable_roots: ["/workspace"] },
+      source_refs: [{ type: "decision", id: "decision-1" }],
+    });
+    await kernel.submitBriefForReview(ownerIdentity, project.id as string, replacementBrief.id as string);
+    await kernel.publishBrief(ownerIdentity, project.id as string, replacementBrief.id as string);
+    const pinnedContext = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE,
+      null,
+      sessionId,
+      OWNER,
+      { type: "work_context_setup", id: setup.id as string, version: String(setup.version) },
+      { brief: null, instruction: null },
+    );
+    expect(pinnedContext.brief).toMatchObject({ id: setup.project_brief_version_id });
+    expect(pinnedContext.brief).not.toMatchObject({ id: replacementBrief.id });
+    expect(pinnedContext.pinnedReferences).toEqual([
+      expect.objectContaining({
+        type: "project_brief_version",
+        value: expect.objectContaining({
+          id: initialBrief!.id,
+          confirmed_decisions: [],
+          workspace_identity: {},
+          workspace_boundary: {},
+          source_refs: [],
+          published_by_user_id: OWNER,
+        }),
+      }),
+    ]);
+    expect(pinnedContext.pinnedReferences[0]?.value).not.toHaveProperty("confirmed_decisions_json");
+    const replacementInstruction = await kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "Replacement rules", instruction_text: "Use the new checklist." });
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, replacementInstruction.id as string, false);
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, replacementInstruction.id as string, true);
+    await expect(new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE, project.id as string, sessionId, OWNER,
+      { type: "work_context_setup", id: setup.id as string, version: String(setup.version) },
+      { brief: null, instruction: null },
+    ))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const refreshedSetup = await work.create(ownerIdentity, {
+      base_version: 1, reason: "refresh published instruction",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: null, agent_id: privateAgentId, runtime_ref: null, pinned_refs: [], excluded_refs: [],
+      retrieval_preferences: {}, continuity_preferences: {},
+    });
+    expect(refreshedSetup).toMatchObject({ version: 2, project_instruction_version_id: replacementInstruction.id });
+    const refreshedAuthority = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE, project.id as string, sessionId, OWNER,
+      { type: "work_context_setup", id: refreshedSetup.id as string, version: String(refreshedSetup.version) },
+      { brief: null, instruction: null },
+    );
+    expect(refreshedAuthority.instruction).toMatchObject({ id: replacementInstruction.id });
+    expect(refreshedAuthority.brief).toMatchObject({
+      id: replacementBrief.id,
+      space_id: SPACE,
+      project_id: project.id,
+      goal: "Replacement goal",
+      project_status: "active",
+      confirmed_decisions: ["Use the canonical Context Engine"],
+      primary_mode: replacementBrief.primary_mode,
+      workspace_identity: { repository: "agent-space" },
+      workspace_boundary: { writable_roots: ["/workspace"] },
+      source_refs: [{ type: "decision", id: "decision-1" }],
+      status: "published",
+      published_by_user_id: OWNER,
+      created_by_user_id: OWNER,
+    });
+    const exclusionSetup = await work.create(ownerIdentity, {
+      base_version: 2, reason: "exclude superseded brief",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: null, agent_id: privateAgentId, runtime_ref: null, pinned_refs: [],
+      excluded_refs: [{ type: "project_brief_version", id: replacementBrief.id as string }],
+      retrieval_preferences: {}, continuity_preferences: {},
+    });
+    await expect(work.create(ownerIdentity, {
+      base_version: 3, reason: "invalid instruction exclusion",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id as string,
+      project_folder_id: null, agent_id: privateAgentId, runtime_ref: null, pinned_refs: [],
+      excluded_refs: [{ type: "project_instruction_version", id: replacementInstruction.id as string }],
+      retrieval_preferences: {}, continuity_preferences: {},
+    })).rejects.toMatchObject({ statusCode: 422 });
+    const excludedBrief = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE, project.id as string, sessionId, OWNER,
+      { type: "work_context_setup", id: exclusionSetup.id as string, version: String(exclusionSetup.version) },
+      { brief: null, instruction: null },
+    );
+    expect(excludedBrief.brief).toBeNull();
+
+    await pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, project.id, VIEWER, new Date().toISOString()]);
+    const roomId = randomUUID();
+    const roomSessionId = randomUUID();
+    const roomAgentId = randomUUID();
+    const roomAgentMemberId = randomUUID();
+    const now = new Date().toISOString();
+    await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Room Agent','active',$4,$4,'space_shared','full')`, [roomAgentId, SPACE, OWNER, now]);
+    await pool.query(`INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'Context room','active',$5,$5)`, [roomId, SPACE, project.id, OWNER, now]);
+    await pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'manager','active',$5,$5)`, [roomAgentMemberId, SPACE, roomId, roomAgentId, now]);
+    await pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',$7,$7),($5,$2,$3,$6,'member','active',$7,$7)`, [randomUUID(), SPACE, roomId, OWNER, randomUUID(), VIEWER, now]);
+    await pool.query(`INSERT INTO sessions (id,space_id,project_id,room_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5)`, [roomSessionId, SPACE, project.id, roomId, now]);
+    const roomInput = {
+      base_version: null, reason: "test room setup",
+      work_context_scope_id: roomAgentMemberId, scope_kind: "room_recipient" as const, project_id: project.id as string,
+      project_folder_id: null, agent_id: roomAgentId, runtime_ref: null, pinned_refs: [], excluded_refs: [],
+      retrieval_preferences: {}, continuity_preferences: {},
+    };
+    await expect(work.ensureForInvocation(
+      ownerIdentity,
+      roomAgentMemberId,
+      { agentId: roomAgentId, runtimeProfileId: null },
+    )).resolves.toMatchObject({
+      version: 1,
+      user_id: OWNER,
+      scope_kind: "room_recipient",
+      project_id: project.id,
+      agent_id: roomAgentId,
+    });
+    const viewerRoomSetup = await work.create(viewerIdentity, roomInput);
+    expect(viewerRoomSetup).toMatchObject({ version: 1, user_id: VIEWER });
+    await expect(work.getActive(viewerIdentity, roomAgentMemberId)).resolves.toMatchObject({ user_id: VIEWER, agent_id: roomAgentId });
+    const otherProject = await repo.create(ownerIdentity, { name: "Other Runtime Context Project" });
+    await expect(work.create(ownerIdentity, { ...roomInput, project_id: otherProject.id as string }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    await pool.query(`UPDATE project_members SET status='revoked', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
+    await expect(work.getActive(viewerIdentity, roomAgentMemberId)).rejects.toMatchObject({ statusCode: 404 });
+    await pool.query(`UPDATE project_members SET status='active', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
+    await pool.query(`UPDATE room_user_members SET status='removed', updated_at=$4 WHERE room_id=$1 AND space_id=$2 AND user_id=$3`, [roomId, SPACE, VIEWER, new Date().toISOString()]);
+    await expect(work.getActive(viewerIdentity, roomAgentMemberId)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE, project.id as string, roomAgentMemberId, VIEWER,
+      { type: "work_context_setup", id: viewerRoomSetup.id as string, version: String(viewerRoomSetup.version) },
+      { brief: null, instruction: null },
+    )).rejects.toMatchObject({ statusCode: 404 });
+
+    const restrictivePolicyId = randomUUID();
+    await pool.query(
+      `INSERT INTO runtime_context_policy_versions
+         (id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,reason,created_by_user_id,created_at)
+       VALUES ($1,$2,'space',$2,2,$3::jsonb,'{}','restrict setup',$4,$5)`,
+      [restrictivePolicyId, SPACE, JSON.stringify({
+        constraints: {
+          explicit_reference_max: 0,
+          retrieval_max_candidates: 0,
+          continuity_modes: ["none"],
+          allow_project_brief: false,
+          allow_project_instructions: false,
+        },
+        preferences: { retrieval_enabled: false },
+      }), OWNER, new Date().toISOString()],
+    );
+    await pool.query(
+      `UPDATE runtime_context_policy_bindings
+          SET active_version_id=$1, updated_by_user_id=$2, updated_at=$3
+        WHERE space_id=$4 AND scope_type='space' AND scope_id=$4`,
+      [restrictivePolicyId, OWNER, new Date().toISOString(), SPACE],
+    );
+    const restrictedBase = {
+      base_version: 3, reason: "apply restrictive policy",
+      work_context_scope_id: sessionId, scope_kind: "direct_session" as const,
+      project_id: project.id as string, project_folder_id: null, agent_id: privateAgentId,
+      runtime_ref: null, pinned_refs: [], excluded_refs: [], retrieval_preferences: {},
+      continuity_preferences: {},
+    };
+    const policyOmitted = await work.create(ownerIdentity, restrictedBase);
+    expect(policyOmitted).toMatchObject({
+      project_brief_version_id: null,
+      project_instruction_version_id: null,
+      project_instruction_enabled: false,
+    });
+    const policyOmittedContext = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+      SPACE, project.id as string, sessionId, OWNER,
+      { type: "work_context_setup", id: policyOmitted.id as string, version: String(policyOmitted.version) },
+      { brief: null, instruction: null },
+    );
+    expect(policyOmittedContext).toMatchObject({ brief: null, instruction: null });
+    await expect(work.create(ownerIdentity, {
+      ...restrictedBase,
+      base_version: 4,
+      pinned_refs: [{ type: "project_brief_version", id: initialBrief!.id as string }],
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(work.create(ownerIdentity, {
+      ...restrictedBase,
+      base_version: 4,
+      retrieval_preferences: { enabled: true },
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(work.create(ownerIdentity, {
+      ...restrictedBase,
+      base_version: 4,
+      continuity_preferences: { strategy: "stateful_cli", continue_vendor_session: true },
+    })).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("does not publish Project instructions after co-owner authority is revoked concurrently", async () => {
+    if (!available || !pool) return;
+    const repo = new PgProjectRepository(pool);
+    const kernel = new ProjectKernelService(pool);
+    const project = await repo.create(ownerIdentity, { name: "Authority Race Project" });
+    await pool.query(
+      `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'owner','active',now(),now())`,
+      [randomUUID(), SPACE, project.id, VIEWER],
+    );
+    const instruction = await kernel.createInstructionVersion(viewerIdentity, project.id as string, {
+      title: "Delegated authority",
+      instruction_text: "Only publish while authorized.",
+    });
+    await kernel.transitionInstruction(viewerIdentity, project.id as string, instruction.id as string, false);
+
+    const revocation = await pool.connect();
+    try {
+      await revocation.query("BEGIN");
+      await revocation.query(
+        `SELECT 1 FROM project_members
+          WHERE space_id=$1 AND project_id=$2 AND user_id=$3 FOR UPDATE`,
+        [SPACE, project.id, VIEWER],
+      );
+      let settled = false;
+      const publishing = kernel.transitionInstruction(
+        viewerIdentity,
+        project.id as string,
+        instruction.id as string,
+        true,
+      ).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+      await revocation.query(
+        `DELETE FROM project_members WHERE space_id=$1 AND project_id=$2 AND user_id=$3`,
+        [SPACE, project.id, VIEWER],
+      );
+      await revocation.query("COMMIT");
+      await expect(publishing).rejects.toMatchObject({ statusCode: 403 });
+      await expect(kernel.getActiveInstructionVersion(ownerIdentity, project.id as string)).resolves.toBeNull();
+    } finally {
+      await revocation.query("ROLLBACK").catch(() => undefined);
+      revocation.release();
+    }
+  });
+
+  it("does not create or submit Project Brief drafts after writer authority is revoked concurrently", async () => {
+    if (!available || !pool) return;
+    const repo = new PgProjectRepository(pool);
+    const kernel = new ProjectKernelService(pool);
+    const project = await repo.create(ownerIdentity, { name: "Brief Writer Race Project" });
+    const memberId = randomUUID();
+    await pool.query(
+      `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [memberId, SPACE, project.id, VIEWER],
+    );
+
+    const revocation = await pool.connect();
+    try {
+      await revocation.query("BEGIN");
+      await revocation.query(
+        `SELECT 1 FROM project_members
+          WHERE space_id=$1 AND project_id=$2 AND user_id=$3 FOR UPDATE`,
+        [SPACE, project.id, VIEWER],
+      );
+      let createSettled = false;
+      const creating = kernel.createBriefVersion(
+        viewerIdentity,
+        project.id as string,
+        { goal: "Must not be created" },
+      ).finally(() => { createSettled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(createSettled).toBe(false);
+      await revocation.query(
+        `DELETE FROM project_members WHERE space_id=$1 AND project_id=$2 AND user_id=$3`,
+        [SPACE, project.id, VIEWER],
+      );
+      await revocation.query("COMMIT");
+      await expect(creating).rejects.toMatchObject({ statusCode: 403 });
+
+      await pool.query(
+        `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+        [randomUUID(), SPACE, project.id, VIEWER],
+      );
+      const draft = await kernel.createBriefVersion(
+        viewerIdentity,
+        project.id as string,
+        { goal: "Draft before revocation" },
+      );
+
+      await revocation.query("BEGIN");
+      await revocation.query(
+        `SELECT 1 FROM project_members
+          WHERE space_id=$1 AND project_id=$2 AND user_id=$3 FOR UPDATE`,
+        [SPACE, project.id, VIEWER],
+      );
+      let submitSettled = false;
+      const submitting = kernel.submitBriefForReview(
+        viewerIdentity,
+        project.id as string,
+        draft.id as string,
+      ).finally(() => { submitSettled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(submitSettled).toBe(false);
+      await revocation.query(
+        `DELETE FROM project_members WHERE space_id=$1 AND project_id=$2 AND user_id=$3`,
+        [SPACE, project.id, VIEWER],
+      );
+      await revocation.query("COMMIT");
+      await expect(submitting).rejects.toMatchObject({ statusCode: 403 });
+      await expect(kernel.listBriefVersions(ownerIdentity, project.id as string))
+        .resolves.toContainEqual(expect.objectContaining({ id: draft.id, status: "draft" }));
+    } finally {
+      await revocation.query("ROLLBACK").catch(() => undefined);
+      revocation.release();
+    }
+  });
+
+  it("restricts Project Instruction drafts to owner-level authority and validates the DTO", async () => {
+    if (!available || !pool) return;
+    const repo = new PgProjectRepository(pool);
+    const kernel = new ProjectKernelService(pool);
+    const project = await repo.create(ownerIdentity, { name: "Instruction Authority Project" });
+    await pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, project.id, VIEWER, new Date().toISOString()]);
+    await expect(kernel.createInstructionVersion(viewerIdentity, project.id as string, { title: "Unsafe", instruction_text: "Do it" })).rejects.toMatchObject({ statusCode: 403 });
+    const ownerDraft = await kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "Owner draft", instruction_text: "Use the checklist" });
+    await expect(kernel.transitionInstruction(viewerIdentity, project.id as string, ownerDraft.id as string, false)).rejects.toMatchObject({ statusCode: 403 });
+    await pool.query(`UPDATE project_members SET role='owner', updated_at=$4 WHERE space_id=$1 AND project_id=$2 AND user_id=$3`, [SPACE, project.id, VIEWER, new Date().toISOString()]);
+    await expect(repo.get(viewerIdentity, project.id as string)).resolves.toMatchObject({
+      current_user_can_approve_context: true,
+    });
+    await expect(kernel.createInstructionVersion(viewerIdentity, project.id as string, { title: "Co-owner draft", instruction_text: "Use the co-owner checklist" })).resolves.toMatchObject({ status: "draft" });
+    const coOwnedBrief = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Co-owned goal" });
+    await kernel.submitBriefForReview(ownerIdentity, project.id as string, coOwnedBrief.id as string);
+    await expect(kernel.publishBrief(viewerIdentity, project.id as string, coOwnedBrief.id as string)).resolves.toMatchObject({ status: "published" });
+    await expect(kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "x".repeat(257), instruction_text: "Do it" })).rejects.toMatchObject({ statusCode: 422 });
+    const newerDraft = await kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "Newer", instruction_text: "Use the newer checklist" });
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, ownerDraft.id as string, false);
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, newerDraft.id as string, false);
+    await kernel.transitionInstruction(ownerIdentity, project.id as string, newerDraft.id as string, true);
+    await expect(kernel.transitionInstruction(ownerIdentity, project.id as string, ownerDraft.id as string, true))
+      .rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("database constraints keep the active Brief pointer inside its Project", async () => {
@@ -160,12 +717,9 @@ describe("Project Kernel (real Postgres)", () => {
     const repo = new PgProjectRepository(pool);
     const kernel = new ProjectKernelService(pool);
     projectModeProjectionRegistry.register({
-      mode: "decision",
+      mode: "delivery",
       async getOverviewProjection() {
-        return { mode: "decision", current_state_summary: "Decision ready.", progress_indicators: [], focus_set: [], next_actions: [] };
-      },
-      async getAreaSummary() {
-        return { count: 0, status: "ok" };
+        return { mode: "delivery", current_state_summary: "Delivery ready.", progress_indicators: [], focus_set: [], next_actions: [] };
       },
     });
     const project = await repo.create(ownerIdentity, { name: "Mode Project" });
@@ -177,13 +731,13 @@ describe("Project Kernel (real Postgres)", () => {
     );
 
     const transition = await kernel.transitionMode(ownerIdentity, project.id as string, {
-      to_mode: "decision",
+      to_mode: "delivery",
       reason: "switching focus to a commitment",
     });
-    expect(transition).toMatchObject({ from_mode: "inquiry", to_mode: "decision" });
+    expect(transition).toMatchObject({ from_mode: "research", to_mode: "delivery" });
 
     const updated = await repo.get(ownerIdentity, project.id as string);
-    expect(updated?.primary_mode).toBe("decision");
+    expect(updated?.primary_mode).toBe("delivery");
 
     const opStatus = await pool.query<{ status: string }>(
       `SELECT status FROM project_operations WHERE space_id = $1 AND project_id = $2`,
@@ -192,7 +746,7 @@ describe("Project Kernel (real Postgres)", () => {
     expect(opStatus.rows[0]?.status).toBe("active");
 
     const transitions = await kernel.listModeTransitions(ownerIdentity, project.id as string);
-    expect(transitions.map((t) => t.to_mode)).toEqual(["decision", "inquiry"]);
+    expect(transitions.map((t) => t.to_mode)).toEqual(["delivery", "research"]);
   });
 
   it("rejects an invalid to_mode", async () => {
@@ -212,6 +766,7 @@ describe("Project Kernel (real Postgres)", () => {
       new ProjectKernelService(pool).transitionMode(ownerIdentity, project.id as string, { to_mode: "learning" }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
+
 
   it("aggregates Attention items from registered adapters and respects snooze", async () => {
     if (!available || !pool) return;
@@ -295,19 +850,40 @@ describe("Project Kernel (real Postgres)", () => {
     const kernel = new ProjectKernelService(pool);
     const overview = new ProjectOverviewService(pool);
     const project = await repo.create(ownerIdentity, { name: "Overview Project" });
-    await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Ship the Project Kernel" });
+    const brief = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Ship the Project Kernel" });
+    await kernel.submitBriefForReview(ownerIdentity, project.id as string, brief.id as string);
+    await kernel.publishBrief(ownerIdentity, project.id as string, brief.id as string);
 
     const result = await overview.getOverview(ownerIdentity, project.id as string);
-    expect(result.project).toMatchObject({ id: project.id, primary_mode: "inquiry", template_key: "blank" });
+    expect(result.project).toMatchObject({ id: project.id, primary_mode: "research" });
     expect(result.brief).toMatchObject({ goal: "Ship the Project Kernel", version: "v2" });
-    expect(result.mode_projection).toMatchObject({ mode: "inquiry" });
-    expect(result.available_modes).toEqual(["inquiry"]);
+    expect(result.mode_projection).toMatchObject({ mode: "research" });
+    expect(result.available_modes).toEqual(["research"]);
     expect(result.attention).toEqual([]);
-    expect(result.template).toMatchObject({ key: "blank", name: "Blank" });
+    // A research Project needs a Provider, an Agent and a Source before it can
+    // do anything, whether or not a source pack was applied at creation.
     expect(result.setup_checklist).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "brief", status: "ready", required: true }),
-      expect.objectContaining({ id: "provider", status: "missing", required: false }),
+      expect.objectContaining({ id: "provider", status: "missing", required: true }),
+      expect.objectContaining({ id: "agent", status: "missing", required: true }),
+      expect.objectContaining({ id: "source", status: "missing", required: true }),
       expect.objectContaining({ id: "folder", status: "missing", required: false }),
+    ]));
+  });
+
+  /** What a Project needs before it can start is a question about how it
+   *  advances, not about which sources it happened to bind at creation. */
+  it("requires Provider/Agent/Source setup by Mode, not by source pack", async () => {
+    if (!available || !pool) return;
+    const repo = new PgProjectRepository(pool);
+    const overview = new ProjectOverviewService(pool);
+    const project = await repo.create(ownerIdentity, { name: "Delivery Project", primary_mode: "delivery" });
+
+    const result = await overview.getOverview(ownerIdentity, project.id as string);
+    expect(result.setup_checklist).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "provider", required: false }),
+      expect.objectContaining({ id: "agent", required: false }),
+      expect.objectContaining({ id: "source", required: false }),
     ]));
   });
 
@@ -322,7 +898,7 @@ describe("Project Kernel (real Postgres)", () => {
     // project known to exist in this space (403), matching `assertProjectWriter`
     // elsewhere in this module.
     await expect(kernel.listModeTransitions(viewerIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
-    await expect(kernel.transitionMode(viewerIdentity, project.id as string, { to_mode: "decision" })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(kernel.transitionMode(viewerIdentity, project.id as string, { to_mode: "delivery" })).rejects.toMatchObject({ statusCode: 403 });
 
     // Not even a space member: not readable.
     await expect(kernel.listModeTransitions(outsiderIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
@@ -334,6 +910,6 @@ describe("Project Kernel (real Postgres)", () => {
       [randomUUID(), SPACE, project.id, VIEWER],
     );
     expect(await kernel.listModeTransitions(viewerIdentity, project.id as string)).toHaveLength(1);
-    await expect(kernel.transitionMode(viewerIdentity, project.id as string, { to_mode: "decision" })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(kernel.transitionMode(viewerIdentity, project.id as string, { to_mode: "delivery" })).rejects.toMatchObject({ statusCode: 403 });
   });
 });

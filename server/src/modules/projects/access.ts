@@ -82,6 +82,35 @@ export async function assertProjectReadable(
   }
 }
 
+/** Revalidate and lock every mutable row that grants Project read authority. */
+export async function assertProjectReadableLocked(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  userId: string,
+): Promise<void> {
+  const project = await db.query<{ owner_user_id: string | null }>(
+    `SELECT owner_user_id FROM projects
+      WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL
+      FOR SHARE`,
+    [projectId, spaceId],
+  );
+  const row = project.rows[0];
+  if (!row) throw new HttpError(404, "Project not found");
+  const space = await db.query<{ type: string }>(
+    `SELECT type FROM spaces WHERE id=$1 FOR SHARE`,
+    [spaceId],
+  );
+  if (space.rows[0]?.type === "personal" || row.owner_user_id === userId) return;
+  const member = await db.query(
+    `SELECT 1 FROM project_members
+      WHERE space_id=$1 AND project_id=$2 AND user_id=$3 AND status='active'
+      FOR SHARE`,
+    [spaceId, projectId, userId],
+  );
+  if (!member.rows[0]) throw new HttpError(404, "Project not found");
+}
+
 /**
  * Batched form of {@link canReadProject} for filtering rows that carry
  * `project_id`. Returns the accessible subset in a fixed number of queries.
@@ -135,13 +164,14 @@ export async function canWriteProject(
   spaceId: string,
   projectId: string,
   userId: string,
+  options: { lockAuthority?: boolean } = {},
 ): Promise<boolean> {
   const project = await db.query<{ owner_user_id: string | null }>(
     `SELECT owner_user_id
        FROM projects
       WHERE id = $1
         AND space_id = $2
-        AND deleted_at IS NULL`,
+        AND deleted_at IS NULL${options.lockAuthority ? " FOR SHARE" : ""}`,
     [projectId, spaceId],
   );
   const row = project.rows[0];
@@ -154,7 +184,7 @@ export async function canWriteProject(
       WHERE space_id = $1
         AND user_id = $2
         AND status = 'active'
-      LIMIT 1`,
+      LIMIT 1${options.lockAuthority ? " FOR SHARE" : ""}`,
     [spaceId, userId],
   );
   const role = spaceRole.rows[0]?.role;
@@ -167,11 +197,22 @@ export async function canWriteProject(
         AND project_id = $2
         AND user_id = $3
         AND status = 'active'
-      LIMIT 1`,
+      LIMIT 1${options.lockAuthority ? " FOR SHARE" : ""}`,
     [spaceId, projectId, userId],
   );
   const memberRole = projectRole.rows[0]?.role;
   return memberRole === "owner" || memberRole === "member";
+}
+
+export async function assertProjectWriterForMutation(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  userId: string,
+): Promise<void> {
+  if (!(await canWriteProject(db, spaceId, projectId, userId, { lockAuthority: true }))) {
+    throw new HttpError(403, "Requires project writer, project owner, or space owner/admin role");
+  }
 }
 
 export async function assertProjectWriter(
@@ -246,29 +287,40 @@ export async function assertProjectFolderInProject(
 }
 
 /**
- * Owner-level authority: the project `owner_user_id` or a space `owner`/`admin`.
- * Unlike `canWriteProject`, an active project member role of `owner`/`member`
- * does NOT qualify — this is the gate for publishing a public summary
- * (`review_status` other than `draft`), so a project writer can only stage a
- * draft and the project owner / space admin performs the review/publish step.
+ * Owner-level authority: the project `owner_user_id`, an active Project member
+ * with role `owner`, or a Space `owner`/`admin`. Project `member` remains a
+ * writer only and cannot perform review/publish operations.
  */
 export async function isProjectOwnerLevel(
   db: Queryable,
   spaceId: string,
   projectId: string,
   userId: string,
+  options: { lockAuthority?: boolean } = {},
 ): Promise<boolean> {
   const project = await db.query<{ owner_user_id: string | null }>(
     `SELECT owner_user_id
        FROM projects
       WHERE id = $1
         AND space_id = $2
-        AND deleted_at IS NULL`,
+        AND deleted_at IS NULL${options.lockAuthority ? " FOR SHARE" : ""}`,
     [projectId, spaceId],
   );
   const row = project.rows[0];
   if (!row) return false;
   if (row.owner_user_id && row.owner_user_id === userId) return true;
+
+  const projectRole = await db.query<{ role: string }>(
+    `SELECT role
+       FROM project_members
+      WHERE space_id = $1
+        AND project_id = $2
+        AND user_id = $3
+        AND status = 'active'
+      LIMIT 1${options.lockAuthority ? " FOR SHARE" : ""}`,
+    [spaceId, projectId, userId],
+  );
+  if (projectRole.rows[0]?.role === "owner") return true;
 
   const spaceRole = await db.query<{ role: string }>(
     `SELECT role
@@ -276,11 +328,22 @@ export async function isProjectOwnerLevel(
       WHERE space_id = $1
         AND user_id = $2
         AND status = 'active'
-      LIMIT 1`,
+      LIMIT 1${options.lockAuthority ? " FOR SHARE" : ""}`,
     [spaceId, userId],
   );
   const role = spaceRole.rows[0]?.role;
   return isSpaceOwnerOrAdmin(role);
+}
+
+export async function assertProjectOwnerLevelForMutation(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  userId: string,
+): Promise<void> {
+  if (!(await isProjectOwnerLevel(db, spaceId, projectId, userId, { lockAuthority: true }))) {
+    throw new HttpError(403, "Requires project owner or space owner/admin role to publish project context");
+  }
 }
 
 export async function assertProjectOwnerLevel(
@@ -290,6 +353,6 @@ export async function assertProjectOwnerLevel(
   userId: string,
 ): Promise<void> {
   if (!(await isProjectOwnerLevel(db, spaceId, projectId, userId))) {
-    throw new HttpError(403, "Requires project owner or space owner/admin role to publish a public summary");
+    throw new HttpError(403, "Requires project owner or space owner/admin role to publish project context");
   }
 }

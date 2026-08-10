@@ -136,16 +136,19 @@ export class ResearchStrategyActivationService {
       [randomUUID(), identity.spaceId, strategy.project_id, strategy.research_context_version_id, strategy.id, previousStrategyId, sequence, reason, input.proposalId ?? null, identity.userId, now],
     );
     await this.db.query(
-      `UPDATE project_research_workflows
+      `WITH changed AS (UPDATE project_research_workflows
           SET state_json=jsonb_set(
                 jsonb_set(
                   jsonb_set(state_json,'{query_strategy_id}',to_jsonb($4::text),true),
                   '{channel_ids}',$5::jsonb,true
                 ),
                 '{source_channel_ids}',$5::jsonb,true
-              ),updated_at=$6
+              )
         WHERE space_id=$1 AND project_id=$2 AND status='active'
-          AND ($3::text IS NULL OR state_json->>'query_strategy_id'=$3 OR NOT (state_json ? 'query_strategy_id'))`,
+          AND ($3::text IS NULL OR state_json->>'query_strategy_id'=$3 OR NOT (state_json ? 'query_strategy_id'))
+        RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$6 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [identity.spaceId, strategy.project_id, previousStrategyId, strategy.id, JSON.stringify(channels), now],
     );
     return { strategy_id: strategy.id, previous_strategy_id: previousStrategyId, sequence, channel_ids: channels };

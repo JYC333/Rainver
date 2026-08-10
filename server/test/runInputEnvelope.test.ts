@@ -65,7 +65,6 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
         },
       ],
     },
-    context_snapshot_id: "snapshot-1",
     ...overrides,
   };
 }
@@ -78,10 +77,6 @@ describe("run_input.v1 assembly", () => {
       schema_version: "run_input.v1",
       run_id: "run-1",
       messages: [{ role: "user", content: "Continue from the prior turn" }],
-      context: {
-        context_snapshot_id: "snapshot-1",
-        context_package_ref: "context_snapshot:snapshot-1",
-      },
       project_folder_access: {
         project_folder_id: "folder-1",
         access: "read_write",

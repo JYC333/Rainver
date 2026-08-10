@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { InvocationAuditRefsSchema } from "./runtimeContext.js";
 import { IdSchema, ISODateTimeSchema, RunTriggerOriginSchema, SecretResponseGuards } from "./common.js";
 import {
   CanonicalMessageSchema,
@@ -66,13 +67,13 @@ export const RuntimeHostExecuteRequestSchema = z.object({
   project_folder_id: IdSchema.nullish(),
   trigger_origin: RunTriggerOriginSchema.nullish(),
   capability_id: z.string().nullish(),
-  context_snapshot_id: IdSchema.nullish(),
   max_tokens: z.number().int().positive().optional(),
   output_format: RuntimeHostStructuredOutputSchema.nullish(),
   tool_mode: RuntimeHostToolModeSchema.default("disabled"),
   tool_bindings: z.array(RuntimeHostToolBindingSchema).default([]),
   tools: z.array(CanonicalToolDefinitionSchema).optional(),
   cache_strategy: z.literal("conversation").optional(),
+  invocation_audit_refs: InvocationAuditRefsSchema.optional(),
 });
 export type RuntimeHostExecuteRequest = z.infer<typeof RuntimeHostExecuteRequestSchema>;
 

@@ -21,6 +21,42 @@ export interface TestPostgresDatabase {
   stop(): Promise<void>;
 }
 
+export class TestPostgresUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "TestPostgresUnavailableError";
+  }
+}
+
+const POSTGRES_CONNECTION_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTDOWN",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+]);
+
+export function isTestPostgresUnavailableError(error: unknown): boolean {
+  if (error instanceof TestPostgresUnavailableError) return true;
+  if (!(error instanceof Error)) return false;
+
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code && (POSTGRES_CONNECTION_ERROR_CODES.has(code) || code.startsWith("08"))) return true;
+  if (code === "57P01" || code === "57P02" || code === "57P03") return true;
+  const nestedErrors = (error as Error & { errors?: unknown[] }).errors;
+  if (Array.isArray(nestedErrors) && nestedErrors.some(isTestPostgresUnavailableError)) return true;
+  if (error.cause && error.cause !== error) {
+    return isTestPostgresUnavailableError(error.cause);
+  }
+  return false;
+}
+
 function databaseUri(adminUri: string, database: string): string {
   const uri = new URL(adminUri);
   uri.pathname = `/${database}`;
@@ -42,7 +78,9 @@ export async function getTestPostgres(
     !context.templateDatabase ||
     !context.runId
   ) {
-    throw new Error(context.error ?? "Shared Postgres test container is unavailable");
+    throw new TestPostgresUnavailableError(
+      context.error ?? "Shared Postgres test container is unavailable",
+    );
   }
 
   const fileHash = createHash("sha256").update(fileUrl).digest("hex").slice(0, 12);

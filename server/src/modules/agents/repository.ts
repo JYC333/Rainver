@@ -54,6 +54,7 @@ interface Queryable {
 export interface AgentRecord {
   id: string;
   space_id: string;
+  project_id: string | null;
   owner_user_id: string | null;
   name: string;
   description: string | null;
@@ -123,6 +124,7 @@ export interface AgentVersionRecord {
 export interface AgentOut {
   id: string;
   space_id: string;
+  project_id: string | null;
   created_by_user_id: string | null;
   name: string;
   description: string | null;
@@ -180,7 +182,7 @@ export interface AgentRuntimeProfileOut {
 }
 
 const AGENT_COLUMNS = `
-  a.id, a.space_id, a.owner_user_id, a.name, a.description, a.role_instruction,
+  a.id, a.space_id, a.project_id, a.owner_user_id, a.name, a.description, a.role_instruction,
   a.status, a.agent_kind,
   a.current_version_id, a.visibility, a.access_level, a.created_at, a.updated_at,
   COALESCE(arp.model_provider_id, av.model_provider_id) AS model_provider_id,
@@ -589,6 +591,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 
   async create(input: {
     spaceId: string;
+    projectId?: string | null;
     userId: string;
     name: string;
     description?: string | null;
@@ -629,6 +632,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return withTransaction(this.pool, async (client) =>
       this.createAgentWithVersion(client, {
         spaceId: input.spaceId,
+        projectId: input.projectId ?? null,
         ownerUserId: input.ownerUserId === undefined ? input.userId : input.ownerUserId,
         name: input.name,
         description: input.description ?? null,
@@ -827,7 +831,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   async publishSystemManagedPrompt(input: {
     spaceId: string;
     agentId: string;
-    agentKind: "system_assistant" | "system_source_post_processor" | "system_research";
+    agentKind: "system_assistant" | "system_source_post_processor" | "system_source_annotator" | "system_research";
     systemPrompt: string;
     promptProvenanceJson?: PromptProvenance | null;
   }): Promise<{ changed: boolean; versionId: string }> {
@@ -1101,7 +1105,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     db: Queryable,
     spaceId: string,
     agentId: string,
-    agentKind?: "system_assistant" | "system_source_post_processor" | "system_research",
+    agentKind?: "system_assistant" | "system_source_post_processor" | "system_source_annotator" | "system_research",
   ): Promise<AgentVersionRecord | null> {
     const agent = await db.query<{ current_version_id: string | null }>(
       `SELECT current_version_id
@@ -1127,6 +1131,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     client: PoolClient,
     input: {
       spaceId: string;
+      projectId: string | null;
       ownerUserId: string | null;
       name: string;
       description: string | null;
@@ -1155,12 +1160,13 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const now = new Date().toISOString();
     await client.query(
       `INSERT INTO agents (
-         id, space_id, owner_user_id, name, description, role_instruction,
+         id, space_id, project_id, owner_user_id, name, description, role_instruction,
          status, agent_kind, visibility, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)`,
       [
         agentId,
         input.spaceId,
+        input.projectId,
         input.ownerUserId,
         input.name,
         input.description,

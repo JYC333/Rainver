@@ -105,7 +105,7 @@ const objectRelationCreate = z
     proposal_type: z.literal("object_relation_create"),
     from_object_id: z.string().min(1),
     to_object_id: z.string().min(1),
-    relation_type: z.string().min(1),
+    link_type: z.string().min(1),
   })
   .passthrough();
 
@@ -116,33 +116,33 @@ const objectRelationDelete = z
   })
   .passthrough();
 
-const objectKindCreate = z
+const objectProfileCreate = z
   .object({
-    proposal_type: z.literal("object_kind_create"),
+    proposal_type: z.literal("object_profile_create"),
     key: z.string().min(1),
     label: z.string().min(1),
     base_object_type: z.string().min(1),
   })
   .passthrough();
 
-const objectKindUpdate = z
+const objectProfileUpdate = z
   .object({
-    proposal_type: z.literal("object_kind_update"),
-    target_kind_id: z.string().min(1),
+    proposal_type: z.literal("object_profile_update"),
+    target_profile_id: z.string().min(1),
   })
   .passthrough();
 
-const objectKindDeprecate = z
+const objectProfileDeprecate = z
   .object({
-    proposal_type: z.literal("object_kind_deprecate"),
-    target_kind_id: z.string().min(1),
+    proposal_type: z.literal("object_profile_deprecate"),
+    target_profile_id: z.string().min(1),
   })
   .passthrough();
 
-const objectKindArchive = z
+const objectProfileArchive = z
   .object({
-    proposal_type: z.literal("object_kind_archive"),
-    target_kind_id: z.string().min(1),
+    proposal_type: z.literal("object_profile_archive"),
+    target_profile_id: z.string().min(1),
   })
   .passthrough();
 
@@ -356,6 +356,20 @@ const evolutionBundleRollback = z
   })
   .passthrough();
 
+const egressReview = z.object({
+  proposal_type: z.literal("egress_review"),
+  target_resource_type: z.string().min(1),
+  target_resource_id: z.string().min(1),
+  requested_visibility: z.literal("space_shared"),
+  requested_access_level: z.enum(["full", "summary"]),
+  requested_project_id: z.string().min(1).nullable(),
+  requested_grants: z.array(z.object({
+    user_id: z.string().min(1),
+    access_level: z.enum(["full", "summary"]),
+  })),
+  required_egress_approver_user_ids: z.array(z.string().min(1)).min(1),
+}).passthrough();
+
 export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   memoryCreate,
   memoryUpdate,
@@ -375,10 +389,10 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   claimArchive,
   objectRelationCreate,
   objectRelationDelete,
-  objectKindCreate,
-  objectKindUpdate,
-  objectKindDeprecate,
-  objectKindArchive,
+  objectProfileCreate,
+  objectProfileUpdate,
+  objectProfileDeprecate,
+  objectProfileArchive,
   followUpTask,
   planReview,
   planCheckpoint,
@@ -400,6 +414,7 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   evolvableAssetVersionPromote,
   workflowSave,
   evolutionBundleRollback,
+  egressReview,
 ]);
 
 export type ProposalPayload = z.infer<typeof ProposalPayloadSchema>;

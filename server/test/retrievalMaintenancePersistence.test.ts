@@ -51,7 +51,7 @@ function report(): MaintenanceReport {
             operation: "object_relation_create",
             from_object_id: "item-a",
             to_object_id: "item-b",
-            relation_type: "related_to",
+            link_type: "related_to",
             status: "candidate",
             confidence: null,
             evidence_summary: "suggested related_to relation from extracted links",

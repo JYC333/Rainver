@@ -6,10 +6,12 @@ import { runs } from "./runs";
 import { spaces } from "./spaces";
 import { modelProviders, networkProfiles } from "./providers";
 import { proposals } from "./proposals";
+import { projects } from "./projects";
 
 export const agents = pgTable("agents", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	name: varchar({ length: 256 }).notNull(),
 	description: text(),
@@ -25,10 +27,12 @@ export const agents = pgTable("agents", {
 	index("ix_agents_agent_kind").using("btree", table.agentKind.asc().nullsLast()),
 	index("ix_agents_current_version_id").using("btree", table.currentVersionId.asc().nullsLast()),
 	index("ix_agents_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_agents_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_agents_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_agents_status").using("btree", table.status.asc().nullsLast()),
 	uniqueIndex("uq_agents_system_assistant_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_source_post_processor_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text))`),
+	uniqueIndex("uq_agents_system_source_annotator_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_annotator'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_research_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text))`),
 	foreignKey({
 			columns: [table.ownerUserId],
@@ -41,12 +45,17 @@ export const agents = pgTable("agents", {
 			name: "agents_space_id_fkey"
 		}),
 	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "fk_agents_project_id_projects"
+		}),
+	foreignKey({
 			columns: [table.currentVersionId, table.id, table.spaceId],
 			foreignColumns: [agentVersions.id, agentVersions.agentId, agentVersions.spaceId],
 			name: "fk_agents_current_version_id_agent_versions"
 		}),
 	unique("uq_agents_space_id_id").on(table.id, table.spaceId),
-	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_research'::character varying)::text])`),
+	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])`),
 	check("ck_agents_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('inactive'::character varying)::text, ('archived'::character varying)::text, ('disabled'::character varying)::text])`),
 	check("ck_agents_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_agents_access_level", sql`access_level IN ('full', 'summary')`),

@@ -34,9 +34,11 @@ credentials, and file contents are not persisted.
 The current engine supports:
 
 - `command`, `test`, `lint`, `typecheck`: argv commands from an enabled
-  `ValidationRecipe` or Project Folder Execution Config, executed without a shell with a
-  bounded timeout and a temporary `HOME` under the run sandbox; the server
-  process user's real HOME is not inherited;
+  `ValidationRecipe` or Project Folder Execution Config, sent through the typed
+  Sandbox Runner `verification` launch and executed without a shell in the one
+  managed workspace mount, with bounded timeout, empty-root namespace, private
+  HOME, the Runner image's Node toolchain path, no network or ambient server
+  environment, and a 64 KiB combined stdout/stderr ceiling;
 - `file_exists`, `file_changed`, `diff_scope`, `no_forbidden_change`: safe
   sandbox and git-scope checks;
 - `artifact_exists`, `artifact_schema`, `output_schema`: materialization and
@@ -44,7 +46,8 @@ The current engine supports:
 - `proposal_created`: proposal materialization evidence.
 
 Code-patch collection records structural validation metadata. The engine then
-checks that a collected patch changed files and did not touch Project Folder
+asks the same no-egress Runner to inspect git diff/status, then checks that a
+collected patch changed files and did not touch Project Folder
 Execution Config-forbidden paths. A patch proposal is never marked as validated merely
 because git text collection succeeded.
 

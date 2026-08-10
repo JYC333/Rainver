@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
@@ -11,6 +11,7 @@ import { PgRunRepository } from "../src/modules/runs/repository";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for the synthesis_only vertical slice migrated to
 // execution-per-pass WorkflowExecution authority (plan section 17.3): the
@@ -41,6 +42,7 @@ beforeAll(async () => {
     await syncBuiltinPrompts(pool, CATALOG_ROOT);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[project-research-synthesis-only-execution-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -72,15 +74,14 @@ beforeEach(async () => {
     PROJECT,
     { kind: "question", statement: "Does X improve Y?" },
   );
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, started_by_user_id, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','synthesis','active','agent_assisted',$4::jsonb,$5,$6,$6)`,
-    [WORKFLOW, SPACE, PROJECT, JSON.stringify({
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "synthesis", primaryThreadId: String(thread.id), state: {
       research_question: "Does X improve Y?", research_question_version: 1, report_depth: "quick",
       thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
       agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE, question_refine_skipped: true,
-    }), OWNER, now],
-  );
+    }, now,
+  });
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,

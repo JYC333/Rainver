@@ -111,6 +111,6 @@ Memory remains proposal-gated. The evolution core can produce maintenance
 packets or review artifacts for memory health, but it does not directly write,
 archive, or supersede active `MemoryEntry` rows.
 
-Memory read traces and retrieval quality signals can feed strategy selection and
-experience records. They do not bypass `MemoryReadTrace`, source monitoring, or
-proposal approval.
+Content read traces and retrieval quality signals can feed strategy selection
+and experience records. They do not bypass `ContentReadTrace`, cross-person
+content-access auditing, source monitoring, or proposal approval.

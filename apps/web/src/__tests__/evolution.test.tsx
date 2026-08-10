@@ -74,8 +74,6 @@ vi.mock('../contexts/SpaceContext', () => ({
     activeSpaceId: null,
     activeSpaceName: null,
     preferredSpaceId: 'personal-1',
-    writeTargetSpaceId: 'personal-1',
-    setWriteTarget: vi.fn(),
   }),
 }))
 

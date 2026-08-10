@@ -16,7 +16,6 @@ export interface ResolvedNodeInputs {
     truncated: boolean;
     missing_reason: string | null;
   }>;
-  contextArtifactIds: string[];
 }
 
 export class InputBindingResolutionError extends Error {
@@ -38,7 +37,7 @@ export async function resolveNodeInputs(
     scopeId: string;
   },
 ): Promise<ResolvedNodeInputs> {
-  const result: ResolvedNodeInputs = { values: {}, bindings: [], contextArtifactIds: [] };
+  const result: ResolvedNodeInputs = { values: {}, bindings: [] };
   for (const binding of input.bindings) {
     const source = await db.query<{ node_id: string; run_id: string; output_json: unknown }>(
       `SELECT source_node.id AS node_id, r.id AS run_id, r.output_json
@@ -101,7 +100,6 @@ export async function resolveNodeInputs(
       truncated: bounded.truncated,
       missing_reason: missingReason,
     });
-    if (artifactId) result.contextArtifactIds.push(artifactId);
   }
   return result;
 }

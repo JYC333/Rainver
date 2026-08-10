@@ -1,26 +1,20 @@
-# agent-space-sandbox — isolated execution environment for agent runs
+# agent-space-sandbox-runner — dedicated scoped CLI execution service
 #
-# This image runs inside a Docker container spawned per agent run.
-# It has no access to host files beyond the volumes explicitly mounted:
-#   /workspace          (rw) — the agent's working directory for this run
-#   /workspace/repo     (ro) — the source workspace repo (if provided)
-#   /home/sandbox/.claude (ro, optional) — granted CLI profile state, when the
-#       future one-shot Docker path is implemented
-#
-# Network: controlled per run.
-# Resources: 1 GB RAM, 1 CPU (enforced by DockerExecutor at spawn time).
+# This long-lived service has only the managed authority roots mounted by
+# Compose. Each launch creates a fresh bubblewrap mount/PID namespace and
+# exposes only the request's allowlisted ids to the vendor CLI.
 #
 # Build:
-#   docker build -t agent-space-sandbox sandbox/
+#   docker build -f sandbox/Dockerfile -t agent-space-sandbox .
 #
-# Vendor CLIs are not baked into this image. They are installed as instance
-# runtime tools and mounted/resolved by the run launcher when Docker execution
-# becomes available.
+# Vendor CLIs are not baked into this image. The Runner resolves one selected
+# version below its read-only runtime-tools authority root.
 
-FROM node:20-slim
+FROM node:24.18.0-slim
 
 # Install system tools agents commonly need
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bubblewrap \
     git \
     curl \
     python3 \
@@ -29,15 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Rename the built-in node user (UID 1000) to sandbox
-# node:20-slim ships with UID 1000 already claimed, so we reuse it
+# The Node base image ships with UID 1000 already claimed, so we reuse it.
 RUN usermod -l sandbox -d /home/sandbox -m node \
     && groupmod -n sandbox node
 
-# Default working directory — overridden by DockerExecutor volume mount
-WORKDIR /workspace
-RUN chown sandbox /workspace
+WORKDIR /runner
+COPY sandbox/runner.mjs /runner/runner.mjs
+RUN mkdir -p /runner/workspaces /runner/sandboxes /runner/runtime-tools /runner/run-homes /runner/conversation-homes /runner/login-homes \
+    && chown -R sandbox:sandbox /runner
 
 USER sandbox
 
-# No ENTRYPOINT — DockerExecutor passes the full command directly
-# e.g. docker run agent-space-sandbox claude --print "..."
+EXPOSE 8020
+CMD ["node", "/runner/runner.mjs"]

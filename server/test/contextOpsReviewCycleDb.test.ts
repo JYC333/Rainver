@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import type { RetrievalBriefResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { migrate } from "../src/db/migrator";
 import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle";
@@ -32,6 +32,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[context-ops-review-cycle-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -48,7 +49,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    `TRUNCATE memory_access_logs, memory_entries, artifacts, proposals,
+    `TRUNCATE content_access_logs, memory_entries, artifacts, proposals,
               object_relations, claims, retrieval_objects, retrieval_aliases,
               retrieval_chunks, retrieval_edges, knowledge_items, space_objects,
               users, spaces CASCADE`,

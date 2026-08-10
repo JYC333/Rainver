@@ -17,7 +17,7 @@ const EXPECTED_ASSET_KEYS = [
   "agent_template.personal_assistant.system",
   "agent_template.memory_reflector.system",
   "inquiry.next_step_advice",
-  "project_research.paper_card",
+  "project_research.evidence_card",
   "project_research.monitor_compare",
   "project_research.question_refine",
   "project_research.question_subquestion_repair",
@@ -28,14 +28,6 @@ const EXPECTED_ASSET_KEYS = [
   "retrieval.query_rewrite",
   "retrieval.rerank",
   "retrieval.synthesis",
-  "session.condenser.adaptive",
-  "session.condenser.general",
-  "session.condenser.coding",
-  "session.condenser.project",
-  "workflow.research.academic_literature_review.run",
-  "workflow.research.market_research.run",
-  "workflow.research.news_scan.run",
-  "workflow.research.technical_survey.run",
 ];
 
 async function writeManifest(catalogRoot: string, fileName: string, yaml: string): Promise<void> {
@@ -57,7 +49,7 @@ describe("loadPromptManifests (real catalog/prompts)", () => {
   it("keeps a complete parseable JSON example at the end of every structured research prompt", async () => {
     const manifests = await loadPromptManifests(REAL_CATALOG_ROOT);
     const expectedTopLevelKeys: Record<string, string[]> = {
-      "project_research.paper_card": ["schema", "digest_markdown", "item_summaries", "item_decisions", "evidence_candidates", "proposal_markdown"],
+      "project_research.evidence_card": ["schema", "digest_markdown", "item_summaries", "item_decisions", "evidence_candidates", "proposal_markdown"],
       "project_research.monitor_compare": ["comparisons"],
       "project_research.question_refine": ["reply", "recommended_question", "assessment", "suggested_questions", "sub_questions", "scope", "clarifying_questions"],
       "project_research.question_subquestion_repair": ["reply", "repairs"],

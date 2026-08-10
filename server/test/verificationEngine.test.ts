@@ -160,7 +160,13 @@ describe("verification engine", () => {
 
   it("gives validation commands a temporary HOME inside the sandbox", async () => {
     const db = new VerificationDb();
-    const engine = new PgVerificationEngine(db);
+    const calls: string[][] = [];
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run(input) {
+        calls.push(input.command);
+        return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+      },
+    });
     const results = await engine.verify({
       run: run({
         contract_snapshot_json: {
@@ -183,5 +189,6 @@ describe("verification engine", () => {
     });
 
     expect(results[0]).toMatchObject({ verifier_type: "command", status: "passed" });
+    expect(calls).toContainEqual(expect.arrayContaining([process.execPath, "-e"]));
   });
 });

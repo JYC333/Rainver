@@ -71,7 +71,7 @@ function historyLabel(draft: ResearchSetupDraft): string {
 }
 
 const structuredOutputProviderTypes = new Set(['openai', 'openrouter', 'other', 'anthropic', 'ollama'])
-const academicDiscoveryProviders: Array<{ key: ResearchProviderKey; label: string; note: string }> = [
+const researchDiscoveryProviders: Array<{ key: ResearchProviderKey; label: string; note: string }> = [
   { key: 'arxiv', label: 'arXiv', note: 'Public academic API' },
   { key: 'openalex', label: 'OpenAlex', note: 'Public academic API' },
   { key: 'semantic_scholar', label: 'Semantic Scholar', note: 'Anonymous access; stricter shared rate limits' },
@@ -332,7 +332,7 @@ export function ResearchSetupDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain">
             <DialogHeader>
-              <DialogTitle>Set up initial literature intake</DialogTitle>
+              <DialogTitle>Set up initial material intake</DialogTitle>
               <DialogDescription>
                 Researching: {draft.research_question || 'this Thread’s question'}. Evaluate provider-specific queries, then confirm the selected strategy and configure the one-time historical import.
               </DialogDescription>
@@ -371,11 +371,11 @@ export function ResearchSetupDialog({
                   </div>
                   <Button type="button" size="sm" variant="outline" onClick={() => void discoverSources()} disabled={Boolean(engineBusy) || evaluationProviders.length === 0 || draft.question_refine_skipped || !draft.research_context_version_id || !draft.execution.model_provider_id}>{engineBusy === 'search' ? 'Evaluating…' : engineResult ? 'Evaluate again' : 'Evaluate search coverage'}</Button>
                 </div>
-                <label className="block max-w-md space-y-1 text-xs"><span className="text-muted-foreground">Web search credential (optional)</span><Select options={[{ value: '', label: sourceCredentials.length ? 'Academic sources only unless web is available' : 'No managed web credential available' }, ...sourceCredentials.map(credential => ({ value: credential.id, label: credential.name }))]} value={webCredentialId} onChange={setWebCredentialId} ariaLabel="Web search credential" /><span className="block text-muted-foreground">When the planner selects current or general web evidence, this credential is injected only by the trusted fetch layer.</span></label>
+                <label className="block max-w-md space-y-1 text-xs"><span className="text-muted-foreground">Web search credential (optional)</span><Select options={[{ value: '', label: sourceCredentials.length ? 'Configured source providers only' : 'No managed web credential available' }, ...sourceCredentials.map(credential => ({ value: credential.id, label: credential.name }))]} value={webCredentialId} onChange={setWebCredentialId} ariaLabel="Web search credential" /><span className="block text-muted-foreground">When the planner selects current or general web evidence, this credential is injected only by the trusted fetch layer.</span></label>
                 <fieldset className="space-y-2">
                   <legend className="text-xs font-medium">Providers to evaluate</legend>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {academicDiscoveryProviders.map(provider => {
+                    {researchDiscoveryProviders.map(provider => {
                       const checked = evaluationProviders.includes(provider.key)
                       return (
                         <label key={provider.key} className={`flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 ${checked ? 'border-primary bg-primary/5' : 'border-border'}`}>
@@ -444,7 +444,7 @@ export function ResearchSetupDialog({
 
               {step === 1 && <section className="space-y-3 rounded-md border border-border bg-muted/10 p-4">
                 <div>
-                  <h3 className="text-sm font-semibold">2. Initial literature import</h3>
+                  <h3 className="text-sm font-semibold">2. Initial material import</h3>
                   <p className="mt-1 text-xs text-muted-foreground">The date range and item limit apply only to this one-time import that seeds the project corpus. After you approve the initial results, monitors keep scanning on schedule and new matches are screened automatically — without this limit.</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
@@ -452,7 +452,7 @@ export function ResearchSetupDialog({
                   {draft.history_mode === 'bounded_range' && <label className="space-y-1 text-xs"><span className="text-muted-foreground">From</span><DatePicker value={draft.from} onChange={value => setDraft(current => ({ ...current, from: value }))} ariaLabel="History from" /></label>}
                   {draft.history_mode === 'bounded_range' && <label className="space-y-1 text-xs"><span className="text-muted-foreground">To</span><DatePicker value={draft.to} onChange={value => setDraft(current => ({ ...current, to: value }))} ariaLabel="History to" /></label>}
                   <label className="space-y-1 text-xs"><span className="text-muted-foreground">Max items</span><Input type="number" min={1} max={10000} value={draft.max_items} onChange={event => setDraft(current => ({ ...current, max_items: event.target.value }))} /><span className="block text-muted-foreground">Budget for this initial import only, shared across all selected monitors. Ongoing monitoring is not limited by it.</span></label>
-                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Monitoring field</span><Select options={[{ value: 'submittedDate', label: 'Submission date' }, { value: 'lastUpdatedDate', label: 'Last update date' }]} value={draft.monitoring_field} onChange={value => setDraft(current => ({ ...current, monitoring_field: value as ResearchSetupDraft['monitoring_field'] }))} ariaLabel="Monitoring field" /><span className="block text-muted-foreground">Choose whether scans follow a paper's first submission or its latest revision.</span></label>
+                  <label className="space-y-1 text-xs"><span className="text-muted-foreground">Monitoring field</span><Select options={[{ value: 'submittedDate', label: 'First published' }, { value: 'lastUpdatedDate', label: 'Last updated' }]} value={draft.monitoring_field} onChange={value => setDraft(current => ({ ...current, monitoring_field: value as ResearchSetupDraft['monitoring_field'] }))} ariaLabel="Monitoring field" /><span className="block text-muted-foreground">Choose whether scans follow an item's first publication or its latest update.</span></label>
                 </div>
                 <p className="text-xs text-muted-foreground">{historyLabel(draft)} · Up to {draft.max_items} items.</p>
               </section>}

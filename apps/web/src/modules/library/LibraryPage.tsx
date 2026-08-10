@@ -3,10 +3,10 @@ import { Outlet } from 'react-router-dom'
 import { toast } from 'sonner'
 import { BookOpen, CheckCircle2, ExternalLink, FileText, Library, RefreshCw, Search, XCircle } from 'lucide-react'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { sourcesApi } from '../../api/client'
+import { informationDigestsApi, projectsApi, sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { ExtractionJob, SourceChannel, SourceItem, SourcePostProcessingBriefingDaySummary } from '../../types/api'
+import type { ExtractionJob, InformationDigest, InterestProfileSnapshot, Project, SourceChannel, SourceItem, SourcePostProcessingBriefingDaySummary } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -24,6 +24,8 @@ import {
   type ItemFilter,
 } from '../sources/sourcePageModel'
 import { runPendingItemJob } from '../sources/sourceActions'
+import { InformationDigestView } from './InformationDigestView'
+import { InterestProfileControls } from './InterestProfileControls'
 
 const ITEM_PAGE_SIZE = 30
 const BRIEF_PAGE_SIZE = 10
@@ -441,19 +443,35 @@ export function LibraryDigestsPage() {
   const [briefingTotal, setBriefingTotal] = useState(0)
   const [briefingOffset, setBriefingOffset] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [daily, setDaily] = useState<InformationDigest | null>(null)
+  const [profile, setProfile] = useState<InterestProfileSnapshot | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
 
   const load = useCallback(async () => {
     if (!activeSpaceId) {
       setBriefings([])
       setBriefingTotal(0)
+      setProjects([])
       setLoading(false)
       return
     }
     setLoading(true)
     try {
-      const briefingPage = await sourcesApi.briefings({ limit: BRIEF_PAGE_SIZE, offset: briefingOffset })
-      setBriefings(briefingPage.items)
-      setBriefingTotal(briefingPage.total)
+      const [briefingResult, dailyResult, profileResult, projectResult] = await Promise.allSettled([
+        sourcesApi.briefings({ limit: BRIEF_PAGE_SIZE, offset: briefingOffset }),
+        informationDigestsApi.personal(activeSpaceId),
+        informationDigestsApi.profile(activeSpaceId),
+        projectsApi.list({ status: 'active', limit: 200 }),
+      ])
+      if (briefingResult.status === 'fulfilled') {
+        setBriefings(briefingResult.value.items)
+        setBriefingTotal(briefingResult.value.total)
+      } else {
+        throw briefingResult.reason
+      }
+      if (dailyResult.status === 'fulfilled') setDaily(dailyResult.value)
+      if (profileResult.status === 'fulfilled') setProfile(profileResult.value)
+      setProjects(projectResult.status === 'fulfilled' ? projectResult.value.items : [])
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -466,11 +484,13 @@ export function LibraryDigestsPage() {
   const firstLoad = loading && briefings.length === 0
 
   return (
-    <section className="space-y-3">
+    <section className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Digests</h2>
-          <p className="text-xs text-muted-foreground">{briefingTotal} digests</p>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Today for you</h2>
+          <p className="text-xs text-muted-foreground">
+            {profile ? `${profile.maturity} profile · ${profile.read_item_count} read items` : 'Cross-source daily selection'}
+          </p>
         </div>
         <Button variant="outline" onClick={load} disabled={loading} type="button">
           <RefreshCw className="size-4" />
@@ -478,6 +498,39 @@ export function LibraryDigestsPage() {
         </Button>
       </div>
 
+      {daily && <InformationDigestView digest={daily} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
+        try {
+          await projectsApi.addCorpusItem(projectId, {
+            source_item_id: sourceItemId,
+            role: 'candidate',
+            triage_status: 'new',
+            metadata_json: { origin: 'information_digest', digest_item_id: itemId },
+          })
+          toast.success('Added to Project Corpus')
+        } catch (error) {
+          toast.error(errMsg(error))
+        }
+      }} onSerendipityFeedback={async (itemId, feedback) => {
+        if (!activeSpaceId) return
+        try {
+          const result = await informationDigestsApi.serendipityFeedback(activeSpaceId, itemId, feedback)
+          setDaily(current => current ? {
+            ...current,
+            items: current.items.map(item => item.id === itemId ? { ...item, serendipity_feedback: result.feedback } : item),
+          } : current)
+          toast.success(result.blocked ? 'Direction blocked' : 'Feedback saved')
+        } catch (error) {
+          toast.error(errMsg(error))
+        }
+      }} />}
+
+      {activeSpaceId && profile && <InterestProfileControls spaceId={activeSpaceId} profile={profile} onChanged={load} />}
+
+      <div className="pt-3 border-t space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Source run briefings</h3>
+          <p className="text-xs text-muted-foreground">{briefingTotal} digests from individual processing rules</p>
+        </div>
       {firstLoad ? (
         <div className="space-y-3">
           <Skeleton className="h-24 w-full" />
@@ -498,6 +551,7 @@ export function LibraryDigestsPage() {
       )}
 
       <Pagination total={briefingTotal} limit={BRIEF_PAGE_SIZE} offset={briefingOffset} onChange={setBriefingOffset} />
+      </div>
     </section>
   )
 }

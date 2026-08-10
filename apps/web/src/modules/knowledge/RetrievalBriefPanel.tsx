@@ -180,7 +180,7 @@ function BriefResult({ response }: { response: RetrievalBriefResponse }) {
               <div className="flex flex-wrap items-center gap-1.5">
                 <Badge variant="outline">[{index + 1}]</Badge>
                 <Badge variant="muted">{citation.object_type}</Badge>
-                {citation.object_kind_label && <Badge variant="secondary">{citation.object_kind_label}</Badge>}
+                {citation.object_profile_label && <Badge variant="secondary">{citation.object_profile_label}</Badge>}
                 <span>{citation.title}</span>
               </div>
             </div>
@@ -214,7 +214,7 @@ function SourceList({ items }: { items: RetrievalSearchResult[] }) {
           <div key={`${item.object_type}:${item.object_id}`} className="rounded-md border border-border px-3 py-2">
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant="muted">{item.object_type}</Badge>
-              {item.object_kind_label && <Badge variant="secondary">{item.object_kind_label}</Badge>}
+              {item.object_profile_label && <Badge variant="secondary">{item.object_profile_label}</Badge>}
               <span className="text-sm font-medium">{item.title}</span>
               <span className="text-xs font-mono text-muted-foreground">{item.score.toFixed(3)}</span>
             </div>

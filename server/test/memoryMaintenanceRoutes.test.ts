@@ -124,7 +124,6 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     space_id: "space-1",
     subject_user_id: null,
     owner_user_id: "user-1",
-    project_folder_id: null,
     scope_type: "user",
     namespace: "user.default",
     memory_type: "fact",
@@ -155,203 +154,19 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
 }
 
 describe("Memory maintenance routes", () => {
-  it("lists only currently readable memory access-log entries", async () => {
+  it("returns 404 for the retired memory-specific access-log endpoint", async () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const visible = row({ id: "memory-visible", title: "Visible", owner_user_id: "user-1", project_id: "project-1" });
-    const hidden = row({ id: "memory-hidden", title: "Hidden", owner_user_id: "user-2" });
-    const query = vi.fn(async (sql: string, _params: readonly unknown[] = []) => {
-      const normalized = sql.replace(/\s+/g, " ").trim();
-      if (/FROM memory_access_logs/.test(normalized)) {
-        return {
-          rows: [
-            {
-              ...visible,
-              log_id: "11111111-1111-4111-8111-111111111111",
-              log_space_id: "space-1",
-              log_memory_id: "memory-visible",
-              log_user_id: "user-1",
-              log_agent_id: null,
-              log_run_id: null,
-              log_access_type: "context_injection",
-              log_reason: "context build",
-              log_accessed_at: "2026-06-26T10:00:00.000Z",
-            },
-            {
-              ...hidden,
-              log_id: "22222222-2222-4222-8222-222222222222",
-              log_space_id: "space-1",
-              log_memory_id: "memory-hidden",
-              log_user_id: "user-2",
-              log_agent_id: null,
-              log_run_id: null,
-              log_access_type: "explicit_read",
-              log_reason: "hidden read",
-              log_accessed_at: "2026-06-26T09:00:00.000Z",
-            },
-          ],
-          rowCount: 2,
-        };
-      }
-      if (/FROM projects/.test(normalized)) {
-        return { rows: [{ id: "project-1", owner_user_id: "user-1" }], rowCount: 1 };
-      }
-      if (/FROM spaces/.test(normalized)) {
-        return { rows: [{ type: "household" }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 0 };
-    });
-    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    vi.mocked(getDbPool).mockReturnValue({
+      query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
+    } as never);
     app = buildServer(config(), { logger: false });
 
-    const res = await app.inject({
+    const response = await app.inject({
       method: "GET",
-      url: "/api/v1/memory/access-logs?limit=20&project_id=project-1",
+      url: "/api/v1/memory/access-logs",
     });
 
-    expect(res.statusCode, res.body).toBe(200);
-    expect(String(query.mock.calls[0]?.[0] ?? "")).not.toContain("m.content");
-    expect(String(query.mock.calls[0]?.[0] ?? "")).toContain("m.project_id");
-    expect(query.mock.calls[0]?.[1]).toContain("project-1");
-    expect(res.json()).toMatchObject({
-      limit: 20,
-      offset: 0,
-      returned: 1,
-      has_more: false,
-      items: [
-        {
-          id: "11111111-1111-4111-8111-111111111111",
-          memory_id: "memory-visible",
-          memory_title: "Visible",
-          access_type: "context_injection",
-          reason: "context build",
-        },
-      ],
-    });
-    expect(JSON.stringify(res.json())).not.toContain("Readable memory content");
-    expect(JSON.stringify(res.json())).not.toContain("Hidden");
-  });
-
-  it("offset-paginates currently readable memory access-log entries", async () => {
-    __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const first = row({ id: "memory-1", title: "First", owner_user_id: "user-1" });
-    const second = row({ id: "memory-2", title: "Second", owner_user_id: "user-1" });
-    const third = row({ id: "memory-3", title: "Third", owner_user_id: "user-1" });
-    const query = vi.fn(async (sql: string, params: readonly unknown[] = []) => {
-      const normalized = sql.replace(/\s+/g, " ").trim();
-      if (/FROM memory_access_logs/.test(normalized)) {
-        return {
-          rows: [
-            {
-              ...first,
-              log_id: "11111111-1111-4111-8111-111111111111",
-              log_space_id: "space-1",
-              log_memory_id: "memory-1",
-              log_user_id: "user-1",
-              log_agent_id: null,
-              log_run_id: null,
-              log_access_type: "maintenance_scan",
-              log_reason: "first",
-              log_accessed_at: "2026-06-26T10:00:00.000Z",
-            },
-            {
-              ...second,
-              log_id: "22222222-2222-4222-8222-222222222222",
-              log_space_id: "space-1",
-              log_memory_id: "memory-2",
-              log_user_id: "user-1",
-              log_agent_id: null,
-              log_run_id: null,
-              log_access_type: "maintenance_scan",
-              log_reason: "second",
-              log_accessed_at: "2026-06-26T09:00:00.000Z",
-            },
-            {
-              ...third,
-              log_id: "33333333-3333-4333-8333-333333333333",
-              log_space_id: "space-1",
-              log_memory_id: "memory-3",
-              log_user_id: "user-1",
-              log_agent_id: null,
-              log_run_id: null,
-              log_access_type: "maintenance_scan",
-              log_reason: "third",
-              log_accessed_at: "2026-06-26T08:00:00.000Z",
-            },
-          ],
-          rowCount: 3,
-        };
-      }
-      return { rows: [], rowCount: params.length };
-    });
-    vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
-
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/v1/memory/access-logs?limit=1&offset=1",
-    });
-
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toMatchObject({
-      limit: 1,
-      offset: 1,
-      returned: 1,
-      has_more: true,
-      items: [{ memory_id: "memory-2", memory_title: "Second" }],
-    });
-  });
-
-  it("includes workspace-scoped shared access-log entries only when workspace context is provided", async () => {
-    __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const workspaceShared = row({
-      id: "memory-workspace",
-      title: "Workspace memory",
-      owner_user_id: "user-2",
-      visibility: "space_shared",
-      project_folder_id: "workspace-1",
-    });
-    const query = vi.fn(async (sql: string) => {
-      const normalized = sql.replace(/\s+/g, " ").trim();
-      if (/FROM memory_access_logs/.test(normalized)) {
-        return {
-          rows: [
-            {
-              ...workspaceShared,
-              log_id: "33333333-3333-4333-8333-333333333333",
-              log_space_id: "space-1",
-              log_memory_id: "memory-workspace",
-              log_user_id: "user-1",
-              log_agent_id: null,
-              log_run_id: null,
-              log_access_type: "context_injection",
-              log_reason: "workspace context",
-              log_accessed_at: "2026-06-26T10:00:00.000Z",
-            },
-          ],
-          rowCount: 1,
-        };
-      }
-      return { rows: [], rowCount: 0 };
-    });
-    vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
-
-    const withoutWorkspace = await app.inject({
-      method: "GET",
-      url: "/api/v1/memory/access-logs?limit=20",
-    });
-    const withWorkspace = await app.inject({
-      method: "GET",
-      url: "/api/v1/memory/access-logs?limit=20&project_folder_id=workspace-1",
-    });
-
-    expect(withoutWorkspace.statusCode).toBe(200);
-    expect(withoutWorkspace.json().returned).toBe(0);
-    expect(withWorkspace.statusCode).toBe(200);
-    expect(withWorkspace.json()).toMatchObject({
-      returned: 1,
-      items: [{ memory_id: "memory-workspace", memory_title: "Workspace memory" }],
-    });
+    expect(response.statusCode, response.body).toBe(404);
   });
 
   it("creates a private report artifact and packet from a maintenance scan", async () => {
@@ -418,12 +233,11 @@ describe("Memory maintenance routes", () => {
       canonical_write_performed: false,
     });
 
-    const accessLog = db.calls.find((call) => /INSERT INTO memory_access_logs/.test(call.sql));
+    const accessLog = db.calls.find((call) => /INSERT INTO content_access_logs/.test(call.sql));
     expect(accessLog).toBeDefined();
-    expect(accessLog!.params[2]).toBe("memory-1");
-    expect(accessLog!.params[4]).toBe("maintenance_scan");
-    expect(accessLog!.params[9]).toBe("memory-2");
-    expect(accessLog!.params[11]).toBe("maintenance_scan");
+    expect(accessLog!.params[1]).toEqual(["memory-1", "memory-2"]);
+    expect(accessLog!.params[2]).toBe("memory");
+    expect(accessLog!.params[6]).toBe("maintenance_scan");
     expect(accessLog!.params).not.toContain("memory-3");
   });
 
@@ -522,6 +336,6 @@ describe("Memory maintenance routes", () => {
     expect(statements).toContain("BEGIN");
     expect(statements).toContain("ROLLBACK");
     expect(statements).not.toContain("COMMIT");
-    expect(db.calls.some((call) => /INSERT INTO memory_access_logs/.test(call.sql))).toBe(false);
+    expect(db.calls.some((call) => /INSERT INTO content_access_logs/.test(call.sql))).toBe(false);
   });
 });

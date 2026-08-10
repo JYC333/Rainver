@@ -3,7 +3,7 @@ export interface StructuredOutputContract {
   schema_id: string;
   schema: Record<string, unknown>;
   strict: true;
-  stage: "source_post_processing" | "question_refinement" | "synthesis" | "synthesis_critique";
+  stage: "source_post_processing" | "source_annotation" | "question_refinement" | "synthesis" | "synthesis_critique";
 }
 
 export const RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT: StructuredOutputContract = {

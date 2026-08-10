@@ -53,9 +53,6 @@ class RunCreateSqlShapeDb implements Queryable {
         rowCount: 1,
       };
     }
-    if (sql.includes("INSERT INTO context_snapshots")) {
-      return { rows: [], rowCount: 1 };
-    }
     if (sql.includes("FROM runs")) {
       const row: Partial<RunRecord> = {
         id: String(params[1] ?? "run-root"),
@@ -99,28 +96,27 @@ class RunCreateSqlShapeDb implements Queryable {
         runtime_profile_id: params[6] === null ? null : String(params[6]),
         run_role: String(params[4]) as "execution" | "coordinator",
         requested_runtime_profile_id: params[5] === null ? null : String(params[5]),
-        context_snapshot_id: String(params[7]),
         run_type: "agent",
         status: "queued",
-        mode: String(params[18]),
-        prompt: params[19] === null ? null : String(params[19]),
-        instruction: params[20] === null ? null : String(params[20]),
-        project_folder_id: params[8] === null ? null : String(params[8]),
-        session_id: params[9] === null ? null : String(params[9]),
-        parent_run_id: params[10] === null ? null : String(params[10]),
-        root_run_id: params[11] === null ? null : String(params[11]),
-        run_group_id: params[12] === null ? null : String(params[12]),
-        delegation_id: params[13] === null ? null : String(params[13]),
-        project_id: params[32] === null ? null : String(params[32]),
+        mode: String(params[17]),
+        prompt: params[18] === null ? null : String(params[18]),
+        instruction: params[19] === null ? null : String(params[19]),
+        project_folder_id: params[7] === null ? null : String(params[7]),
+        session_id: params[8] === null ? null : String(params[8]),
+        parent_run_id: params[9] === null ? null : String(params[9]),
+        root_run_id: params[10] === null ? null : String(params[10]),
+        run_group_id: params[11] === null ? null : String(params[11]),
+        delegation_id: params[12] === null ? null : String(params[12]),
+        project_id: params[31] === null ? null : String(params[31]),
         scheduled_at: null,
-        adapter_type: params[23] === null ? null : String(params[23]),
+        adapter_type: params[22] === null ? null : String(params[22]),
         capability_id: null,
         capabilities_json: [],
-        model_provider_id: params[26] === null ? null : String(params[26]),
+        model_provider_id: params[25] === null ? null : String(params[25]),
         model_override_json: null,
         runtime_profile_snapshot_json: {},
-        required_sandbox_level: String(params[29]),
-        trigger_origin: String(params[17]),
+        required_sandbox_level: String(params[28]),
+        trigger_origin: String(params[16]),
         instructed_by_user_id: "user-1",
         instructed_by_agent_id: null,
         error_message: null,
@@ -169,9 +165,6 @@ class RunCreateSqlShapeDb implements Queryable {
       };
       return { rows: [row as RunRecord as Row], rowCount: 1 };
     }
-    if (sql.includes("UPDATE context_snapshots")) {
-      return { rows: [], rowCount: 1 };
-    }
     if (sql.includes("INSERT INTO run_attempts")) {
       return { rows: [], rowCount: 1 };
     }
@@ -196,13 +189,13 @@ describe("PgRunRepository SQL shape", () => {
     expect(runInsert).toBeTruthy();
     const { columns, values } = insertColumnsAndValues(runInsert!.sql);
     expect(values).toHaveLength(columns.length);
-    expect(runInsert!.params).toHaveLength(37);
-    expect(runInsert!.params[35]).toBe("default");
-    expect(runInsert!.params[36]).toBe('{"tool_grants":[]}');
+    expect(runInsert!.params).toHaveLength(36);
+    expect(runInsert!.params[34]).toBe("default");
+    expect(runInsert!.params[35]).toBe('{"tool_grants":[]}');
     expect(columns.at(-1)).toBe("permission_snapshot_json");
-    expect(columns.slice(16, 19)).toEqual(["run_type", "trigger_origin", "status"]);
-    expect(values.slice(16, 19)).toEqual(["$17", "$18", "'queued'"]);
-    expect(runInsert!.params.slice(16, 19)).toEqual(["agent", "manual", "live"]);
+    expect(columns.slice(15, 18)).toEqual(["run_type", "trigger_origin", "status"]);
+    expect(values.slice(15, 18)).toEqual(["$16", "$17", "'queued'"]);
+    expect(runInsert!.params.slice(15, 18)).toEqual(["agent", "manual", "live"]);
   });
 
   it("persists an explicitly requested runtime profile without preselecting it", async () => {
@@ -221,8 +214,8 @@ describe("PgRunRepository SQL shape", () => {
     const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
     expect(runInsert?.params[5]).toBe("profile-1");
     expect(runInsert?.params[6]).toBeNull();
-    expect(runInsert?.params[23]).toBeNull();
-    expect(runInsert?.params[35]).toBe("explicit");
+    expect(runInsert?.params[22]).toBeNull();
+    expect(runInsert?.params[34]).toBe("explicit");
   });
 
   it("creates coordinator runs without physical attempts", async () => {
@@ -271,15 +264,7 @@ describe("PgRunRepository SQL shape", () => {
       trigger_origin: "manual",
     });
     const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
-    expect(runInsert?.params.slice(10, 13)).toEqual(["run-root", "run-root", "group-1"]);
-    const snapshotInsert = db.calls.find((call) => call.sql.includes("INSERT INTO context_snapshots"));
-    expect(JSON.parse(String(snapshotInsert?.params[4]))).toMatchObject({
-      root_run_id: "run-root",
-      run_group_id: "group-1",
-      budget_json: { max_fanout: 4 },
-      context_policy_json: { room: true },
-      user_message: "Continue the room",
-    });
+    expect(runInsert?.params.slice(9, 12)).toEqual(["run-root", "run-root", "group-1"]);
   });
 
   it("snapshots tool grants through the delegated child creation path", async () => {
@@ -305,7 +290,7 @@ describe("PgRunRepository SQL shape", () => {
       trigger_origin: "delegation",
     });
     const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
-    expect(runInsert?.params[36]).toBe('{"tool_grants":[]}');
+    expect(runInsert?.params[35]).toBe('{"tool_grants":[]}');
   });
 
   it("keeps agent identity fields on the running run returned for execution", async () => {

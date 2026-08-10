@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, stat } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
 import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService";
@@ -16,8 +15,6 @@ import { getDbPool } from "../src/db/pool";
 
 // Real-Postgres integration tests for Phase 12 (rate limiting, artifact
 // retention, and observability). Skips gracefully when Docker is unavailable.
-
-const SCHEMA = readFileSync(join(process.cwd(), "test/fixtures/sourceCustomSourceCreateFlowSchema.sql"), "utf8");
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
@@ -31,11 +28,11 @@ let available = false;
 
 beforeAll(async () => {
   try {
-    container = await getTestPostgres(__filename, { empty: true });
+    container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[source-custom-source-hardening] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -57,14 +54,19 @@ beforeEach(async () => {
               policy_decision_records, proposal_approvals, proposals, runs, space_memberships,
               source_handler_runs, source_handler_versions, source_recipe_versions, source_connections, source_connectors,
               scheduler_tasks, settings, artifacts, extraction_jobs, source_items,
-              source_snapshots, extracted_evidence, credentials`,
+              source_snapshots, extracted_evidence, credentials,
+              source_provider_connectors, source_providers, users, spaces CASCADE`,
   );
+  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', now(), now())`, [IDENTITY.userId]);
+  await pool.query(`INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, 'Space A', 'team', $2, now(), now())`, [IDENTITY.spaceId, IDENTITY.userId]);
   await pool.query(
     `INSERT INTO source_connectors (
        id, connector_key, display_name, connector_type, ingestion_mode, status,
        capabilities_json, created_at, updated_at
      ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
   );
+  await pool.query(`INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`);
+  await pool.query(`INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`);
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-hardening-artifacts-"));
   config = {
     ...loadConfig({}),
@@ -142,6 +144,11 @@ describe("generateHandler rate limit", () => {
     if (!available) return;
     const connectionA = await createDraftConnection();
     const identityB = { spaceId: SPACE_A, userId: "user-2" };
+    await pool!.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at)
+       VALUES ($1, 'Second User', 'active', now(), now())`,
+      [identityB.userId],
+    );
     await pool!.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,

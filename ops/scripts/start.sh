@@ -52,8 +52,13 @@ init_data_dirs() {
   install -d -m 700 "$MODE_ROOT/secrets"
   install -d -m 700 "$MODE_ROOT/artifacts"
   install -d -m 700 "$MODE_ROOT/cache"
+  install -d -m 700 "$MODE_ROOT/cache/runtime-homes"
+  install -d -m 700 "$MODE_ROOT/cache/conversation-runtime-homes"
+  install -d -m 700 "$MODE_ROOT/cache/login-homes"
   install -d -m 700 "$MODE_ROOT/run"
   install -d -m 700 "$MODE_ROOT/sandboxes"
+  install -d -m 700 "$MODE_ROOT/workspaces"
+  install -d -m 700 "$MODE_ROOT/runtime-tools"
 }
 
 # ── Ensure .env exists in mode root ───────────────────────────────────────────
@@ -134,7 +139,7 @@ DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 989)
 
 if ! docker image inspect "$SANDBOX_IMAGE" &>/dev/null; then
   echo "Building sandbox image ($SANDBOX_IMAGE)..."
-  docker build --network=host -t "$SANDBOX_IMAGE" "$REPO_ROOT/sandbox/"
+  docker build --network=host -f "$REPO_ROOT/sandbox/Dockerfile" -t "$SANDBOX_IMAGE" "$REPO_ROOT"
 fi
 
 ensure_server_image_for_migrations

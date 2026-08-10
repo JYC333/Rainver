@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import {
   ConversationBackendError,
   PgConversationBackendRepository,
@@ -44,6 +44,7 @@ beforeAll(async () => {
     });
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(
       `[conversation-backend-db] skipped — Docker/Postgres unavailable: ${
         error instanceof Error ? error.message : String(error)

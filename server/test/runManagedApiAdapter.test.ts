@@ -8,6 +8,8 @@ import {
 } from "../src/modules/runs/managedApiAdapter";
 import type { RetrievalToolService } from "../src/modules/retrieval/tool/service";
 import type { RunRecord } from "../src/modules/runs/repository";
+import type { InvocationDelivery } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts";
 import {
   __setProviderCommandStoreForTests,
   __setProviderHttpClientForTests,
@@ -15,6 +17,7 @@ import {
   type ProviderHttpClient,
 } from "../src/modules/providers";
 import { resolveTestUsageAttribution } from "./support/usageAttribution";
+import { executeRuntimeHost } from "../src/modules/runtimeHost";
 
 vi.mock("../src/db/pool", () => ({
   getDbPool: vi.fn(),
@@ -118,6 +121,37 @@ function fakeProviderStore(): ProviderCommandStore {
   } as unknown as ProviderCommandStore;
 }
 
+function invocationDelivery(id: string, prompt: string): InvocationDelivery {
+  const itemId = `item-${id}`;
+  const controlId = `control-${id}`;
+  const snapshotId = `snapshot-${id}`;
+  return {
+    id,
+    invocation_id: "run-1",
+    delivery_kind: "agent_task",
+    adapter_type: "model_api",
+    provider_id: "provider-1",
+    model: "gpt-4o-mini",
+    renderer_version: "managed.v1",
+    mode: "full",
+    planned_items: [{ item_id: itemId, semantic_role: "user_input", required: true }],
+    message_blocks: [{ semantic_role: "user_input", content: prompt, source_item_ids: [itemId] }],
+    control_ref: { type: "execution_control_snapshot", id: controlId },
+    sandbox_ref: null,
+    tool_grant_refs: [],
+    output_contract_ref: null,
+    expected_prompt_tokens: 4,
+    max_output_tokens: null,
+    snapshot_draft_ref: { type: "invocation_snapshot", id: snapshotId },
+    audit_refs: {
+      delivery_id: id,
+      invocation_snapshot_id: snapshotId,
+      execution_control_snapshot_id: controlId,
+      usage_source_id: `usage-${id}`,
+    },
+  };
+}
+
 describe("executeManagedApiNoToolAdapter", () => {
   it("builds an explicit no-tool runtime-host request and maps success", async () => {
     const calls: Array<Parameters<RuntimeHostExecutor>[1]> = [];
@@ -167,7 +201,6 @@ describe("executeManagedApiNoToolAdapter", () => {
         project_folder_id: null,
         trigger_origin: "manual",
         capability_id: null,
-        context_snapshot_id: null,
         max_tokens: 64,
         tool_mode: "disabled",
         tool_bindings: [],
@@ -200,6 +233,26 @@ describe("executeManagedApiNoToolAdapter", () => {
     });
   });
 
+  it("uses the accepted Delivery output reserve as the provider limit", async () => {
+    const calls: Array<Parameters<RuntimeHostExecutor>[1]> = [];
+    const delivery = {
+      ...invocationDelivery("delivery-budget", "Say hello"),
+      max_output_tokens: 23,
+    };
+    await executeManagedApiNoToolAdapter(
+      config(),
+      { run: run(), model: "gpt-4o-mini", max_tokens: 64, invocation_delivery: delivery },
+      {
+        executeRuntimeHost: async (_config, request) => {
+          calls.push(request);
+          return runtimeHostSuccess({ output_text: "done" });
+        },
+      },
+    );
+
+    expect(calls).toEqual([expect.objectContaining({ max_tokens: 23 })]);
+  });
+
   it("honors the model persisted by routing when the worker request omits it", async () => {
     const calls: Array<{ model?: string | null }> = [];
     const executor: RuntimeHostExecutor = async (_config, request) => {
@@ -223,13 +276,67 @@ describe("executeManagedApiNoToolAdapter", () => {
       };
     };
 
-    await executeManagedApiNoToolAdapter(
+    const result = await executeManagedApiNoToolAdapter(
       config(),
       { run: run({ model_override_json: { model: "routed-model" } }) },
       { executeRuntimeHost: executor },
     );
 
     expect(calls).toEqual([expect.objectContaining({ model: "routed-model" })]);
+    expect(result.metadata_json).toMatchObject({
+      model_provider_id: "provider-1",
+      requested_model_provider_id: "provider-1",
+      model: "routed-model",
+    });
+  });
+
+  it("preserves actual and requested provider evidence from the runtime host", async () => {
+    const executor: RuntimeHostExecutor = async () => ({
+      success: true,
+      stdout: "fallback output",
+      stderr: "",
+      output_text: "fallback output",
+      output_json: {},
+      exit_code: 0,
+      error_text: null,
+      error_code: null,
+      started_at: "2026-06-12T10:00:00.000Z",
+      completed_at: "2026-06-12T10:00:01.000Z",
+      model: "fallback-model",
+      usage: null,
+      events: [],
+      adapter_metadata: {
+        adapter_type: "ts_agent_host",
+        model_provider_id: "provider-2",
+        requested_model_provider_id: "provider-1",
+        model: "fallback-model",
+      },
+      adapter_log_json: null,
+    });
+
+    const result = await executeManagedApiNoToolAdapter(
+      config(),
+      { run: run({ model_provider_id: "provider-1" }) },
+      { executeRuntimeHost: executor },
+    );
+
+    expect(result.metadata_json).toMatchObject({
+      model_provider_id: "provider-2",
+      requested_model_provider_id: "provider-1",
+      model: "fallback-model",
+    });
+    expect(result.runtime_events).toContainEqual({
+      schema_version: "runtime_event.v1",
+      type: "warning",
+      occurred_at: "2026-06-12T10:00:01.000Z",
+      call_id: null,
+      summary: "Managed model invocation used a fallback Provider.",
+      metadata_json: {
+        event_code: "model_provider_mismatch",
+        model_provider_id: "provider-2",
+        requested_model_provider_id: "provider-1",
+      },
+    });
   });
 
   it("passes native chat messages to runtime-host for managed API runs", async () => {
@@ -685,6 +792,34 @@ describe("executeManagedApiNoToolAdapter", () => {
     });
   });
 
+  it("does not inject adapter-side retrieval preflight into a Delivery-backed call", async () => {
+    mockRetrievalSettingsPool({ retrieval_tool_mode: "preflight_brief" });
+    __setProviderCommandStoreForTests(fakeProviderStore());
+    const calls: Array<Parameters<RuntimeHostExecutor>[1]> = [];
+    const toolBrief = vi.fn();
+
+    await executeManagedApiNoToolAdapter(
+      config(),
+      {
+        run: run({
+          instructed_by_user_id: "user-1",
+          runtime_config_json: { retrieval_tool_mode: "preflight_brief" },
+        }),
+        invocation_delivery: invocationDelivery("delivery-preflight", "Planned Gateway context"),
+      },
+      {
+        executeRuntimeHost: async (_config, request) => {
+          calls.push(request);
+          return runtimeHostSuccess({ output_text: "planned answer" });
+        },
+        retrievalToolService: { toolBrief } as unknown as RetrievalToolService,
+      },
+    );
+
+    expect(toolBrief).not.toHaveBeenCalled();
+    expect(calls[0]?.messages).toEqual([{ role: "user", content: "Planned Gateway context" }]);
+  });
+
   it("runs a governed retrieval search preflight without exposing manual tool bindings", async () => {
     const calls: unknown[] = [];
     const toolActors: unknown[] = [];
@@ -907,6 +1042,13 @@ describe("executeManagedApiNoToolAdapter", () => {
     const pool = mockDomainRetrievalToolPool({ retrieval_tool_mode: "manual_tool_only" });
     __setProviderCommandStoreForTests(fakeProviderStore());
     const calls: unknown[] = [];
+    const firstDelivery = invocationDelivery("delivery-1", "First accepted context");
+    const secondDelivery = invocationDelivery("delivery-2", "Second accepted context");
+    const invocationAttempts: RunInvocationAttemptLifecycle = {
+      prepare: vi.fn(async () => secondDelivery),
+      acknowledge: vi.fn(async () => ({} as never)),
+      finalize: vi.fn(async () => ({} as never)),
+    };
     const executor: RuntimeHostExecutor = async (_config, request) => {
       calls.push(request);
       if (calls.length === 1) {
@@ -942,6 +1084,8 @@ describe("executeManagedApiNoToolAdapter", () => {
           },
         }),
         model: "gpt-4o-mini",
+        invocation_delivery: firstDelivery,
+        invocation_attempts: invocationAttempts,
       },
       { executeRuntimeHost: executor },
     );
@@ -963,6 +1107,18 @@ describe("executeManagedApiNoToolAdapter", () => {
     expect(pool.auditWrites).toHaveLength(1);
     expect(pool.auditWrites[0]?.[4]).toBe("memory.retrieval.search");
     expect(pool.auditWrites[0]?.[7]).toBe("allow");
+    expect(invocationAttempts.prepare).toHaveBeenCalledTimes(1);
+    expect(invocationAttempts.acknowledge).toHaveBeenCalledTimes(2);
+    expect(invocationAttempts.finalize).toHaveBeenCalledTimes(2);
+    expect((calls[0] as { invocation_audit_refs?: { delivery_id: string } }).invocation_audit_refs?.delivery_id)
+      .toBe("delivery-1");
+    expect((calls[1] as { invocation_audit_refs?: { delivery_id: string } }).invocation_audit_refs?.delivery_id)
+      .toBe("delivery-2");
+    expect((calls[1] as { messages?: Array<{ role: string; content?: string | null }> }).messages)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "Second accepted context" }),
+        expect.objectContaining({ role: "tool" }),
+      ]));
     expect(result).toMatchObject({
       success: true,
       output_text: "final memory answer",
@@ -977,6 +1133,24 @@ describe("executeManagedApiNoToolAdapter", () => {
         ],
       },
     });
+  });
+
+  it("does not relabel lifecycle persistence failures as transport failures", async () => {
+    const delivery = invocationDelivery("delivery-lifecycle", "Accepted context");
+    const attempts: RunInvocationAttemptLifecycle = {
+      prepare: vi.fn(async () => delivery),
+      acknowledge: vi.fn(async () => { throw new Error("ack persistence failed"); }),
+      finalize: vi.fn(async () => ({} as never)),
+    };
+
+    await expect(executeManagedApiNoToolAdapter(
+      config(),
+      { run: run(), invocation_delivery: delivery, invocation_attempts: attempts },
+      { executeRuntimeHost: async () => runtimeHostSuccess({ output_text: "done" }) },
+    )).rejects.toThrow("ack persistence failed");
+
+    expect(attempts.acknowledge).toHaveBeenCalledTimes(1);
+    expect(attempts.finalize).not.toHaveBeenCalled();
   });
 
   it("returns an audited requestable denial for an unapproved grantable action", async () => {
@@ -1551,10 +1725,11 @@ describe("executeManagedApiNoToolAdapter", () => {
     __setProviderCommandStoreForTests(emptyCredentialStore(calls));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
 
-    const result = await executeManagedApiNoToolAdapter(config(), {
-      run: run(),
-      model: "gpt-4o-mini",
-    });
+    const result = await executeManagedApiNoToolAdapter(
+      config(),
+      { run: run(), model: "gpt-4o-mini" },
+      { executeRuntimeHost: (runtimeConfig, request) => executeRuntimeHost(runtimeConfig, request) },
+    );
 
     expect(result).toMatchObject({
       success: false,
@@ -1563,6 +1738,7 @@ describe("executeManagedApiNoToolAdapter", () => {
     });
     expect(calls).toEqual(["task:runtime_host", "target:provider-1"]);
   });
+
 });
 
 function emptyCredentialStore(calls: string[]): ProviderCommandStore {
@@ -1661,6 +1837,12 @@ class DomainRetrievalToolFakePool implements Queryable {
     if (sql.includes("INSERT INTO policy_decision_records")) {
       (this.auditWrites as unknown[][]).push([...params]);
       return rows([{ id: `policy-${this.auditWrites.length}` }] as Row[]);
+    }
+    if (sql.includes("UPDATE memory_entries") && sql.includes("access_count")) {
+      return rows([]);
+    }
+    if (sql.includes("INSERT INTO content_access_logs")) {
+      return rows([]);
     }
     if (sql.includes("FROM action_approval_grants")) {
       return rows([]);

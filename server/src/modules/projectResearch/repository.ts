@@ -3,6 +3,7 @@ import {
   HttpError,
   dateIso,
   objectValue,
+  optionalObject,
   optionalString,
   withQueryableTransaction,
   type Queryable,
@@ -14,6 +15,8 @@ import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutatio
 import { ProjectCorpusRepository } from "../projects/corpusRepository";
 import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
 import { PgUsageRepository, type UsageRunSummaryRecord } from "../usage/repository";
+import { availableProjectDomainCriteria, loadProjectScreeningCriteria } from "./screeningCriteria";
+import { researchWorkflowProjection } from "./workflowOntology";
 
 const CHECKPOINT_TYPES = new Set(["screening_gate", "idea_review", "integrity_gate", "manuscript_gate", "review_gate", "other"]);
 const SCREENING_REVIEW_ITEM_LIMIT = 200;
@@ -27,10 +30,8 @@ const RESEARCH_ANNOTATION_ACCESS = contentResourceDefinition("reader_annotation"
 interface WorkflowRow {
   id: string;
   project_id: string;
-  workflow_type: string;
   current_stage: string | null;
   status: string;
-  mode: string;
   state_json: unknown;
   primary_thread_id: string | null;
   started_by_user_id: string | null;
@@ -101,12 +102,13 @@ interface ScreeningReviewSummaryRow {
 }
 
 /**
- * A source item is an ingestion record. A paper can have more than one of
+ * A source item is an ingestion record. One material item can have more than
+ * one of
  * those records when a scan is retried, a backfill window overlaps, or the
  * same work is found through more than one channel. Review surfaces must
- * operate on the stable paper identity instead of the ingestion record ID.
+ * operate on stable material identity instead of the ingestion record ID.
  */
-function screeningPaperIdentitySql(alias = "si"): string {
+function screeningMaterialIdentitySql(alias = "si"): string {
   return `CASE
     WHEN NULLIF(${alias}.metadata_json->>'arxiv_id', '') IS NOT NULL
       THEN 'arxiv:' || lower(regexp_replace(regexp_replace(${alias}.metadata_json->>'arxiv_id', '^arxiv:', '', 'i'), 'v[0-9]+$', '', 'i'))
@@ -125,12 +127,12 @@ function screeningPaperIdentitySql(alias = "si"): string {
 
 /**
  * Build the common read model used by the screening list and its summary.
- * `source_papers` de-duplicates source ingestion records, while
+ * `source_material` de-duplicates source ingestion records, while
  * `corpus_candidates` preserves all corpus rows long enough to merge full-text
  * and evidence availability before selecting the best row for display.
  */
-function screeningPaperReviewCtes(): string {
-  const sourcePaperKey = screeningPaperIdentitySql("si");
+function screeningMaterialReviewCtes(): string {
+  const sourceMaterialKey = screeningMaterialIdentitySql("si");
   return `WITH source_items_scoped AS (
            SELECT si.id AS source_item_id,
                   si.title,
@@ -141,17 +143,17 @@ function screeningPaperReviewCtes(): string {
                   si.content_state,
                   si.last_seen_at,
                   si.updated_at,
-                  ${sourcePaperKey} AS paper_key
+                  ${sourceMaterialKey} AS material_key
              FROM source_items si
             WHERE si.space_id=$1
               AND si.deleted_at IS NULL
               AND si.id=ANY($3::text[])
-         ), source_papers AS (
-           SELECT DISTINCT ON (paper_key) *
+         ), source_material AS (
+           SELECT DISTINCT ON (material_key) *
              FROM source_items_scoped
-            ORDER BY paper_key, last_seen_at DESC NULLS LAST, updated_at DESC NULLS LAST, source_item_id ASC
+            ORDER BY material_key, last_seen_at DESC NULLS LAST, updated_at DESC NULLS LAST, source_item_id ASC
          ), corpus_candidates AS (
-           SELECT ${screeningPaperIdentitySql("si")} AS paper_key,
+           SELECT ${screeningMaterialIdentitySql("si")} AS material_key,
                   pcis.source_item_id,
                   pci.object_id,
                   pci.evidence_id,
@@ -176,9 +178,9 @@ function screeningPaperReviewCtes(): string {
               AND pci.status='active'
               AND pcis.source_item_id=ANY($3::text[])
          ), corpus_best AS (
-           SELECT DISTINCT ON (paper_key) *
+           SELECT DISTINCT ON (material_key) *
              FROM corpus_candidates
-            ORDER BY paper_key,
+            ORDER BY material_key,
                      triage_confirmed_by_user DESC,
                      (source_decision_id IS NOT NULL) DESC,
                      (object_id IS NOT NULL) DESC,
@@ -186,14 +188,14 @@ function screeningPaperReviewCtes(): string {
                      updated_at DESC NULLS LAST,
                      id ASC
          ), corpus_features AS (
-           SELECT paper_key,
+           SELECT material_key,
                   bool_or(object_id IS NOT NULL) AS has_full_text,
                   bool_or(evidence_id IS NOT NULL) AS has_evidence,
                   bool_or(metadata_json->>'processing_status'='failed') AS has_failed_item
              FROM corpus_candidates
-            GROUP BY paper_key
-         ), paper_rows AS (
-           SELECT sp.paper_key,
+            GROUP BY material_key
+         ), material_rows AS (
+           SELECT sp.material_key,
                   sp.source_item_id,
                   sp.title,
                   sp.source_uri,
@@ -211,9 +213,9 @@ function screeningPaperReviewCtes(): string {
                   COALESCE(cf.has_full_text, false) AS has_full_text,
                   COALESCE(cf.has_evidence, false) AS has_evidence,
                   COALESCE(cf.has_failed_item, false) AS has_failed_item
-             FROM source_papers sp
-             LEFT JOIN corpus_best cb ON cb.paper_key=sp.paper_key
-             LEFT JOIN corpus_features cf ON cf.paper_key=sp.paper_key
+             FROM source_material sp
+             LEFT JOIN corpus_best cb ON cb.material_key=sp.material_key
+             LEFT JOIN corpus_features cf ON cf.material_key=sp.material_key
          ) `;
 }
 
@@ -231,11 +233,6 @@ interface ClaimLinkRow {
   created_at: unknown;
   updated_at: unknown;
 }
-
-const WORKFLOW_COLUMNS = `
-  id, project_id, workflow_type, current_stage, status, mode, state_json,
-  primary_thread_id, started_by_user_id, started_run_id, created_at, updated_at
-`;
 
 const CLAIM_LINK_SELECT = `
   pcl.id, pcl.project_id, pcl.workflow_id, pcl.claim_id, pcl.support_status,
@@ -256,10 +253,8 @@ function workflowOut(row: WorkflowRow): Record<string, unknown> {
   return {
     id: row.id,
     project_id: row.project_id,
-    workflow_type: row.workflow_type,
     current_stage: row.current_stage,
     status: row.status,
-    mode: row.mode,
     state_json: objectValue(row.state_json),
     primary_thread_id: row.primary_thread_id,
     started_by_user_id: row.started_by_user_id,
@@ -367,11 +362,13 @@ export class ProjectResearchRepository {
 
   async listWorkflows(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    const workflow = researchWorkflowProjection({ viewerPlaceholder: "$3" });
     const result = await this.db.query<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLUMNS} FROM project_research_workflows
-        WHERE space_id = $1 AND project_id = $2
-        ORDER BY created_at DESC, id ASC`,
-      [identity.spaceId, projectId],
+      `SELECT ${workflow.columns} FROM ${workflow.from}
+        WHERE w.space_id = $1 AND w.project_id = $2
+          AND ${workflow.visibilityPredicate}
+        ORDER BY workflow_object.created_at DESC,w.object_id ASC`,
+      [identity.spaceId, projectId, identity.userId],
     );
     return result.rows.map(workflowOut);
   }
@@ -458,14 +455,17 @@ export class ProjectResearchRepository {
     // context in the same statement trips "inconsistent types deduced for
     // parameter" on this pg version/driver combination.
     await this.db.query(
-      `UPDATE project_research_workflows
+      `WITH changed AS (
+        UPDATE project_research_workflows
           SET current_stage = $4,
               state_json = jsonb_set(
                 jsonb_set(coalesce(state_json, '{}'::jsonb), '{stages}', coalesce(state_json->'stages', '{}'::jsonb), true),
                 ARRAY['stages', $5], $6::jsonb, true
-              ),
-              updated_at = $7
-        WHERE space_id = $1 AND project_id = $2 AND id = $3`,
+              )
+        WHERE space_id = $1 AND project_id = $2 AND object_id = $3
+        RETURNING object_id,space_id
+      ) UPDATE space_objects object SET updated_at=$7
+          FROM changed WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [identity.spaceId, projectId, workflowId, stageKey, stageKey, JSON.stringify(stageEntry), now],
     );
     const updated = await this.workflowRow(identity.spaceId, projectId, workflowId);
@@ -474,9 +474,10 @@ export class ProjectResearchRepository {
   }
 
   private async workflowRow(spaceId: string, projectId: string, workflowId: string): Promise<WorkflowRow | null> {
+    const workflow = researchWorkflowProjection();
     const result = await this.db.query<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLUMNS} FROM project_research_workflows
-        WHERE space_id = $1 AND project_id = $2 AND id = $3 LIMIT 1`,
+      `SELECT ${workflow.columns} FROM ${workflow.from}
+        WHERE w.space_id = $1 AND w.project_id = $2 AND w.object_id = $3 LIMIT 1`,
       [spaceId, projectId, workflowId],
     );
     return result.rows[0] ?? null;
@@ -549,10 +550,10 @@ export class ProjectResearchRepository {
         const review = await this.checkpointReview(identity.spaceId, projectId, row);
         const processingStatus = optionalString(objectValue(review?.summary).processing_status);
         if (processingStatus === "incomplete") {
-          throw new HttpError(409, "Screening is not complete; wait for every paper to receive an AI classification before approving this batch");
+          throw new HttpError(409, "Screening is not complete; wait for every item to receive an AI classification before approving this batch");
         }
         if (processingStatus === "empty") {
-          throw new HttpError(409, "No papers matched this search window; revise the search query or date range and rescan before continuing");
+          throw new HttpError(409, "No material matched this search window; revise the search query or date range and rescan before continuing");
         }
       }
     }
@@ -602,7 +603,7 @@ export class ProjectResearchRepository {
       const [items, corpusSummary, decisionCoverage, usage] = await Promise.all([
         sourceItemIds.length
           ? this.db.query<ScreeningReviewItemRow>(
-            `${screeningPaperReviewCtes()}
+            `${screeningMaterialReviewCtes()}
              SELECT source_item_id,
                     title,
                     source_uri,
@@ -619,7 +620,7 @@ export class ProjectResearchRepository {
                     ai_reason,
                     has_full_text,
                     has_evidence
-               FROM paper_rows
+               FROM material_rows
               ORDER BY
               CASE COALESCE(ai_relevance, relevance, triage_status)
                 WHEN 'relevant' THEN 0
@@ -636,7 +637,7 @@ export class ProjectResearchRepository {
           : Promise.resolve({ rows: [] as ScreeningReviewItemRow[] }),
         sourceItemIds.length
           ? this.db.query<ScreeningReviewSummaryRow>(
-              `${screeningPaperReviewCtes()}
+              `${screeningMaterialReviewCtes()}
                SELECT count(*)::int AS total,
                       count(*) FILTER (WHERE COALESCE(ai_relevance, relevance, triage_status) IN ('relevant','included'))::int AS relevant,
                       count(*) FILTER (WHERE COALESCE(ai_relevance, relevance, triage_status)='maybe')::int AS maybe,
@@ -644,13 +645,13 @@ export class ProjectResearchRepository {
                       count(*) FILTER (WHERE NOT has_full_text)::int AS missing_full_text,
                       count(*) FILTER (WHERE has_evidence)::int AS evidence_count,
                       count(*) FILTER (WHERE has_failed_item)::int AS failed_items
-                 FROM paper_rows`,
+                 FROM material_rows`,
               [spaceId, projectId, sourceItemIds],
             )
           : Promise.resolve({ rows: [] as ScreeningReviewSummaryRow[] }),
         sourceItemIds.length
           ? this.db.query<{ classified: string }>(
-              `SELECT count(DISTINCT ${screeningPaperIdentitySql("si")})::int AS classified
+              `SELECT count(DISTINCT ${screeningMaterialIdentitySql("si")})::int AS classified
                  FROM source_post_processing_item_decisions d
                  JOIN source_items si
                    ON si.space_id=d.space_id AND si.id=d.source_item_id AND si.deleted_at IS NULL
@@ -685,10 +686,10 @@ export class ProjectResearchRepository {
       return {
         type: "screening",
         title: "Screening results",
-        description: "Confirm that this screening batch is complete and worth moving into the literature matrix and synthesis.",
+        description: "Confirm that this screening batch is complete and worth moving into the evidence matrix and synthesis.",
         decision_scope: "batch",
         decision_help: isEmpty
-          ? "No papers matched this search window. Synthesis is paused; revise the search query or date range and rescan before continuing."
+          ? "No material matched this search window. Synthesis is paused; revise the search query or date range and rescan before continuing."
           : "Approve accepts the completed batch and starts synthesis. Reject keeps it out of the formal outputs so the search or screening criteria can be revised.",
         summary,
         usage,
@@ -697,11 +698,11 @@ export class ProjectResearchRepository {
           label: isEmpty ? "Rescan empty windows" : "Generate synthesis",
           description: isEmpty
             ? "Update the source query or date range, then rescan the empty windows. No synthesis run will be started for an empty corpus."
-            : "Approval will build or refresh the literature matrix and spend additional model budget on the synthesis and idea candidates.",
+            : "Approval will build or refresh the evidence matrix and spend additional model budget on the synthesis and idea candidates.",
         },
         items: items.rows.map((item) => ({
           source_item_id: item.source_item_id,
-          title: item.title ?? "Untitled paper",
+          title: item.title ?? "Untitled material",
           source_uri: item.source_uri,
           external_id: item.source_external_id,
           author: item.author,
@@ -743,7 +744,7 @@ export class ProjectResearchRepository {
         next_step: {
           key: "monitoring",
           label: "Activate monitoring",
-          description: "Approval makes this idea batch part of the workflow record and activates ongoing literature monitoring.",
+          description: "Approval makes this idea batch part of the workflow record and activates ongoing source monitoring.",
         },
         items: ideas.slice(0, 50).map((idea) => ({
           title: optionalString(idea.title) ?? "Untitled idea",
@@ -876,7 +877,7 @@ export class ProjectResearchRepository {
   }
 
   /**
-   * V1 checks: citation existence for cited papers, claim has evidence or
+   * V1 checks: citation existence for readable Project corpus objects, claim has evidence or
    * an explicit gap, evidence source is visible in the project corpus, and
    * experiment-backed claims reference a real Experiment Definition
    * (modules/experiments).
@@ -920,19 +921,28 @@ export class ProjectResearchRepository {
         ? link.planned_experiment_ids_json.filter((v): v is string => typeof v === "string")
         : [];
 
-      for (const paperObjectId of citationAnchors) {
+      for (const citedObjectId of citationAnchors) {
         const exists = await this.db.query<{ object_id: string }>(
-          `SELECT ap.object_id FROM academic_papers ap
-             JOIN space_objects so ON so.id = ap.object_id AND so.space_id = ap.space_id
-            WHERE ap.space_id = $1 AND ap.object_id = $2 AND so.deleted_at IS NULL LIMIT 1`,
-          [spaceId, paperObjectId],
+          `SELECT pci.object_id
+             FROM project_corpus_items pci
+             JOIN space_objects so
+               ON so.id = pci.object_id
+              AND so.space_id = pci.space_id
+              AND so.deleted_at IS NULL
+            WHERE pci.space_id = $1
+              AND pci.project_id = $2
+              AND pci.object_id = $3
+              AND pci.status = 'active'
+              AND ${contentReadSql("space_object", "so", "$4")}
+            LIMIT 1`,
+          [spaceId, projectId, citedObjectId, viewerUserId],
         );
         if (!exists.rows[0]) {
           findings.push({
             severity: "high",
             claim_link_id: link.id,
             code: "citation_not_found",
-            message: `Cited paper ${paperObjectId} does not exist in this space`,
+            message: `Cited material ${citedObjectId} is not readable in this Project corpus`,
           });
         }
       }
@@ -968,8 +978,8 @@ export class ProjectResearchRepository {
 
       for (const experimentDefinitionId of plannedExperimentIds) {
         const definition = await this.db.query<{ id: string }>(
-          `SELECT id FROM experiment_definitions
-            WHERE space_id = $1 AND project_id = $2 AND id = $3 LIMIT 1`,
+          `SELECT object_id AS id FROM experiment_definitions
+            WHERE space_id = $1 AND project_id = $2 AND object_id = $3 LIMIT 1`,
           [spaceId, projectId, experimentDefinitionId],
         );
         if (!definition.rows[0]) {
@@ -1155,13 +1165,13 @@ export class ProjectResearchRepository {
     return result.rows[0] ?? null;
   }
 
-  // --- Literature matrix / synthesis ---------------------------------------
+  // --- Evidence matrix / synthesis -----------------------------------------
   //
-  // Thin read model over the existing Project Corpus (relevant/included/maybe papers).
-  // The route contract stays stable as the backing query gains richer academic
+  // Thin read model over the existing Project Corpus (relevant/included/maybe material).
+  // The route contract stays stable as academic profiles add richer
   // metadata, extracted evidence, and annotations.
 
-  async getLiteratureMatrix(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
+  async getEvidenceMatrix(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const result = await this.db.query<{
       id: string;
@@ -1321,17 +1331,22 @@ export class ProjectResearchRepository {
     }));
   }
 
-  async rebuildLiteratureMatrix(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
+  async rebuildEvidenceMatrix(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await new ProjectCorpusRepository(this.db).backfillFromSources(identity, projectId);
-    return this.getLiteratureMatrix(identity, projectId);
+    return this.getEvidenceMatrix(identity, projectId);
   }
 
   // --- Screening criteria ---------------------------------------------------------
 
   async getScreeningCriteria(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const row = await this.screeningCriteriaRow(identity.spaceId, projectId);
-    return row ? screeningCriteriaOut(row) : emptyScreeningCriteria(projectId);
+    const [row, availableDomainCriteria] = await Promise.all([
+      this.screeningCriteriaRow(identity.spaceId, projectId),
+      availableProjectDomainCriteria(this.db, identity.spaceId, projectId),
+    ]);
+    return row
+      ? screeningCriteriaOut(row, availableDomainCriteria)
+      : emptyScreeningCriteria(projectId, availableDomainCriteria);
   }
 
   async upsertScreeningCriteria(
@@ -1342,8 +1357,8 @@ export class ProjectResearchRepository {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const includeKeywords = stringArray(body.include_keywords);
     const excludeKeywords = stringArray(body.exclude_keywords);
-    const methods = stringArray(body.methods);
-    const venues = stringArray(body.venues);
+    const domainCriteria = await this.validatedDomainCriteria(identity.spaceId, projectId, body.domain_criteria);
+    const sourceRestrictions = stringArray(body.source_restrictions);
     const requiredEvidenceFields = stringArray(body.required_evidence_fields);
     const dateRangeStart = optionalString(body.date_range_start);
     const dateRangeEnd = optionalString(body.date_range_end);
@@ -1354,17 +1369,17 @@ export class ProjectResearchRepository {
     const id = randomUUID();
     await this.db.query(
       `INSERT INTO project_research_screening_criteria (
-         id, space_id, project_id, include_keywords_json, exclude_keywords_json, methods_json,
-         date_range_start, date_range_end, venues_json, required_evidence_fields_json,
+         id, space_id, project_id, include_keywords_json, exclude_keywords_json, domain_criteria_json,
+         date_range_start, date_range_end, source_restrictions_json, required_evidence_fields_json,
          created_at, updated_at
        ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9::jsonb, $10::jsonb, $11, $11)
        ON CONFLICT (space_id, project_id)
        DO UPDATE SET include_keywords_json = EXCLUDED.include_keywords_json,
                      exclude_keywords_json = EXCLUDED.exclude_keywords_json,
-                     methods_json = EXCLUDED.methods_json,
+                     domain_criteria_json = EXCLUDED.domain_criteria_json,
                      date_range_start = EXCLUDED.date_range_start,
                      date_range_end = EXCLUDED.date_range_end,
-                     venues_json = EXCLUDED.venues_json,
+                     source_restrictions_json = EXCLUDED.source_restrictions_json,
                      required_evidence_fields_json = EXCLUDED.required_evidence_fields_json,
                      updated_at = EXCLUDED.updated_at`,
       [
@@ -1373,23 +1388,76 @@ export class ProjectResearchRepository {
         projectId,
         JSON.stringify(includeKeywords),
         JSON.stringify(excludeKeywords),
-        JSON.stringify(methods),
+        JSON.stringify(domainCriteria),
         dateRangeStart,
         dateRangeEnd,
-        JSON.stringify(venues),
+        JSON.stringify(sourceRestrictions),
         JSON.stringify(requiredEvidenceFields),
         now,
       ],
     );
     const row = await this.screeningCriteriaRow(identity.spaceId, projectId);
     if (!row) throw new HttpError(500, "Failed to upsert screening criteria");
-    return screeningCriteriaOut(row);
+    const [availableDomainCriteria, effectiveCriteria] = await Promise.all([
+      availableProjectDomainCriteria(this.db, identity.spaceId, projectId),
+      loadProjectScreeningCriteria(this.db, identity.spaceId, projectId),
+    ]);
+    await this.db.query(
+      `UPDATE source_post_processing_rules
+          SET input_config_json = jsonb_set(
+                COALESCE(input_config_json, '{}'::jsonb),
+                '{relevance_profile}',
+                COALESCE(input_config_json->'relevance_profile', '{}'::jsonb)
+                  || jsonb_build_object('project_criteria', $3::jsonb),
+                true
+              ),
+              updated_at = $4
+        WHERE space_id = $1 AND project_id = $2 AND status <> 'archived'`,
+      [identity.spaceId, projectId, JSON.stringify(effectiveCriteria), now],
+    );
+    return screeningCriteriaOut(row, availableDomainCriteria);
+  }
+
+  /**
+   * `domain_criteria` accepts exactly the keys the Project's bound extraction
+   * profiles declare (R4/D12).
+   *
+   * This is the difference between a domain criterion and free-form JSON: the
+   * profile that understands the domain says which axes exist, so a criterion
+   * cannot be stored against a Project that has no way to evaluate it. An
+   * unknown key is refused with the legal set named, because the alternative —
+   * accepting and ignoring it — looks identical to working.
+   *
+   * Each value is a string list, the same shape the keyword criteria use.
+   */
+  private async validatedDomainCriteria(
+    spaceId: string,
+    projectId: string,
+    value: unknown,
+  ): Promise<Record<string, string[]>> {
+    const requested = optionalObject(value) ?? {};
+    const keys = Object.keys(requested);
+    if (keys.length === 0) return {};
+    const legal = new Set(await availableProjectDomainCriteria(this.db, spaceId, projectId));
+    const criteria: Record<string, string[]> = {};
+    for (const key of keys) {
+      if (!legal.has(key)) {
+        throw new HttpError(
+          422,
+          legal.size === 0
+            ? `No source bound to this project declares domain criteria, so ${key} cannot be screened on`
+            : `Unknown domain criterion ${key}; this project's sources declare ${[...legal].sort().join(", ")}`,
+        );
+      }
+      criteria[key] = stringArray(requested[key]);
+    }
+    return criteria;
   }
 
   private async screeningCriteriaRow(spaceId: string, projectId: string): Promise<ScreeningCriteriaRow | null> {
     const result = await this.db.query<ScreeningCriteriaRow>(
-      `SELECT id, project_id, include_keywords_json, exclude_keywords_json, methods_json,
-              date_range_start, date_range_end, venues_json, required_evidence_fields_json,
+      `SELECT id, project_id, include_keywords_json, exclude_keywords_json, domain_criteria_json,
+              date_range_start, date_range_end, source_restrictions_json, required_evidence_fields_json,
               created_at, updated_at
          FROM project_research_screening_criteria
         WHERE space_id = $1 AND project_id = $2 LIMIT 1`,
@@ -1404,10 +1472,10 @@ interface ScreeningCriteriaRow {
   project_id: string;
   include_keywords_json: unknown;
   exclude_keywords_json: unknown;
-  methods_json: unknown;
+  domain_criteria_json: unknown;
   date_range_start: unknown;
   date_range_end: unknown;
-  venues_json: unknown;
+  source_restrictions_json: unknown;
   required_evidence_fields_json: unknown;
   created_at: unknown;
   updated_at: unknown;
@@ -1421,32 +1489,38 @@ function jsonStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function screeningCriteriaOut(row: ScreeningCriteriaRow): Record<string, unknown> {
+function screeningCriteriaOut(row: ScreeningCriteriaRow, availableDomainCriteria: string[]): Record<string, unknown> {
+  const available = new Set(availableDomainCriteria);
+  const domainCriteria = Object.fromEntries(
+    Object.entries(objectValue(row.domain_criteria_json)).filter(([key]) => available.has(key)),
+  );
   return {
     id: row.id,
     project_id: row.project_id,
     include_keywords: jsonStringArray(row.include_keywords_json),
     exclude_keywords: jsonStringArray(row.exclude_keywords_json),
-    methods: jsonStringArray(row.methods_json),
+    domain_criteria: domainCriteria,
+    available_domain_criteria: availableDomainCriteria,
     date_range_start: dateIso(row.date_range_start),
     date_range_end: dateIso(row.date_range_end),
-    venues: jsonStringArray(row.venues_json),
+    source_restrictions: jsonStringArray(row.source_restrictions_json),
     required_evidence_fields: jsonStringArray(row.required_evidence_fields_json),
     created_at: dateIso(row.created_at),
     updated_at: dateIso(row.updated_at),
   };
 }
 
-function emptyScreeningCriteria(projectId: string): Record<string, unknown> {
+function emptyScreeningCriteria(projectId: string, availableDomainCriteria: string[]): Record<string, unknown> {
   return {
     id: null,
     project_id: projectId,
     include_keywords: [],
     exclude_keywords: [],
-    methods: [],
+    domain_criteria: {},
+    available_domain_criteria: availableDomainCriteria,
     date_range_start: null,
     date_range_end: null,
-    venues: [],
+    source_restrictions: [],
     required_evidence_fields: [],
     created_at: null,
     updated_at: null,

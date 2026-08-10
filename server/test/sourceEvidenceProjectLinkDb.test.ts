@@ -2,13 +2,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import {
   linkEvidenceToBoundProjects,
   recomputeProjectSourceBindingLinks,
 } from "../src/modules/projects/projectSourceRoutingService";
-import { PgRunContextRepository } from "../src/modules/context/repository";
 import { upsertCanonicalEvidence } from "../src/modules/sources/evidenceIdentity";
 import { PgSourcesRepository } from "../src/modules/sources/repository";
 import { sourceRetrievalAdapter } from "../src/modules/sources/retrievalAdapter";
@@ -44,6 +43,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[source-evidence-project-link-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -230,6 +230,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const now = new Date().toISOString();
     const common = {
       spaceId: SPACE,
+      projectId: null,
       ownerUserId: OWNER,
       visibility: "space_shared",
       accessLevel: "full",
@@ -285,6 +286,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const now = new Date().toISOString();
     const common = {
       spaceId: SPACE,
+      projectId: null,
       accessLevel: "full",
       sourceItemId: null,
       sourceObjectType: "reader_annotation",
@@ -331,6 +333,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const now = new Date().toISOString();
     const evidenceId = await upsertCanonicalEvidence(pool, {
       spaceId: SPACE,
+      projectId: null,
       ownerUserId: OWNER,
       visibility: "space_shared",
       accessLevel: "full",
@@ -366,6 +369,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const { itemId } = await seedItemWithEvidence();
     const evidenceId = await upsertCanonicalEvidence(pool, {
       spaceId: SPACE,
+      projectId: null,
       ownerUserId: OWNER,
       visibility: "space_shared",
       accessLevel: "full",
@@ -407,22 +411,13 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const unconsentedCorpus = await corpus.list({ spaceId: SPACE, userId: OTHER_USER }, PROJECT, { limit: 50, offset: 0 });
     expect(unconsentedCorpus.items as unknown[]).toHaveLength(0);
 
-    const now = new Date().toISOString();
-    await pool.query(
-      `INSERT INTO evidence_links (
-         id,space_id,evidence_id,target_type,target_id,link_type,status,created_at,updated_at
-       ) VALUES ($1,$2,$3,'space',$2,'context_candidate','active',$4,$4)`,
-      [randomUUID(), SPACE, evidenceId, now],
-    );
-    const context = new PgRunContextRepository(pool);
-    const ownerContext = await context.selectEvidenceForContext({
-      spaceId: SPACE, userId: OWNER, projectFolderId: null, projectId: null, runId: null, limit: 8,
-    });
-    expect(ownerContext.map((selection) => (selection.item as { id?: string }).id)).toContain(evidenceId);
-    const unconsentedContext = await context.selectEvidenceForContext({
-      spaceId: SPACE, userId: OTHER_USER, projectFolderId: null, projectId: null, runId: null, limit: 8,
-    });
-    expect(unconsentedContext.map((selection) => (selection.item as { id?: string }).id)).not.toContain(evidenceId);
+    // The Project Overview's corpus counts run the same readability predicate
+    // as the list, so a row the viewer cannot open is not counted for them
+    // either — a count is a disclosure.
+    await expect(corpus.entityCounts({ spaceId: SPACE, userId: OWNER }, PROJECT))
+      .resolves.toEqual({ source_item_count: 1, extracted_evidence_count: 1 });
+    await expect(corpus.entityCounts({ spaceId: SPACE, userId: OTHER_USER }, PROJECT))
+      .resolves.toEqual({ source_item_count: 0, extracted_evidence_count: 0 });
 
     await expect(sourceRetrievalAdapter.revalidate(pool, SPACE, "extracted_evidence", evidenceId, OWNER)).resolves.not.toBeNull();
     await expect(sourceRetrievalAdapter.revalidate(pool, SPACE, "extracted_evidence", evidenceId, OTHER_USER)).resolves.toBeNull();
@@ -433,6 +428,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const snapshotId = await seedConnectionOnlySnapshot();
     const evidenceId = await upsertCanonicalEvidence(pool, {
       spaceId: SPACE,
+      projectId: null,
       ownerUserId: OWNER,
       visibility: "space_shared",
       accessLevel: "full",
@@ -471,7 +467,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       { spaceId: SPACE, userId: OTHER_USER }, PROJECT, { evidence_id: evidenceId },
     )).rejects.toMatchObject({ statusCode: 422 });
     await corpus.upsert({ spaceId: SPACE, userId: OWNER }, PROJECT, { evidence_id: evidenceId });
-    const artifactId = await new ProjectResearchArtifactService(pool).ensureLiteratureMatrix({
+    const artifactId = await new ProjectResearchArtifactService(pool).ensureEvidenceMatrix({
       spaceId: SPACE,
       projectId: PROJECT,
       workflowId: "workflow-policy-test",
@@ -563,16 +559,6 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       pool, SPACE, "extracted_evidence", evidenceIds, OTHER_USER,
     );
     expect([...revalidatedEvidence.keys()]).toEqual([]);
-    await pool.query(
-      `INSERT INTO evidence_links (
-         id,space_id,evidence_id,target_type,target_id,link_type,status,created_at,updated_at
-       ) VALUES ($1,$2,$3,'project',$4,'context_candidate','active',$5,$5)`,
-      [randomUUID(), SPACE, evidenceIds[0], PROJECT, now],
-    );
-    const contextRows = await new PgRunContextRepository(pool).selectEvidenceForContext({
-      spaceId: SPACE, userId: OTHER_USER, projectFolderId: null, projectId: PROJECT, runId: null, limit: 8,
-    });
-    expect(contextRows.map((selection) => (selection.item as { id?: string }).id)).not.toContain(evidenceIds[0]);
     await expect(repository.createSummaryRun({ spaceId: SPACE, userId: OTHER_USER }, {
       source_item_ids: [sharedItem], evidence_ids: [],
     })).rejects.toMatchObject({ statusCode: 404 });
@@ -710,21 +696,4 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(links.rows).toEqual([{ target_id: PROJECT, reason: `project_source_binding:${bindingId}` }]);
   });
 
-  it("auto-linked evidence is returned by context evidence selection for the project", async () => {
-    if (!available) return;
-    await seedBinding(PROJECT);
-    const { itemId, evidenceId } = await seedItemWithEvidence();
-    await linkEvidenceToBoundProjects(pool!, { spaceId: SPACE, sourceItemId: itemId });
-
-    const repo = new PgRunContextRepository(pool!);
-    const selections = await repo.selectEvidenceForContext({
-      spaceId: SPACE,
-      userId: OWNER,
-      projectFolderId: null,
-      projectId: PROJECT,
-      runId: null,
-      limit: 8,
-    });
-    expect(selections.map((s) => (s.item as { id?: string }).id)).toContain(evidenceId);
-  });
 });

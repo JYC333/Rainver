@@ -168,7 +168,7 @@ export class KnowledgeExtractionService {
       }>(
         `SELECT r.id AS revision_id,r.version,r.content_hash,r.statement,r.kind,
                 r.answer_state,r.evaluation_state,r.confidence,r.state_snapshot_json
-           FROM inquiry_thread_revisions r JOIN inquiry_threads t ON t.id=r.thread_id AND t.space_id=r.space_id
+           FROM inquiry_thread_revisions r JOIN inquiry_threads t ON t.object_id=r.thread_id AND t.space_id=r.space_id
           WHERE r.thread_id=$1 AND r.space_id=$2 AND t.project_id=$3
           ORDER BY r.version DESC LIMIT 1`,
         [sourceId, identity.spaceId, projectId],

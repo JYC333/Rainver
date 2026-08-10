@@ -16,7 +16,8 @@ for each.
 - `ContextBuilder` raises `ValueError` if called without `space_id`; never queries across spaces.
 - `PolicyEngine.rule_space_boundary` denies any action where requesting `space_id` differs from resource `space_id`.
 - Every server memory repository query includes `space_id` in its WHERE clause — no global query path exists.
-- `MemoryReadTrace` records every read for after-the-fact auditability.
+- `content_access_logs` records every cross-person registered-content read for
+  after-the-fact auditability; the resource owner can inspect those records.
 
 ---
 
@@ -30,7 +31,8 @@ for each.
 - `Memory.visibility` defaults to `private`; private memories filter to `owner_user_id == user_id`.
 - `ContextBuilder` always passes the requesting `user_id`; the memory store enforces visibility.
 - Agent's `memory_policy_json.readable_scopes` limits which scopes are fetched at all.
-- `MemoryReadTrace` records agent_id alongside user_id for every access.
+- `content_access_logs` records the viewer and, when applicable, the agent and
+  Run responsible for every cross-person access.
 
 ---
 
@@ -134,7 +136,8 @@ for each.
 
 ## Threat 10: Audit log tampering
 
-**Scenario**: A compromised service deletes `MemoryReadTrace`, `CredentialAccessLog`, or `ApprovalEvent` records to hide actions.
+**Scenario**: A compromised service deletes `content_access_logs`,
+`CredentialAccessLog`, or `ApprovalEvent` records to hide actions.
 
 **Impact**: Loss of auditability; forensic gap.
 
@@ -182,4 +185,4 @@ for each.
 | File access | `PathPolicy.validate()` |
 | Credential access | `Credential.encrypted_secret_ref` + `CredentialAccessLog` |
 | Capability evolution | `draft → proposed → testing → enabled` lifecycle |
-| Audit trail | `MemoryReadTrace`, `CredentialAccessLog`, `ApprovalEvent`, `ToolCall` |
+| Audit trail | `content_access_logs`, `ContentReadTrace`, `CredentialAccessLog`, `ApprovalEvent`, `ToolCall` |

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import type { AddressInfo } from "node:net";
-import { Readable } from "node:stream";
+import { connect, type AddressInfo } from "node:net";
+import { Duplex, Readable } from "node:stream";
 import type { ServerConfig } from "../../../config";
 import {
   ProviderCommandValidationError,
@@ -15,6 +15,7 @@ import {
   type ProviderProxyLeaseRegistry,
   type ProviderProxyRoute,
 } from "./lease";
+import { subscriptionEgressLeases } from "./subscriptionEgress";
 import {
   fetchWithNetworkProfile,
   resolveNetworkProfileRepository,
@@ -82,22 +83,62 @@ export async function startProviderProxyServer(
       }
     });
   });
+  server.on("connect", (request, client, head) => handleSubscriptionConnect(request, client, head));
 
-  const host = "127.0.0.1";
+  const host = "0.0.0.0";
   await listen(server, host, 0);
   const address = server.address() as AddressInfo;
-  const baseUrl = `http://${host}:${address.port}`;
-  setProviderProxyBaseUrlForProcess(baseUrl);
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  setProviderProxyBaseUrlForProcess(
+    `http://${config.sandboxRunnerServerHost}:${address.port}`,
+  );
+  subscriptionEgressLeases.setBaseUrl(`http://${config.sandboxRunnerServerHost}:${address.port}`);
   return {
     baseUrl,
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close((err) => {
           setProviderProxyBaseUrlForProcess(null);
+          subscriptionEgressLeases.setBaseUrl(null);
           return err ? reject(err) : resolve();
         }),
       ),
   };
+}
+
+function handleSubscriptionConnect(request: IncomingMessage, client: Duplex, head: Buffer): void {
+  const auth = basicProxyAuth(request.headers["proxy-authorization"]);
+  const target = connectTarget(request.url);
+  if (!auth || !target || !subscriptionEgressLeases.authorize(auth.id, auth.token, target.host, target.port)) {
+    client.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=subscription-egress\r\n\r\n");
+    return;
+  }
+  const upstream = connect({ host: target.host, port: target.port });
+  upstream.once("connect", () => {
+    client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (head.length) upstream.write(head);
+    client.pipe(upstream); upstream.pipe(client);
+  });
+  upstream.once("error", () => client.destroy());
+  client.once("error", () => upstream.destroy());
+}
+
+function basicProxyAuth(value: string | undefined): { id: string; token: string } | null {
+  if (!value?.startsWith("Basic ")) return null;
+  try {
+    const decoded = Buffer.from(value.slice(6), "base64").toString("utf8");
+    const separator = decoded.indexOf(":");
+    return separator > 0 ? { id: decoded.slice(0, separator), token: decoded.slice(separator + 1) } : null;
+  } catch { return null; }
+}
+
+function connectTarget(value: string | undefined): { host: string; port: number } | null {
+  if (!value) return null;
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0) return null;
+  const host = value.slice(0, separator).replace(/^\[|\]$/g, "");
+  const port = Number(value.slice(separator + 1));
+  return host && Number.isInteger(port) ? { host, port } : null;
 }
 
 async function handleProviderProxyRequest(
@@ -134,6 +175,7 @@ async function handleProviderProxyRequest(
     sendJson(response, 401, { error: "provider_proxy_token_invalid" });
     return;
   }
+  const usageSequence = ++lease.usage_sequence;
 
   let apiKey: string;
   try {
@@ -167,6 +209,7 @@ async function handleProviderProxyRequest(
     response,
     upstream,
     lease,
+    usageSequence,
     attribution,
     deps.recordUsageObservation,
   );
@@ -199,6 +242,7 @@ async function forwardUpstreamResponse(
   response: ServerResponse,
   upstream: Response,
   lease: ResolvedProviderProxyLease,
+  usageSequence: number,
   attribution: UsageAttribution,
   recordUsageObservation?: (
     observation: UsageObservation,
@@ -214,7 +258,7 @@ async function forwardUpstreamResponse(
   });
 
   if (!upstream.body) {
-    await recordProviderProxyUsage(config, lease, upstream, null, attribution, recordUsageObservation);
+    await recordProviderProxyUsage(config, lease, usageSequence, upstream, null, attribution, recordUsageObservation);
     response.end();
     return;
   }
@@ -225,6 +269,7 @@ async function forwardUpstreamResponse(
       await recordProviderProxyUsage(
         config,
         lease,
+        usageSequence,
         upstream,
         proxyUsageMetadata(inspected.body),
         attribution,
@@ -234,13 +279,13 @@ async function forwardUpstreamResponse(
       return;
     }
 
-    await recordProviderProxyUsage(config, lease, upstream, null, attribution, recordUsageObservation);
+    await recordProviderProxyUsage(config, lease, usageSequence, upstream, null, attribution, recordUsageObservation);
     for (const chunk of inspected.chunks) await writeResponseChunk(response, chunk);
     await pipeReaderToResponse(inspected.reader, response);
     return;
   }
 
-  await recordProviderProxyUsage(config, lease, upstream, null, attribution, recordUsageObservation);
+  await recordProviderProxyUsage(config, lease, usageSequence, upstream, null, attribution, recordUsageObservation);
   Readable.fromWeb(upstream.body).pipe(response);
 }
 
@@ -314,6 +359,7 @@ function proxyUsageMetadata(body: Buffer): ProxyUsageMetadata | null {
 async function recordProviderProxyUsage(
   config: ServerConfig,
   lease: ResolvedProviderProxyLease,
+  usageSequence: number,
   upstream: Response,
   metadata: ProxyUsageMetadata | null,
   attribution: UsageAttribution,
@@ -323,7 +369,7 @@ async function recordProviderProxyUsage(
   ) => Promise<void>,
 ): Promise<void> {
   if (!upstream.ok) return;
-  const observation = providerProxyUsageObservation(lease, metadata);
+  const observation = providerProxyUsageObservation(lease, metadata, usageSequence);
   if (recordUsageObservation) await recordUsageObservation(observation, attribution);
   else await recordUsage(config, observation, attribution);
 }
@@ -331,6 +377,7 @@ async function recordProviderProxyUsage(
 function providerProxyUsageObservation(
   lease: ResolvedProviderProxyLease,
   metadata: ProxyUsageMetadata | null,
+  usageSequence?: number,
 ): UsageObservation {
   const providerUsage = metadata?.providerUsage ?? {};
   return {
@@ -360,8 +407,22 @@ function providerProxyUsageObservation(
     model: metadata?.model ?? lease.model,
     provider_usage: providerUsage,
     usage_accuracy: hasUsage(providerUsage) ? "proxy_observed" : "unknown",
+    idempotency_key: lease.invocation_audit_refs
+      ? `${lease.invocation_audit_refs.usage_source_id}:proxy:${usageSequence ?? 0}`
+      : undefined,
+    metadata: lease.invocation_audit_refs
+      ? { runtime_context_audit_refs: lease.invocation_audit_refs }
+      : {},
     dimensions: {
       provider_proxy_route: lease.route,
+      ...(lease.invocation_audit_refs
+        ? {
+            delivery_id: lease.invocation_audit_refs.delivery_id,
+            invocation_snapshot_id: lease.invocation_audit_refs.invocation_snapshot_id,
+            execution_control_snapshot_id: lease.invocation_audit_refs.execution_control_snapshot_id,
+            usage_source_id: lease.invocation_audit_refs.usage_source_id,
+          }
+        : {}),
     },
   };
 }

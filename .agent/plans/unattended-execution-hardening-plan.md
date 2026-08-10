@@ -32,6 +32,9 @@ unattended dogfooding does.
 - explicit Runtime hard pins;
 - waiting-for-review and human resume/abandon;
 - orphan recovery and CLI stall timeout;
+- managed-call abort propagation and two-phase CLI cancellation;
+- normalized Claude Code, Codex, and OpenCode usage in Run envelopes and the
+  append-only usage ledger;
 - bounded Workflow node re-attempt without graph cycles;
 - operation/execution idempotency guards;
 - failure notifications and operational alerts at selected boundaries.
@@ -205,4 +208,3 @@ using production data.
 - Operations shows retry, alert, approval, and recovery state;
 - failure injection proves no duplicate durable or external side effects;
 - current-state architecture and runbooks describe the implemented behavior.
-

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ContextOpsService } from "../src/modules/contextOps";
 import { RetrievalMaintenanceService, RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
@@ -37,6 +37,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[retrieval-source-policy-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -54,7 +55,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              knowledge_items, space_object_kinds, space_objects, provenance_links, source_items,
+              knowledge_items, space_object_profiles, space_objects, provenance_links, source_items,
               source_connections, source_provider_connectors, source_providers, source_connectors, users, spaces CASCADE`,
   );
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'SP', 'personal', now(), now())`, [SPACE]);
@@ -112,7 +113,7 @@ async function seedRestrictedAndOpen(): Promise<void> {
   );
 
   await pool!.query(
-    `INSERT INTO space_object_kinds (
+    `INSERT INTO space_object_profiles (
        id, space_id, key, label, base_object_type, status, created_at, updated_at
      ) VALUES
        ('kind-concept', $1, 'concept', 'Concept', 'knowledge_item', 'active', now(), now()),
@@ -184,7 +185,7 @@ describe("Retrieval source policy closure (real Postgres)", () => {
     expect(JSON.stringify(readerResults.trace)).not.toContain("source_policy_denied");
   });
 
-  it("G2: object_kind filters do not reveal source-restricted kind distributions", async () => {
+  it("G2: object_profile filters do not reveal source-restricted kind distributions", async () => {
     if (!available || !pool) return;
     await seedRestrictedAndOpen();
     const service = new RetrievalSearchService(pool, knowledgeRetrievalRegistry);
@@ -194,14 +195,14 @@ describe("Retrieval source policy closure (real Postgres)", () => {
       viewerUserId: OWNER,
       query: "alpha",
       objectTypes: ["knowledge_item"],
-      objectKinds: ["concept"],
+      objectProfiles: ["concept"],
       includeTrace: true,
     });
     expect(ownerConcept.items).toHaveLength(1);
     expect(ownerConcept.items[0]).toMatchObject({
       object_id: "restricted-doc",
-      object_kind: "concept",
-      object_kind_label: "Concept",
+      object_profile: "concept",
+      object_profile_label: "Concept",
     });
 
     const readerConcept = await service.search({
@@ -209,7 +210,7 @@ describe("Retrieval source policy closure (real Postgres)", () => {
       viewerUserId: READER,
       query: "alpha",
       objectTypes: ["knowledge_item"],
-      objectKinds: ["concept"],
+      objectProfiles: ["concept"],
       includeTrace: true,
     });
     expect(readerConcept.items).toHaveLength(0);

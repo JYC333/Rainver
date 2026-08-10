@@ -163,6 +163,7 @@ export class PgProposalApplyService {
         proposal.payload_json,
         options.confirmIncompletePatch === true,
       );
+      await this.assertRequiredContextOwnerApprovals(client, proposal);
       await this.enforceApplyPolicy(client, proposal, identity.userId);
       const result = await this.registry.apply({
         config: this.config,
@@ -176,6 +177,7 @@ export class PgProposalApplyService {
           project_folder_id: proposal.project_folder_id,
           visibility: proposal.visibility,
           created_by_user_id: proposal.created_by_user_id,
+          created_by_agent_id: proposal.created_by_agent_id,
           created_by_run_id: proposal.created_by_run_id,
           project_id: proposal.project_id,
         },
@@ -246,6 +248,7 @@ export class PgProposalApplyService {
         id: proposal.id, space_id: proposal.space_id, proposal_type: proposal.proposal_type,
         title: proposal.title, payload_json: proposal.payload_json, project_folder_id: proposal.project_folder_id,
         visibility: proposal.visibility, created_by_user_id: proposal.created_by_user_id,
+        created_by_agent_id: proposal.created_by_agent_id,
         created_by_run_id: proposal.created_by_run_id, project_id: proposal.project_id,
       }, userId: grantingUserId });
       rollbackOnFailure = result.rollback ?? null;
@@ -353,10 +356,28 @@ export class PgProposalApplyService {
       const proposal = await this.getProposalForUpdate(client, proposalId);
       if (
         !proposal
+        || proposal.status !== "pending"
         || proposal.space_id !== identity.spaceId
         || (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny"
       ) {
         throw new ProposalApplyHttpError(404, "Proposal not found");
+      }
+      const taintOwnerApprovers = requiredTaintOwnerApprovers(proposal.payload_json);
+      if (taintOwnerApprovers.length > 0) {
+        if (!taintOwnerApprovers.includes(identity.userId)) {
+          throw new ProposalApplyHttpError(403, "only a required taint owner can approve this egress");
+        }
+        if (grantIdInput) {
+          throw new ProposalApplyHttpError(422, "grant_id must be omitted for context-taint owner approval");
+        }
+        const approval = await this.upsertEgressApproval(client, proposal, identity.userId, null, {
+          approval_type: "egress_granting_user",
+          approval_source: "context_taint_owner",
+          raw_private_memory_included: false,
+          personal_summary_persisted: false,
+        });
+        await client.query("COMMIT");
+        return approvalToOut(approval);
       }
       const grantId = grantIdInput ?? await this.inferGrantId(client, proposal);
       if (!grantId) throw new ProposalApplyHttpError(422, "grant_id is required");
@@ -364,6 +385,29 @@ export class PgProposalApplyService {
       if (!grant) throw new ProposalApplyHttpError(403, "grant not found");
       this.validateGrantApproval(proposal, grant, identity.userId, grantId);
 
+      const approval = await this.upsertEgressApproval(client, proposal, identity.userId, grantId, {
+        approval_type: "egress_granting_user",
+        raw_private_memory_included: false,
+        personal_summary_persisted: false,
+      }, grant.target_space_id);
+      await client.query("COMMIT");
+      return approvalToOut(approval);
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async upsertEgressApproval(
+    client: PoolClient,
+    proposal: ApplyProposalRow,
+    userId: string,
+    grantId: string | null,
+    metadata: Record<string, unknown>,
+    targetSpaceId: string = proposal.space_id,
+  ): Promise<ApprovalRow> {
       const existing = await client.query<ApprovalRow>(
         `SELECT id, proposal_id, approval_type, approver_user_id, grant_id,
                 target_space_id, status, metadata_json, created_at, revoked_at
@@ -371,20 +415,15 @@ export class PgProposalApplyService {
           WHERE proposal_id = $1
             AND approval_type = 'egress_granting_user'
             AND approver_user_id = $2
-            AND grant_id = $3
+            AND grant_id IS NOT DISTINCT FROM $3
             AND status = 'approved'
             AND revoked_at IS NULL
           ORDER BY created_at DESC
           LIMIT 1`,
-        [proposal.id, identity.userId, grantId],
+        [proposal.id, userId, grantId],
       );
       let approval = existing.rows[0];
       if (!approval) {
-        const metadata = {
-          approval_type: "egress_granting_user",
-          raw_private_memory_included: false,
-          personal_summary_persisted: false,
-        };
         const inserted = await client.query<ApprovalRow>(
           `INSERT INTO proposal_approvals
              (id, proposal_id, approval_type, approver_user_id, grant_id,
@@ -396,23 +435,16 @@ export class PgProposalApplyService {
           [
             randomUUID(),
             proposal.id,
-            identity.userId,
+            userId,
             grantId,
-            grant.target_space_id,
+            targetSpaceId,
             JSON.stringify(metadata),
             new Date().toISOString(),
           ],
         );
         approval = inserted.rows[0]!;
       }
-      await client.query("COMMIT");
-      return approvalToOut(approval);
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+      return approval;
   }
 
   async rollback(
@@ -660,12 +692,40 @@ export class PgProposalApplyService {
     const sourceRunId = stringValue(payload.source_run_id) ?? proposal.created_by_run_id;
     if (!sourceRunId) return null;
     const run = await client.query<{ grant_id: string | null }>(
-      `SELECT personal_grant_context_json->>'grant_id' AS grant_id
+      `SELECT context_taint_json->'personal_memory_grant_ids'->>0 AS grant_id
          FROM runs
         WHERE id = $1`,
       [sourceRunId],
     );
     return run.rows[0]?.grant_id ?? null;
+  }
+
+  private async assertRequiredContextOwnerApprovals(
+    client: PoolClient,
+    proposal: ApplyProposalRow,
+  ): Promise<void> {
+    const requiredOwners = requiredTaintOwnerApprovers(proposal.payload_json);
+    if (requiredOwners.length === 0) return;
+    const approved = await client.query<{ approver_user_id: string }>(
+      `SELECT DISTINCT approver_user_id
+         FROM proposal_approvals
+        WHERE proposal_id = $1
+          AND approval_type = 'egress_granting_user'
+          AND approver_user_id = ANY($2::varchar[])
+          AND grant_id IS NULL
+          AND status = 'approved'
+          AND revoked_at IS NULL`,
+      [proposal.id, requiredOwners],
+    );
+    const approvedIds = new Set(approved.rows.map((row) => row.approver_user_id));
+    const missing = requiredOwners.filter((userId) => !approvedIds.has(userId));
+    if (missing.length > 0) {
+      throw new ProposalApplyHttpError(409, {
+        code: "content_owner_egress_approval_required",
+        required_approver_user_ids: missing,
+        message: "Publishing context-tainted output requires every contributing content owner's approval.",
+      });
+    }
   }
 
   private async getGrant(client: PoolClient, grantId: string): Promise<GrantRow | null> {
@@ -894,6 +954,13 @@ function approvalToOut(row: ApprovalRow): ProposalApprovalOut {
     created_at: dateValue(row.created_at) ?? new Date(0).toISOString(),
     revoked_at: dateValue(row.revoked_at),
   };
+}
+
+function requiredTaintOwnerApprovers(payload: Record<string, unknown> | null): string[] {
+  if (payload?.requires_approval_type !== "egress_content_owner") return [];
+  const value = payload?.required_egress_approver_user_ids;
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))].sort();
 }
 
 function stringValue(value: unknown): string | null {

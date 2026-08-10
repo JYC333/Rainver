@@ -374,7 +374,7 @@ export default function TodayPage() {
           <div className="flex flex-col gap-1.5">
             <div className="text-[10px] font-bold tracking-[.1em] uppercase" style={{ color: 'color-mix(in oklch, var(--muted-foreground) 70%, transparent)' }}>Space · Today</div>
             <h1 className="text-2xl font-semibold tracking-tight m-0">{activeSpaceName ?? 'This space'}</h1>
-            <p className="text-[13px] text-muted-foreground">This space's daily overview. Quick Capture and new work default to this space.</p>
+            <p className="text-[13px] text-muted-foreground">This space's daily overview. In-context work stays here; Quick Capture always goes to your Personal Space.</p>
           </div>
           <TodaySummaryCard stats={stats} />
         </div>

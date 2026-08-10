@@ -14,8 +14,8 @@ future Memory evolution. Current direction splits that work into two tracks:
   scope below (no vector/rerank/synthesis) is historical — those have since shipped.
 - Track B: later Memory quality and retrieval integration (still forward-looking).
 
-The proposal gate, space boundary, privacy boundary, and ContextBuilder memory
-rules remain unchanged.
+The proposal gate, Space boundary, privacy boundary, and Runtime Context Memory
+acquisition rules remain unchanged.
 
 ## Track A: Knowledge Retrieval Substrate (implemented; historical)
 
@@ -41,8 +41,7 @@ Track A does not:
 - Make an external retrieval runtime the system of record.
 - Index MemoryEntry rows.
 - Change Memory write paths.
-- Auto-inject Knowledge, Notes, Sources, or retrieval results into
-  ContextBuilder.
+- Auto-inject Knowledge, Notes, Sources, or retrieval results into Runtime Context.
 - Add vector search, pgvector, embeddings, rerankers, or LLM synthesis.
 - Turn heuristic links into accepted canonical `ObjectRelation` rows.
 - Revive the removed `context_sources` table.
@@ -56,11 +55,11 @@ Memory integration is deferred until the Knowledge substrate proves the
 mechanics and until a separate design covers:
 
 - Memory ACL and sensitivity revalidation for every retrieval arm.
-- `MemoryReadTrace` logging requirements for candidate reads and context
+- `ContentReadTrace` logging requirements for cross-person candidate reads and context
   injection.
 - SourceMonitoring interaction for duplicate/update suggestions.
 - Proposal payload shape for retrieval evidence and duplicate detection.
-- ContextBuilder hard filters and token-budget behavior.
+- Runtime Context acquisition hard filters and planner token-budget behavior.
 - Evaluation gates for ranking and leakage.
 
 Any Memory-side implementation must preserve:
@@ -68,8 +67,9 @@ Any Memory-side implementation must preserve:
 - Public Memory writes create proposals, not active `MemoryEntry` rows.
 - Accepted Memory changes go through `ProposalApplyService` and the memory
   applier/writer path.
-- ContextBuilder remains the only runtime memory context authority.
-- Every injected MemoryEntry is logged through MemoryReadTrace.
+- Runtime Context remains the only runtime Memory acquisition authority.
+- Every cross-person injected MemoryEntry is logged through ContentReadTrace;
+  same-owner reads intentionally produce no privacy-audit row.
 - Cross-space and private/restricted memory reads remain fail-closed unless a
   documented grant path explicitly applies.
 

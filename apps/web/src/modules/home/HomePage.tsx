@@ -463,7 +463,7 @@ export default function HomePage() {
     if (s.pending_proposals_count > 0) out.push({ id: 'review', label: 'Review pending proposals', reason: `${s.pending_proposals_count} waiting across your spaces`, to: '/proposals' })
     if (s.recent_runs.some(r => r.status === 'failed')) out.push({ id: 'failed', label: 'Inspect failed runs', reason: 'One or more recent runs failed', to: '/runs' })
     if (s.assigned_tasks_count > 0) out.push({ id: 'tasks', label: 'Pick up your tasks', reason: `${s.assigned_tasks_count} assigned to you`, to: '/tasks' })
-    out.push({ id: 'context-artifacts', label: 'Review context artifacts', reason: 'Open saved Context Briefs, eval diagnostics, and maintenance reports', to: '/artifacts' })
+    out.push({ id: 'review-artifacts', label: 'Review analysis artifacts', reason: 'Open saved Context Briefs, eval diagnostics, and maintenance reports', to: '/artifacts' })
     out.push({ id: 'capture', label: 'Process your captures', reason: 'Open the Inbox to triage and consolidate', to: '/activity' })
     return out
   }, [s])
@@ -485,7 +485,7 @@ export default function HomePage() {
             {greeting}, <span className="text-accent-foreground">{displayName}</span>.
           </h1>
           <p className="text-[13px] text-muted-foreground">
-            Your cross-space command center. Use Quick Capture (bottom-right) to save anything — it writes to your Personal Space by default.
+            Your cross-space command center. Use Quick Capture (bottom-right) to save anything — it always writes to your Personal Space.
           </p>
         </div>
 

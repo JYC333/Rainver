@@ -36,19 +36,102 @@ Existing clients join the caller's transaction without issuing a nested
 **Best-effort evidence** (use a separate short transaction):
 - RunStep metadata and terminal detail
 - Auxiliary Activity records
-- Traces and read logs
-- Non-critical replay/read audit rows
+- Non-privacy execution traces
+- Non-critical replay and observability rows
 
 **Critical writes** (must not be abandoned due to evidence write failures):
 - Run terminal status
 - Proposal status
 - MemoryEntry creation, update, archive, and provenance/source fields
 - Policy row creation and supersession
+- Runtime Context Policy version + active binding + typed audit write
+- Work Context Setup immutable version + base-version check + typed diff
+- Execution Control Snapshot creation before adapter invocation
+- Invocation Delivery + safe Invocation Snapshot attempt creation
+- Critical policy/tool/approval Context Event capture and terminal
+  Invocation Snapshot + Micro Checkpoint finalization
+- Bounded provider-task control + Delivery + safe Snapshot attempt creation
+- Authorized Sealed Payload read + access-audit insertion
 - Job terminal state
 - Project Folder lifecycle state
 - Backup manifest/archive state
+- Accepted Invocation Snapshot source attribution and the corresponding Run taint summary
+- A cross-person `content_access_logs` row before the successful read is
+  returned; privacy audit is fail-closed, while same-owner reads write no row
+
+Accepted Delivery preparation derives `runs.has_context_taint` and
+`runs.context_taint_json` from authorized source ownership/visibility before
+adapter execution. Safe Invocation Snapshots retain the source refs consumed by
+content-demotion disclosure; no legacy Context Snapshot table or compatibility
+column exists.
+
+Explicit fused cross-Space storage is also one critical transaction. It locks
+the disclosure and contributing Space setting rows, re-authorizes every source
+pointer, writes the private Personal-Space artifact plus one pointer-only egress
+row per source Space, emits enabled member notifications, and consumes the
+disclosure together. A concurrent setting change therefore either precedes the
+validation and invalidates the disclosure or follows the completed action.
+
+Content visibility demotion is likewise one critical transaction after its
+preflight disclosure. The update locks the resource and disclosure row,
+recomputes readers, consuming Runs, and still-shared derived outputs, rejects a
+changed or expired exposure snapshot, narrows policy/grants, and consumes the
+confirmation id together. There is no silent or one-step demotion path.
 
 If a transaction fails, callers must not continue as though the transaction were clean.
+
+Runtime Context Policy mutation is one fail-closed transaction. It locks the
+scope's active binding, compares the requested base version, validates ACL and
+the resolved higher-scope hard constraints, inserts one immutable version,
+advances the active binding, and writes the typed diff audit. A stale base,
+unauthorized actor, or attempted widening rolls back all three writes.
+
+Work Context Setup mutation uses a scope/user advisory transaction lock,
+revalidates scope bindings and referenced objects, compares the required base
+version, and appends one immutable setup with typed diff, reason, and a linked
+Policy Decision Record. Checkpoint correction takes the same scope lock before
+selecting the latest Setup, so it cannot commit against a version concurrently
+superseded by setup creation. A stale editor receives 409 and cannot silently
+replace a newer active setup.
+
+Every newly created Space is seeded with an immutable empty root Runtime
+Context Policy version and active binding. Run execution resolves the current
+Space/Project/Folder/Agent/User chain after the existing execution-policy gate
+and persists an immutable `execution_control_snapshots` row before invoking an
+adapter. Adapters do not receive that snapshot until the Runtime Context
+Gateway delivery cutover; the preflight record is already durable and real,
+never a placeholder id.
+
+Invocation attempt creation uses a short transaction and a per-Space/invocation
+advisory lock. It loads and locks the persisted same-Space Execution Control
+Snapshot, rejects caller/control drift, and reauthorizes the live Run adapter,
+viewer, current Setup, Agent, Project/Folder membership, provider grant,
+external-egress setting, and every accepted direct/retrieval source before
+allocating a distinct attempt. Source reauthorization locks the canonical root,
+content grant, Project/Folder/share scope, Source connection/subscription, and
+Evidence provenance dependencies before re-running the authoritative read and
+source-policy predicates; concurrent revocation therefore fails closed before
+Delivery persistence. It writes the immutable
+Window Plan reconciliation, content-free Delivery metadata, and protocol-safe
+snapshot together. Optional
+raw replay is encrypted separately and joins that transaction only when the
+persisted control grants a positive retention period. A Sealed Payload read locks
+the payload, reauthorizes through the same transaction, verifies AEAD-bound
+Space/snapshot/payload/retention metadata, and inserts its access audit before
+returning plaintext. Expiry deletion commits before the caller receives 410.
+Acknowledgement and finalization each lock the same-Space Delivery snapshot.
+Acknowledgements and finalizations retain separate content-free fingerprints,
+so each is replay-safe and rejects a different receipt/terminal state; finalization
+requires a prior acknowledgement, preserves any acknowledged error, and is
+idempotent only for the same terminal state. Window-usage reconciliation is a
+separate retry-safe write after the acknowledgement transaction commits.
+Adapter acknowledgement alone leaves continuity capture `partial`.
+Finalization appends the canonical terminal Context Event, advances the dense
+scope cursor, creates an immutable Micro Checkpoint, and writes the snapshot's
+capture/cursor projection in the same transaction. Noncritical capture failures
+create explicit gap rows and are replayed/reconciled separately. Semantic
+checkpoint provider calls occur outside transactions; persistence re-locks the
+scope and rejects stale heads or non-canonical citations.
 
 ## External Call Boundary
 
@@ -249,6 +332,40 @@ When adding a new scheduler:
 - Keep `jobs` for execution queue rows and retries. A scheduler may enqueue a
   job, but the scheduler cursor must remain separate from the queued work.
 
+## Information Digest Snapshot Transactions
+
+Personal and Project daily snapshots are serialized with a scope/day advisory
+lock acquired before the authoritative existing-snapshot recheck. Replacing a
+snapshot, inserting all attributed item rows, and consuming selected
+`information_digest_serendipity_pool` rows happen in one transaction. Candidate
+day windows are explicit UTC instants and do not depend on the PostgreSQL
+session timezone.
+A lazy read-created snapshot may be replaced once by the authoritative
+scheduled Run; a snapshot already carrying `generated_by_run_id` is returned
+unchanged on repeated fires so standby items cannot be double-consumed.
+
+The weekly external probe never shares the delivery transaction. Its
+`information_digest_probe_runs` row is unique per `(space,user,period)` and
+constrains `request_count` to 0–3. Probe results and existing Source
+recommendations land in the private standby pool before a later daily
+transaction selects them. Network work therefore cannot hold digest locks or
+turn daily delivery into an external-call transaction.
+
+Explicit serendipity feedback takes an item-scoped advisory lock and writes
+the immutable `information_digest_serendipity_feedback` row together with its
+owner/domain cooldown or blocklist projection in one transaction. It may
+clean up still-pending recommendations for the newly blocked domain in that
+same transaction. These queries have no write dependency on any
+`interest_profile*` table; implicit item read state stays on the separate
+interest fact-layer path.
+
+Project digest reading aggregates are computed at read time, never copied into
+the shared snapshot. Item counts are returned only when at least 3 distinct
+active Project members have a non-unread private state for that item. Corpus
+domain blind spots are limited to zero-reader domains and are returned only
+when the active-member cohort itself is at least 3. The query returns counts
+and domain keys only; no member id leaves the repository.
+
 ## Anti-Patterns
 
 - A massive `DatabaseService` or `DatabaseOperations` class owning everything.
@@ -271,8 +388,15 @@ When adding a new scheduler:
 | Proposal creation / acceptance / rejection | proposals module | Code patch file write |
 | Memory proposal apply | `PgProposalApplyService.accept` — one commit with rollback on failure | Source monitoring only (in-process) |
 | Policy proposal apply | `PgProposalApplyService.accept` — one commit | None |
+| Runtime Context Policy mutation | `RuntimeContextPolicyRepository.write` — version, binding, audit in one commit | None |
+| Execution control preflight | `ExecutionControlSnapshotRepository.createForRun` — one immutable insert before adapter | Adapter runs only after commit |
+| Work Context Setup mutation | `WorkContextService.create` — serialized base check, revalidation, immutable version and typed diff | None |
+| Invocation Delivery lifecycle | `InvocationSnapshotService` — transaction-bound live reauthorization plus atomic plan/attempt, then short acknowledgement and finalization transactions; gateway reconciles Usage after acknowledgement | Provider call occurs between attempt creation and acknowledgement |
+| Runtime Context continuity | `RuntimeContextContinuityService` — per-scope advisory lock, dense append-only event sequence, gaps, terminal Micro Checkpoint, active Semantic Checkpoint pointer, immutable corrections | Semantic extraction runs outside the transaction; result persistence revalidates the selected head and canonical refs |
+| Bounded provider-task lifecycle | `PgProviderCommandStore.beginProviderTaskAttempt` — immutable task control, unique physical-attempt Delivery, and draft safe Snapshot in one short transaction; completion updates only the draft Snapshot and Usage carries the same refs | Domain-owned provider call occurs after attempt commit and before completion |
 | Activity capture | `ActivityService` | None |
 | Sources daily briefing Activity pointer | Source post-processing repository short upsert after successful run; auxiliary failure logged | None |
+| Information Digest daily snapshot | Transaction-scoped advisory lock by scope/day; root upsert plus complete item replacement commit together | Existing snapshot remains intact on failure |
 | Activity consolidation | One short commit per activity outcome | Low (consolidation model call possible) |
 | Job queue / handlers | Short standalone commits; auxiliary events isolated | Handler execution |
 | Project Folder archive/unregister | Single-row status update commit; physical directory left untouched | None |
@@ -343,6 +467,16 @@ were merged into `server/migrations/0001_baseline.sql`. It does not inspect a
 live database or re-read custom SQL migrations for structural drift.
 
 **Schema representation notes:**
+- Content column defaults are storage backstops, not creation policy. Seven
+  legacy defaults remain `space_shared` (`activity_records`, `artifacts`,
+  `space_objects`, `knowledge_promotion_candidates`, `proposals`, `runs`,
+  `tasks`) and six remain/are explicitly written `private`
+  (`extracted_evidence`, `reader_annotations`, `source_connections`,
+  `source_items`, `source_snapshots`, `memory_entries`). User-initiated routes
+  always supply the access-owned creation context, so these contradictory
+  defaults are unreachable on that path; derived writers inherit their source.
+  We intentionally do not migrate sixteen defaults into a second policy
+  authority.
 - The `retrieval_object_type` Postgres DOMAIN (a closed enum used by ~10
   retrieval/knowledge columns) is represented with `customType` in
   `src/db/schema/_types.ts`; the DOMAIN definition itself lives in SQL

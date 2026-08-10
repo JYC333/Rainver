@@ -136,7 +136,7 @@ work does not consume a retry attempt. If delegated work fails and the node
 has another attempt, its audit link is retained as `delegated_superseded`
 before the new primary attempt becomes authoritative.
 
-Academic Research uses this mechanism for every run kind. One immutable
+Project Research uses this mechanism for every run kind. One immutable
 execution-per-pass graph invokes the deterministic coordinator, waits on any
 queued research model Run, and applies bounded subsequent stage Runs. Retry,
 resume, rescan, and later observations create a fresh Workflow Execution;

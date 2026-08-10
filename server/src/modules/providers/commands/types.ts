@@ -107,6 +107,25 @@ export interface ProviderTaskChainEntry {
   model?: string | null;
 }
 
+export interface ProviderTaskAttemptRefs {
+  invocation_id: string;
+  control_id: string;
+  delivery_id: string;
+  invocation_snapshot_id: string;
+  usage_source_id: string;
+  attempt: number;
+}
+
+export interface ProviderTaskAttemptStart {
+  space_id: string;
+  task: string;
+  owner_domain: string;
+  provider_id: string;
+  model: string | null;
+  input_fingerprint: string;
+  metering: UsageObservation;
+}
+
 export interface ProviderSpaceGrantInput {
   space_id: string;
   enabled?: boolean;
@@ -152,6 +171,11 @@ export interface ProviderCommandStore {
   recordPoolOutcome(memberId: string, outcome: PoolOutcome): Promise<void>;
   resolveUsageAttribution(input: UsageObservation): Promise<UsageAttribution>;
   recordUsageObservation(input: UsageObservation, attribution: UsageAttribution): Promise<void>;
+  beginProviderTaskAttempt?(input: ProviderTaskAttemptStart): Promise<ProviderTaskAttemptRefs>;
+  completeProviderTaskAttempt?(
+    refs: ProviderTaskAttemptRefs,
+    result: { status: "accepted" | "failed"; error_code?: string | null },
+  ): Promise<void>;
   resolveProviderApiKey(spaceId: string, providerId: string): Promise<string>;
   resolveCredentialApiKey(spaceId: string, credentialId: string): Promise<string>;
   listConfiguredModels(spaceId: string, providerId: string): Promise<string[]>;

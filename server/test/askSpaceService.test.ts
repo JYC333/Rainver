@@ -118,12 +118,10 @@ describe("AskSpaceService.think (orchestration)", () => {
     });
   });
 
-  it("fans across domains, aggregates gaps/provenance, logs Memory reads, and gates follow-ups", async () => {
+  it("fans across domains, aggregates gaps/provenance, and gates follow-ups", async () => {
     const db = new FakeDb();
-    const recordMemoryReads = vi.fn(async () => {});
     const service = new AskSpaceService(db, CONFIG, {
       runDomainBrief: async ({ domain }) => cannedBrief(domain, { stale: domain === "knowledge" }),
-      recordMemoryReads,
       canRunActions: async () => true,
     });
 
@@ -141,10 +139,6 @@ describe("AskSpaceService.think (orchestration)", () => {
     expect(result.gap_summary.stale_count).toBe(1);
     expect(result.provenance).toHaveLength(3);
     expect(result.canonical_write_performed).toBe(false);
-
-    // Memory access logging fired ONLY for the memory domain, with its item ids.
-    expect(recordMemoryReads).toHaveBeenCalledTimes(1);
-    expect(recordMemoryReads).toHaveBeenCalledWith(["memory-1"], "space-1", "user-1");
 
     // Persist wrote 3 brief artifacts + 1 session artifact.
     const inserts = db.artifactInserts();
@@ -170,7 +164,6 @@ describe("AskSpaceService.think (orchestration)", () => {
     const service = new AskSpaceService(db, CONFIG, {
       runDomainBrief: async ({ domain }) => cannedBrief(domain, { sourceId: `source-${domain}` }),
       runCombinedSynthesis,
-      recordMemoryReads: async () => {},
       canRunActions: async () => true,
     });
 
@@ -206,7 +199,6 @@ describe("AskSpaceService.think (orchestration)", () => {
     const service = new AskSpaceService(db, CONFIG, {
       runDomainBrief: async ({ domain }) => cannedBrief(domain, { sourceId: `source-${domain}` }),
       runCombinedSynthesis,
-      recordMemoryReads: async () => {},
       canRunActions: async () => true,
     });
 
@@ -239,7 +231,6 @@ describe("AskSpaceService.think (orchestration)", () => {
     const service = new AskSpaceService(db, CONFIG, {
       runDomainBrief: async ({ domain }) => cannedBrief(domain),
       runCombinedSynthesis,
-      recordMemoryReads: async () => {},
       canRunActions: async () => true,
     });
 
@@ -262,7 +253,6 @@ describe("AskSpaceService.think (orchestration)", () => {
         if (domain === "project") throw new Error("adapter boom");
         return cannedBrief(domain);
       },
-      recordMemoryReads: async () => {},
       canRunActions: async () => true,
     });
 
@@ -283,7 +273,6 @@ describe("AskSpaceService.think (orchestration)", () => {
     const db = new FakeDb();
     const service = new AskSpaceService(db, CONFIG, {
       runDomainBrief: async ({ domain }) => cannedBrief(domain, { stale: true }),
-      recordMemoryReads: async () => {},
       canRunActions: async () => false,
     });
 
@@ -300,19 +289,16 @@ describe("AskSpaceService.think (orchestration)", () => {
     expect(result.session_artifact_id).toBeTruthy();
   });
 
-  it("defaults to the knowledge domain and never logs Memory reads when memory is not requested", async () => {
+  it("defaults to the knowledge domain", async () => {
     const db = new FakeDb();
-    const recordMemoryReads = vi.fn(async () => {});
     const service = new AskSpaceService(db, CONFIG, {
       runDomainBrief: async ({ domain }) => cannedBrief(domain),
-      recordMemoryReads,
       canRunActions: async () => true,
     });
 
     const result = await service.think({ spaceId: "space-1", userId: "user-1", query: "q" });
 
     expect(result.requested_domains).toEqual(["knowledge"]);
-    expect(recordMemoryReads).not.toHaveBeenCalled();
   });
 
   it("attaches advisory claim trajectory for cited claims only when opted in (Slice E)", async () => {

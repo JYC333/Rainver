@@ -8,7 +8,7 @@
  * place that defines the failure disposition for those executions.
  */
 
-export type ManagedExecutionKind = "source_post_processing" | "project_research";
+export type ManagedExecutionKind = "source_post_processing" | "source_annotation" | "project_research";
 export type ManagedExecutionFailurePolicy = "fail_fast";
 
 export interface ManagedExecutionPolicyContext {
@@ -85,7 +85,7 @@ export function credentialPolicyMetadata(
 }
 
 function isManagedExecutionKind(value: unknown): value is ManagedExecutionKind {
-  return value === "source_post_processing" || value === "project_research";
+  return value === "source_post_processing" || value === "source_annotation" || value === "project_research";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

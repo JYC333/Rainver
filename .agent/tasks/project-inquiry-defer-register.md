@@ -2,6 +2,8 @@
 
 Date: 2026-07-25
 Status: DEFERRED — usage-triggered
+Audited 2026-08-08: removed the retired Project Template work and aligned the
+taxonomy trigger with the four current Primary Modes.
 
 These items are not current correctness gaps and are not part of the active
 delivery sequence. Reconsider an item only when its recorded trigger occurs
@@ -9,9 +11,8 @@ or a newly observed correctness or security requirement supersedes it.
 
 | Item | Trigger | Owner |
 |---|---|---|
-| Additional Project Templates | Two or more real Projects repeat the same setup/workflow bundle | Projects + owning domains |
-| Template import/export | Template contract is stable through real use and has a portability requirement | Projects |
-| Revisit five-Mode taxonomy | A real Project cannot be classified by its primary definition of progress | Projects |
+| A creation-time setup preset distinct from Mode and Sources | Two or more real Projects repeat the same setup, and the repeated state cannot be owned by Primary Mode, Project Sources/extraction profiles, a saved Workflow, or an owning Area | Projects + owning domains |
+| Revisit the four-Mode taxonomy | A real Project cannot be classified by how its work advances as research, delivery, operations, or learning | Projects |
 | Review cursor/chunking | Measured pending volume makes bounded complete-pool selection too slow/noisy | Inquiry / Knowledge Promotion |
 | Thread labels/tags | Navigation or search use demonstrates the need | Inquiry |
 | Adaptive Learning scheduling | Real review behavior supplies scheduling requirements | Learning |

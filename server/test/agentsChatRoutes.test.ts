@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
@@ -6,8 +6,17 @@ import {
   __setAgentChatIdentityForTests,
   __setAgentChatServicesFactoryForTests,
 } from "../src/modules/agents";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
 
 let app: FastifyInstance;
+
+beforeEach(() => {
+  __setContentCreationContextResolverForTests(async (_db, input) => ({
+    spaceId: input.requestSpaceId,
+    projectId: input.projectId ?? null,
+    visibility: input.projectId ? "space_shared" : "private",
+  }));
+});
 
 type AgentChatServicesFactory = NonNullable<
   Parameters<typeof __setAgentChatServicesFactoryForTests>[0]
@@ -23,6 +32,7 @@ type AgentChatServiceOverrides = {
 afterEach(async () => {
   __setAgentChatIdentityForTests(null);
   __setAgentChatServicesFactoryForTests(null);
+  __setContentCreationContextResolverForTests(null);
   await app?.close();
 });
 
@@ -82,12 +92,6 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
       async attachRunToUserMessage() {
         return true;
       },
-      async listRecentMessagesForContext() {
-        return [];
-      },
-      async getLatestSummaryForContext() {
-        return null;
-      },
     },
     backends: {
       async resolveBinding() {
@@ -119,20 +123,6 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
         };
       },
     },
-    context: {
-      async fetchCandidates() {
-        return {
-          allowed_sources: [],
-          max_tokens: 4000,
-          max_items: 20,
-          context_policy_applied: true,
-          items: [],
-        };
-      },
-    },
-    snapshots: {
-      async persistChatSnapshot() {},
-    },
     runs: {
       async createQueuedRun(input) {
         return {
@@ -140,7 +130,6 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
           space_id: "space-1",
           agent_id: input.agent_id,
           agent_version_id: "agent-version-1",
-          context_snapshot_id: null,
           status: "queued",
           mode: input.mode,
           prompt: input.prompt ?? null,
@@ -167,8 +156,6 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
     backends: { ...base.backends, ...overrides.backends },
     runtimeSessions: { ...base.runtimeSessions, ...overrides.runtimeSessions },
     runs: { ...base.runs, ...overrides.runs },
-    context: { ...base.context, ...overrides.context },
-    snapshots: { ...base.snapshots, ...overrides.snapshots },
     jobs: { ...base.jobs, ...overrides.jobs },
   };
   const result: AgentChatServices = {
@@ -371,35 +358,14 @@ describe("agents asynchronous chat-turn route", () => {
     });
   });
 
-  it("persists context and chat finalization metadata before enqueue", async () => {
+  it("persists only canonical turn and routing metadata before enqueue", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const observed: {
       queuedRun?: Record<string, unknown>;
-      persisted?: Record<string, unknown>;
-      jobSawSnapshot?: boolean;
+      jobSawRun?: boolean;
     } = {};
     __setAgentChatServicesFactoryForTests(() =>
       services({
-        context: {
-          async fetchCandidates() {
-            return {
-              allowed_sources: ["memory"],
-              max_tokens: 4000,
-              max_items: 20,
-              context_policy_applied: true,
-              items: [{
-                item_type: "memory",
-                item_id: "memory-1",
-                title: "A memory",
-                excerpt: "remember this",
-                score: 0.8,
-                reason: "approved_memory",
-                token_count: 3,
-                metadata: {},
-              }],
-            };
-          },
-        },
         backends: {
           async resolveBinding() {
             return {
@@ -423,18 +389,12 @@ describe("agents asynchronous chat-turn route", () => {
             observed.queuedRun = input as unknown as Record<string, unknown>;
             return {
               ...(await services().runs.createQueuedRun(input)),
-              context_snapshot_id: "snapshot-1",
             };
-          },
-        },
-        snapshots: {
-          async persistChatSnapshot(input) {
-            observed.persisted = input as unknown as Record<string, unknown>;
           },
         },
         jobs: {
           async enqueue() {
-            observed.jobSawSnapshot = Boolean(observed.persisted);
+            observed.jobSawRun = Boolean(observed.queuedRun);
           },
         },
       }),
@@ -448,23 +408,13 @@ describe("agents asynchronous chat-turn route", () => {
     });
 
     expect(response.statusCode).toBe(202);
-    expect(String(observed.queuedRun?.prompt)).toContain("remember this");
+    expect(observed.queuedRun?.prompt).toBe("Hi");
     expect(observed.queuedRun?.model_override_json).toMatchObject({
-      chat_context_preamble: expect.stringContaining("remember this"),
-      conversation_window_version: "conversation_window.v1",
       conversation_backend: {
         schema_version: "conversation_backend.v1",
         runtime_profile_id: "runtime-profile-1",
         adapter_type: "claude_code",
         credential_profile_id: "credential-1",
-      },
-      conversation_runtime: {
-        schema_version: "conversation_runtime.v1",
-        binding_id: "binding-1",
-        runtime_state_key: "11111111-1111-4111-8111-111111111111",
-        runtime_session_id: null,
-        context_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-        replay_prompt: expect.stringContaining("remember this"),
       },
       execution_mode: "conversation_lightweight.v1",
       chat_turn: {
@@ -477,33 +427,18 @@ describe("agents asynchronous chat-turn route", () => {
         project_id: null,
       },
     });
-    expect(observed.persisted).toMatchObject({
-      contextSnapshotId: "snapshot-1",
-      spaceId: "space-1",
-      runId: "run-1",
-    });
-    expect(observed.jobSawSnapshot).toBe(true);
+    expect(observed.queuedRun?.model_override_json).not.toHaveProperty("messages");
+    expect(observed.queuedRun?.model_override_json).not.toHaveProperty("conversation_runtime");
+    expect(observed.queuedRun?.model_override_json).not.toHaveProperty("chat_context_preamble");
+    expect(observed.queuedRun?.model_override_json).not.toHaveProperty("conversation_window_version");
+    expect(observed.jobSawRun).toBe(true);
   });
 
-  it("sends only the increment when a CLI conversation session can resume", async () => {
+  it("queues only the canonical increment and defers CLI session selection to orchestration", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     let queuedRun: Record<string, unknown> | undefined;
     __setAgentChatServicesFactoryForTests(() =>
       services({
-        sessions: {
-          async listRecentMessagesForContext() {
-            return [{
-              id: "message-old",
-              session_id: "session-1",
-              space_id: "space-1",
-              user_id: "user-1",
-              role: "assistant",
-              content: "OLD HISTORY",
-              metadata_json: null,
-              created_at: "2026-06-14T09:00:00.000Z",
-            }];
-          },
-        },
         backends: {
           async resolveBinding() {
             return {
@@ -552,15 +487,10 @@ describe("agents asynchronous chat-turn route", () => {
     expect(response.statusCode).toBe(202);
     expect(queuedRun?.prompt).toContain("NEW TURN");
     expect(queuedRun?.prompt).not.toContain("OLD HISTORY");
-    expect(queuedRun?.model_override_json).toMatchObject({
-      conversation_runtime: {
-        runtime_session_id: "ses_existing-opaque",
-        replay_prompt: expect.stringContaining("OLD HISTORY"),
-      },
-    });
+    expect(queuedRun?.model_override_json).not.toHaveProperty("conversation_runtime");
   });
 
-  it("changes the runtime fingerprint when an in-place backend config changes", async () => {
+  it("does not author runtime fingerprints in the HTTP route", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     let runtimeRevision = 1;
     const fingerprints: string[] = [];
@@ -612,7 +542,6 @@ describe("agents asynchronous chat-turn route", () => {
       payload: { message: "second" },
     });
 
-    expect(fingerprints).toHaveLength(2);
-    expect(fingerprints[0]).not.toBe(fingerprints[1]);
+    expect(fingerprints).toEqual([]);
   });
 });

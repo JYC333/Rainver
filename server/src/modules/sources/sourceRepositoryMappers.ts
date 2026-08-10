@@ -16,6 +16,7 @@ export function itemOut(row: SourceItemRow) {
   return {
     id: row.id,
     space_id: row.space_id,
+    project_id: row.project_id,
     connection_id: row.connection_id,
     item_type: row.item_type,
     source_object_type: row.source_object_type,
@@ -81,6 +82,7 @@ export function evidenceOut(row: EvidenceRow) {
   return {
     id: row.id,
     space_id: row.space_id,
+    project_id: row.project_id,
     source_item_id: row.source_item_id,
     extraction_job_id: row.extraction_job_id,
     source_snapshot_id: row.source_snapshot_id,
@@ -139,6 +141,7 @@ export function projectSourceBindingOut(row: ProjectSourceBindingRow) {
     priority: row.priority,
     delivery_scope: row.delivery_scope,
     collection_notifications_enabled: row.collection_notifications_enabled,
+    standing_comparison_enabled: row.standing_comparison_enabled,
     filters_json: row.filters_json ?? {},
     routing_policy_json: row.routing_policy_json ?? {},
     extraction_policy_json: row.extraction_policy_json ?? {},

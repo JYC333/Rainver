@@ -79,7 +79,7 @@ describe("source backfill extraction windows",()=>{
   });
 
   it("defers a retryable extraction failure and preserves safe diagnostics", async () => {
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
       if (sql.startsWith("SELECT s.id AS segment_id")) {
         return {
           rows: [{

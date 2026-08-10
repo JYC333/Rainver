@@ -2,10 +2,11 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for a regression where reconcileOperation's
 // backfill->screening transition block has no stage guard: once backfill
@@ -42,6 +43,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-synthesis-stage-guard-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -106,11 +108,10 @@ beforeEach(async () => {
      ) VALUES ($1,$2,$3,$4,'Monitor','search','https://export.arxiv.org/api/query','{}'::jsonb,'{}'::jsonb,'fp-a','active','daily',$5,$5)`,
     [CHANNEL, SPACE, CONNECTION, OWNER, now],
   );
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','synthesis','active','agent_assisted','{}'::jsonb,$4,$4)`,
-    [WORKFLOW, SPACE, PROJECT, now],
-  );
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "synthesis", now,
+  });
   await seedOperationInSynthesis();
   await pool.query(
     `INSERT INTO source_backfill_plans (

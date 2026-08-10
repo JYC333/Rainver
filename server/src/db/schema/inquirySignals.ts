@@ -19,7 +19,7 @@ export const inquiryEvidenceSignals = pgTable("inquiry_evidence_signals", {
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	threadId: varchar("thread_id", { length: 36 }).notNull(),
 	// Exactly one Signal source is set (see ck_inquiry_evidence_signals_one_source):
-	// a literature/Corpus item, or a reviewed Experiment Interpretation
+	// a Corpus item, or a reviewed Experiment Interpretation
 	// ("convert reviewed interpretations to Evidence Signals").
 	corpusItemId: varchar("corpus_item_id", { length: 36 }),
 	experimentInterpretationId: varchar("experiment_interpretation_id", { length: 36 }),
@@ -46,7 +46,7 @@ export const inquiryEvidenceSignals = pgTable("inquiry_evidence_signals", {
 	uniqueIndex("uq_inquiry_evidence_signals_producer_key").using("btree", table.projectId.asc().nullsLast(), table.producerIdempotencyKey.asc().nullsLast()).where(sql`producer_idempotency_key IS NOT NULL`),
 	foreignKey({
 			columns: [table.threadId, table.projectId, table.spaceId],
-			foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+			foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId],
 			name: "inquiry_evidence_signals_thread_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
@@ -119,7 +119,7 @@ export const inquirySignalCandidates = pgTable("inquiry_signal_candidates", {
 	uniqueIndex("uq_inquiry_signal_candidates_open_semantic").using("btree", table.threadId.asc().nullsLast(), table.candidateKind.asc().nullsLast(), table.semanticKey.asc().nullsLast()).where(sql`(status)::text = 'pending'::text`),
 	foreignKey({
 			columns: [table.threadId, table.projectId, table.spaceId],
-			foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+			foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId],
 			name: "inquiry_signal_candidates_thread_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
@@ -149,7 +149,7 @@ export const inquirySignalCandidates = pgTable("inquiry_signal_candidates", {
 		}),
 	foreignKey({
 			columns: [table.resultingThreadId, table.projectId, table.spaceId],
-			foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+			foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId],
 			name: "inquiry_signal_candidates_result_thread_fkey"
 		}),
 	foreignKey({

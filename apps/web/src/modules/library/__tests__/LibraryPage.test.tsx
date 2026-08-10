@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import LibraryModule from '../LibraryModule'
-import { sourcesApi } from '../../../api/client'
-import type { ExtractionJob, SourceChannel, SourceItem } from '../../../types/api'
+import { informationDigestsApi, projectsApi, sourcesApi } from '../../../api/client'
+import type { ExtractionJob, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
 
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
 
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -21,6 +21,23 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
+  projectsApi: {
+    list: vi.fn(),
+    addCorpusItem: vi.fn(),
+  },
+  informationDigestsApi: {
+    personal: vi.fn(),
+    profile: vi.fn(),
+    acceptCandidate: vi.fn(),
+    dismissCandidate: vi.fn(),
+    updateProfileSettings: vi.fn(),
+    createTopic: vi.fn(),
+    updateTopic: vi.fn(),
+    archiveTopic: vi.fn(),
+    applyStarterPack: vi.fn(),
+    backfillProfileHistory: vi.fn(),
+    serendipityFeedback: vi.fn(),
+  },
   sourcesApi: {
     channels: vi.fn(),
     items: vi.fn(),
@@ -33,6 +50,22 @@ vi.mock('../../../api/client', () => ({
 
 function page<T>(items: T[], limit = 20) {
   return { items, total: items.length, limit, offset: 0 }
+}
+
+function interestProfile(overrides: Partial<InterestProfileSnapshot> = {}): InterestProfileSnapshot {
+  return {
+    profile_id: 'profile-1', maturity: 'cold', read_item_count: 0, covered_domain_count: 0,
+    skeleton_size: 50, exploration_share: 1, gaps_are_meaningful: false,
+    coverage: [], topics: [], ready_candidates: [], domains: [],
+    settings: {
+      coverage_half_life_days: 180, new_topic_occurrence_threshold: 4, new_topic_read_threshold: 2,
+      warming_min_read_items: 15, warm_min_read_items: 60, warm_min_covered_domains: 5,
+      interest_slots: 6, serendipity_slots: 2, interesting_cooldown_days: 7,
+      neutral_cooldown_days: 30, probe_domain_budget: 3,
+    },
+    starter_packs: [],
+    ...overrides,
+  }
 }
 
 function channel(): SourceChannel {
@@ -137,6 +170,14 @@ describe('LibraryPage', () => {
     vi.mocked(sourcesApi.channels).mockResolvedValue([channel()])
     vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem()], 30))
     vi.mocked(sourcesApi.briefings).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 })
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+      id: 'digest-1', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
+      digest_date: '2026-08-06', profile_maturity: 'cold', status: 'empty', settings: {},
+      created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z', items: [],
+      team_aggregates_available: false, team_blind_spot_domains: [],
+    })
+    vi.mocked(informationDigestsApi.profile).mockResolvedValue(interestProfile())
+    vi.mocked(projectsApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
   })
 
   it('defaults the Library shell to the all items route', async () => {
@@ -215,6 +256,81 @@ describe('LibraryPage', () => {
     expect(screen.getByText('2 not relevant')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /arXiv: 3dgs/ })).toHaveAttribute('href', '/library/digests/channel-1/2026-07-07')
     expect(sourcesApi.items).not.toHaveBeenCalled()
+  })
+
+  it('records explicit serendipity feedback and replaces controls with the saved state', async () => {
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+      id: 'digest-1', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
+      digest_date: '2026-08-06', profile_maturity: 'cold', status: 'ready', settings: {},
+      created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z',
+      items: [{
+        id: 'digest-item-1', source_item_id: 'source-item-1', section: 'serendipity', position: 0,
+        quota_slot: 'serendipity:distant:1', matched_topic_id: null, serendipity_pool_item_id: 'pool-1',
+        target_domain_key: 'history', discovery_origin: 'weekly_probe', score: 0.8,
+        component_scores: { rotation: 1 }, rationale: 'Why you are seeing this: history is distant.',
+        title: 'Outside history', source_uri: null, source_domain: null, author: null, excerpt: null,
+        occurred_at: '2026-08-05T00:00:00Z', domain_key: 'history', depth: 'overview', genre: 'explainer',
+        summary: 'A history overview.', read_status: 'unread', serendipity_feedback: null,
+        stance_target: null, stance_target_key: null, stance_polarity: 'neutral', stance_confidence: 0,
+        anonymous_read_count: null,
+      }],
+      team_aggregates_available: false, team_blind_spot_domains: [],
+    })
+    vi.mocked(informationDigestsApi.serendipityFeedback).mockResolvedValue({
+      digest_item_id: 'digest-item-1', domain_key: 'history', feedback: 'never', cooldown_until: null,
+      blocked: true, created_at: '2026-08-06T12:00:00Z',
+    })
+
+    renderLibrary('/library/digests')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Never this direction again' }))
+    await waitFor(() => expect(informationDigestsApi.serendipityFeedback).toHaveBeenCalledWith('space-1', 'digest-item-1', 'never'))
+    expect(await screen.findByText('Feedback: Never this direction again')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Never this direction again' })).not.toBeInTheDocument()
+  })
+
+  it('files a digest item into a selected Project Corpus through the existing Project gate', async () => {
+    vi.mocked(projectsApi.list).mockResolvedValue({
+      items: [{ id: 'project-1', name: 'Research Project' } as never], total: 1, limit: 200, offset: 0,
+    })
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+      id: 'digest-1', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
+      digest_date: '2026-08-06', profile_maturity: 'cold', status: 'ready', settings: {},
+      created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z',
+      team_aggregates_available: false, team_blind_spot_domains: [],
+      items: [{
+        id: 'digest-item-1', source_item_id: 'source-item-1', section: 'interest', position: 0,
+        quota_slot: 'interest:1', matched_topic_id: null, serendipity_pool_item_id: null,
+        target_domain_key: null, discovery_origin: null, score: 0.8, component_scores: {}, rationale: null,
+        title: 'Useful paper', source_uri: null, source_domain: null, author: null, excerpt: null,
+        occurred_at: '2026-08-05T00:00:00Z', domain_key: 'history', depth: 'overview', genre: 'paper',
+        summary: null, stance_target: null, stance_target_key: null, stance_polarity: 'neutral', stance_confidence: 0,
+        read_status: 'unread', serendipity_feedback: null, anonymous_read_count: null,
+      }],
+    })
+    vi.mocked(projectsApi.addCorpusItem).mockResolvedValue({} as never)
+
+    renderLibrary('/library/digests')
+
+    fireEvent.change(await screen.findByLabelText('Project for Useful paper'), { target: { value: 'project-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Project Corpus' }))
+    await waitFor(() => expect(projectsApi.addCorpusItem).toHaveBeenCalledWith('project-1', {
+      source_item_id: 'source-item-1', role: 'candidate', triage_status: 'new',
+      metadata_json: { origin: 'information_digest', digest_item_id: 'digest-item-1' },
+    }))
+  })
+
+  it('lets the owner accept a deterministic topic suggestion from the private profile', async () => {
+    vi.mocked(informationDigestsApi.profile).mockResolvedValue(interestProfile({
+      domains: [{ key: 'artificial_intelligence', label: 'Artificial intelligence', group: 'technology' }],
+      ready_candidates: [{ id: 'candidate-1', phrase_key: 'model-evaluation', display_phrase: 'Model evaluation', domain_key: 'artificial_intelligence', occurrence_count: 4, read_count: 2 }],
+    }))
+    vi.mocked(informationDigestsApi.acceptCandidate).mockResolvedValue({} as never)
+
+    renderLibrary('/library/digests')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept' }))
+    await waitFor(() => expect(informationDigestsApi.acceptCandidate).toHaveBeenCalledWith('space-1', 'model-evaluation', {}))
   })
 
   it('runs text extraction from the source item reading stream', async () => {

@@ -222,7 +222,7 @@ async function loadVisibleClaimsBySubjectObject(
       WHERE c.space_id = $1
         AND c.subject_object_id = $3
         AND so.deleted_at IS NULL
-        AND so.status <> 'rejected'
+        AND c.status <> 'rejected'
         AND ${readableClaimClause("$2")}
       ORDER BY so.created_at ASC, c.object_id ASC
       LIMIT $4`,
@@ -246,7 +246,7 @@ async function loadVisibleClaimsBySubjectText(
         AND c.subject_object_id IS NULL
         AND lower(btrim(c.subject_text)) = lower(btrim($3))
         AND so.deleted_at IS NULL
-        AND so.status <> 'rejected'
+        AND c.status <> 'rejected'
         AND ${readableClaimClause("$2")}
       ORDER BY so.created_at ASC, c.object_id ASC
       LIMIT $4`,
@@ -266,7 +266,7 @@ async function loadVisibleActiveClaims(
     `SELECT ${CLAIM_COLUMNS}
        FROM ${CLAIM_FROM}
       WHERE c.space_id = $1
-        AND so.status = 'active'
+        AND c.status = 'active'
         AND so.deleted_at IS NULL
         AND ($4::varchar IS NULL OR c.subject_object_id = $4)
         AND ${readableClaimClause("$2")}
@@ -568,7 +568,7 @@ function buildFinding(
       proposal_type: "object_relation_create",
       from_object_id: a.id,
       to_object_id: b.id,
-      relation_type: "contradicts",
+      link_type: "contradicts",
       confidence: confidenceForTier(detected.tier),
     },
   };
@@ -576,7 +576,7 @@ function buildFinding(
 
 function findingKey(finding: ClaimContradictionFinding): string {
   const action = finding.proposed_action;
-  if (action) return `${action.from_object_id}->${action.to_object_id}:${action.relation_type}`;
+  if (action) return `${action.from_object_id}->${action.to_object_id}:${action.link_type}`;
   return `${finding.from_claim.claim_id}->${finding.to_claim.claim_id}:${finding.signal}`;
 }
 

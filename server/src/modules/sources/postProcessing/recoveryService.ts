@@ -101,7 +101,7 @@ export class SourcePostProcessingRecoveryService {
     if (scope.channelIds.length === 0 || scope.ruleIds.length === 0) {
       return {
         status: "failed",
-        message: "Literature screening cannot start because no active channel processing rule is configured",
+        message: "Screening cannot start because no active channel processing rule is configured",
       };
     }
 
@@ -132,7 +132,7 @@ export class SourcePostProcessingRecoveryService {
       );
       return {
         status: "failed",
-        message: `Literature screening failed before review: ${classifiedCount}/${totalCount} papers classified${detail ? ` — ${detail}` : ""}`,
+        message: `Screening failed before review: ${classifiedCount}/${totalCount} items classified${detail ? ` — ${detail}` : ""}`,
       };
     }
 
@@ -148,7 +148,7 @@ export class SourcePostProcessingRecoveryService {
     if (rules.length === 0) {
       return {
         status: "failed",
-        message: "Literature screening cannot start because the configured processing rules are not active",
+        message: "Screening cannot start because the configured processing rules are not active",
       };
     }
 
@@ -156,7 +156,7 @@ export class SourcePostProcessingRecoveryService {
     // the full scope here would resend already-classified items to the rule on
     // every recovery pass (e.g. a Rescan that adds even one new item), and
     // evidence extraction has no per-item idempotency guard — that duplicates
-    // extracted_evidence rows for papers that were already screened.
+    // extracted_evidence rows for items that were already screened.
     const classifiedItemIds = new Set(await this.recoveryRepository.classifiedItemIds({ ...scope, sourceItemIds }));
     const unclassifiedItemIds = sourceItemIds.filter((id) => !classifiedItemIds.has(id));
     if (unclassifiedItemIds.length === 0) {
@@ -199,7 +199,7 @@ export class SourcePostProcessingRecoveryService {
     if (queuedJobCount === 0) {
       return {
         status: "failed",
-        message: "Literature screening cannot start because no configured rule covers the imported source items",
+        message: "Screening cannot start because no configured rule covers the imported source items",
       };
     }
 

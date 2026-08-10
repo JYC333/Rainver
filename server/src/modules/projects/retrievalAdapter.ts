@@ -49,7 +49,7 @@ export const projectRetrievalAdapter: RetrievalDomainAdapter = {
       ownerUserId: row.owner_user_id,
       visibility: "space_shared",
       status: row.review_status,
-      objectKind: "project_public_summary",
+      objectProfile: "project_public_summary",
       aliases: [...topics],
       text: joinText([
         row.name,

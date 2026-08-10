@@ -1,5 +1,5 @@
 /**
- * PTY fallback subscription-quota probe for Claude Code.
+ * Deterministic PTY parser/test harness for Claude Code quota output.
  *
  * `claude` exposes the Pro/Max usage bars only through the interactive `/usage`
  * slash command (no machine-readable flag), so we drive it the same way the
@@ -12,7 +12,9 @@
  * TUI scraping is inherently fragile and slow, so this is NEVER on the request
  * path: callers run it on demand / on a schedule and persist the result to a
  * cache that the UI reads. A failed probe returns an "unavailable" result and
- * the caller keeps the last good cache.
+ * the caller keeps the last good cache. Production no longer invokes this
+ * file-capable CLI fallback in the application-server namespace; live Claude
+ * quota refresh uses the server-owned OAuth API path.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -103,23 +105,7 @@ function emptyQuota(): QuotaResult {
 }
 
 async function defaultPtyFactory(): Promise<ProbePtyFactory> {
-  const pty = (await import("node-pty")) as typeof import("node-pty");
-  return {
-    spawn(command, args, options) {
-      const handle = pty.spawn(command, args, {
-        name: "xterm-256color",
-        cols: options.cols,
-        rows: options.rows,
-        env: options.env,
-      });
-      return {
-        write: (data) => handle.write(data),
-        onData: (listener) => void handle.onData(listener),
-        onExit: (listener) => void handle.onExit(({ exitCode }) => listener(exitCode)),
-        kill: () => handle.kill(),
-      };
-    },
-  };
+  throw new Error("Interactive Claude quota fallback is disabled outside the scoped Sandbox Runner.");
 }
 
 /**

@@ -15,6 +15,10 @@ import {
   sendRouteError,
 } from "../routeUtils/common";
 import { PgActivityRepository, summaryInputFromBody } from "./repository";
+import {
+  applyContentCreationContext,
+  resolveContentCreationContext,
+} from "../access/creationContext";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
@@ -25,7 +29,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await repository().create(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.send(await repository().create(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -41,9 +54,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         throw new HttpError(413, `file exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
       }
       const originalName = basename(upload.filename || "");
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(upload.fields.project_id),
+      });
       const ext = extname(originalName).slice(0, 16);
       const storedName = `${randomUUID().replace(/-/g, "")}${ext}`;
-      const dir = join(context.config.agentSpaceHome, "storage", "uploads", identity.spaceId);
+      const dir = join(context.config.agentSpaceHome, "storage", "uploads", creation.spaceId);
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, storedName), upload.file);
       const kind = (upload.fields.kind || "file").toLowerCase();
@@ -58,7 +76,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         (kind === "voice"
           ? `Voice capture (${contentType}, ${upload.file.length} bytes)`
           : `File capture: ${originalName || storedName} (${contentType}, ${upload.file.length} bytes)`);
-      const out = await repository().create(identity, {
+      const out = await repository().create({ spaceId: creation.spaceId, userId: identity.userId }, applyContentCreationContext({
         source_type: kind === "voice" ? "voice_capture" : "file_capture",
         content,
         title,
@@ -68,9 +86,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           filename: originalName || null,
           mime_type: contentType,
           size_bytes: upload.file.length,
-          stored_path: `${identity.spaceId}/${storedName}`,
+          stored_path: `${creation.spaceId}/${storedName}`,
         },
-      });
+      }, creation));
       return reply.send(out);
     } catch (error) {
       return sendRouteError(reply, error);

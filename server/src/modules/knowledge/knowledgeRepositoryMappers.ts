@@ -1,5 +1,4 @@
 import {
-  HttpError,
   dateIso,
   numberValue,
   objectValue,
@@ -7,11 +6,9 @@ import {
   stringArray,
 } from "../routeUtils/common";
 import type {
-  ClaimRelationRow,
   ClaimRow,
   ClaimSourceRow,
   KnowledgeItemRow,
-  KnowledgeRelationRow,
   NoteCollectionRow,
   NoteRow,
   ObjectRelationRow,
@@ -66,10 +63,6 @@ export function knowledgeItemOut(row: KnowledgeItemRow, sourceRefs: Record<strin
     archived_at: dateIso(row.archived_at),
     deprecated_at: dateIso(row.deprecated_at),
   };
-}
-
-export function relationOut(row: KnowledgeRelationRow): Record<string, unknown> {
-  return normalizeDates({ ...row });
 }
 
 export function claimSummaryOut(row: ClaimRow): Record<string, unknown> {
@@ -127,10 +120,6 @@ export function claimSourceOut(row: ClaimSourceRow): Record<string, unknown> {
   };
 }
 
-export function claimRelationOut(row: ClaimRelationRow): Record<string, unknown> {
-  return normalizeDates({ ...row });
-}
-
 export function objectRelationOut(row: ObjectRelationRow): Record<string, unknown> {
   const out = normalizeDates({ ...row });
   delete out.from_object_type;
@@ -168,6 +157,20 @@ export function sourceOut(row: SourceRow): Record<string, unknown> {
   };
 }
 
+/**
+ * Every folder the note is placed in, in placement order. A note with no
+ * placement (nothing has filed it yet) has an empty list, not a null folder.
+ */
+function notePlacementsOut(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const row = entry as { collection_id?: unknown; sort_order?: unknown };
+    return typeof row?.collection_id === "string"
+      ? [{ collection_id: row.collection_id, sort_order: numberValue(row.sort_order) ?? 0 }]
+      : [];
+  });
+}
+
 export function noteSummaryOut(row: NoteRow): Record<string, unknown> {
   return {
     id: row.id,
@@ -177,8 +180,9 @@ export function noteSummaryOut(row: NoteRow): Record<string, unknown> {
     status: row.status,
     content_format: row.content_format,
     primary_project_id: row.primary_project_id,
-    collection_id: row.collection_id,
-    sort_order: numberValue(row.collection_sort_order),
+    project_role: row.project_role,
+    role_project_id: row.role_project_id,
+    placements: notePlacementsOut(row.placements),
     version: numberValue(row.version) ?? 1,
     content_hash: row.content_hash,
     updated_by_user_id: row.updated_by_user_id,
@@ -232,9 +236,3 @@ export function canMutateClaim(row: ClaimRow, userId: string): boolean {
   return isContentOwner(row, userId);
 }
 
-export function confidence(value: unknown): number | null {
-  const parsed = numberValue(value);
-  if (parsed === null) return null;
-  if (parsed < 0 || parsed > 1) throw new HttpError(422, "confidence must be between 0 and 1");
-  return parsed;
-}

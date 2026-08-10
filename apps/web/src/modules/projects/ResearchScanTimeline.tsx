@@ -16,7 +16,7 @@ function dateLabel(value: string): string {
 
 function summaryLabel(summary: ProjectResearchScanSummary): string {
   if (summary.integrity_alerts.length > 0) return `${summary.integrity_alerts.length} publication integrity alert${summary.integrity_alerts.length === 1 ? '' : 's'}`
-  if (summary.new_item_count === 0) return 'No new papers'
+  if (summary.new_item_count === 0) return 'No new material'
   const parts = [`${summary.new_item_count} new`, `${summary.relevant_count} relevant`]
   if (summary.maybe_count > 0) parts.push(`${summary.maybe_count} maybe`)
   if (summary.relevant_count + summary.maybe_count === 0) return `${summary.new_item_count} new · no relevant updates`

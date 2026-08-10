@@ -7,10 +7,11 @@
  */
 
 import { z } from "zod";
+import { LinkTypeSchema } from "./linkTypes.js";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import { RetrievalObjectTypeSchema } from "./knowledgeRetrieval.js";
 
-const UNSAFE_OBJECT_KIND_CONFIG_KEY_TOKENS = new Set([
+const UNSAFE_OBJECT_PROFILE_CONFIG_KEY_TOKENS = new Set([
   "script",
   "scripts",
   "shell",
@@ -41,50 +42,50 @@ const JsonObjectSchema = z.record(z.unknown()).superRefine((value, ctx) => {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "object schema config is too large" });
     return;
   }
-  const violation = objectKindConfigViolation(value, "config", 0);
+  const violation = objectProfileConfigViolation(value, "config", 0);
   if (violation) ctx.addIssue({ code: z.ZodIssueCode.custom, message: violation });
 });
-const ObjectKindKeySchema = z
+const ObjectProfileKeySchema = z
   .string()
   .min(1)
   .max(64)
   .regex(/^[a-z][a-z0-9_]*$/);
 
-function objectKindConfigViolation(value: unknown, path: string, depth: number): string | null {
+function objectProfileConfigViolation(value: unknown, path: string, depth: number): string | null {
   if (depth > 8) return `${path} is too deeply nested`;
   if (Array.isArray(value)) {
     if (value.length > 200) return `${path} has too many array entries`;
     for (let index = 0; index < value.length; index += 1) {
-      const violation = objectKindConfigViolation(value[index], `${path}[${index}]`, depth + 1);
+      const violation = objectProfileConfigViolation(value[index], `${path}[${index}]`, depth + 1);
       if (violation) return violation;
     }
     return null;
   }
   if (!value || typeof value !== "object") return null;
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (unsafeObjectKindConfigKey(key)) {
+    if (unsafeObjectProfileConfigKey(key)) {
       return `${path}.${key} is not allowed in object schema config`;
     }
-    const violation = objectKindConfigViolation(entry, `${path}.${key}`, depth + 1);
+    const violation = objectProfileConfigViolation(entry, `${path}.${key}`, depth + 1);
     if (violation) return violation;
   }
   return null;
 }
 
-function unsafeObjectKindConfigKey(key: string): boolean {
+function unsafeObjectProfileConfigKey(key: string): boolean {
   const normalized = key
     .trim()
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
   const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
-  return tokens.some((token) => UNSAFE_OBJECT_KIND_CONFIG_KEY_TOKENS.has(token));
+  return tokens.some((token) => UNSAFE_OBJECT_PROFILE_CONFIG_KEY_TOKENS.has(token));
 }
 
-function refineObjectKindKeyMatchesBase(
-  value: { key: string; base_object_type: SpaceObjectKindBaseObjectType },
+function refineObjectProfileKeyMatchesBase(
+  value: { key: string; base_object_type: SpaceObjectProfileBaseObjectType },
   ctx: z.RefinementCtx,
 ): void {
-  const allowed = OBJECT_KIND_KEY_VALUES_BY_BASE_OBJECT_TYPE[value.base_object_type];
+  const allowed = OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE[value.base_object_type];
   if (!allowed.includes(value.key as never)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -94,13 +95,13 @@ function refineObjectKindKeyMatchesBase(
   }
 }
 
-export const SpaceObjectKindStatusSchema = z.enum(["draft", "active", "deprecated", "archived"]);
-export type SpaceObjectKindStatus = z.infer<typeof SpaceObjectKindStatusSchema>;
+export const SpaceObjectProfileStatusSchema = z.enum(["draft", "active", "deprecated", "archived"]);
+export type SpaceObjectProfileStatus = z.infer<typeof SpaceObjectProfileStatusSchema>;
 
-export const SpaceObjectKindBaseObjectTypeSchema = RetrievalObjectTypeSchema;
-export type SpaceObjectKindBaseObjectType = z.infer<typeof SpaceObjectKindBaseObjectTypeSchema>;
+export const SpaceObjectProfileBaseObjectTypeSchema = RetrievalObjectTypeSchema;
+export type SpaceObjectProfileBaseObjectType = z.infer<typeof SpaceObjectProfileBaseObjectTypeSchema>;
 
-export const OBJECT_KIND_KEY_VALUES_BY_BASE_OBJECT_TYPE = {
+export const OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE = {
   knowledge_item: ["concept", "lesson", "procedure", "decision", "question", "answer", "summary"],
   note: ["note"],
   source: ["activity_record", "chat_capture", "webpage", "article", "paper", "pdf", "file", "email", "manual_reference", "external_note"],
@@ -110,62 +111,42 @@ export const OBJECT_KIND_KEY_VALUES_BY_BASE_OBJECT_TYPE = {
   source_item: ["external_url", "feed_entry", "activity_record", "artifact", "run_event", "file", "document", "log"],
   extracted_evidence: ["document", "excerpt", "event", "log", "artifact", "claim", "summary"],
   inquiry_thread: ["question", "hypothesis"],
-} as const satisfies Record<SpaceObjectKindBaseObjectType, readonly string[]>;
+} as const satisfies Record<SpaceObjectProfileBaseObjectType, readonly string[]>;
 
-export const OBJECT_SCHEMA_RELATION_TYPE_VALUES = [
-  "related_to",
-  "explains",
-  "depends_on",
-  "prerequisite_of",
-  "part_of",
-  "example_of",
-  "applies_to",
-  "supports",
-  "contradicts",
-  "derived_from",
-  "summarizes",
-  "updates",
-  "references",
-  "source_for",
-  "about",
-  "supersedes",
-  "refines",
-  "same_as",
-] as const;
 
-export const SpaceObjectKindRelationHintDirectionSchema = z.enum(["from", "to", "either"]);
-export type SpaceObjectKindRelationHintDirection = z.infer<typeof SpaceObjectKindRelationHintDirectionSchema>;
+export const SpaceObjectProfileRelationHintDirectionSchema = z.enum(["from", "to", "either"]);
+export type SpaceObjectProfileRelationHintDirection = z.infer<typeof SpaceObjectProfileRelationHintDirectionSchema>;
 
-export const SpaceObjectKindRelationHintRelationTypeSchema = z.enum(OBJECT_SCHEMA_RELATION_TYPE_VALUES);
-export type SpaceObjectKindRelationHintRelationType = z.infer<typeof SpaceObjectKindRelationHintRelationTypeSchema>;
+export const SpaceObjectProfileRelationHintLinkTypeSchema = LinkTypeSchema;
+export type SpaceObjectProfileRelationHintLinkType = z.infer<typeof SpaceObjectProfileRelationHintLinkTypeSchema>;
 
-export const SpaceObjectKindRelationHintRequestSchema = z
+export const SpaceObjectProfileRelationHintRequestSchema = z
   .object({
-    endpoint_object_type: SpaceObjectKindBaseObjectTypeSchema,
-    endpoint_object_kind_id: IdSchema.nullish(),
-    relation_type: SpaceObjectKindRelationHintRelationTypeSchema,
-    direction: SpaceObjectKindRelationHintDirectionSchema.default("from"),
+    endpoint_object_type: SpaceObjectProfileBaseObjectTypeSchema,
+    endpoint_object_profile_id: IdSchema.nullish(),
+    link_type: SpaceObjectProfileRelationHintLinkTypeSchema,
+    direction: SpaceObjectProfileRelationHintDirectionSchema.default("from"),
     confidence_default: z.number().min(0).max(1).default(0.55),
     required: z.boolean().default(false),
   })
   .strict();
-export type SpaceObjectKindRelationHintRequest = z.infer<typeof SpaceObjectKindRelationHintRequestSchema>;
+export type SpaceObjectProfileRelationHintRequest = z.infer<typeof SpaceObjectProfileRelationHintRequestSchema>;
 
-export const SpaceObjectKindOutSchema = z
+export const SpaceObjectProfileOutSchema = z
   .object({
     id: IdSchema,
     space_id: IdSchema,
-    key: ObjectKindKeySchema,
+    key: ObjectProfileKeySchema,
     label: z.string().min(1),
     description: z.string().nullable(),
-    base_object_type: SpaceObjectKindBaseObjectTypeSchema,
-    status: SpaceObjectKindStatusSchema,
+    base_object_type: SpaceObjectProfileBaseObjectTypeSchema,
+    status: SpaceObjectProfileStatusSchema,
     version: z.number().int().positive(),
     field_schema: JsonObjectSchema,
     extraction_policy: JsonObjectSchema,
     retrieval_policy: JsonObjectSchema,
     ui_config: JsonObjectSchema,
-    relation_hints: z.array(SpaceObjectKindRelationHintRequestSchema.extend({ id: IdSchema })).default([]),
+    relation_hints: z.array(SpaceObjectProfileRelationHintRequestSchema.extend({ id: IdSchema })).default([]),
     created_by_user_id: IdSchema.nullish(),
     created_from_proposal_id: IdSchema.nullish(),
     updated_from_proposal_id: IdSchema.nullish(),
@@ -174,48 +155,48 @@ export const SpaceObjectKindOutSchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type SpaceObjectKindOut = z.infer<typeof SpaceObjectKindOutSchema>;
+export type SpaceObjectProfileOut = z.infer<typeof SpaceObjectProfileOutSchema>;
 
-export const SpaceObjectKindPageSchema = z
+export const SpaceObjectProfilePageSchema = z
   .object({
-    items: z.array(SpaceObjectKindOutSchema),
+    items: z.array(SpaceObjectProfileOutSchema),
     total: z.number().int().nonnegative(),
     limit: z.number().int().nonnegative(),
     offset: z.number().int().nonnegative(),
     ...SecretResponseGuards,
   })
   .strict();
-export type SpaceObjectKindPage = z.infer<typeof SpaceObjectKindPageSchema>;
+export type SpaceObjectProfilePage = z.infer<typeof SpaceObjectProfilePageSchema>;
 
-export const SpaceObjectKindListRequestSchema = z
+export const SpaceObjectProfileListRequestSchema = z
   .object({
-    base_object_type: SpaceObjectKindBaseObjectTypeSchema.optional(),
-    status: SpaceObjectKindStatusSchema.optional(),
+    base_object_type: SpaceObjectProfileBaseObjectTypeSchema.optional(),
+    status: SpaceObjectProfileStatusSchema.optional(),
     limit: z.number().int().positive().max(200).default(50),
     offset: z.number().int().nonnegative().default(0),
   })
   .strict();
-export type SpaceObjectKindListRequest = z.infer<typeof SpaceObjectKindListRequestSchema>;
+export type SpaceObjectProfileListRequest = z.infer<typeof SpaceObjectProfileListRequestSchema>;
 
-export const SpaceObjectKindCreateProposalRequestSchema = z
+export const SpaceObjectProfileCreateProposalRequestSchema = z
   .object({
-    key: ObjectKindKeySchema,
+    key: ObjectProfileKeySchema,
     label: z.string().min(1).max(160),
     description: z.string().max(2000).nullable().optional(),
-    base_object_type: SpaceObjectKindBaseObjectTypeSchema,
+    base_object_type: SpaceObjectProfileBaseObjectTypeSchema,
     status: z.enum(["draft", "active"]).default("active"),
     field_schema: JsonObjectSchema.default({}),
     extraction_policy: JsonObjectSchema.default({}),
     retrieval_policy: JsonObjectSchema.default({}),
     ui_config: JsonObjectSchema.default({}),
-    relation_hints: z.array(SpaceObjectKindRelationHintRequestSchema).max(50).default([]),
+    relation_hints: z.array(SpaceObjectProfileRelationHintRequestSchema).max(50).default([]),
     rationale: z.string().max(4000).optional(),
   })
   .strict()
-  .superRefine(refineObjectKindKeyMatchesBase);
-export type SpaceObjectKindCreateProposalRequest = z.infer<typeof SpaceObjectKindCreateProposalRequestSchema>;
+  .superRefine(refineObjectProfileKeyMatchesBase);
+export type SpaceObjectProfileCreateProposalRequest = z.infer<typeof SpaceObjectProfileCreateProposalRequestSchema>;
 
-export const SpaceObjectKindUpdateProposalRequestSchema = z
+export const SpaceObjectProfileUpdateProposalRequestSchema = z
   .object({
     label: z.string().min(1).max(160).optional(),
     description: z.string().max(2000).nullable().optional(),
@@ -224,7 +205,7 @@ export const SpaceObjectKindUpdateProposalRequestSchema = z
     extraction_policy: JsonObjectSchema.optional(),
     retrieval_policy: JsonObjectSchema.optional(),
     ui_config: JsonObjectSchema.optional(),
-    relation_hints: z.array(SpaceObjectKindRelationHintRequestSchema).max(50).optional(),
+    relation_hints: z.array(SpaceObjectProfileRelationHintRequestSchema).max(50).optional(),
     rationale: z.string().max(4000).optional(),
   })
   .strict()
@@ -240,21 +221,21 @@ export const SpaceObjectKindUpdateProposalRequestSchema = z
       value.relation_hints !== undefined,
     "at least one object kind field is required",
   );
-export type SpaceObjectKindUpdateProposalRequest = z.infer<typeof SpaceObjectKindUpdateProposalRequestSchema>;
+export type SpaceObjectProfileUpdateProposalRequest = z.infer<typeof SpaceObjectProfileUpdateProposalRequestSchema>;
 
-export const SpaceObjectKindStatusProposalRequestSchema = z
+export const SpaceObjectProfileStatusProposalRequestSchema = z
   .object({
     rationale: z.string().max(4000).optional(),
   })
   .strict();
-export type SpaceObjectKindStatusProposalRequest = z.infer<typeof SpaceObjectKindStatusProposalRequestSchema>;
+export type SpaceObjectProfileStatusProposalRequest = z.infer<typeof SpaceObjectProfileStatusProposalRequestSchema>;
 
 export const ObjectSchemaManifestRelationHintSchema = z
   .object({
-    endpoint_object_type: SpaceObjectKindBaseObjectTypeSchema,
-    endpoint_object_kind_key: ObjectKindKeySchema.nullish(),
-    relation_type: SpaceObjectKindRelationHintRelationTypeSchema,
-    direction: SpaceObjectKindRelationHintDirectionSchema.default("from"),
+    endpoint_object_type: SpaceObjectProfileBaseObjectTypeSchema,
+    endpoint_object_profile_key: ObjectProfileKeySchema.nullish(),
+    link_type: SpaceObjectProfileRelationHintLinkTypeSchema,
+    direction: SpaceObjectProfileRelationHintDirectionSchema.default("from"),
     confidence_default: z.number().min(0).max(1).default(0.55),
     required: z.boolean().default(false),
   })
@@ -263,11 +244,11 @@ export type ObjectSchemaManifestRelationHint = z.infer<typeof ObjectSchemaManife
 
 export const ObjectSchemaManifestKindSchema = z
   .object({
-    key: ObjectKindKeySchema,
+    key: ObjectProfileKeySchema,
     label: z.string().min(1).max(160),
     description: z.string().max(2000).nullable().optional(),
-    base_object_type: SpaceObjectKindBaseObjectTypeSchema,
-    status: SpaceObjectKindStatusSchema.optional(),
+    base_object_type: SpaceObjectProfileBaseObjectTypeSchema,
+    status: SpaceObjectProfileStatusSchema.optional(),
     version: z.number().int().positive().optional(),
     field_schema: JsonObjectSchema.default({}),
     extraction_policy: JsonObjectSchema.default({}),
@@ -276,7 +257,7 @@ export const ObjectSchemaManifestKindSchema = z
     relation_hints: z.array(ObjectSchemaManifestRelationHintSchema).max(50).default([]),
   })
   .strict()
-  .superRefine(refineObjectKindKeyMatchesBase);
+  .superRefine(refineObjectProfileKeyMatchesBase);
 export type ObjectSchemaManifestKind = z.infer<typeof ObjectSchemaManifestKindSchema>;
 
 export const ObjectSchemaExportManifestSchema = z
@@ -284,7 +265,7 @@ export const ObjectSchemaExportManifestSchema = z
     format: z.literal("agent_space.object_schema.v1"),
     exported_at: ISODateTimeSchema,
     object_schema_version: z.number().int().nonnegative(),
-    object_kinds: z.array(ObjectSchemaManifestKindSchema).max(500),
+    object_profiles: z.array(ObjectSchemaManifestKindSchema).max(500),
     metadata: JsonObjectSchema.default({}),
     ...SecretResponseGuards,
   })
@@ -313,7 +294,7 @@ export type ObjectSchemaImportResponse = z.infer<typeof ObjectSchemaImportRespon
 
 export const ObjectSchemaSuggestionScanRequestSchema = z
   .object({
-    base_object_types: z.array(SpaceObjectKindBaseObjectTypeSchema).max(6).optional(),
+    base_object_types: z.array(SpaceObjectProfileBaseObjectTypeSchema).max(6).optional(),
     limit: z.number().int().positive().max(200).default(100),
     persist_artifact: z.boolean().default(true),
     review_scope: z.enum(["private", "space_ops"]).default("private"),
@@ -324,9 +305,9 @@ export type ObjectSchemaSuggestionScanRequest = z.infer<typeof ObjectSchemaSugge
 export const ObjectSchemaSuggestionFindingSchema = z
   .object({
     id: z.string(),
-    kind: z.enum(["missing_object_kind", "deprecated_kind_usage", "unused_active_kind"]),
-    base_object_type: SpaceObjectKindBaseObjectTypeSchema,
-    object_kind: ObjectKindKeySchema,
+    kind: z.enum(["missing_object_profile", "deprecated_profile_usage", "unused_active_profile"]),
+    base_object_type: SpaceObjectProfileBaseObjectTypeSchema,
+    object_profile: ObjectProfileKeySchema,
     title: z.string(),
     reason: z.string(),
     confidence_tier: z.enum(["high", "medium", "low"]),

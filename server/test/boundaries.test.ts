@@ -45,8 +45,8 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
 const FORBIDDEN_SUBSTRINGS = [
   "../apps/web", // frontend app
   "../../apps/web",
-  "../sandbox", // first-level sandbox subsystem internals
-  "../../sandbox",
+  "../sandbox/", // first-level sandbox subsystem internals
+  "../../sandbox/",
   "../deployer", // first-level deployer subsystem internals
   "../../deployer",
   "../ops", // compose/env/script tree
@@ -134,13 +134,7 @@ describe("server import boundaries", () => {
   });
 
   it("does not reference web or subsystem internals anywhere in src", () => {
-    // These files intentionally hold "apps/web/src" as routing-manifest/glob
-    // *data* (path patterns mapping repo areas to context bundles/doc
-    // sources), never as an import specifier — see routingManifest.ts's
-    // DEFAULT_CONTEXT_ROUTING_MANIFEST and compiler.ts's path-glob matcher.
     const dataReferenceAllowlist = new Set([
-      join(srcDir, "modules", "context", "routingManifest.ts"),
-      join(srcDir, "modules", "context", "compiler.ts"),
       // This is the fixed HOME path inside the dedicated one-shot Docker
       // image, not a repository subsystem import or host path.
       join(srcDir, "modules", "runs", "localCliExecution.ts"),
@@ -153,9 +147,8 @@ describe("server import boundaries", () => {
         "../apps/web",
         "../../apps/web",
         "apps/web/src",
-        "../sandbox",
-        "../../sandbox",
-        "sandbox/",
+        "../sandbox/",
+        "../../sandbox/",
         "../deployer",
         "../../deployer",
         "deployer/",

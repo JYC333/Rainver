@@ -17,6 +17,7 @@ export {
   listBuiltInCapabilityDefinitions,
 } from "./registry";
 export {
+  __setWorkflowTemplateRegistryForTests,
   assertUniqueWorkflowTemplateIds,
   getBuiltInWorkflowTemplate,
   listBuiltInWorkflowTemplates,

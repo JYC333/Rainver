@@ -124,7 +124,6 @@ export const StartRunPayloadSchema = z.object({
   project_folder_id: IdSchema.nullish(),
   session_id: IdSchema.nullish(),
   project_id: IdSchema.nullish(),
-  context_artifact_ids: z.array(IdSchema).max(8).default([]),
 });
 export const StartRunCommandSchema = commandSchema(
   CommandType.StartRun,

@@ -12,12 +12,11 @@ const BoundedCriterionSchema = z.string().trim().min(1).max(200);
 const BoundedCriteriaSchema = z.array(BoundedCriterionSchema).max(10);
 export const RESEARCH_QUESTION_MAX_LENGTH = 2_000;
 const BoundedQuestionSchema = z.string().trim().min(1).max(RESEARCH_QUESTION_MAX_LENGTH);
-const BoundedQuestionsSchema = z.array(BoundedQuestionSchema).max(10);
 
 export const ResearchContextSchema = z.object({
   schema_version: z.literal("research_context.v1"),
   objective: BoundedQuestionSchema,
-  sub_questions: BoundedQuestionsSchema,
+  sub_questions: BoundedCriteriaSchema,
   in_scope: BoundedCriteriaSchema,
   out_of_scope: BoundedCriteriaSchema,
   must_have: BoundedCriteriaSchema,

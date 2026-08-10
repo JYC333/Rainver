@@ -60,15 +60,16 @@ describe("project corpus graph foundation", () => {
       sourceItemId: "item-1",
     });
 
-    expect(db.queries).toHaveLength(8);
+    expect(db.queries).toHaveLength(9);
     expect(db.queries[0]?.sql).toContain("FOR UPDATE");
     expect(db.queries[1]?.sql).toContain("INSERT INTO project_corpus_items");
     expect(db.queries[1]?.sql).toContain("FROM project_source_item_links psil");
-    expect(db.queries[2]?.sql).toContain("INSERT INTO project_corpus_item_sources");
-    expect(db.queries[3]?.sql).toContain("WITH promoted AS");
-    expect(db.queries[4]?.sql).toContain("source_item_references");
-    expect(db.queries[5]?.sql).toContain("INSERT INTO project_corpus_item_sources");
-    expect(db.queries[6]?.sql).toContain("DELETE FROM project_corpus_items");
-    expect(db.queries[7]?.sql).toContain("UPDATE project_corpus_items pci");
+    expect(db.queries[2]?.sql).toContain("pci.triage_status IN ('relevant', 'included')");
+    expect(db.queries[3]?.sql).toContain("INSERT INTO project_corpus_item_sources");
+    expect(db.queries[4]?.sql).toContain("WITH promoted AS");
+    expect(db.queries[5]?.sql).toContain("source_item_references");
+    expect(db.queries[6]?.sql).toContain("INSERT INTO project_corpus_item_sources");
+    expect(db.queries[7]?.sql).toContain("DELETE FROM project_corpus_items");
+    expect(db.queries[8]?.sql).toContain("UPDATE project_corpus_items pci");
   });
 });

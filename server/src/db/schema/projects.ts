@@ -13,13 +13,11 @@ export const projects = pgTable("projects", {
 	status: varchar({ length: 32 }).notNull(),
 	currentFocus: text("current_focus"),
 	settingsJson: jsonb("settings_json"),
-	// Immutable creation-time provenance only: which Project Template produced
-	// this Project and when. Runtime behavior (Area reachability, capability
-	// exposure) must never branch on this field.
-	templateKey: varchar("template_key", { length: 64 }).default('blank').notNull(),
-	templateAppliedJson: jsonb("template_applied_json"),
-	primaryMode: varchar("primary_mode", { length: 32 }).default('inquiry').notNull(),
+	// The single Project classification axis: how work advances. Creation also
+	// appends an immutable Mode Transition; there is no Template provenance.
+	primaryMode: varchar("primary_mode", { length: 32 }).default('research').notNull(),
 	activeBriefVersionId: varchar("active_brief_version_id", { length: 36 }),
+	activeInstructionVersionId: varchar("active_instruction_version_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	archivedAt: timestamp("archived_at", { withTimezone: true, mode: 'string' }),
@@ -33,7 +31,12 @@ export const projects = pgTable("projects", {
 			columns: [table.ownerUserId],
 			foreignColumns: [users.id],
 			name: "projects_owner_user_id_fkey"
-		}),
+	}),
+	foreignKey({
+		columns: [table.activeInstructionVersionId, table.id, table.spaceId],
+		foreignColumns: [projectInstructionVersions.id, projectInstructionVersions.projectId, projectInstructionVersions.spaceId],
+		name: "projects_active_instruction_version_fkey"
+	}),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
@@ -46,7 +49,7 @@ export const projects = pgTable("projects", {
 		}),
 	unique("uq_projects_space_id_id").on(table.id, table.spaceId),
 	check("ck_projects_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
-	check("ck_projects_primary_mode", sql`(primary_mode)::text = ANY (ARRAY[('inquiry'::character varying)::text, ('decision'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])`),
+	check("ck_projects_primary_mode", sql`(primary_mode)::text = ANY (ARRAY[('research'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])`),
 ]);
 
 // Versioned Project Brief. Material changes create a new version; the active
@@ -63,6 +66,18 @@ export const projectBriefVersions = pgTable("project_brief_versions", {
 	successDefinition: text("success_definition"),
 	constraints: text(),
 	assumptions: text(),
+	projectStatus: varchar("project_status", { length: 32 }).notNull(),
+	currentFocus: text("current_focus"),
+	confirmedDecisionsJson: jsonb("confirmed_decisions_json").default([]).notNull(),
+	primaryMode: varchar("primary_mode", { length: 32 }).notNull(),
+	workspaceIdentityJson: jsonb("workspace_identity_json").default({}).notNull(),
+	workspaceBoundaryJson: jsonb("workspace_boundary_json").default({}).notNull(),
+	sourceRefsJson: jsonb("source_refs_json").default([]).notNull(),
+	status: varchar({ length: 32 }).default('draft').notNull(),
+	reviewedByUserId: varchar("reviewed_by_user_id", { length: 36 }),
+	reviewedAt: timestamp("reviewed_at", { withTimezone: true, mode: 'string' }),
+	publishedByUserId: varchar("published_by_user_id", { length: 36 }),
+	publishedAt: timestamp("published_at", { withTimezone: true, mode: 'string' }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
@@ -84,7 +99,42 @@ export const projectBriefVersions = pgTable("project_brief_versions", {
 			columns: [table.createdByUserId],
 			foreignColumns: [users.id],
 			name: "project_brief_versions_created_by_user_id_fkey"
-		}).onDelete("set null"),
+	}).onDelete("set null"),
+	foreignKey({ columns: [table.reviewedByUserId], foreignColumns: [users.id], name: "project_brief_versions_reviewed_by_user_id_fkey" }).onDelete("set null"),
+	foreignKey({ columns: [table.publishedByUserId], foreignColumns: [users.id], name: "project_brief_versions_published_by_user_id_fkey" }).onDelete("set null"),
+	check("ck_project_brief_versions_status", sql`status IN ('draft', 'in_review', 'published', 'archived')`),
+	check("ck_project_brief_versions_project_status", sql`project_status IN ('active', 'archived', 'deleted')`),
+	check("ck_project_brief_versions_primary_mode", sql`primary_mode IN ('research', 'delivery', 'operations', 'learning')`),
+	check("ck_project_brief_versions_confirmed_decisions_array", sql`jsonb_typeof(confirmed_decisions_json) = 'array'`),
+	check("ck_project_brief_versions_workspace_identity_object", sql`jsonb_typeof(workspace_identity_json) = 'object'`),
+	check("ck_project_brief_versions_workspace_boundary_object", sql`jsonb_typeof(workspace_boundary_json) = 'object'`),
+	check("ck_project_brief_versions_source_refs_array", sql`jsonb_typeof(source_refs_json) = 'array'`),
+]);
+
+export const projectInstructionVersions = pgTable("project_instruction_versions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	version: varchar({ length: 16 }).notNull(),
+	title: varchar({ length: 256 }).notNull(),
+	instructionText: text("instruction_text").notNull(),
+	status: varchar({ length: 32 }).default('draft').notNull(),
+	reviewedByUserId: varchar("reviewed_by_user_id", { length: 36 }),
+	reviewedAt: timestamp("reviewed_at", { withTimezone: true, mode: 'string' }),
+	publishedByUserId: varchar("published_by_user_id", { length: 36 }),
+	publishedAt: timestamp("published_at", { withTimezone: true, mode: 'string' }),
+	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_project_instruction_versions_project_id").on(table.projectId),
+	uniqueIndex("uq_project_instruction_versions_project_version").on(table.projectId, table.version),
+	unique("uq_project_instruction_versions_id_project_space").on(table.id, table.projectId, table.spaceId),
+	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "project_instruction_versions_space_project_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "project_instruction_versions_space_id_fkey" }),
+	foreignKey({ columns: [table.createdByUserId], foreignColumns: [users.id], name: "project_instruction_versions_created_by_user_id_fkey" }),
+	foreignKey({ columns: [table.reviewedByUserId], foreignColumns: [users.id], name: "project_instruction_versions_reviewed_by_user_id_fkey" }).onDelete("set null"),
+	foreignKey({ columns: [table.publishedByUserId], foreignColumns: [users.id], name: "project_instruction_versions_published_by_user_id_fkey" }).onDelete("set null"),
+	check("ck_project_instruction_versions_status", sql`status IN ('draft', 'in_review', 'published', 'archived')`),
 ]);
 
 // Append-only. A Mode transition is a focus/projection change only; it never
@@ -117,7 +167,7 @@ export const projectModeTransitions = pgTable("project_mode_transitions", {
 			foreignColumns: [users.id],
 			name: "project_mode_transitions_confirmed_by_user_id_fkey"
 		}).onDelete("set null"),
-	check("ck_project_mode_transitions_to_mode", sql`(to_mode)::text = ANY (ARRAY[('inquiry'::character varying)::text, ('decision'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])`),
+	check("ck_project_mode_transitions_to_mode", sql`(to_mode)::text = ANY (ARRAY[('research'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])`),
 ]);
 
 // Per-user UI state over aggregated ProjectAttentionItem rows (which are

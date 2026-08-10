@@ -1,7 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { loadConfig } from "../src/config";
 import {
   RunOrchestrationService,
@@ -18,16 +17,16 @@ import type {
   RunTerminalUpdate,
   ConversationRuntimeTerminalSync,
 } from "../src/modules/runs/repository";
-import type { RunAdapterResultEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { PgRunRepository } from "../src/modules/runs/repository";
+import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders";
 import type { CliStdioController } from "../src/modules/runs/localCliExecution";
 import type { UsageObservation } from "../src/modules/usage/types";
-import { prepareConversationRuntimeState } from "../src/modules/runs/conversationRuntimeState";
 
-function config() {
+function config(withDatabase = false) {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    ...(withDatabase ? { SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" } : {}),
     SERVER_INTERNAL_TOKEN: "internal-token",
     AGENT_SPACE_HOME: "/tmp/agent-space-run-orchestration-tests-home",
     SANDBOX_ROOT: "/tmp/agent-space-run-orchestration-tests",
@@ -35,6 +34,40 @@ function config() {
 }
 
 const allowPolicy: RunPolicyEnforcer = async () => ({ status: "allow" });
+
+function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
+  return {
+    id: "delivery-1",
+    invocation_id: "run-1",
+    delivery_kind: "agent_task",
+    adapter_type: "model_api",
+    provider_id: "provider-1",
+    model: "gpt-4o-mini",
+    renderer_version: "managed.v1",
+    mode: "full",
+    planned_items: [
+      { item_id: "system-item", semantic_role: "delegated_instruction", required: true },
+      { item_id: "user-item", semantic_role: "user_input", required: true },
+    ],
+    message_blocks: [
+      { semantic_role: "delegated_instruction", content: "System prompt for agent-from-setup", source_item_ids: ["system-item"] },
+      { semantic_role: "user_input", content: prompt, source_item_ids: ["user-item"] },
+    ],
+    control_ref: { type: "execution_control_snapshot", id: "control-1" },
+    sandbox_ref: null,
+    tool_grant_refs: [],
+    output_contract_ref: null,
+    expected_prompt_tokens: 8,
+    max_output_tokens: null,
+    snapshot_draft_ref: { type: "invocation_snapshot", id: "snapshot-1" },
+    audit_refs: {
+      delivery_id: "delivery-1",
+      invocation_snapshot_id: "snapshot-1",
+      execution_control_snapshot_id: "control-1",
+      usage_source_id: "usage-delivery-1",
+    },
+  };
+}
 
 function completeCodexProtocol(
   controller: CliStdioController | undefined,
@@ -128,6 +161,8 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     model_provider_id: "provider-1",
     required_sandbox_level: "none",
     trigger_origin: "manual",
+    instructed_by_user_id: "user-1",
+    owner_user_id: "user-1",
     started_at: null,
     ended_at: null,
     ...overrides,
@@ -145,6 +180,7 @@ class FakeRepo implements RunExecutionRepositoryPort {
   failEvents = false;
   failSteps = false;
   executionLocked = false;
+  authorizationRuns: Array<Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id">> = [];
 
   async getRun(spaceId: string, runId: string): Promise<RunRecord | null> {
     this.calls.push(`get:${spaceId}:${runId}`);
@@ -178,11 +214,12 @@ class FakeRepo implements RunExecutionRepositoryPort {
       : { allowed: false, error_code: "dispatch_denied", error_message: "dispatch denied" };
   }
 
-  async checkRunExecutionAuthorization(): Promise<{
+  async checkRunExecutionAuthorization(candidate: RunRecord): Promise<{
     allowed: boolean;
     error_code?: string;
     error_message?: string;
   }> {
+    this.authorizationRuns.push(candidate);
     return this.executionAllowed
       ? { allowed: true }
       : {
@@ -190,6 +227,28 @@ class FakeRepo implements RunExecutionRepositoryPort {
           error_code: "run_execution_authorization_revoked",
           error_message: "authorization revoked",
         };
+  }
+
+  async bindRunToWorkContext(input: {
+    run_id: string;
+    space_id: string;
+    project_id: string | null;
+    project_folder_id: string | null;
+    agent_id: string;
+    runtime_profile_id: string | null;
+  }): Promise<RunRecord | null> {
+    if (!this.run || this.run.id !== input.run_id || this.run.space_id !== input.space_id) return null;
+    this.run = {
+      ...this.run,
+      project_id: input.project_id,
+      project_folder_id: input.project_folder_id,
+      agent_id: input.agent_id,
+      agent_version_id: `${input.agent_id}-current-version`,
+      system_prompt: `System prompt for ${input.agent_id}`,
+      requested_runtime_profile_id: input.runtime_profile_id,
+      runtime_profile_selection_source: input.runtime_profile_id ? "explicit" : "default",
+    };
+    return this.run;
   }
 
   async updateRunSandboxLevel(input: {
@@ -375,43 +434,47 @@ class FakeTools implements RuntimeToolResolverPort {
   }
 }
 
-class FakeContextPreparer {
-  contextRendered = true;
-  runtimeContextText: string | null = null;
-  calls: Array<{
-    runId: string;
-    spaceId: string;
-    adapterType: string | null;
-    sandboxCwd: string | null;
-    targetFormat: string | null;
-    workspacePath: string | null;
-    promptOverride?: string | null;
-  }> = [];
+class FakeRuntimeContextGateway {
+  calls: unknown[] = [];
 
-  async prepare(input: {
-    runId: string;
-    spaceId: string;
-    adapterType: string | null;
-    sandboxCwd: string | null;
-    targetFormat: string | null;
-    workspacePath: string | null;
-    promptOverride?: string | null;
-  }) {
+  async preview(): Promise<never> { throw new Error("preview is not used by execution tests"); }
+
+  async prepareInvocation(input: unknown): Promise<InvocationDelivery> {
     this.calls.push(input);
-    return {
-      runtime_prompt: input.promptOverride ?? "prepared prompt",
-      runtime_context_text: this.runtimeContextText,
-      context_snapshot_id: "snapshot-1",
-      context_rendered: this.contextRendered,
-      target_format: input.targetFormat,
-      instruction_file_path: input.sandboxCwd
-        ? `${input.sandboxCwd}/AGENTS.md`
-        : null,
-      total_chars: 100,
-      budget_chars: 128000,
-      dropped_sections: [],
-    };
+    return invocationDelivery();
   }
+
+  async acknowledgeDelivery(): Promise<Record<string, never>> { return {}; }
+  async finalizeInvocation(): Promise<Record<string, never>> { return {}; }
+}
+
+function orchestration(
+  repo: RunExecutionRepositoryPort,
+  adapters: ConstructorParameters<typeof RunOrchestrationService>[2] = {},
+): RunOrchestrationService {
+  const { managedApi, ...adapterOverrides } = adapters;
+  return new RunOrchestrationService(config(), repo, {
+    runtimeContextGateway: new FakeRuntimeContextGateway() as never,
+    workContextResolver: async (run) => ({
+      workContextScopeId: run.session_id ?? run.root_run_id ?? run.id,
+      workContextSetupRef: { type: "work_context_setup", id: "setup-1", version: "1" },
+      projectId: run.project_id,
+      projectFolderId: run.project_folder_id,
+      agentId: run.agent_id,
+      runtimeProfileId: run.runtime_profile_id ?? null,
+      projectBriefRef: null,
+      projectInstructionRef: null,
+    }),
+    executionControlSnapshotWriter: async () => ({ id: "control-1" } as ExecutionControlSnapshot),
+    ...adapterOverrides,
+    managedApi: {
+      agentDelegationTools: {
+        targets: [],
+        service: { spawnChildRun: async () => { throw new Error("unexpected delegation"); } } as never,
+      },
+      ...managedApi,
+    },
+  });
 }
 
 class FakeWorkspaceManager implements RunSandboxManagerPort {
@@ -464,13 +527,76 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
 }
 
 describe("RunOrchestrationService", () => {
+  it("defaults production PgRunRepository execution to the Runtime Context Gateway only", () => {
+    const orchestration = new RunOrchestrationService(
+      config(true),
+      new PgRunRepository({ query: async () => ({ rows: [] }) } as never),
+    );
+    expect((orchestration as unknown as { runtimeContextGateway: unknown }).runtimeContextGateway).toBeTruthy();
+  });
+
   it("executes a managed API run with setup writes before adapter invocation and terminal writes after", async () => {
     const repo = new FakeRepo();
-    repo.run = run({ system_prompt: "You are the space assistant.", instruction: null });
+    repo.run = run({
+      system_prompt: "You are the space assistant.",
+      instruction: null,
+      owner_user_id: "user-1",
+      session_id: "session-1",
+      model_override_json: {
+        execution_mode: "conversation_lightweight.v1",
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          user_message_id: "message-1",
+        },
+      },
+    });
     const adapterCalls: string[] = [];
     const adapterRequests: Array<{ system_prompt?: string | null }> = [];
-    const service = new RunOrchestrationService(config(), repo, {
-      policyEnforcer: allowPolicy,
+    let snapshotInputs: { cliCredentialProfileId: string | null; policyDecisionRecordIds: string[] } | null = null;
+    let routedRequestedRuntimeProfileId: string | null | undefined;
+    let routedBindings: Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id"> | null = null;
+    let snapshottedBindings: Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id"> | null = null;
+    const prepareInvocation = vi.fn(async () => invocationDelivery());
+    const acknowledgeDelivery = vi.fn(async () => ({} as never));
+    const finalizeInvocation = vi.fn(async () => ({} as never));
+    const ensureWorkContextSetup = vi.fn(async () => ({ id: "setup-1", version: 1 }));
+    const workContextResolver = vi.fn(async () => ({
+      workContextScopeId: "session-1",
+      workContextSetupRef: { type: "work_context_setup" as const, id: "setup-1", version: "1" },
+      projectId: "project-from-setup",
+      projectFolderId: "folder-from-setup",
+      agentId: "agent-from-setup",
+      runtimeProfileId: "runtime-profile-from-setup",
+      projectBriefRef: null,
+      projectInstructionRef: null,
+    }));
+    const service = orchestration(repo, {
+      policyEnforcer: async (request) => ({
+        status: "allow",
+        policy_decision_record_id: `decision-${request.action}`,
+      }),
+      workContextResolver,
+      ensureWorkContextSetup,
+      routeResolver: {
+        async routeRun(routed) {
+          routedRequestedRuntimeProfileId = routed.requested_runtime_profile_id;
+          routedBindings = routed;
+          return routed;
+        },
+      },
+      executionControlSnapshotWriter: async (snapshottedRun, inputs, bindings) => {
+        adapterCalls.push("control_snapshot");
+        snapshotInputs = inputs;
+        snapshottedBindings = snapshottedRun;
+        expect(bindings?.workContextSetupRef?.id).toBe("setup-1");
+        return { id: "control-1" } as ExecutionControlSnapshot;
+      },
+      runtimeContextGateway: {
+        preview: vi.fn(),
+        prepareInvocation,
+        acknowledgeDelivery,
+        finalizeInvocation,
+      },
       managedApi: {
         executeRuntimeHost: async (_config, request) => {
           adapterCalls.push(`adapter_after:${repo.calls.join("|")}`);
@@ -496,27 +622,74 @@ describe("RunOrchestrationService", () => {
       },
     });
 
-    await expect(
-      service.executeRun({
-        run_id: "run-1",
-        space_id: "space-1",
-        worker_id: "worker-1",
-        job_id: "job-1",
-        command_source: "job",
-      }),
-    ).resolves.toMatchObject({ run_id: "run-1", status: "succeeded" });
-
-    expect(adapterCalls[0]).toContain("running:run-1");
-    expect(adapterCalls[0]).toContain("event:adapter_invoked:running");
-    expect(adapterRequests[0]).toMatchObject({
-      system_prompt: "You are the space assistant.",
-      prompt: "Say hello",
+    const execution = await service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      job_id: "job-1",
+      command_source: "job",
     });
+    expect(execution).toMatchObject({ run_id: "run-1", status: "succeeded" });
+
+    expect(adapterCalls[1]).toContain("running:run-1");
+    expect(routedRequestedRuntimeProfileId).toBe("runtime-profile-from-setup");
+    expect(repo.authorizationRuns).toEqual([
+      expect.objectContaining({
+        project_id: "project-from-setup",
+        project_folder_id: "folder-from-setup",
+        agent_id: "agent-from-setup",
+      }),
+    ]);
+    expect(routedBindings).toMatchObject({
+      project_id: "project-from-setup",
+      project_folder_id: "folder-from-setup",
+      agent_id: "agent-from-setup",
+    });
+    expect(snapshottedBindings).toMatchObject({
+      project_id: "project-from-setup",
+      project_folder_id: "folder-from-setup",
+      agent_id: "agent-from-setup",
+    });
+    expect(adapterCalls).toEqual([
+      "control_snapshot",
+      expect.stringContaining("event:adapter_invoked:running"),
+    ]);
+    expect(snapshotInputs).toEqual({
+      cliCredentialProfileId: null,
+      policyDecisionRecordIds: ["decision-runtime.execute", "decision-runtime.use_credential"],
+    });
+    expect(adapterRequests[0]).toMatchObject({
+      system_prompt: "System prompt for agent-from-setup",
+      prompt: "Say hello",
+      invocation_audit_refs: { delivery_id: "delivery-1" },
+    });
+    expect(prepareInvocation).toHaveBeenCalledTimes(1);
+    expect(prepareInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      invocationId: "run-1",
+      turn: expect.objectContaining({
+        work_context_scope_id: "session-1",
+        current_message_ref: { type: "message", id: "message-1" },
+      }),
+    }));
+    expect(ensureWorkContextSetup).toHaveBeenCalledTimes(1);
+    expect(ensureWorkContextSetup).toHaveBeenCalledWith(
+      { spaceId: "space-1", userId: "user-1" },
+      "session-1",
+      { agentId: "agent-1", runtimeProfileId: "runtime-profile-from-setup" },
+    );
+    expect(workContextResolver).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "run-1" }));
+    expect(workContextResolver).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "run-1" }),
+      { type: "work_context_setup", id: "setup-1", version: "1" },
+    );
+    expect(acknowledgeDelivery).toHaveBeenCalledTimes(1);
+    expect(finalizeInvocation).toHaveBeenCalledTimes(1);
     expect(repo.calls).toEqual([
       "get:space-1:run-1",
       "lock:run-1:worker-1:job-1",
       "running:run-1",
-      "actor:job",
+      "actor:user-1",
       "step:adapter_started:running",
       "event:adapter_invoked:running",
       "get:space-1:run-1",
@@ -539,7 +712,7 @@ describe("RunOrchestrationService", () => {
       parent_run_id: "run-root",
       system_prompt: "You are the manager.",
     });
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => ({
@@ -569,22 +742,21 @@ describe("RunOrchestrationService", () => {
       },
     });
 
-    await expect(
-      service.executeRun({
+    const waitingResult = await service.executeRun({
         run_id: "run-1",
         space_id: "space-1",
         worker_id: "worker-1",
         job_id: "job-1",
         command_source: "job",
-      }),
-    ).resolves.toMatchObject({ run_id: "run-1", status: "waiting_for_dependency" });
+      });
+    expect(waitingResult, JSON.stringify(waitingResult)).toMatchObject({ run_id: "run-1", status: "waiting_for_dependency" });
 
     expect(repo.terminalUpdates).toEqual([]);
     expect(repo.calls).toEqual([
       "get:space-1:run-1",
       "lock:run-1:worker-1:job-1",
       "running:run-1",
-      "actor:job",
+      "actor:user-1",
       "step:adapter_started:running",
       "event:adapter_invoked:running",
       "waiting_for_dependency:run-1",
@@ -611,7 +783,7 @@ describe("RunOrchestrationService", () => {
       delegation_id: "delegation-1",
     });
     const delegationProjector = new FakeDelegationProjector();
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       delegationProjector,
       managedApi: {
@@ -658,7 +830,7 @@ describe("RunOrchestrationService", () => {
       root_run_id: "run-root",
     });
     const delegationProjector = new FakeDelegationProjector();
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       delegationProjector,
     });
 
@@ -686,7 +858,7 @@ describe("RunOrchestrationService", () => {
     });
     const delegationProjector = new FakeDelegationProjector();
     let adapterCalled = false;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       delegationProjector,
       managedApi: {
         executeRuntimeHost: async () => {
@@ -709,66 +881,10 @@ describe("RunOrchestrationService", () => {
     expect(delegationProjector.terminal).toHaveLength(0);
   });
 
-  it("passes prepared digest context to managed API system context", async () => {
-    const repo = new FakeRepo();
-    repo.run = run({
-      system_prompt: "You are the space assistant.",
-      prompt: "Original prompt",
-    });
-    const contextPreparer = new FakeContextPreparer();
-    contextPreparer.contextRendered = false;
-    contextPreparer.runtimeContextText = "[digest:policy_bundle:v3]\nUse safe defaults.";
-    const adapterRequests: Array<{ system_prompt?: string | null; prompt?: string | null }> = [];
-    const service = new RunOrchestrationService(config(), repo, {
-      policyEnforcer: allowPolicy,
-      contextPreparer,
-      managedApi: {
-        executeRuntimeHost: async (_config, request) => {
-          adapterRequests.push(request);
-          return {
-            success: true,
-            stdout: "done",
-            stderr: "",
-            output_text: "done",
-            output_json: { adapter_type: "ts_agent_host" },
-            exit_code: 0,
-            error_text: null,
-            error_code: null,
-            started_at: "2026-06-12T10:00:00.000Z",
-            completed_at: "2026-06-12T10:00:01.000Z",
-            model: "gpt-4o-mini",
-            usage: null,
-            events: [],
-            adapter_metadata: { adapter_type: "ts_agent_host" },
-            adapter_log_json: null,
-          };
-        },
-      },
-    });
-
-    await expect(
-      service.executeRun({
-        run_id: "run-1",
-        space_id: "space-1",
-        worker_id: "worker-1",
-        command_source: "job",
-      }),
-    ).resolves.toMatchObject({ run_id: "run-1", status: "succeeded" });
-
-    expect(contextPreparer.calls[0]).toMatchObject({
-      adapterType: "model_api",
-      targetFormat: "generic",
-    });
-    expect(adapterRequests[0]?.prompt).toBe("prepared prompt");
-    expect(adapterRequests[0]?.system_prompt).toContain("You are the space assistant.");
-    expect(adapterRequests[0]?.system_prompt).toContain("[digest:policy_bundle:v3]");
-    expect(adapterRequests[0]?.system_prompt).toContain("Use safe defaults.");
-  });
-
   it("prevents duplicate execution before adapter invocation", async () => {
     const repo = new FakeRepo();
     repo.lockAcquired = false;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => {
@@ -799,7 +915,7 @@ describe("RunOrchestrationService", () => {
 
   it("maps adapter failures and orchestration exceptions to terminal failed runs", async () => {
     const repo = new FakeRepo();
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => ({
@@ -846,7 +962,7 @@ describe("RunOrchestrationService", () => {
   it("maps orchestration-level adapter timeout to a terminal failed run", async () => {
     const repo = new FakeRepo();
     let adapterAborted = false;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async (_config, _request, options) =>
@@ -889,7 +1005,7 @@ describe("RunOrchestrationService", () => {
       project_folder_id: "workspace-1",
     });
     const executorResults: RunAdapterResultEnvelope[] = [];
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
       vendorCli: {
@@ -967,9 +1083,11 @@ describe("RunOrchestrationService", () => {
       required_sandbox_level: "worktree",
       project_folder_id: "workspace-1",
     });
-    const service = new RunOrchestrationService(config(), repo, {
+    const runtimeContextGateway = new FakeRuntimeContextGateway();
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
+      runtimeContextGateway: runtimeContextGateway as never,
       vendorCli: {
         credentialBroker: {
           async grantForRun() {
@@ -1031,7 +1149,7 @@ describe("RunOrchestrationService", () => {
         }],
       },
     });
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
       vendorCli: {
@@ -1058,6 +1176,7 @@ describe("RunOrchestrationService", () => {
             expect(output).toBeTruthy();
             await mkdir(dirname(`${output}/report.json`), { recursive: true });
             await writeFile(`${output}/report.json`, JSON.stringify({ answer: "ok" }));
+            completeCodexProtocol(input.stdio_controller, "done");
             return { returncode: 0, stdout: "done", stderr: "", timed_out: false };
           },
         },
@@ -1085,14 +1204,14 @@ describe("RunOrchestrationService", () => {
       required_sandbox_level: "worktree",
       project_folder_id: "workspace-1",
     });
-    const contextPreparer = new FakeContextPreparer();
+    const runtimeContextGateway = new FakeRuntimeContextGateway();
     const workspaceManager = new FakeWorkspaceManager();
     const executorCalls: Array<{ command: string[]; cwd: string | null }> = [];
     const usageObservations: Array<Record<string, unknown>> = [];
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer,
+      runtimeContextGateway: runtimeContextGateway as never,
       workspaceManager,
       usageRecorder: async (observation) => {
         usageObservations.push(observation as unknown as Record<string, unknown>);
@@ -1146,16 +1265,12 @@ describe("RunOrchestrationService", () => {
       "prepare:run-1",
       "cleanup:run-1:git_worktree:/tmp/aspace-prepared-run:/tmp/workspace-root",
     ]);
-    expect(contextPreparer.calls).toEqual([
-      {
-        runId: "run-1",
-        spaceId: "space-1",
-        adapterType: "codex_cli",
-        sandboxCwd: "/tmp/aspace-prepared-run",
-        targetFormat: "codex_cli",
-        workspacePath: "/tmp/workspace-root",
-      },
-    ]);
+    expect(runtimeContextGateway.calls[0]).toMatchObject({
+      invocationId: "run-1",
+      adapterType: "codex_cli",
+      executionControlSnapshotId: "control-1",
+      identity: { spaceId: "space-1", userId: "user-1" },
+    });
     expect(executorCalls[0]).toEqual({
       command: [
         process.execPath,
@@ -1178,8 +1293,7 @@ describe("RunOrchestrationService", () => {
         run_id: "run-1",
         external_session_id: "thread-1",
         usage_accuracy: "provider_reported",
-        idempotency_key:
-          "local-cli:11111111-1111-4111-8111-111111111111:0",
+        idempotency_key: "usage-delivery-1:0",
         usage_details: {
           input: 8,
           output: 2,
@@ -1224,7 +1338,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => ({
@@ -1306,7 +1420,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       delegationProjector,
       materializer,
@@ -1372,7 +1486,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => ({
@@ -1440,7 +1554,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => ({
@@ -1486,7 +1600,7 @@ describe("RunOrchestrationService", () => {
     const repo = new FakeRepo();
     repo.failEvents = true;
     repo.failSteps = true;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       managedApi: {
         executeRuntimeHost: async () => ({
@@ -1529,7 +1643,7 @@ describe("RunOrchestrationService", () => {
     });
     let adapterInvoked = false;
     const finalized: string[] = [];
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: denyPolicy,
       materializer: {
         async finalizeRun(finalizedRun: RunRecord) {
@@ -1576,7 +1690,7 @@ describe("RunOrchestrationService", () => {
         reason: "operator stop during dispatch",
       });
     };
-    service = new RunOrchestrationService(config(), repo, {
+    service = orchestration(repo, {
       policyEnforcer: allowPolicy,
     });
 
@@ -1607,11 +1721,11 @@ describe("RunOrchestrationService", () => {
     });
     const workspaceManager = new FakeWorkspaceManager();
     const executorModes: string[] = [];
-    const executorInputs: Array<{ docker?: unknown }> = [];
-    const service = new RunOrchestrationService(config(), repo, {
+    const executorInputs: Array<{ read_only?: unknown }> = [];
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer: new FakeContextPreparer(),
+      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       workspaceManager,
       vendorCli: {
         credentialBroker: {
@@ -1639,7 +1753,8 @@ describe("RunOrchestrationService", () => {
         },
         executor: {
           async runCommand(input) {
-            executorInputs.push({ docker: input.docker });
+            executorInputs.push({ read_only: input.read_only });
+            completeCodexProtocol(input.stdio_controller, "critical cli ok");
             return { returncode: 0, stdout: "critical cli ok", stderr: "", timed_out: false };
           },
         },
@@ -1656,8 +1771,8 @@ describe("RunOrchestrationService", () => {
     })).resolves.toMatchObject({ status: "succeeded" });
 
     expect(repo.calls).toContain("sandbox_level:one_shot_docker");
-    expect(executorModes).toEqual(["docker"]);
-    expect(executorInputs[0]?.docker).toMatchObject({ image: "agent-space-sandbox" });
+    expect(executorModes).toEqual(["worktree"]);
+    expect(executorInputs[0]?.read_only).toBeUndefined();
     expect(workspaceManager.calls).toContain("prepare:run-1");
   });
 
@@ -1670,10 +1785,10 @@ describe("RunOrchestrationService", () => {
       project_folder_id: "workspace-1",
     });
     const adapterConfigs: Array<Record<string, unknown>> = [];
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer: new FakeContextPreparer(),
+      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       workspaceManager: new FakeWorkspaceManager(),
       vendorCli: {
         credentialBroker: {
@@ -1724,9 +1839,9 @@ describe("RunOrchestrationService", () => {
     const repo = new FakeRepo();
     repo.run = run({ adapter_type: "legacy_removed", required_sandbox_level: "none" });
     let hostCalled = false;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      contextPreparer: new FakeContextPreparer(),
+      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       managedApi: {
         executeRuntimeHost: async () => {
           hostCalled = true;
@@ -1789,9 +1904,11 @@ describe("RunOrchestrationService", () => {
         },
       },
     });
-    const service = new RunOrchestrationService(config(), repo, {
+    const runtimeContextGateway = new FakeRuntimeContextGateway();
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
+      runtimeContextGateway: runtimeContextGateway as never,
       vendorCli: {
         credentialBroker: {
           async grantForRun() {
@@ -1828,215 +1945,13 @@ describe("RunOrchestrationService", () => {
       command_source: "job",
     });
     expect(result).toEqual(expect.objectContaining({ status: "succeeded" }));
+    expect(runtimeContextGateway.calls[0]).toMatchObject({
+      invocationId: "run-1",
+      adapterType: "codex_cli",
+      executionControlSnapshotId: "control-1",
+    });
     expect(repo.calls.indexOf("runtime:record"))
       .toBeLessThan(repo.calls.indexOf("terminal:succeeded"));
-  });
-
-  it("resumes a Room CLI conversation while retaining project context and tool grants", async () => {
-    const stateKey = "77777777-7777-4777-8777-777777777777";
-    await prepareConversationRuntimeState({
-      agent_space_home: config().agentSpaceHome,
-      sandbox_root: config().sandboxRoot,
-      state_key: stateKey,
-      resume_requested: false,
-    });
-    const repo = new FakeRepo();
-    repo.run = run({
-      adapter_type: "codex_cli",
-      model_provider_id: null,
-      required_sandbox_level: "read_only",
-      project_folder_id: "workspace-1",
-      session_id: "room-session-1",
-      system_prompt: "Room system",
-      permission_snapshot_json: {
-        tool_grants: [{
-          action_id: "source.search",
-          approval_behavior: "none",
-          side_effecting: false,
-        }],
-      },
-      model_override_json: {
-        execution_mode: "room_conversation.v1",
-        conversation_runtime: {
-          schema_version: "conversation_runtime.v1",
-          binding_id: "binding-room-1",
-          runtime_state_key: stateKey,
-          runtime_session_id: "vendor-room-session-1",
-          context_fingerprint: "room-fingerprint-1",
-          replay_prompt: "Full Room replay",
-          message_cursor_id: "message-2",
-        },
-      },
-    });
-    const contextPreparer = new FakeContextPreparer();
-    const workspaceManager = new FakeWorkspaceManager();
-    workspaceManager.sandboxKind = "read_only_project";
-    const protocolMessages: Record<string, unknown>[] = [];
-    let manifest: Record<string, unknown> | null = null;
-    let invokedCwd: string | null = null;
-    const service = new RunOrchestrationService(config(), repo, {
-      policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer,
-      workspaceManager,
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree" as const,
-              readonly: true,
-              temp_home: `${config().agentSpaceHome}/cache/conversation-runtime-homes/${stateKey}`,
-              persistent_home: true,
-              host_source_path: null,
-              target_path: null,
-              env: {
-                HOME: `${config().agentSpaceHome}/cache/conversation-runtime-homes/${stateKey}`,
-              },
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-        },
-        executor: {
-          async runCommand(input) {
-            invokedCwd = input.cwd;
-            manifest = JSON.parse(
-              await readFile(input.env.AGENT_SPACE_EXCHANGE_INPUT!, "utf8"),
-            ) as Record<string, unknown>;
-            completeCodexProtocol(
-              input.stdio_controller,
-              "ok",
-              message => {
-                protocolMessages.push(message);
-              },
-              "vendor-room-session-1",
-              true,
-            );
-            return { returncode: 0, stdout: "ok", stderr: "", timed_out: false };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
-    });
-
-    const execution = await service.executeRun({
-      run_id: "run-1",
-      space_id: "space-1",
-      worker_id: "worker-1",
-      command_source: "job",
-    });
-    expect({
-      execution,
-      terminal: repo.terminalUpdates[0],
-    }).toMatchObject({
-      execution: { status: "succeeded" },
-    });
-
-    expect(workspaceManager.calls).toContain("prepare:run-1");
-    expect(contextPreparer.calls[0]).toMatchObject({
-      sandboxCwd: "/tmp/aspace-prepared-run",
-      workspacePath: "/tmp/workspace-root",
-    });
-    expect(invokedCwd).toBe("/tmp/aspace-prepared-run");
-    expect(manifest).toMatchObject({
-      tool_grants: [{ action_id: "source.search" }],
-    });
-    expect(protocolMessages).toContainEqual(expect.objectContaining({
-      method: "thread/resume",
-      params: expect.objectContaining({ threadId: "vendor-room-session-1" }),
-    }));
-  });
-
-  it("replays a Room turn in Claude's stable conversation cwd when resume state is absent", async () => {
-    const stateKey = randomUUID();
-    const repo = new FakeRepo();
-    repo.run = run({
-      adapter_type: "claude_code",
-      model_provider_id: null,
-      required_sandbox_level: "none",
-      project_folder_id: null,
-      session_id: "room-session-1",
-      prompt: "Increment only",
-      model_override_json: {
-        execution_mode: "room_conversation.v1",
-        conversation_runtime: {
-          schema_version: "conversation_runtime.v1",
-          binding_id: "binding-room-2",
-          runtime_state_key: stateKey,
-          runtime_session_id: "stale-vendor-session",
-          context_fingerprint: "room-fingerprint-2",
-          replay_prompt: "Full Room replay with assigned segment",
-          message_cursor_id: "message-3",
-        },
-      },
-    });
-    const contextPreparer = new FakeContextPreparer();
-    const invocations: Array<{ cwd: string | null; command: string[] }> = [];
-    const claudeOutput = await readFile(
-      join(__dirname, "fixtures", "cliRuntimeOutput", "claude_code.turn.jsonl"),
-      "utf8",
-    );
-    const service = new RunOrchestrationService(config(), repo, {
-      policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer,
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "claude_code",
-              executor_mode: "worktree" as const,
-              readonly: false,
-              temp_home: null,
-              persistent_home: true,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-        },
-        executor: {
-          async runCommand(input) {
-            invocations.push({ cwd: input.cwd, command: input.command });
-            return {
-              returncode: 0,
-              stdout: claudeOutput,
-              stderr: "",
-              timed_out: false,
-            };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
-    });
-
-    const result = await service.executeRun({
-      run_id: "run-1",
-      space_id: "space-1",
-      worker_id: "worker-1",
-      command_source: "job",
-    });
-    expect({ result, terminal: repo.terminalUpdates[0] }).toMatchObject({
-      result: { status: "succeeded" },
-      terminal: { status: "succeeded" },
-    });
-
-    expect(invocations[0]?.cwd).toContain(stateKey);
-    expect(invocations[0]?.command).not.toContain("--resume");
-    expect(invocations[0]?.command.at(-1)).toContain(
-      "Full Room replay with assigned segment",
-    );
-    expect(contextPreparer.calls[0]).toMatchObject({
-      sandboxCwd: invocations[0]?.cwd,
-      promptOverride: "Full Room replay with assigned segment",
-    });
   });
 
   it("terminates the registered CLI process on cancel", async () => {
@@ -2054,7 +1969,7 @@ describe("RunOrchestrationService", () => {
       },
     });
     const terminated: string[] = [];
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       processRegistry: {
         register() {},
         deregister() {},
@@ -2088,10 +2003,10 @@ describe("RunOrchestrationService", () => {
       project_folder_id: "workspace-1",
     });
     const usageObservations: UsageObservation[] = [];
-    const service: RunOrchestrationService = new RunOrchestrationService(config(), repo, {
+    const service: RunOrchestrationService = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer: new FakeContextPreparer(),
+      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       workspaceManager: new FakeWorkspaceManager(),
       usageRecorder: async (observation) => {
         usageObservations.push(observation);
@@ -2177,7 +2092,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       materializer,
       managedApi: {
@@ -2239,7 +2154,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       materializer,
       verificationEngine: {
@@ -2309,13 +2224,13 @@ describe("RunOrchestrationService", () => {
       model_provider_id: null,
       contract_snapshot_json: { max_cost: 1 },
     });
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       usageRecorder: async () => {
         throw new Error("usage ledger unavailable");
       },
       runtimeToolVersionResolver: async () => "test-version",
-      contextPreparer: new FakeContextPreparer(),
+      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       workspaceManager: new FakeWorkspaceManager(),
       vendorCli: {
         credentialBroker: {
@@ -2390,7 +2305,7 @@ describe("RunOrchestrationService", () => {
         };
       },
     } as unknown as RunMaterializationService;
-    const service = new RunOrchestrationService(config(), repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       delegationProjector,
       materializer,
@@ -2425,60 +2340,4 @@ describe("RunOrchestrationService", () => {
     expect(delegationProjector.terminal).toEqual([]);
   });
 
-  it("adds bounded failure context to a Supervisor retry attempt", async () => {
-    const repo = new FakeRepo();
-    repo.run = run({
-      error_json: {
-        error_code: "supervisor_retry_scheduled",
-        reason_code: "verification_failed",
-        attempt_number: 2,
-      },
-    });
-    const requests: Array<{ prompt?: string | null; run_input?: unknown }> = [];
-    const service = new RunOrchestrationService(config(), repo, {
-      policyEnforcer: allowPolicy,
-      managedApi: {
-        executeRuntimeHost: async (_config, request) => {
-          requests.push(request);
-          return {
-            success: true,
-            stdout: "done",
-            stderr: "",
-            output_text: "done",
-            output_json: { status: "succeeded" },
-            exit_code: 0,
-            error_text: null,
-            error_code: null,
-            started_at: "2026-06-12T10:00:00.000Z",
-            completed_at: "2026-06-12T10:00:01.000Z",
-            model: "gpt-4o-mini",
-            usage: null,
-            events: [],
-            adapter_metadata: { adapter_type: "ts_agent_host" },
-            adapter_log_json: null,
-          };
-        },
-      },
-    });
-
-    await service.executeRun({
-      run_id: "run-1",
-      space_id: "space-1",
-      worker_id: "worker-1",
-      command_source: "job",
-    });
-
-    expect(requests[0]?.prompt).toContain("physical attempt 2");
-    expect(requests[0]?.prompt).toContain("verification_failed");
-    expect(requests[0]?.run_input).toMatchObject({
-      inputs: {
-        direct: {
-          supervisor_retry: {
-            reason_code: "verification_failed",
-            attempt_number: 2,
-          },
-        },
-      },
-    });
-  });
 });

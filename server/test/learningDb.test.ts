@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { LearningService } from "../src/modules/learning/service";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -31,6 +31,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[learning-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -68,8 +69,8 @@ async function seedKnowledgeItem(version = 1): Promise<string> {
   const objectId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
-     VALUES ($1,$2,'knowledge_item','Anchor concept','active','space_shared',$3,$4,$3,$5,$5)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
+     VALUES ($1,$2,'knowledge_item','Anchor concept','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, PROJECT, now],
   );
   await pool!.query(
@@ -84,8 +85,8 @@ async function seedKnowledgeItemIn(spaceId: string, projectId: string, ownerUser
   const objectId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
-     VALUES ($1,$2,'knowledge_item','Anchor concept','active','space_shared',$3,$4,$3,$5,$5)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
+     VALUES ($1,$2,'knowledge_item','Anchor concept','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, spaceId, ownerUserId, projectId, now],
   );
   await pool!.query(

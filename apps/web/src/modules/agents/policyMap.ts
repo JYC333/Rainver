@@ -63,45 +63,6 @@ export interface ScheduleSummary {
   manualRunAllowed: boolean
 }
 
-export type SessionCondenserProfile = 'adaptive' | 'general' | 'coding' | 'project'
-
-export interface SessionCondenserConfig {
-  profile: SessionCondenserProfile
-}
-
-export const CONDENSER_PROFILE_OPTIONS: {
-  value: SessionCondenserProfile
-  label: string
-  detail: string
-}[] = [
-  {
-    value: 'adaptive',
-    label: 'Adaptive',
-    detail: 'Mixed personal, coding, and project conversations',
-  },
-  {
-    value: 'general',
-    label: 'General',
-    detail: 'Personal assistant and everyday conversation',
-  },
-  {
-    value: 'coding',
-    label: 'Coding',
-    detail: 'Code, files, commands, errors, and implementation state',
-  },
-  {
-    value: 'project',
-    label: 'Project',
-    detail: 'Scope, decisions, milestones, blockers, owners, and next steps',
-  },
-]
-
-function asCondenserProfile(value: unknown): SessionCondenserProfile {
-  return value === 'general' || value === 'coding' || value === 'project' || value === 'adaptive'
-    ? value
-    : 'adaptive'
-}
-
 // ── Input contexts ────────────────────────────────────────────────────────────
 
 const INPUT_CONTEXT_LABELS: Record<string, string> = {
@@ -129,7 +90,6 @@ const INPUT_CONTEXT_LABELS: Record<string, string> = {
   project_folder_metadata: 'Project Folder metadata',
   recent_runs: 'Recent runs',
   recent_proposals: 'Recent proposals',
-  manual_context: 'Manually attached context',
   selected_project_folder: 'Selected Project Folder',
   selected_files: 'Selected files',
   git_diff: 'Git diff',
@@ -168,49 +128,6 @@ export function buildContextPolicy(base: Record<string, unknown>, enabled: strin
   return { ...base, default_input_contexts: clamped }
 }
 
-export function sessionCondenserProfile(version: { context_policy_json?: unknown }): SessionCondenserProfile {
-  return sessionCondenserConfig(version).profile
-}
-
-export function sessionCondenserConfig(version: { context_policy_json?: unknown }): SessionCondenserConfig {
-  const policy = asObj(version.context_policy_json)
-  const condenser = asObj(policy.condenser)
-  return {
-    profile: asCondenserProfile(condenser.profile),
-  }
-}
-
-export function buildCondenserProfileContextPolicy(
-  base: Record<string, unknown>,
-  profile: SessionCondenserProfile,
-): Record<string, unknown> {
-  const condenser = asObj(base.condenser)
-  return {
-    ...base,
-    condenser: {
-      ...condenser,
-      profile,
-    },
-  }
-}
-
-export function buildCondenserConfigContextPolicy(
-  base: Record<string, unknown>,
-  config: SessionCondenserConfig,
-): Record<string, unknown> {
-  const condenserBase = { ...asObj(base.condenser) }
-  delete condenserBase.custom_system
-  delete condenserBase.custom_instructions
-  const condenser: Record<string, unknown> = {
-    ...condenserBase,
-    profile: config.profile,
-  }
-  return {
-    ...base,
-    condenser,
-  }
-}
-
 // ── Output types ──────────────────────────────────────────────────────────────
 
 const OUTPUT_TYPE_LABELS: Record<string, string> = {
@@ -229,8 +146,8 @@ const OUTPUT_TYPE_LABELS: Record<string, string> = {
   claim_archive: 'Claim archive',
   object_relation_create: 'Object relation',
   object_relation_delete: 'Object relation removal',
-  object_kind_create: 'Object kind',
-  object_kind_update: 'Object kind update',
+  object_profile_create: 'Object profile',
+  object_profile_update: 'Object profile update',
   // Legacy labels kept for backward compat with older stored agent versions
   memory_update_proposal: 'Memory update',
   knowledge_item_proposal: 'Knowledge item',

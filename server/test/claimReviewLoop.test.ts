@@ -74,7 +74,7 @@ class FakeClaimDb implements Queryable {
       const rows = this.opts.subjectClaims ?? [];
       return { rows: rows as Row[], rowCount: rows.length };
     }
-    if (/so\.status = 'active'/.test(sql)) {
+    if (/c\.status = 'active'/.test(sql)) {
       const rows = this.opts.activeClaims ?? [];
       return { rows: rows as Row[], rowCount: rows.length };
     }
@@ -162,7 +162,7 @@ describe("scanClaimContradictions", () => {
     expect(finding.signal).toBe("negation");
     expect(finding.proposed_action).toMatchObject({
       proposal_type: "object_relation_create",
-      relation_type: "contradicts",
+      link_type: "contradicts",
       from_object_id: "a",
       to_object_id: "b",
     });
@@ -223,7 +223,7 @@ describe("scanClaimContradictions", () => {
               proposal_type: "object_relation_create",
               from_object_id: "a",
               to_object_id: "b",
-              relation_type: "contradicts",
+              link_type: "contradicts",
               confidence: 0.3,
             },
           },

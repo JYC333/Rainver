@@ -18,10 +18,10 @@ import { findOrCreateResearchAutomation } from "./synthesisOnlyExecution";
 import { researchState } from "./operationProjection";
 import { isRetryableRunErrorCode } from "../runs/retryPolicy";
 
-const RESEARCH_PASS_WORKFLOW_ID = "academic_literature_review.reconcile_pass";
+const RESEARCH_PASS_WORKFLOW_ID = "project_research.reconcile_pass";
 const RESEARCH_PASS_ACTION_KEY = "project_research.reconcile_pass";
 const RESEARCH_APPLY_RUN_ACTION_KEY = "project_research.apply_stage_run";
-const RESEARCH_PASS_TEMPLATE_ASSET_KEY = "academic_literature_review.reconcile_pass";
+const RESEARCH_PASS_TEMPLATE_ASSET_KEY = "project_research.reconcile_pass";
 
 interface ResearchOperationForPass {
   id: string;
@@ -174,7 +174,7 @@ function researchPassDefinition(
   return {
     schema_version: "workflow_definition.v1",
     workflow_id: RESEARCH_PASS_WORKFLOW_ID,
-    name: "Academic Literature Review — reconcile pass",
+    name: "Project Research — reconcile pass",
     description: "Applies one bounded observation pass to a Project Research operation.",
     input_schema_json: {},
     output_artifact_types: [],
@@ -249,7 +249,7 @@ async function findOrCreateResearchPassTemplateVersion(
       randomUUID(),
       identity.spaceId,
       RESEARCH_PASS_TEMPLATE_ASSET_KEY,
-      "Academic Literature Review — reconcile pass",
+      "Project Research — reconcile pass",
       "One immutable execution-per-pass reconciliation step.",
       now,
     ],

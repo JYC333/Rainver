@@ -1,3 +1,4 @@
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Queryable } from "../routeUtils/common";
@@ -268,7 +269,7 @@ const memoryAdapter: PublicationAdapter = {
       `INSERT INTO memory_entries (
          id, space_id, scope_type, memory_type, content, status, created_at, updated_at,
          valid_from, valid_to, subject_user_id, owner_user_id, sensitivity_level,
-         last_confirmed_at, project_folder_id, agent_id, namespace, title, visibility,
+         last_confirmed_at, agent_id, namespace, title, visibility,
          access_level, confidence, importance, source_id, created_by, approved_by,
          deleted_at, version, access_count, last_accessed_at, tags, memory_layer,
          event_time, event_type, last_retrieved_at, root_memory_id,
@@ -276,7 +277,7 @@ const memoryAdapter: PublicationAdapter = {
        ) VALUES (
          $1, $2, 'user', $3, $4, 'active', $5, $5,
          NULL, NULL, $6, $6, 'normal',
-         NULL, NULL, NULL, $7, $8, 'private',
+         NULL, NULL, $7, $8, 'private',
          'full', $9, $10, NULL, 'publication_import', $6,
          NULL, 1, 0, NULL, $11::jsonb, $12,
          $13::timestamptz, $14, NULL, $1,
@@ -303,7 +304,7 @@ const knowledgeAdapter: PublicationAdapter = {
               ki.reflection_status, ki.tags_json, ki.confidence
          FROM space_objects so
          JOIN knowledge_items ki ON ki.object_id = so.id AND ki.space_id = so.space_id
-        WHERE so.space_id = $1 AND so.id = $2 AND so.status = 'active'
+        WHERE so.space_id = $1 AND so.id = $2 AND ki.status = 'active'
         LIMIT 1 FOR SHARE OF so, ki`,
       [sourceSpaceId, resourceId],
     );
@@ -324,39 +325,43 @@ const knowledgeAdapter: PublicationAdapter = {
     const id = randomUUID();
     const now = new Date().toISOString();
     const p = parsed.payload;
+    const object = buildSpaceObjectInsert({
+      id,
+      spaceId: context.targetSpaceId,
+      objectType: "knowledge_item",
+      title: p.title,
+      summary: p.summary,
+      visibility: "private",
+      ownerUserId: context.ownerUserId,
+      createdByUserId: context.ownerUserId,
+      createdAt: now,
+    });
+    const n = object.params.length;
     await db.query(
       `WITH object_insert AS (
-         INSERT INTO space_objects (
-           id, space_id, object_type, title, summary, status, visibility, access_level,
-           owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
-           created_by_agent_id, created_by_run_id, created_at, updated_at,
-           archived_at, deleted_at
-         ) VALUES (
-           $1, $2, 'knowledge_item', $3, $4, 'active', 'private', 'full',
-           $5, NULL, NULL, $5,
-           NULL, NULL, $6, $6,
-           NULL, NULL
-         )
+         ${object.sql}
        )
        INSERT INTO knowledge_items (
-         object_id, space_id, root_item_id, supersedes_item_id, knowledge_kind,
+         object_id, space_id, status, root_item_id, supersedes_item_id, knowledge_kind,
          slug, aliases_json, content, content_json, content_format,
          content_schema_version, plain_text, verification_status, reflection_status,
          tags_json, confidence, created_from_proposal_id, approved_by_user_id,
          redirect_to_item_id, version, deprecated_at
        ) VALUES (
-         $1, $2, $1, NULL, $7,
-         $8, $9::jsonb, $10, $11::jsonb, $12,
-         $13, $14, $15, $16,
-         $17::jsonb, $18, NULL, $5,
+         $${n + 1}, $${n + 2}, 'active', $${n + 1}, NULL, $${n + 3},
+         $${n + 4}, $${n + 5}::jsonb, $${n + 6}, $${n + 7}::jsonb, $${n + 8},
+         $${n + 9}, $${n + 10}, $${n + 11}, $${n + 12},
+         $${n + 13}::jsonb, $${n + 14}, NULL, $${n + 15},
          NULL, 1, NULL
        )`,
       [
-        id, context.targetSpaceId, p.title, p.summary, context.ownerUserId, now,
+        ...object.params,
+        id, context.targetSpaceId,
         p.knowledge_kind, p.slug, json(p.aliases_json), p.content,
         json(p.content_json), p.content_format, p.content_schema_version,
         p.plain_text, p.verification_status, p.reflection_status,
         json(p.tags_json), p.confidence,
+        context.ownerUserId,
       ],
     );
     return { resource_type: "space_object", resource_id: id };

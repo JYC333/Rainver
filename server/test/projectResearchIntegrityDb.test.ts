@@ -2,13 +2,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
-// Real-Postgres coverage for Academic Research integrity checks:
+// Real-Postgres coverage for domain-neutral Project Research integrity checks:
 // project-level claim intent records (project_research_claim_links) linking
 // to already-canonical `claims` rows, and the integrity gate's V1 checks
 // (citation existence, claim evidence/gap, evidence visible in project
@@ -31,6 +32,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-integrity-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -90,15 +92,12 @@ async function addSpaceMember(userId: string): Promise<void> {
   );
 }
 
-async function seedWorkflow(workflowType = "literature_review"): Promise<string> {
+async function seedWorkflow(): Promise<string> {
   const workflowId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
-    `INSERT INTO project_research_workflows (
-       id, space_id, project_id, workflow_type, status, mode, state_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'active','manual','{}'::jsonb,$5,$5)`,
-    [workflowId, SPACE, PROJECT, workflowType, now],
-  );
+  await insertResearchWorkflowFixture(pool!, {
+    id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER, now,
+  });
   return workflowId;
 }
 
@@ -109,9 +108,7 @@ async function seedClaim(
   const now = new Date().toISOString();
   const objectId = randomUUID();
   await pool!.query(
-    `INSERT INTO space_objects (
-       id, space_id, object_type, title, status, visibility, owner_user_id, created_by_user_id, created_at, updated_at
-     ) VALUES ($1,$2,'claim',$3,'active',$4,$5,$6,$7,$7)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1,$2,'claim',$3,$4,$5,$6,$7,$7)`,
     [
       objectId,
       SPACE,
@@ -136,8 +133,8 @@ async function seedPaperObject(arxivId: string): Promise<string> {
   const now = new Date().toISOString();
   const objectId = randomUUID();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, created_at, updated_at)
-     VALUES ($1,$2,'source','Paper','processed',$3,$3)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+     VALUES ($1,$2,'source','Paper',$3,$3)`,
     [objectId, SPACE, now],
   );
   await pool!.query(
@@ -149,6 +146,23 @@ async function seedPaperObject(arxivId: string): Promise<string> {
     `INSERT INTO academic_papers (object_id, space_id, arxiv_id, paper_type, created_at, updated_at)
      VALUES ($1,$2,$3,'preprint',$4,$4)`,
     [objectId, SPACE, arxivId, now],
+  );
+  return objectId;
+}
+
+async function seedGenericDocumentObject(): Promise<string> {
+  const now = new Date().toISOString();
+  const objectId = randomUUID();
+  await pool!.query(
+    `INSERT INTO space_objects (
+       id, space_id, object_type, title, primary_project_id, created_by_user_id, created_at, updated_at
+     ) VALUES ($1,$2,'source','General web document',$3,$4,$5,$5)`,
+    [objectId, SPACE, PROJECT, OWNER, now],
+  );
+  await pool!.query(
+    `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
+     VALUES ($1,$2,'webpage','https://example.test/general','{}'::jsonb)`,
+    [objectId, SPACE],
   );
   return objectId;
 }
@@ -218,7 +232,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   it("does not let an unrelated workflow claim link block the current workflow integrity gate", async () => {
     if (!available) return;
     const currentWorkflowId = await seedWorkflow();
-    const otherWorkflowId = await seedWorkflow("revision");
+    const otherWorkflowId = await seedWorkflow();
     const claimId = await seedClaim();
     await repo().createClaimLink(identity, PROJECT, { claim_id: claimId, workflow_id: otherWorkflowId });
 
@@ -245,12 +259,13 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
     expect(report.findings).toHaveLength(0);
   });
 
-  it("flags a citation anchor that does not exist as a paper in this space", async () => {
+  it("flags a citation anchor that is not a readable object in the Project corpus", async () => {
     if (!available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     const paperObjectId = await seedPaperObject("2401.00001");
     await addEvidence(claimId, paperObjectId);
+    await addToCorpus(paperObjectId);
     await repo().createClaimLink(identity, PROJECT, {
       claim_id: claimId,
       workflow_id: workflowId,
@@ -261,6 +276,25 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
     const report = checkpoint as { blocking: boolean; findings: Array<{ code: string }> };
     expect(report.blocking).toBe(true);
     expect(report.findings.filter((f) => f.code === "citation_not_found")).toHaveLength(1);
+  });
+
+  it("accepts a generic document object as a citation anchor", async () => {
+    if (!available) return;
+    const workflowId = await seedWorkflow();
+    const claimId = await seedClaim("A policy page documents the current rule");
+    const documentObjectId = await seedGenericDocumentObject();
+    await addEvidence(claimId, documentObjectId);
+    await addToCorpus(documentObjectId);
+    await repo().createClaimLink(identity, PROJECT, {
+      claim_id: claimId,
+      workflow_id: workflowId,
+      citation_anchors: [documentObjectId],
+    });
+
+    const result = await repo().evaluateWorkflowIntegrity(identity, PROJECT, workflowId);
+    const report = result as { blocking: boolean; findings: Array<{ code: string }> };
+    expect(report.findings.some((finding) => finding.code === "citation_not_found")).toBe(false);
+    expect(report.blocking).toBe(false);
   });
 
   it("flags evidence whose source object is not in the project corpus, and passes once it is added", async () => {

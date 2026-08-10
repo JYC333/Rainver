@@ -42,6 +42,7 @@ const VALID_STATUSES = new Set(["active", "paused", "archived"]);
 const AUTOMATION_TARGET_AGENT_RUN = "agent_run";
 const AUTOMATION_TARGET_WORKFLOW = "workflow";
 const AUTOMATION_TARGET_AUTONOMOUS_TICK = "autonomous_tick";
+const AUTOMATION_TARGET_INFORMATION_DIGEST = "information_digest";
 const DEFAULT_AUTONOMY_CRON = "0 * * * *";
 const AUTONOMY_ENABLE_KEYS = new Set([
   "agent_id",
@@ -224,8 +225,13 @@ export class AutomationService {
     const nextProjectId = hasProjectKey
       ? optionalString(input.body.project_id, "project_id")
       : existing.project_id;
-    if (nextProjectId && nextTargetType !== AUTOMATION_TARGET_AGENT_RUN && nextTargetType !== AUTOMATION_TARGET_WORKFLOW) {
-      throw new HttpError(422, "project_id is only supported for agent_run and workflow automations");
+    if (
+      nextProjectId
+      && nextTargetType !== AUTOMATION_TARGET_AGENT_RUN
+      && nextTargetType !== AUTOMATION_TARGET_WORKFLOW
+      && nextTargetType !== AUTOMATION_TARGET_INFORMATION_DIGEST
+    ) {
+      throw new HttpError(422, "project_id is only supported for agent_run, workflow, and Project information_digest automations");
     }
     const authorityProjectId = nextProjectId ?? existing.project_id;
     configJson = configJson
@@ -258,7 +264,11 @@ export class AutomationService {
         actorUserId: input.actorUserId,
         agentId: existing.agent_id,
         projectFolderId: existing.project_folder_id,
-        projectId: nextTargetType === AUTOMATION_TARGET_WORKFLOW ? nextProjectId : null,
+        projectId:
+          nextTargetType === AUTOMATION_TARGET_WORKFLOW
+          || nextTargetType === AUTOMATION_TARGET_INFORMATION_DIGEST
+            ? nextProjectId
+            : null,
         automationPreAuthorized: isUnattendedTrigger(existing.trigger_type),
         configJson: configJson ?? existing.config_json,
       });
@@ -817,7 +827,7 @@ export class AutomationService {
         resource_type: action === "context.inject_memory" ? "memory" : "context",
         context: {
           trigger_origin: "automation",
-          has_personal_grant_context: false,
+          has_context_taint: false,
         },
         metadata_json: {
           project_folder_id: projectFolderId ?? null,

@@ -106,9 +106,12 @@ export type ProjectPublicSummaryDraftRequest = z.infer<
 // Overview. See `.agent/architecture/PROJECTS.md` and ADR 0011.
 // ---------------------------------------------------------------------------
 
+// One classification axis, valued by how work advances rather than by subject
+// matter. `inquiry` and `decision` were absorbed into `research`: asking is how
+// research starts and deciding is where it ends, and both remain entities with
+// their own Areas that a Project of any Mode can hold.
 export const ProjectPrimaryModeSchema = z.enum([
-  "inquiry",
-  "decision",
+  "research",
   "delivery",
   "operations",
   "learning",
@@ -127,11 +130,58 @@ export const ProjectBriefVersionSchema = z
     success_definition: z.string().nullable(),
     constraints: z.string().nullable(),
     assumptions: z.string().nullable(),
+    project_status: z.string().trim().min(1),
+    current_focus: z.string().nullable(),
+    confirmed_decisions: z.array(z.string()),
+    primary_mode: ProjectPrimaryModeSchema,
+    workspace_identity: z.record(z.unknown()),
+    workspace_boundary: z.record(z.unknown()),
+    source_refs: z.array(z.record(z.unknown())),
+    status: z.enum(["draft", "in_review", "published", "archived"]),
+    reviewed_by_user_id: IdSchema.nullable(),
+    reviewed_at: ISODateTimeSchema.nullable(),
+    published_by_user_id: IdSchema.nullable(),
+    published_at: ISODateTimeSchema.nullable(),
     created_by_user_id: IdSchema.nullable(),
     created_at: ISODateTimeSchema,
   })
-  .passthrough();
+  .strict();
 export type ProjectBriefVersion = z.infer<typeof ProjectBriefVersionSchema>;
+
+export const ProjectBriefVersionWriteRequestSchema = ProjectBriefVersionSchema.pick({
+  goal: true,
+  scope_included: true,
+  scope_excluded: true,
+  success_definition: true,
+  constraints: true,
+  assumptions: true,
+  confirmed_decisions: true,
+  workspace_identity: true,
+  workspace_boundary: true,
+  source_refs: true,
+}).partial().strict();
+
+export const ProjectInstructionVersionSchema = z.object({
+  id: IdSchema,
+  space_id: IdSchema,
+  project_id: IdSchema,
+  version: z.string(),
+  title: z.string(),
+  instruction_text: z.string(),
+  status: z.enum(["draft", "in_review", "published", "archived"]),
+  reviewed_by_user_id: IdSchema.nullable(),
+  reviewed_at: ISODateTimeSchema.nullable(),
+  published_by_user_id: IdSchema.nullable(),
+  published_at: ISODateTimeSchema.nullable(),
+  created_by_user_id: IdSchema,
+  created_at: ISODateTimeSchema,
+}).strict();
+export type ProjectInstructionVersion = z.infer<typeof ProjectInstructionVersionSchema>;
+
+export const ProjectInstructionVersionWriteRequestSchema = z.object({
+  title: z.string().trim().min(1).max(256),
+  instruction_text: z.string().trim().min(1).max(50_000),
+}).strict();
 
 export const ProjectModeTransitionSchema = z
   .object({
@@ -206,7 +256,6 @@ export const ProjectOverviewResponseSchema = z
         id: IdSchema,
         name: z.string(),
         primary_mode: ProjectPrimaryModeSchema,
-        template_key: z.string(),
         status: z.string(),
       })
       .passthrough(),
@@ -214,13 +263,27 @@ export const ProjectOverviewResponseSchema = z
     mode_projection: ModeOverviewProjectionSchema,
     available_modes: z.array(ProjectPrimaryModeSchema),
     attention: z.array(ProjectAttentionItemSchema),
-    area_summaries: z.array(
+    setup_checklist: z.array(
       z.object({
-        mode: ProjectPrimaryModeSchema,
-        summary: z.object({
-          count: z.number(),
-          status: z.enum(["ok", "attention", "blocked"]),
-        }),
+        id: z.string(),
+        label: z.string(),
+        status: z.enum(["ready", "missing"]),
+        required: z.boolean(),
+        href: z.string(),
+        detail: z.string(),
+      }),
+    ),
+    // How much of each kind of thing the Project holds, and the way into the
+    // Area that owns it. Never a list of Areas: every navigation Area stays
+    // reachable whatever this contains.
+    entity_summaries: z.array(
+      z.object({
+        entity_type: z.string(),
+        label: z.string(),
+        detail: z.string(),
+        href: z.string(),
+        count: z.number(),
+        status: z.enum(["ok", "attention", "blocked"]),
       }),
     ),
   })

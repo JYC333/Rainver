@@ -64,9 +64,9 @@ export class MemoryApplyError extends Error {
   readonly statusCode = 422;
 }
 
-/** Raised when a memory proposal needs an apply capability the server authority
- * does not yet serve (run/grant egress context or workspace/agent-scope digest
- * invalidation). Fails closed so those proposals are never applied here. */
+/** Raised when a memory proposal needs a grant-derived egress apply capability
+ * the server authority does not serve. Fails closed so it is never applied by
+ * the ordinary Memory path. */
 export class MemoryApplyUnsupportedError extends Error {
   readonly statusCode = 409;
 }
@@ -110,9 +110,7 @@ export interface MemoryAcceptResult {
   supersededMemoryId: string | null;
   payloadJson: Record<string, unknown>;
   scopeType: string;
-  projectFolderId: string | null;
   agentId: string | null;
-  affectedDigestTargets: MemoryDigestTarget[];
 }
 
 export interface AppliedMemoryRow {
@@ -129,7 +127,6 @@ export interface AppliedMemoryRow {
   sensitivity_level: string;
   owner_user_id: string | null;
   subject_user_id: string | null;
-  project_folder_id: string | null;
   project_id: string | null;
   source_trust: string | null;
   root_memory_id: string | null;
@@ -142,18 +139,11 @@ export interface AppliedMemoryRow {
 export interface MemoryApplyResult {
   memory: AppliedMemoryRow;
   supersededMemoryId: string | null;
-  affectedDigestTargets: MemoryDigestTarget[];
-}
-
-export interface MemoryDigestTarget {
-  scopeType: string;
-  projectFolderId: string | null;
-  agentId: string | null;
 }
 
 const INSERT_COLUMNS = `id, space_id, scope_type, memory_type, content, status,
   created_at, updated_at, subject_user_id, owner_user_id,
-  sensitivity_level, access_level, last_confirmed_at, project_folder_id, namespace,
+  sensitivity_level, access_level, last_confirmed_at, namespace,
   title, visibility, confidence, importance, source_id,
   created_by, approved_by, version, access_count, tags, memory_layer,
   created_from_proposal_id, root_memory_id, supersedes_memory_id, source_trust, agent_id,
@@ -161,7 +151,7 @@ const INSERT_COLUMNS = `id, space_id, scope_type, memory_type, content, status,
 
 const RETURNING_COLUMNS = `id, space_id, scope_type, namespace, memory_type, title,
   content, status, visibility, access_level, sensitivity_level, owner_user_id, subject_user_id,
-  project_folder_id, project_id, source_trust,
+  project_id, source_trust,
   root_memory_id, supersedes_memory_id, memory_layer, version, agent_id`;
 
 /** Columns + values needed for one new active memory version. */
@@ -176,7 +166,6 @@ interface NewMemoryFields {
   title: string;
   ownerUserId: string | null;
   subjectUserId: string | null;
-  projectFolderId: string | null;
   projectId: string | null;
   agentId: string | null;
   memoryLayer: string | null;
@@ -248,9 +237,7 @@ export class PgMemoryApplyRepository {
       payloadJson: finalPayload,
       finalPayload,
       scopeType: result.memory.scope_type,
-      projectFolderId: result.memory.project_folder_id,
       agentId: result.memory.agent_id,
-      affectedDigestTargets: result.affectedDigestTargets,
     };
   }
 
@@ -269,9 +256,6 @@ export class PgMemoryApplyRepository {
 
   private assertNoEgressContext(proposal: ApplyProposal): void {
     const payload = proposal.payload_json ?? {};
-    if (proposal.proposal_type === "egress_review") {
-      throw new MemoryApplyUnsupportedError("egress_review apply is not implemented in the server authority yet");
-    }
     // Same-space run proposals (created_by_run_id / source_run_id) are allowed.
     // Only reject proposals that carry grant-derived cross-space egress markers.
     for (const marker of GRANT_DERIVED_MARKERS) {
@@ -294,13 +278,14 @@ export class PgMemoryApplyRepository {
     assertContentPolicyFields(vis, accessLevel, sens);
     const content = strOr(payload.proposed_content) ?? strOr(payload.content) ?? "";
     const memType = strOr(payload.memory_type) ?? "semantic";
-    const scope = strOr(payload.target_scope) ?? strOr(payload.scope_type) ?? "user";
+    const scope = memoryScope(strOr(payload.target_scope) ?? strOr(payload.scope_type) ?? "user");
     const namespace = strOr(payload.target_namespace) ?? strOr(payload.namespace) ?? "user.default";
 
     const acting = String(proposal.created_by_user_id ?? userId);
     const entries = provenanceEntriesFromPayload(payload);
     const ownerUserId = this.resolveOwner(strOr(payload.owner_user_id), vis, acting);
     const projectId = await this.resolveProjectId(proposal, payload, null);
+    assertMemoryPlacement(scope, vis, ownerUserId, projectId);
 
     const memId = await this.insertMemory(proposal, {
       scope,
@@ -313,9 +298,8 @@ export class PgMemoryApplyRepository {
       title: proposal.title ?? "",
       ownerUserId,
       subjectUserId: strOr(payload.subject_user_id),
-      projectFolderId: proposal.project_folder_id,
       projectId,
-      agentId: strOr(payload.agent_id),
+      agentId: proposal.created_by_agent_id ?? null,
       memoryLayer: memoryLayer(payload),
       sourceTrust: dominantSourceTrust(entries),
       rootMemoryId: null,
@@ -337,7 +321,6 @@ export class PgMemoryApplyRepository {
     return {
       memory: memId,
       supersededMemoryId: null,
-      affectedDigestTargets: [digestTargetForMemory(memId)],
     };
   }
 
@@ -365,7 +348,7 @@ export class PgMemoryApplyRepository {
     assertContentPolicyFields(vis, accessLevel, sens);
     const content = strOr(payload.proposed_content) ?? strOr(payload.content) ?? old.content;
     const title = strOr(payload.proposed_title) ?? strOr(payload.title) ?? old.title ?? "";
-    const scope = strOr(payload.target_scope) ?? old.scope_type;
+    const scope = memoryScope(strOr(payload.target_scope) ?? old.scope_type);
     const namespace = strOr(payload.target_namespace) ?? old.namespace ?? "user.default";
     const memType = strOr(payload.memory_type) ?? old.memory_type;
     const rootId = old.root_memory_id ?? old.id;
@@ -377,6 +360,7 @@ export class PgMemoryApplyRepository {
       userId,
     );
     const projectId = await this.resolveProjectId(proposal, payload, old.project_id);
+    assertMemoryPlacement(scope, vis, ownerUserId, projectId);
 
     const newMem = await this.insertMemory(proposal, {
       scope,
@@ -389,9 +373,8 @@ export class PgMemoryApplyRepository {
       title,
       ownerUserId,
       subjectUserId: strOr(payload.subject_user_id) ?? old.subject_user_id,
-      projectFolderId: proposal.project_folder_id ?? old.project_folder_id,
       projectId,
-      agentId: strOr(payload.agent_id) ?? old.agent_id,
+      agentId: proposal.created_by_agent_id ?? null,
       memoryLayer: memoryLayer(payload) ?? old.memory_layer,
       sourceTrust: dominantSourceTrust(entries) ?? old.source_trust,
       rootMemoryId: rootId,
@@ -438,10 +421,6 @@ export class PgMemoryApplyRepository {
     return {
       memory: newMem,
       supersededMemoryId: old.id,
-      affectedDigestTargets: distinctDigestTargets([
-        digestTargetForMemory(old),
-        digestTargetForMemory(newMem),
-      ]),
     };
   }
 
@@ -478,7 +457,6 @@ export class PgMemoryApplyRepository {
     return {
       memory: archived ?? mem,
       supersededMemoryId: null,
-      affectedDigestTargets: [digestTargetForMemory(mem)],
     };
   }
 
@@ -504,10 +482,10 @@ export class PgMemoryApplyRepository {
       `INSERT INTO memory_entries (${INSERT_COLUMNS}) VALUES (
          $1, $2, $3, $4, $5, 'active',
          $6, $6, $7, $8,
-         $9, $10, NULL, $11, $12,
-         $13, $14, 1.0, 0.5, NULL,
-         $15, $16, 1, 0, NULL, $17,
-         $18, $19, $20, $21, $22, $23
+         $9, $10, NULL, $11,
+         $12, $13, 1.0, 0.5, NULL,
+         $14, $15, 1, 0, NULL, $16,
+         $17, $18, $19, $20, $21, $22
        )
        RETURNING ${RETURNING_COLUMNS}`,
       [
@@ -521,19 +499,18 @@ export class PgMemoryApplyRepository {
         f.ownerUserId, // $8
         f.sensitivity, // $9
         f.accessLevel, // $10
-        f.projectFolderId, // $11
-        f.namespace, // $12
-        f.title, // $13
-        f.visibility, // $14
-        f.createdBy, // $15
-        f.approvedBy, // $16
-        f.memoryLayer, // $17
-        proposal.id, // $18 created_from_proposal_id
-        f.rootMemoryId, // $19
-        f.supersedesMemoryId, // $20
-        f.sourceTrust, // $21
-        f.agentId, // $22
-        f.projectId, // $23
+        f.namespace, // $11
+        f.title, // $12
+        f.visibility, // $13
+        f.createdBy, // $14
+        f.approvedBy, // $15
+        f.memoryLayer, // $16
+        proposal.id, // $17 created_from_proposal_id
+        f.rootMemoryId, // $18
+        f.supersedesMemoryId, // $19
+        f.sourceTrust, // $20
+        f.agentId, // $21
+        f.projectId, // $22
       ],
     );
     return result.rows[0]!;
@@ -600,6 +577,34 @@ function lower(value: string): string {
   return value.toLowerCase();
 }
 
+function memoryScope(value: string): "user" | "project" {
+  const scope = lower(value);
+  if (scope !== "user" && scope !== "project") {
+    throw new MemoryApplyError("memory scope must be user or project");
+  }
+  return scope;
+}
+
+function assertMemoryPlacement(
+  scope: "user" | "project",
+  visibility: string,
+  ownerUserId: string | null,
+  projectId: string | null,
+): void {
+  if (scope === "user") {
+    if (projectId !== null) throw new MemoryApplyError("user memory cannot carry a project_id");
+    if (ownerUserId === null) throw new MemoryApplyError("user memory requires owner_user_id");
+    if (visibility === "space_shared") {
+      throw new MemoryApplyError("space-shared learning belongs to project memory");
+    }
+    return;
+  }
+  if (projectId === null) throw new MemoryApplyError("project memory requires project_id");
+  if (visibility !== "space_shared") {
+    throw new MemoryApplyError("project memory must be space_shared");
+  }
+}
+
 function assertContentPolicyFields(
   visibility: string,
   accessLevel: string,
@@ -619,30 +624,6 @@ function assertContentPolicyFields(
 function memoryLayer(payload: Record<string, unknown>): string | null {
   const raw = strOr(payload.target_layer) ?? strOr(payload.memory_layer);
   return raw ? raw.toLowerCase() : null;
-}
-
-function digestTargetForMemory(memory: {
-  scope_type: string;
-  project_folder_id: string | null;
-  agent_id: string | null;
-}): MemoryDigestTarget {
-  return {
-    scopeType: memory.scope_type,
-    projectFolderId: memory.project_folder_id,
-    agentId: memory.agent_id,
-  };
-}
-
-function distinctDigestTargets(targets: MemoryDigestTarget[]): MemoryDigestTarget[] {
-  const seen = new Set<string>();
-  const out: MemoryDigestTarget[] = [];
-  for (const target of targets) {
-    const key = `${target.scopeType}:${target.projectFolderId ?? ""}:${target.agentId ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(target);
-  }
-  return out;
 }
 
 function provKey(e: ProvenanceEntry): string | null {

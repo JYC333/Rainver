@@ -3,6 +3,17 @@ import type { ModuleContext } from "../../gateway/routeRegistry";
 import { checkInternalToken } from "../../gateway/internalAuth";
 import { loadProtocol } from "../providers/protocolRuntime";
 import { executeRuntimeHost } from "./service";
+import { getDbPool } from "../../db/pool";
+import type { RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "./deliveryAuthorizer";
+
+let deliveryAuthorizerOverride: ((input: RuntimeHostExecuteRequest) => Promise<void>) | null = null;
+
+export function __setRuntimeHostDeliveryAuthorizerForTests(
+  value: ((input: RuntimeHostExecuteRequest) => Promise<void>) | null,
+): void {
+  deliveryAuthorizerOverride = value;
+}
 
 function bodyText(request: FastifyRequest): string {
   return request.body instanceof Buffer ? request.body.toString("utf8") : "";
@@ -38,6 +49,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         "RuntimeHostExecuteRequestSchema",
         jsonBody(request),
       );
+      await assertRuntimeHostDelivery(context, body);
       const response = await executeRuntimeHost(context.config, body, request.log);
       const protocol = await loadProtocol();
       return reply.send(protocol.RuntimeHostExecuteResponseSchema.parse(response));
@@ -45,4 +57,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return sendDomainError(reply, error);
     }
   });
+}
+
+async function assertRuntimeHostDelivery(
+  context: ModuleContext,
+  input: RuntimeHostExecuteRequest,
+): Promise<void> {
+  const refs = input.invocation_audit_refs;
+  if (!refs) throw Object.assign(new Error("Runtime Host execution requires Invocation Delivery audit references"), { statusCode: 409 });
+  if (deliveryAuthorizerOverride) return deliveryAuthorizerOverride(input);
+  if (!context.config.databaseUrl) throw Object.assign(new Error("SERVER_DATABASE_URL is required"), { statusCode: 503 });
+  const db = getDbPool(context.config.databaseUrl);
+  await bindRuntimeHostDeliveryRequest(db, input);
+  await authorizeRuntimeHostDelivery(db, input);
 }

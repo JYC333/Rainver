@@ -3,12 +3,29 @@
 ## Status
 
 Implemented: manual and scheduled triggers; targets `agent_run`, `workflow`,
-`knowledge_retrieval_maintenance`, `context_ops_review_cycle`; optional project
+`knowledge_retrieval_maintenance`, `context_ops_review_cycle`,
+`information_digest`; optional project
 binding for `agent_run` and `workflow`. Native targets are declared by the
 protocol-owned `AUTOMATION_TARGET_REGISTRY` and dispatched through a
 server-owned handler registry. `autonomous_tick` is declared as a non-user-
 selectable control-plane target with a working handler (observe-only and
 bounded-launch modes; see [autonomy.md](autonomy.md)).
+
+`information_digest` is also non-user-selectable. The scheduler's provisioning
+sweep creates a default 07:00 UTC daily schedule for every subscribed reader
+and active Project once an active attribution Agent exists. Reconciliation is
+idempotent and never rewrites an existing schedule. A member may fire only
+their own personal schedule; the Project form additionally requires Project
+writer authority. Its handler performs deterministic ranking over already
+annotated rows and does not invoke the attribution Agent.
+
+Personal scopes also receive one system-managed Monday 06:00 UTC `probe`
+operation. It rotates through a configured hard budget of uncovered code-owned
+domains (three by default),
+reuses a configured credentialed Brave Source connector when available, and
+fills a standby pool. The 07:00 daily operation reads only that pool, so
+external latency or provider failure cannot block delivery. Project scopes do
+not receive the probe operation.
 
 `autonomous_tick` is unreachable through the generic `POST /api/v1/spaces/:spaceId/automations`
 body — `assertUserSelectableTarget` rejects it there by design, since that
@@ -82,8 +99,9 @@ order and test resets cannot leave stale one-shot registration state.
 
 Automations owns the `agent_run` and `workflow` handlers. Retrieval owns
 `knowledge_retrieval_maintenance`, Context Ops owns
-`context_ops_review_cycle`, and Autonomy owns `autonomous_tick`. Runtime
-control flows from Automation to the selected handler, while compile-time
+`context_ops_review_cycle`, Autonomy owns `autonomous_tick`, and Information
+Digest owns `information_digest`. Runtime control flows from Automation to the
+selected handler, while compile-time
 dependencies flow from each owning domain to the Automations registry
 interface. The Automations module does not import those owning domains.
 
@@ -136,6 +154,7 @@ the screening/idea checkpoints.
 - `server/src/modules/retrieval/automationTarget.ts`
 - `server/src/modules/contextOps/automationTarget.ts`
 - `server/src/modules/autonomy/automationTarget.ts`
+- `server/src/modules/informationDigest/automationTarget.ts`
 - `packages/protocol/src/automationTargets.ts`
 - `server/src/modules/projects/projectSourceRoutingService.ts`
 - `server/src/modules/runs/finalizationService.ts`
@@ -156,6 +175,7 @@ ownership remains in `autonomy`.
 
 ## Related Architecture
 
+- [Information Digest module](information-digest.md)
 - [PROJECTS.md](../architecture/PROJECTS.md)
 - [Sources module](sources.md)
 - [ROADMAP_AND_FUTURE_RISKS.md](../architecture/ROADMAP_AND_FUTURE_RISKS.md) — Capability 6

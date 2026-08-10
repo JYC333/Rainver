@@ -51,7 +51,7 @@ interface ResearchResultStateInput {
   operations: ProjectOperation[]
   reports: ProjectResearchReport[]
   scanSummaries: ProjectResearchScanSummary[]
-  paperCount: number
+  materialCount: number
   includedCount: number
   /** The saved setup no longer matches what the latest search executed; searching again must start fresh, not rescan. */
   savedSetupDiffers?: boolean
@@ -147,17 +147,17 @@ export function researchFailurePresentation(operation: ProjectOperation): { conc
     const rateLimited = failedSources.some(source => source.upstream_status === 429)
     conclusion = providers.length > 0
       ? `History import from ${providers.join(', ')} did not complete.`
-      : 'The literature history import did not complete.'
+      : 'The material history import did not complete.'
     suggestion = rateLimited
-      ? 'The source provider temporarily rate-limited the import. Retry the research operation; another 429 will move this source into background backoff while completed papers are kept.'
+      ? 'The source provider temporarily rate-limited the import. Retry the research operation; another 429 will move this source into background backoff while completed material is kept.'
       : diagnostics.retryable === true
-      ? 'The provider request was already retried automatically. Retry the research operation now; completed papers and results will be kept.'
+      ? 'The provider request was already retried automatically. Retry the research operation now; completed material and results will be kept.'
       : 'Review the provider response in Technical details, correct the source setup if needed, then retry the research operation.'
   } else if (/quota|rate.limit|429/.test(searchable)) {
     conclusion = 'The research provider temporarily reached its request limit.'
     suggestion = 'Wait for the quota window to reset, then retry. No completed research data was changed.'
   } else if (/query|syntax|date.range|validation/.test(searchable)) {
-    conclusion = 'The saved literature search could not be accepted.'
+    conclusion = 'The saved evidence search could not be accepted.'
     suggestion = 'Review the monitor query and date range, save the correction, then retry.'
   } else if (/credential|unauthori|forbidden|api.key|authentication/.test(searchable)) {
     conclusion = 'The configured provider could not authenticate this research run.'
@@ -279,11 +279,11 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
     { active: failedOperations.length > 0, notice: `${failedOperations.length} research operation${failedOperations.length === 1 ? '' : 's'} failed and can be retried.` },
     { active: runningOperations.length > 0, notice: `${runningOperations.length} research operation${runningOperations.length === 1 ? ' is' : 's are'} still running.` },
     { active: monitoring, notice: `Monitoring is active. Last project scan: ${formatDate(latestScanAt(input.workflow))}.` },
-    { active: deferredSourceCount > 0, notice: `${deferredProviderLabel} history (${deferredSourceCount} window${deferredSourceCount === 1 ? '' : 's'}) is temporarily unavailable and retrying in the background; collected papers can continue through research.` },
+    { active: deferredSourceCount > 0, notice: `${deferredProviderLabel} history (${deferredSourceCount} window${deferredSourceCount === 1 ? '' : 's'}) is temporarily unavailable and retrying in the background; collected material can continue through research.` },
   ]
   const noticesFor = (excluded: number) => candidates.flatMap((candidate, index) => candidate.active && index !== excluded ? [candidate.notice] : [])
   const corpusMetrics = [
-    { label: 'Papers', value: input.paperCount.toLocaleString() },
+    { label: 'Materials', value: input.materialCount.toLocaleString() },
     { label: 'Included', value: input.includedCount.toLocaleString() },
     { label: 'Reports', value: input.reports.length.toLocaleString() },
   ]
@@ -291,8 +291,8 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
   if (!input.workflow && !latestOperation) {
     return {
       kind: 'setup', eyebrow: 'Ready to begin',
-      conclusion: input.projectQuestion ? 'Set up the literature search to start this review.' : 'Add a research question to start this review.',
-      detail: 'Choose the literature monitors and history window that will seed the first screening pass.',
+      conclusion: input.projectQuestion ? 'Set up the evidence search to start this review.' : 'Add a research question to start this review.',
+      detail: 'Choose the source monitors and history window that will seed the first screening pass.',
       metrics: corpusMetrics, primaryAction: { key: 'configure', label: 'Set up research' }, secondaryAction: null,
       operation: null, checkpoint: null, latestReport, notices: [], failure: null,
     }
@@ -339,7 +339,7 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
     const scopeMetrics = operationScopeMetrics(latestOperation)
     return {
       kind: 'completed', eyebrow: 'Search complete',
-      conclusion: 'No papers matched the selected query strategy and history window.',
+      conclusion: 'No material matched the selected query strategy and history window.',
       detail: input.savedSetupDiffers
         ? 'The saved setup changed after this search. Search again starts a new search with the updated dates, monitors, and limits.'
         : 'Search again re-runs the same history windows with the monitor queries as saved now. Adjust the setup first if the date range, monitors, or item limit need to change.',
@@ -362,7 +362,7 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
       detail: suggestions[0]
         ?? (typeof noReportOutcome.message === 'string' ? noReportOutcome.message : 'Review the corpus and research scope before starting another search.'),
       metrics: corpusMetrics,
-      primaryAction: { key: 'view_corpus', label: 'Review collected papers' },
+      primaryAction: { key: 'view_corpus', label: 'Review collected material' },
       secondaryAction: { key: 'configure', label: 'Adjust research scope' },
       operation: latestOperation, checkpoint: null, latestReport, notices: monitoring ? noticesFor(-1) : [], failure: null,
     }
@@ -372,10 +372,10 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
     return {
       kind: 'monitoring_update', eyebrow: 'Today’s monitoring update',
       conclusion: latestTodaySummary.new_item_count === 0
-        ? 'Today’s scans found no new papers.'
+        ? 'Today’s scans found no new material.'
         : relevantUpdates === 0
-          ? `${latestTodaySummary.new_item_count.toLocaleString()} new paper${latestTodaySummary.new_item_count === 1 ? '' : 's'} found, with no relevant updates.`
-          : `${latestTodaySummary.new_item_count.toLocaleString()} new paper${latestTodaySummary.new_item_count === 1 ? '' : 's'} found today.`,
+          ? `${latestTodaySummary.new_item_count.toLocaleString()} new item${latestTodaySummary.new_item_count === 1 ? '' : 's'} found, with no relevant updates.`
+          : `${latestTodaySummary.new_item_count.toLocaleString()} new item${latestTodaySummary.new_item_count === 1 ? '' : 's'} found today.`,
       detail: `Latest scan: ${formatDate(latestTodaySummary.scanned_at)}.`,
       metrics: [
         { label: 'New', value: latestTodaySummary.new_item_count.toLocaleString() },

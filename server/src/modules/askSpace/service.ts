@@ -25,7 +25,6 @@ import { memoryRetrievalRegistry } from "../memory/retrievalAdapter";
 import { projectRetrievalRegistry } from "../projects/retrievalAdapter";
 import { sourceRetrievalRegistry } from "../sources/retrievalAdapter";
 import { inquiryRetrievalRegistry } from "../inquiry/retrievalAdapter";
-import { PgMemoryReadRepository } from "../memory/repository";
 import { canInitiateContextOpsScan } from "../contextOps/reviewPolicy";
 import { buildClaimTrajectory } from "../knowledge/claimReviewLoop";
 import { persistAskSpaceSessionArtifact } from "./sessionArtifact";
@@ -109,7 +108,7 @@ interface DomainBriefArgs {
 
 /**
  * Injectable seams (all optional, with production defaults) so the orchestration
- * — multi-domain fan-out, persistence, Memory access logging, partial-domain
+ * — multi-domain fan-out, persistence, partial-domain
  * failure, follow-up gating — can be unit-tested without a live retrieval index
  * or provider. Production wiring uses the defaults.
  */
@@ -123,7 +122,6 @@ export interface AskSpaceDeps {
     egressPolicy: RetrievalEgressPolicy;
     ctx: DomainCtx;
   }) => Promise<SynthesisResult | null>;
-  recordMemoryReads?: (ids: string[], spaceId: string, userId: string) => Promise<void>;
   canRunActions?: (spaceId: string, userId: string) => Promise<boolean>;
   loadClaimTrajectory?: (claimId: string, spaceId: string, userId: string) => Promise<AskSpaceClaimTrajectory | null>;
 }
@@ -376,21 +374,6 @@ export class AskSpaceService {
     try {
       const runner = this.deps.runDomainBrief ?? ((args) => this.defaultRunDomainBrief(args));
       const response = await runner({ domain, cfg, ctx, input });
-
-      // Memory reads are access-logged exactly like the Memory brief route, so
-      // Think never weakens Memory provenance (invariant 14).
-      if (domain === "memory") {
-        const ids = response.items.map((item) => item.object_id);
-        if (ids.length > 0) {
-          await (this.deps.recordMemoryReads
-            ? this.deps.recordMemoryReads(ids, input.spaceId, input.userId)
-            : PgMemoryReadRepository.fromConfig(this.config).recordRetrievalSearchReads(
-                ids,
-                input.spaceId,
-                input.userId,
-              ));
-        }
-      }
 
       let artifactId: string | undefined;
       let artifactError: string | undefined;

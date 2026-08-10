@@ -353,7 +353,7 @@ CREATE TABLE public.retrieval_objects (
     status character varying(32) NOT NULL,
     title character varying(512) NOT NULL,
     slug character varying(512),
-    object_kind character varying(64),
+    object_profile character varying(64),
     content_hash character varying(64) NOT NULL,
     source_connection_ids_json jsonb DEFAULT '[]'::jsonb NOT NULL,
     indexed_at timestamp with time zone NOT NULL,
@@ -455,3 +455,20 @@ CREATE TABLE public.jobs (
 CREATE INDEX ix_jobs_space_id ON public.jobs USING btree (space_id);
 CREATE INDEX ix_jobs_status ON public.jobs USING btree (status);
 CREATE INDEX ix_jobs_job_type ON public.jobs USING btree (job_type);
+
+-- Additional Project scopes for a space_objects row (S6). The content read gate
+-- emits an EXISTS against this table for every space_object read, so a fixture
+-- that defines space_objects has to define this too.
+CREATE TABLE public.space_object_project_shares (
+    id character varying(36) NOT NULL,
+    space_id character varying(36) NOT NULL,
+    object_id character varying(36) NOT NULL,
+    project_id character varying(36) NOT NULL,
+    shared_by_user_id character varying(36) NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_by_user_id character varying(36),
+    CONSTRAINT space_object_project_shares_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_space_object_project_shares_object_project UNIQUE (space_id, object_id, project_id)
+);

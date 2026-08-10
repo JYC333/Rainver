@@ -36,7 +36,9 @@ export const cards = pgTable("cards", {
 			name: "cards_space_id_fkey"
 		}),
 	check("ck_cards_card_type", sql`(card_type)::text = ANY (ARRAY[('basic'::character varying)::text, ('cloze'::character varying)::text])`),
-	check("ck_cards_source_type", sql`(source_type IS NULL) OR ((source_type)::text = ANY (ARRAY[('note'::character varying)::text, ('knowledge_item'::character varying)::text, ('source'::character varying)::text, ('activity'::character varying)::text, ('run'::character varying)::text, ('proposal'::character varying)::text]))`),
+	// B12G: membership is declared by the `CardSourceable` interface in
+	// `modules/ontology/entities.ts`.
+	check("ck_cards_source_type_format", sql`(source_type IS NULL) OR ((source_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text)`),
 	check("ck_cards_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('suspended'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
 

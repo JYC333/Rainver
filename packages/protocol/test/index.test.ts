@@ -8,7 +8,6 @@ import {
   CommandType,
   EventType,
   ModelProviderDTOSchema,
-  ProviderChatRequestSchema,
   isCredentialChannel,
   type ActivityDTO,
   type ModelProviderDTO,
@@ -43,13 +42,22 @@ describe("index smoke import", () => {
     // Provider + credential-channel contracts
     expect(protocol.ModelProviderDTOSchema).toBeDefined();
     expect(protocol.ModelProviderCreateRequestSchema).toBeDefined();
-    expect(protocol.ProviderChatRequestSchema).toBeDefined();
     expect(protocol.CredentialChannelMetadataSchema).toBeDefined();
 
     expect(protocol.ProviderCredentialsAuthoritySchema).toBeDefined();
     expect(protocol.RuntimeCredentialResolveRequestSchema).toBeDefined();
     expect(protocol.RuntimeHostExecuteRequestSchema).toBeDefined();
     expect(protocol.RuntimeHostExecuteResponseSchema).toBeDefined();
+    expect(protocol.RuntimeContextPolicyDocumentSchema).toBeDefined();
+    expect(protocol.ExecutionControlSnapshotSchema).toBeDefined();
+    expect(protocol.WorkContextSetupSchema).toBeDefined();
+    expect(protocol.TurnContextRequestSchema).toBeDefined();
+    expect(protocol.InvocationDeliverySchema).toBeDefined();
+    expect(protocol.InvocationSnapshotSafeSchema).toBeDefined();
+    expect(protocol.MicroCheckpointSchema).toBeDefined();
+    expect(protocol.SemanticCheckpointSchema).toBeDefined();
+    expect(protocol.SemanticCheckpointExtractionSchema).toBeDefined();
+    expect(protocol.RuntimeContextEventIngressSchema).toBeDefined();
     expect(protocol.AgentRunGroupSchema).toBeDefined();
     expect(protocol.RunDelegationSchema).toBeDefined();
     expect(protocol.ProposalOutSchema).toBeDefined();
@@ -82,6 +90,5 @@ describe("type-level contracts (typecheck test)", () => {
     expectTypeOf<StartRunCommand["type"]>().toEqualTypeOf<"run.start">();
     expectTypeOf<RunStatusChangedEvent["type"]>().toEqualTypeOf<"run.status_changed">();
     expect(ModelProviderDTOSchema).toBeDefined();
-    expect(ProviderChatRequestSchema).toBeDefined();
   });
 });

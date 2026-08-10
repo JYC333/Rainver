@@ -5,10 +5,12 @@ import {
   type ProjectAttentionItem,
 } from "../projects/attentionRegistry";
 import {
+  projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
   type ModeOverviewProjection,
-  type ProjectModeAreaAdapter,
-  type ProjectAreaSummary,
+  type ProjectEntitySummary,
+  type ProjectEntitySummaryAdapter,
+  type ProjectModeProjectionAdapter,
 } from "../projects/overviewRegistry";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 
@@ -55,7 +57,7 @@ async function snapshot(db: Queryable, identity: SpaceUserIdentity, projectId: s
   };
 }
 
-const operationsModeAdapter: ProjectModeAreaAdapter = {
+const operationsModeAdapter: ProjectModeProjectionAdapter = {
   mode: "operations",
   async getOverviewProjection(db, identity, projectId): Promise<ModeOverviewProjection> {
     const state = await snapshot(db, identity, projectId);
@@ -79,13 +81,6 @@ const operationsModeAdapter: ProjectModeAreaAdapter = {
         href: `/projects/${projectId}/operations`,
         kind: state.alerts.length > 0 ? "review" : "monitor",
       }],
-    };
-  },
-  async getAreaSummary(db, identity, projectId): Promise<ProjectAreaSummary> {
-    const state = await snapshot(db, identity, projectId);
-    return {
-      count: state.active_automations + state.active_runs,
-      status: state.alerts.length > 0 || state.failed_runs > 0 ? "attention" : "ok",
     };
   },
 };
@@ -112,7 +107,24 @@ const operationsAttentionAdapter: ProjectAttentionAdapter = {
   },
 };
 
+/** Operations' entity row: standing Automations plus the Runs they produce. */
+const operationsSummaryAdapter: ProjectEntitySummaryAdapter = {
+  entityType: "automation",
+  label: "Automations & Runs",
+  detail: "Scheduled work and its executions",
+  href: (projectId) => `/projects/${projectId}/operations`,
+
+  async getSummary(db, identity, projectId): Promise<ProjectEntitySummary> {
+    const state = await snapshot(db, identity, projectId);
+    return {
+      count: state.active_automations + state.active_runs,
+      status: state.alerts.length > 0 || state.failed_runs > 0 ? "attention" : "ok",
+    };
+  },
+};
+
 export function registerAutomationsProjectIntegration(): void {
   projectModeProjectionRegistry.register(operationsModeAdapter);
+  projectEntitySummaryRegistry.register(operationsSummaryAdapter);
   projectAttentionRegistry.register(operationsAttentionAdapter);
 }

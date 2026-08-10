@@ -35,8 +35,8 @@ import type { RevalidatedObject, ScoredCandidate } from "./types";
 export interface BriefCandidate {
   objectType: RetrievalObjectType;
   objectId: string;
-  objectKind?: string | null;
-  objectKindLabel?: string | null;
+  objectProfile?: string | null;
+  objectProfileLabel?: string | null;
   /** Live-revalidated title (authoritative, viewer-readable). */
   title: string;
   /** Live-revalidated text. `null` when the adapter redacted it for the viewer. */
@@ -108,8 +108,8 @@ export function buildBriefCandidates(
     out.push({
       objectType: candidate.objectType,
       objectId: candidate.objectId,
-      objectKind: candidate.objectKind ?? null,
-      objectKindLabel: candidate.objectKindLabel ?? null,
+      objectProfile: candidate.objectProfile ?? null,
+      objectProfileLabel: candidate.objectProfileLabel ?? null,
       title: revalidated.title,
       text: revalidated.text,
       updatedAt: candidate.updatedAt,
@@ -165,8 +165,8 @@ function resolveCitations(
     citations.push({
       object_type: candidate.objectType,
       object_id: candidate.objectId,
-      object_kind: candidate.objectKind ?? null,
-      object_kind_label: candidate.objectKindLabel ?? null,
+      object_profile: candidate.objectProfile ?? null,
+      object_profile_label: candidate.objectProfileLabel ?? null,
       title: candidate.title,
     });
   }
@@ -184,8 +184,8 @@ function staleSources(candidates: readonly BriefCandidate[], nowMs: number, cfg:
       out.push({
         object_type: candidate.objectType,
         object_id: candidate.objectId,
-        object_kind: candidate.objectKind ?? null,
-        object_kind_label: candidate.objectKindLabel ?? null,
+        object_profile: candidate.objectProfile ?? null,
+        object_profile_label: candidate.objectProfileLabel ?? null,
         title: candidate.title,
         reason: `not updated in over ${cfg.staleAfterDays} days`,
       });
@@ -202,8 +202,8 @@ function thinSources(candidates: readonly BriefCandidate[], cfg: SynthesisConfig
       out.push({
         object_type: candidate.objectType,
         object_id: candidate.objectId,
-        object_kind: candidate.objectKind ?? null,
-        object_kind_label: candidate.objectKindLabel ?? null,
+        object_profile: candidate.objectProfile ?? null,
+        object_profile_label: candidate.objectProfileLabel ?? null,
         title: candidate.title,
         reason: "sparse content (few searchable characters)",
       });

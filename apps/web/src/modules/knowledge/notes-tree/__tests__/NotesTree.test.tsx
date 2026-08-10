@@ -30,7 +30,9 @@ function makeNote(overrides: Partial<NoteSummary> = {}): NoteSummary {
     status: 'active',
     content_format: 'prosemirror_json',
     primary_project_id: null,
-    collection_id: 'col-1',
+    project_role: null,
+    role_project_id: null,
+    placements: [{ collection_id: 'col-1', sort_order: 0 }],
     version: 1,
     content_hash: null,
     updated_by_user_id: null,
@@ -67,6 +69,11 @@ function renderTree({
   onDeleteCollection = vi.fn(),
   onDropCollections = vi.fn(),
   onDropNotes = vi.fn(),
+  onPlaceNote = vi.fn(),
+  onRemovePlacement = vi.fn(),
+  hoistRootId = null,
+  onHoist = vi.fn(),
+  canExitHoist = true,
 }: Partial<ComponentProps<typeof NotesTree>> = {}) {
   const tree = (nextActiveNoteId = activeNoteId) => (
     <NotesTree
@@ -91,6 +98,11 @@ function renderTree({
       onDeleteCollection={onDeleteCollection}
       onDropCollections={onDropCollections}
       onDropNotes={onDropNotes}
+      onPlaceNote={onPlaceNote}
+      onRemovePlacement={onRemovePlacement}
+      hoistRootId={hoistRootId}
+      onHoist={onHoist}
+      canExitHoist={canExitHoist}
     />
   )
   const rendered = render(tree())
@@ -111,6 +123,8 @@ function renderTree({
     onDeleteCollection,
     onDropCollections,
     onDropNotes,
+    onPlaceNote,
+    onRemovePlacement,
     rerenderWithActiveNote: (nextActiveNoteId?: string) => rendered.rerender(tree(nextActiveNoteId)),
   }
 }
@@ -124,8 +138,8 @@ describe('NotesTree', () => {
         makeCollection({ id: 'col-alpha', name: 'Alpha', sort_order: 10 }),
       ],
       notes: [
-        makeNote({ id: 'note-old', title: 'Older note', collection_id: 'col-alpha', updated_at: '2025-01-01T00:00:00Z' }),
-        makeNote({ id: 'note-new', title: 'Newer note', collection_id: 'col-alpha', updated_at: '2025-02-01T00:00:00Z' }),
+        makeNote({ id: 'note-old', title: 'Older note', placements: [{ collection_id: 'col-alpha', sort_order: 0 }], updated_at: '2025-01-01T00:00:00Z' }),
+        makeNote({ id: 'note-new', title: 'Newer note', placements: [{ collection_id: 'col-alpha', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' }),
       ],
     })
 
@@ -172,7 +186,7 @@ describe('NotesTree', () => {
   })
 
   it('only triggers note deletion from note keyboard and context menu actions', async () => {
-    const note = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-1' })
+    const note = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-1', sort_order: 0 }] })
     const { onDeleteNote } = renderTree({ notes: [note] })
 
     fireEvent.keyDown(screen.getByRole('button', { name: 'Inbox' }), { key: 'Delete' })
@@ -191,7 +205,7 @@ describe('NotesTree', () => {
   })
 
   it('archives notes from the note context menu', async () => {
-    const note = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-1' })
+    const note = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-1', sort_order: 0 }] })
     const { onArchiveNote, onDeleteNote } = renderTree({ notes: [note] })
 
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Alpha note' }), { clientX: 20, clientY: 30 })
@@ -207,7 +221,7 @@ describe('NotesTree', () => {
       makeCollection({ id: 'col-inbox', name: 'Inbox', sort_order: 0 }),
       makeCollection({ id: 'col-client', name: 'Client Research', sort_order: 1 }),
     ]
-    const note = makeNote({ id: 'note-client', title: 'Client note', collection_id: 'col-client' })
+    const note = makeNote({ id: 'note-client', title: 'Client note', placements: [{ collection_id: 'col-client', sort_order: 0 }] })
     const { onSelectCollection, onSelectNoteCollection } = renderTree({ collections, notes: [note] })
 
     const noteItem = screen.getByRole('button', { name: 'Client note' })
@@ -242,10 +256,10 @@ describe('NotesTree', () => {
 
   it('selects a visible note range with Shift and deletes the selected notes as a batch', async () => {
     const notes = [
-      makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-1', updated_at: '2025-04-01T00:00:00Z' }),
-      makeNote({ id: 'note-beta', title: 'Beta note', collection_id: 'col-1', updated_at: '2025-03-01T00:00:00Z' }),
-      makeNote({ id: 'note-gamma', title: 'Gamma note', collection_id: 'col-1', updated_at: '2025-02-01T00:00:00Z' }),
-      makeNote({ id: 'note-delta', title: 'Delta note', collection_id: 'col-1', updated_at: '2025-01-01T00:00:00Z' }),
+      makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-04-01T00:00:00Z' }),
+      makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-03-01T00:00:00Z' }),
+      makeNote({ id: 'note-gamma', title: 'Gamma note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' }),
+      makeNote({ id: 'note-delta', title: 'Delta note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-01-01T00:00:00Z' }),
     ]
     const { onDeleteNotes, onOpenNote } = renderTree({ notes })
 
@@ -269,9 +283,9 @@ describe('NotesTree', () => {
 
   it('uses the selected note range for the context menu delete action', async () => {
     const notes = [
-      makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-1', updated_at: '2025-03-01T00:00:00Z' }),
-      makeNote({ id: 'note-beta', title: 'Beta note', collection_id: 'col-1', updated_at: '2025-02-01T00:00:00Z' }),
-      makeNote({ id: 'note-gamma', title: 'Gamma note', collection_id: 'col-1', updated_at: '2025-01-01T00:00:00Z' }),
+      makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-03-01T00:00:00Z' }),
+      makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' }),
+      makeNote({ id: 'note-gamma', title: 'Gamma note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-01-01T00:00:00Z' }),
     ]
     const { onDeleteNotes } = renderTree({ notes })
 
@@ -291,9 +305,9 @@ describe('NotesTree', () => {
 
   it('uses the selected note range for the context menu archive action', async () => {
     const notes = [
-      makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-1', updated_at: '2025-03-01T00:00:00Z' }),
-      makeNote({ id: 'note-beta', title: 'Beta note', collection_id: 'col-1', updated_at: '2025-02-01T00:00:00Z' }),
-      makeNote({ id: 'note-gamma', title: 'Gamma note', collection_id: 'col-1', updated_at: '2025-01-01T00:00:00Z' }),
+      makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-03-01T00:00:00Z' }),
+      makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' }),
+      makeNote({ id: 'note-gamma', title: 'Gamma note', placements: [{ collection_id: 'col-1', sort_order: 0 }], updated_at: '2025-01-01T00:00:00Z' }),
     ]
     const { onArchiveNotes } = renderTree({ notes })
 
@@ -309,6 +323,67 @@ describe('NotesTree', () => {
       expect.objectContaining({ id: 'note-beta' }),
       expect.objectContaining({ id: 'note-gamma' }),
     ])
+  })
+
+  it('draws a note once per placement and marks the ones that appear more than once', () => {
+    renderTree({
+      collections: [
+        makeCollection({ id: 'col-1', name: 'First' }),
+        makeCollection({ id: 'col-2', name: 'Second' }),
+      ],
+      notes: [
+        makeNote({
+          id: 'note-shared',
+          title: 'Shared note',
+          placements: [
+            { collection_id: 'col-1', sort_order: 0 },
+            { collection_id: 'col-2', sort_order: 0 },
+          ],
+        }),
+        makeNote({ id: 'note-only', title: 'Local note', placements: [{ collection_id: 'col-1', sort_order: 1 }] }),
+      ],
+    })
+
+    const shared = screen.getAllByRole('button', { name: /Shared note/ })
+    expect(shared).toHaveLength(2)
+    shared.forEach(row => expect(row).toHaveAttribute('title', 'Shared note · also in 1 other folder'))
+    expect(screen.getByRole('button', { name: 'Local note' })).toHaveAttribute('title', 'Local note')
+  })
+
+  it('offers "remove from this folder" only for a note that is in more than one', () => {
+    const onRemovePlacement = vi.fn()
+    renderTree({
+      collections: [
+        makeCollection({ id: 'col-1', name: 'First' }),
+        makeCollection({ id: 'col-2', name: 'Second' }),
+      ],
+      notes: [
+        makeNote({
+          id: 'note-shared',
+          title: 'Shared note',
+          placements: [
+            { collection_id: 'col-1', sort_order: 0 },
+            { collection_id: 'col-2', sort_order: 0 },
+          ],
+        }),
+        makeNote({ id: 'note-only', title: 'Local note', placements: [{ collection_id: 'col-1', sort_order: 1 }] }),
+      ],
+      onRemovePlacement,
+    })
+
+    // Taking the only placement away would be deleting the note, so it is not
+    // offered next to the folder-scoped action.
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Local note' }), { clientX: 4, clientY: 4 })
+    expect(within(screen.getByRole('menu')).queryByRole('menuitem', { name: 'Remove from this folder' }))
+      .not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    const [, inSecond] = screen.getAllByRole('button', { name: /Shared note/ })
+    fireEvent.contextMenu(inSecond!, { clientX: 8, clientY: 8 })
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Remove from this folder' }))
+
+    // The row that was right-clicked decides which placement goes.
+    expect(onRemovePlacement).toHaveBeenCalledWith('note-shared', 'col-2')
   })
 
   it('keeps fixed roots immovable while allowing ordinary and project folders to drag', () => {

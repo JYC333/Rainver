@@ -100,6 +100,75 @@ class FakeDb implements Queryable {
 }
 
 describe("RunMaterializationService", () => {
+  it("derives Agent learning placement from the Run creation context", async () => {
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      db,
+      undefined,
+      async () => ({ status: "allow" }),
+    );
+    const adapterResult = {
+      adapter_type: "model_api",
+      adapter_kind: "managed_api" as const,
+      success: true,
+      output_text: "",
+      output_json: {
+        proposed_changes: [{
+          proposal_type: "memory_create",
+          payload_json: { proposed_content: "learned", target_scope: "agent", agent_id: "agent-1" },
+        }],
+      },
+      exit_code: 0,
+    };
+
+    await service.materializeAdapterResult({ run: run(), adapterResult });
+    await service.materializeAdapterResult({
+      run: run({ id: "run-personal", project_id: null, project_folder_id: null }),
+      adapterResult,
+    });
+
+    expect(JSON.parse(String(db.proposals[0]?.[10]))).toMatchObject({
+      target_scope: "project",
+      target_visibility: "space_shared",
+      owner_user_id: "user-1",
+      project_id: "project-1",
+    });
+    expect(db.proposals[0]?.[16]).toBe("project-1");
+    expect(JSON.parse(String(db.proposals[1]?.[10]))).toMatchObject({
+      target_scope: "user",
+      target_visibility: "private",
+      owner_user_id: "user-1",
+    });
+    expect(JSON.parse(String(db.proposals[1]?.[10]))).not.toHaveProperty("agent_id");
+    expect(db.proposals[1]?.[15]).toBe("private");
+    expect(db.proposals[1]?.[16]).toBeNull();
+  });
+
+  it("fails closed when a Run claims taint but its summary is malformed", async () => {
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      db,
+      undefined,
+      async () => ({ status: "allow" }),
+    );
+    const result = await service.materializeAdapterResult({
+      run: run({ has_context_taint: true, context_taint_json: { schema_version: 99 } }),
+      adapterResult: {
+        adapter_type: "model_api",
+        adapter_kind: "managed_api",
+        success: true,
+        output_text: "",
+        output_json: { artifacts: [{ title: "Must not persist", content: "blocked" }] },
+        exit_code: 0,
+      },
+    });
+    expect(db.artifacts).toHaveLength(0);
+    expect(result.items).toMatchObject([{ kind: "artifact", status: "failed", error_code: "output_artifact_materialization_error" }]);
+    expect(result.errors[0]).toContain("has_context_taint without a valid context_taint_json summary");
+  });
+
   it("stages proposals and reconciles delegation only from terminal output", async () => {
     const db = new FakeDb();
     const delegationCalls: unknown[] = [];
@@ -487,6 +556,72 @@ describe("RunMaterializationService", () => {
     ]);
   });
 
+  it("clamps artifacts and proposals to a private Run", async () => {
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      db,
+      undefined,
+      async () => ({ status: "allow" }),
+    );
+
+    const result = await service.materializeAdapterResult({
+      run: run({ visibility: "private" }),
+      adapterResult: {
+        adapter_type: "model_api",
+        adapter_kind: "managed_api",
+        success: true,
+        output_text: "",
+        output_json: {
+          artifacts: [{ title: "Private result", content: "result", visibility: "space_shared" }],
+          proposed_changes: [{
+            proposal_type: "memory_create",
+            title: "Private proposal",
+            visibility: "private",
+            payload_json: { proposed_content: "proposal" },
+          }],
+        },
+        exit_code: 0,
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(db.artifacts[0]?.[12]).toBe("private");
+    expect(db.proposals[0]?.[15]).toBe("private");
+  });
+
+  it("preserves an explicitly private proposal from a shared Run", async () => {
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      db,
+      undefined,
+      async () => ({ status: "allow" }),
+    );
+
+    const result = await service.materializeAdapterResult({
+      run: run({ visibility: "space_shared" }),
+      adapterResult: {
+        adapter_type: "model_api",
+        adapter_kind: "managed_api",
+        success: true,
+        output_text: "",
+        output_json: {
+          proposed_changes: [{
+            proposal_type: "memory_create",
+            title: "Owner-private proposal",
+            visibility: "private",
+            payload_json: { proposed_content: "private" },
+          }],
+        },
+        exit_code: 0,
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(db.proposals[0]?.[15]).toBe("private");
+  });
+
   it("does not interpret undeclared exchange files as conversation captures", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-room-artifacts-"));
     const exchangeRoot = await mkdtemp(join(tmpdir(), "aspace-room-exchange-"));
@@ -586,7 +721,7 @@ describe("RunMaterializationService", () => {
     expect(db.proposals).toHaveLength(0);
   });
 
-  it("does not materialize proposals for projects outside the run space", async () => {
+  it("ignores a model-supplied project for Agent learning", async () => {
     const db = new FakeDb();
     const config = loadConfig({
       SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
@@ -625,18 +760,13 @@ describe("RunMaterializationService", () => {
       },
     });
 
-    expect(result.items).toMatchObject([
-      {
-        kind: "proposal",
-        status: "failed",
-        error_code: "output_proposal_materialization_error",
-        error_message: "Project not found",
-      },
-    ]);
-    expect(result.errors).toEqual([
-      "proposal:output_proposal_materialization_error:Project not found",
-    ]);
-    expect(db.proposals).toHaveLength(0);
+    expect(result.items).toMatchObject([{ kind: "proposal", status: "succeeded" }]);
+    expect(result.errors).toEqual([]);
+    expect(db.proposals[0]?.[16]).toBe("project-1");
+    expect(JSON.parse(String(db.proposals[0]?.[10]))).toMatchObject({
+      target_scope: "project",
+      project_id: "project-1",
+    });
   });
 
   it("keeps Memory and Knowledge run outputs as pending proposals, not active writes", async () => {

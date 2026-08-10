@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
@@ -9,16 +9,26 @@ import {
 import type { PgSessionRepository } from "../src/modules/sessions/repository";
 import type {
   MessageOut,
-  SessionSummaryForContext,
   SessionOut,
   SessionPage,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
+import { HttpError } from "../src/modules/routeUtils/common";
 
 let app: FastifyInstance;
+
+beforeEach(() => {
+  __setContentCreationContextResolverForTests(async (_db, input) => ({
+    spaceId: input.requestSpaceId,
+    projectId: input.projectId ?? null,
+    visibility: input.projectId ? "space_shared" : "private",
+  }));
+});
 
 afterEach(async () => {
   __setSessionIdentityForTests(null);
   __setSessionServicesFactoryForTests(null);
+  __setContentCreationContextResolverForTests(null);
   await app?.close();
 });
 
@@ -37,7 +47,6 @@ type Repo = Pick<
   | "createSession"
   | "addMessage"
   | "reflectSession"
-  | "getLatestSummaryForContext"
 >;
 
 const notCalled = (name: string) => () => {
@@ -53,7 +62,6 @@ function repo(overrides: Partial<Repo>): Repo {
     createSession: notCalled("createSession"),
     addMessage: notCalled("addMessage"),
     reflectSession: notCalled("reflectSession"),
-    getLatestSummaryForContext: notCalled("getLatestSummaryForContext"),
     ...overrides,
   } as Repo;
 }
@@ -89,70 +97,6 @@ function message(overrides: Partial<MessageOut> = {}): MessageOut {
     ...overrides,
   };
 }
-
-function summary(overrides: Partial<SessionSummaryForContext> = {}): SessionSummaryForContext {
-  return {
-    id: "summary-1",
-    session_id: "session-1",
-    version: 2,
-    summary_text: "Session with 3 messages. Key topics: stage, migration.",
-    condenser_version: "pattern.v1",
-    ...overrides,
-  };
-}
-
-describe("session summary internal route", () => {
-  it("serves latest active session summary from the server sessions authority", async () => {
-    withRepo({
-      async getLatestSummaryForContext(_spaceId, sessionId) {
-        return summary({ session_id: sessionId });
-      },
-    });
-    app = buildServer(sessionsConfig(), { logger: false });
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/sessions/session-summary/get-latest",
-      headers: { "x-agent-space-internal-token": "internal-token" },
-      payload: { space_id: "space-1", session_id: "session-1" },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ summary: summary() });
-  });
-
-  it("returns null for a missing summary without leaking content", async () => {
-    withRepo({
-      async getLatestSummaryForContext() {
-        return null;
-      },
-    });
-    app = buildServer(sessionsConfig(), { logger: false });
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/sessions/session-summary/get-latest",
-      headers: { "x-agent-space-internal-token": "internal-token" },
-      payload: { space_id: "space-1", session_id: "missing-session" },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ summary: null });
-  });
-
-  it("requires the internal service token", async () => {
-    withRepo({});
-    app = buildServer(sessionsConfig(), { logger: false });
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/sessions/session-summary/get-latest",
-      payload: { space_id: "space-1", session_id: "session-1" },
-    });
-
-    expect(res.statusCode).toBe(401);
-  });
-});
 
 describe("session read routes", () => {
   it("serves the session list from the server read model with space/user scope", async () => {
@@ -257,8 +201,26 @@ describe("session write routes", () => {
       id: "session-1",
       status: "active",
       title: "new chat",
-      project_folder_id: "ws-1",
+      project_folder_id: null,
     });
+  });
+
+  it("preserves creation-context authorization errors", async () => {
+    __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    __setContentCreationContextResolverForTests(async () => {
+      throw new HttpError(403, "Project creation requires an active writer role");
+    });
+    withRepo({});
+    app = buildServer(sessionsConfig(), { logger: false });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions",
+      payload: { project_id: "project-1" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ detail: "Project creation requires an active writer role" });
   });
 
   it("appends a message to a visible session (201) and 404s an invisible one", async () => {

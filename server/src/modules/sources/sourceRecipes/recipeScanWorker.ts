@@ -6,6 +6,7 @@ import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHa
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService";
 import { CustomSourceMaterializationService } from "../customSources/customSourceMaterializer";
 import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter";
+import { enqueueItemsForAnnotation } from "../../sourceAnnotation";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch";
 import { cleanupSandbox } from "../customSources/customSourceRunner";
 import { computeNextCheckAt } from "../sourceScanCadence";
@@ -260,6 +261,12 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
       );
       if (result.status === "succeeded" && result.itemsCreated > 0) {
         await emitSourcePostProcessingEvent(db, {
+          spaceId: job.space_id,
+          sourceChannelId: job.source_channel_id,
+          sourceConnectionId: job.connection_id,
+          newItemCount: result.itemsCreated,
+        });
+        await enqueueItemsForAnnotation(db, {
           spaceId: job.space_id,
           sourceChannelId: job.source_channel_id,
           sourceConnectionId: job.connection_id,

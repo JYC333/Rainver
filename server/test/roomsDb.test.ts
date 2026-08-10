@@ -9,7 +9,7 @@ import { PgRunRepository } from "../src/modules/runs/repository";
 import { AgentGroupRunService } from "../src/modules/agentGroups/service";
 import { PgSessionRepository } from "../src/modules/sessions/repository";
 import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 let database: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -46,6 +46,7 @@ beforeAll(async () => {
     }), pool);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(
       `[rooms-db] skipped — Docker/Postgres unavailable: ${
         error instanceof Error ? error.message : String(error)
@@ -345,13 +346,19 @@ describe("Room workflow (real Postgres)", () => {
       SERVER_DATABASE_URL: database!.getConnectionUri(),
       AGENT_SPACE_HOME: testRoot,
     });
+    const continuity = {
+      async finalizeChatTurn() {
+        return { space_id: "space-1", work_context_scope_id: runId } as never;
+      },
+      async runSemanticExtraction() { return null; },
+    };
     await expect(finalizeChatTurn(
       finalizerConfig,
       runRepository,
       terminalRun!,
       {
         loadActionPreviews: async () => [],
-        enqueueCondense: async () => {},
+        continuity,
       },
     )).resolves.toMatchObject({ ok: true });
     await expect(finalizeChatTurn(
@@ -360,7 +367,7 @@ describe("Room workflow (real Postgres)", () => {
       terminalRun!,
       {
         loadActionPreviews: async () => [],
-        enqueueCondense: async () => {},
+        continuity,
       },
     )).resolves.toBeNull();
     const ownerMessages = await service.listMessages(
@@ -581,7 +588,7 @@ describe("Room workflow (real Postgres)", () => {
     ]);
   });
 
-  it("rotates CLI state when a new Room summary replaces raw history", async () => {
+  it("keeps healthy CLI state stable as bounded raw history advances", async () => {
     if (!available || !pool || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
@@ -673,18 +680,6 @@ describe("Room workflow (real Postgres)", () => {
          FROM generate_series(0, 84) value`,
       [conversation.id],
     );
-    await pool.query(
-      `INSERT INTO session_summaries (
-         id, space_id, session_id, user_id, version, status, summary_text,
-         source_message_count, source_first_message_id, source_last_message_id,
-         condenser_version, created_at
-       ) VALUES (
-         'room-summary-1', 'space-1', $1, NULL, 1, 'active',
-         'Earlier: Start the shared analysis. My own prior answer.',
-         2, $2, 'agent-message-1', 'room-test.v1', now()
-       )`,
-      [conversation.id, first.message.id],
-    );
     const memberTurn = await service.sendMessage(member, created.room.id, conversation.id, {
       content: "Add the member-specific constraint.",
       backends: [{
@@ -734,16 +729,14 @@ describe("Room workflow (real Postgres)", () => {
       [resumed.run_ids[0]],
     );
 
-    expect(resumedRun.rows[0]?.runtime_session_id).toBeNull();
+    expect(resumedRun.rows[0]?.runtime_session_id).toBe("vendor-session-1");
     expect(resumedRun.rows[0]?.context_fingerprint)
-      .not.toBe(firstRuntime.context_fingerprint);
-    expect(resumedRun.rows[0]?.prompt).toContain("Add the member-specific constraint.");
-    expect(resumedRun.rows[0]?.prompt).toContain("Bulk Room context 0");
-    expect(resumedRun.rows[0]?.prompt).toContain("Member-owned answer from the same agent.");
-    expect(resumedRun.rows[0]?.prompt).toContain("Continue with the new constraint.");
-    expect(resumedRun.rows[0]?.prompt).not.toContain("My own prior answer.");
-    expect(resumedRun.rows[0]?.replay_prompt).toContain("Start the shared analysis.");
-    expect(resumedRun.rows[0]?.replay_prompt).toContain("My own prior answer.");
+      .toBe(firstRuntime.context_fingerprint);
+    expect(resumedRun.rows[0]?.prompt).toBe("Apply the owner-specific assigned constraint.");
+    expect(resumedRun.rows[0]?.replay_prompt).toContain("Bulk Room context 84");
+    expect(resumedRun.rows[0]?.replay_prompt).toContain("Member-owned answer from the same agent.");
+    expect(resumedRun.rows[0]?.replay_prompt).toContain("Continue with the new constraint.");
+    expect(resumedRun.rows[0]?.replay_prompt).not.toContain("Start the shared analysis.");
     expect(resumedRun.rows[0]?.replay_prompt)
       .toContain("Apply the owner-specific assigned constraint.");
   });

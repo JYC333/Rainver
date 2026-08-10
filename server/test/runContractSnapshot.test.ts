@@ -5,10 +5,18 @@ import {
 } from "../src/modules/runs/contractSnapshot";
 import { workflowContractInput } from "../src/modules/capabilities/workflowContract";
 import { workflowDefinitionFromTemplate } from "../src/modules/capabilities/workflowAssets";
-import { getBuiltInWorkflowTemplate } from "../src/modules/capabilities/workflowRegistry";
+import type { WorkflowTemplate } from "../src/modules/capabilities/types";
 import { loadProtocol } from "../src/modules/providers/protocolRuntime";
 import { runToOut } from "../src/modules/runs/runReadModel";
 import type { RunRecord } from "../src/modules/runs/repository";
+
+const workflowTemplateFixture: WorkflowTemplate = {
+  id: "test.research_workflow", name: "Research Workflow", description: "Collect and synthesize source material.", category: "research",
+  capability_ids: ["research.source_collect", "research.source_summarize", "research.evidence_extract", "research.brief_synthesize", "research.idea_generate"], input_schema_json: { type: "object" },
+  default_config_json: { output_artifact_types: ["research_report.archive.v1"] }, output_artifact_types: ["research_report.archive.v1"],
+  proposal_policy: {}, recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
+  execution_shape: "structured_generation", required_capabilities: [], required_tools: [], prompt_asset_keys: ["test.research_workflow.run"],
+};
 
 describe("Run contract snapshots", () => {
   it("resolves Space, Automation, Workflow, and Plan caps with a persisted source trace", () => {
@@ -102,10 +110,9 @@ describe("Run contract snapshots", () => {
   });
 
   it("builds a workflow contract from the server-owned template", () => {
-    const template = getBuiltInWorkflowTemplate("research.technical_survey");
-    expect(template).not.toBeNull();
+    const template = workflowTemplateFixture;
     const contract = workflowContractInput({
-      template: template!,
+      template,
       workflowVersionId: "workflow-version-1",
       config: { max_duration_seconds: 120, max_runs: 4, max_attempts: 2 },
       projectId: "project-1",
@@ -140,7 +147,7 @@ describe("Run contract snapshots", () => {
       status: "queued",
       mode: "live",
       prompt: "prompt",
-      instruction: null,
+      instruction: "private instruction",
       project_folder_id: null,
       session_id: null,
       project_id: "project-1",
@@ -160,6 +167,7 @@ describe("Run contract snapshots", () => {
 
     expect(runToOut(run).contract_snapshot_json).toEqual(run.contract_snapshot_json);
     expect(runToOut(run).workflow_version_id).toBe("workflow-version-1");
+    expect(runToOut(run)).toMatchObject({ prompt: null, instruction: null });
     expect(contractRecord(run.contract_snapshot_json).source).toEqual({
       kind: "automation",
       id: "automation-1",
@@ -167,8 +175,8 @@ describe("Run contract snapshots", () => {
   });
 
   it("produces a validated versioned definition with a dependency chain", async () => {
-    const template = getBuiltInWorkflowTemplate("research.technical_survey");
-    const definition = await workflowDefinitionFromTemplate(template!);
+    const template = workflowTemplateFixture;
+    const definition = await workflowDefinitionFromTemplate(template);
     const protocol = await loadProtocol();
     expect(protocol.WorkflowDefinitionSchema.safeParse(definition).success).toBe(true);
     expect(definition.schema_version).toBe("workflow_definition.v1");

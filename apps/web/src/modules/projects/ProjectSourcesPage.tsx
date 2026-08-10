@@ -5,8 +5,12 @@ import { AlertTriangle, ArrowLeft, BookOpen, FileText, Link2, Network, Play, Plu
 import { toast } from 'sonner'
 import { projectsApi, sourcesApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Project, ProjectSourceBinding, ProjectSourceItem, SourceBackfillPlan, SourceChannel, SourceHealth } from '../../types/api'
-import { ACADEMIC_TEMPLATE_KEY, templateKeyFromProject } from './templateUtils'
+import type { Project, ProjectExtractionProfile, ProjectSourceBinding, ProjectSourceItem, SourceBackfillPlan, SourceChannel, SourceHealth } from '../../types/api'
+import { ScreeningCriteriaCard } from './ScreeningCriteriaCard'
+import { ProjectSourceSignals } from './sourcesArea/ProjectSourceSignals'
+import {
+  isManualUrlItem, projectSourceOptions, SaveProjectUrlDialog,
+} from './sourcesArea/SaveProjectUrlDialog'
 import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -28,9 +32,13 @@ function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '-'
 }
 
-function projectGraphHref(projectId: string, templateKey: string | null): string {
+function projectGraphHref(projectId: string, bindings: ProjectSourceBinding[]): string {
   const params = new URLSearchParams({ project_id: projectId })
-  if (templateKey === ACADEMIC_TEMPLATE_KEY) params.set('lens_id', 'academic_citation_v1')
+  const lenses = [...new Set(bindings
+    .filter(binding => binding.status === 'active')
+    .map(binding => binding.extraction_profile?.graph_lens_id)
+    .filter((lens): lens is string => Boolean(lens)))]
+  if (lenses.length === 1) params.set('lens_id', lenses[0]!)
   return `/graph?${params}`
 }
 
@@ -65,6 +73,7 @@ function AddProjectSourceDialog({
   projectId,
   channels,
   bindings,
+  profiles,
   onAdded,
 }: {
   open: boolean
@@ -72,6 +81,7 @@ function AddProjectSourceDialog({
   projectId: string
   channels: SourceChannel[]
   bindings: ProjectSourceBinding[]
+  profiles: ProjectExtractionProfile[]
   onAdded: () => void
 }) {
   const options = channels
@@ -80,6 +90,8 @@ function AddProjectSourceDialog({
   const [connectionId, setConnectionId] = useState('')
   const [deliveryScope, setDeliveryScope] = useState<'project_members' | 'source_subscribers'>('project_members')
   const [backfill, setBackfill] = useState(true)
+  const [standingComparison, setStandingComparison] = useState(true)
+  const [profileKey, setProfileKey] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -87,7 +99,9 @@ function AddProjectSourceDialog({
     setConnectionId(options[0]?.value ?? '')
     setDeliveryScope('project_members')
     setBackfill(true)
-  }, [open, channels, bindings])
+    setStandingComparison(true)
+    setProfileKey(profiles.find(profile => profile.is_default)?.key ?? profiles[0]?.key ?? '')
+  }, [open, channels, bindings, profiles])
 
   async function submit() {
     if (!connectionId) return
@@ -97,6 +111,8 @@ function AddProjectSourceDialog({
         source_channel_id: connectionId,
         delivery_scope: deliveryScope,
         backfill_history: backfill,
+        standing_comparison_enabled: standingComparison,
+        extraction_policy: { profile_key: profileKey },
       })
       toast.success('Source added to this project')
       onAdded()
@@ -125,6 +141,28 @@ function AddProjectSourceDialog({
             )}
           </div>
           <div className="space-y-1.5">
+            <Label>Extraction profile</Label>
+            <Select
+              value={profileKey}
+              options={profiles.map(profile => ({ value: profile.key, label: profile.display_name }))}
+              onChange={setProfileKey}
+              ariaLabel="Extraction profile"
+            />
+            <p className="text-xs text-muted-foreground">Controls how triage-approved material becomes a Project object.</p>
+          </div>
+          <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-primary"
+              checked={standingComparison}
+              onChange={event => setStandingComparison(event.target.checked)}
+            />
+            <span>
+              <span className="block font-medium text-foreground">Compare new material with this Project</span>
+              <span className="text-muted-foreground">Use the bounded Standing Research budget to surface possible new directions.</span>
+            </span>
+          </label>
+          <div className="space-y-1.5">
             <Label>Delivery</Label>
             <Select
               value={deliveryScope}
@@ -150,7 +188,7 @@ function AddProjectSourceDialog({
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={saving || !connectionId}>{saving ? 'Adding...' : 'Add source'}</Button>
+          <Button onClick={submit} disabled={saving || !connectionId || !profileKey}>{saving ? 'Adding...' : 'Add source'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -161,9 +199,9 @@ export default function ProjectSourcesPage() {
   const { projectId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [project, setProject] = useState<Project | null>(null)
-  const [projectTemplateKey, setProjectTemplateKey] = useState<string | null>(null)
   const [channels, setChannels] = useState<SourceChannel[]>([])
   const [bindings, setBindings] = useState<ProjectSourceBinding[]>([])
+  const [profiles, setProfiles] = useState<ProjectExtractionProfile[]>([])
   const [backfillPlans,setBackfillPlans]=useState<SourceBackfillPlan[]>([])
   const [health, setHealth] = useState<SourceHealth[]>([])
   const [items, setItems] = useState<ProjectSourceItem[]>([])
@@ -173,12 +211,18 @@ export default function ProjectSourcesPage() {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [addOpen, setAddOpen] = useState(false)
+  const [saveUrlOpen, setSaveUrlOpen] = useState(false)
+  const [updatingItemSourceId, setUpdatingItemSourceId] = useState<string | null>(null)
   const [bindingToRemove, setBindingToRemove] = useState<ProjectSourceBinding | null>(null)
   const [busyBindingId, setBusyBindingId] = useState<string | null>(null)
 
   const channelById = useMemo(
     () => Object.fromEntries(channels.map(channel => [channel.id, channel])) as Record<string, SourceChannel>,
     [channels],
+  )
+  const sourceOptions = useMemo(
+    () => projectSourceOptions(bindings, channels),
+    [bindings, channels],
   )
   const healthByBindingId = useMemo(
     () => Object.fromEntries(health.map(row => [row.binding_id ?? '', row])) as Record<string, SourceHealth>,
@@ -189,10 +233,11 @@ export default function ProjectSourcesPage() {
     if (!projectId) return
     setLoading(true)
     try {
-      const [projectRow, channelRows, bindingRows, healthRows, itemPage] = await Promise.all([
+      const [projectRow, channelRows, bindingRows, profileRows, healthRows, itemPage] = await Promise.all([
         projectsApi.get(projectId),
         sourcesApi.channels(),
         projectsApi.sourceBindings(projectId),
+        projectsApi.sourceExtractionProfiles(projectId),
         projectsApi.sourceHealth(projectId),
         sourcesApi.projectItems({
           project_id: projectId,
@@ -204,9 +249,9 @@ export default function ProjectSourcesPage() {
         }),
       ])
       setProject(projectRow)
-      setProjectTemplateKey(templateKeyFromProject(projectRow))
       setChannels(channelRows)
       setBindings(bindingRows)
+      setProfiles(profileRows)
       const plans=(await Promise.all([...new Set(bindingRows.map(binding=>binding.source_channel_id))].map(channelId=>sourcesApi.channelBackfillPlans(channelId).catch(()=>[] as SourceBackfillPlan[])))).flat()
       setBackfillPlans(plans.filter(plan=>bindingRows.some(binding=>binding.id===plan.project_source_binding_id)))
       setHealth(healthRows)
@@ -277,6 +322,26 @@ export default function ProjectSourcesPage() {
     }, { replace: true })
   }
 
+  /**
+   * Recompute which already-collected SourceItems this binding routes into the
+   * Project. Distinct from "Import history", which asks the provider for
+   * material this Space has never seen and goes through Review; this only
+   * re-evaluates the binding against items the Source already holds, so it is
+   * the repair for a binding whose filters or scope changed after collection.
+   */
+  async function relinkCollectedItems(binding: ProjectSourceBinding) {
+    setBusyBindingId(binding.id)
+    try {
+      const result = await sourcesApi.backfillProjectSourceBinding(projectId, binding.id)
+      toast.success(`Re-linked ${result.created_links} project items`)
+      await refreshSourceModule()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setBusyBindingId(null)
+    }
+  }
+
   async function backfill(binding: ProjectSourceBinding) {
     setBusyBindingId(binding.id)
     try {
@@ -317,6 +382,50 @@ export default function ProjectSourcesPage() {
     }
   }
 
+  async function toggleStanding(binding: ProjectSourceBinding) {
+    setBusyBindingId(binding.id)
+    try {
+      await projectsApi.updateSourceBinding(projectId, binding.id, {
+        standing_comparison_enabled: !binding.standing_comparison_enabled,
+      })
+      toast.success(binding.standing_comparison_enabled ? 'Standing comparison disabled' : 'Standing comparison enabled')
+      await load()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setBusyBindingId(null)
+    }
+  }
+
+  async function updateExtractionProfile(binding: ProjectSourceBinding, profileKey: string) {
+    setBusyBindingId(binding.id)
+    try {
+      await projectsApi.updateSourceBinding(projectId, binding.id, {
+        extraction_policy: { ...binding.extraction_policy_json, profile_key: profileKey },
+      })
+      toast.success('Extraction profile updated')
+      await load()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setBusyBindingId(null)
+    }
+  }
+
+  async function updateProjectItemSource(item: ProjectSourceItem['item'], connectionId: string) {
+    if (item.connection_id === connectionId) return
+    setUpdatingItemSourceId(item.id)
+    try {
+      await sourcesApi.updateItem(item.id, { connection_id: connectionId })
+      toast.success('Item source updated')
+      await refreshSourceCollections()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setUpdatingItemSourceId(null)
+    }
+  }
+
   async function confirmRemove() {
     const binding = bindingToRemove
     if (!binding) return
@@ -334,8 +443,6 @@ export default function ProjectSourcesPage() {
   }
 
   const attentionCount = health.filter(row => row.status === 'attention' || row.status === 'failing').length
-  const isAcademicProject = projectTemplateKey === ACADEMIC_TEMPLATE_KEY
-
   return (
     <div className="p-6 space-y-6">
       <Link
@@ -346,12 +453,10 @@ export default function ProjectSourcesPage() {
         Project
       </Link>
 
-      {isAcademicProject && (
-        <div className="flex flex-wrap items-center gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
-          <BookOpen className="size-3.5 shrink-0" />
-          <span>Paper triage and reading status moved to the <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research`}>Research Area → Reading List</Link>. This page manages collection only.</span>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+        <BookOpen className="size-3.5 shrink-0" />
+        <span>Material triage and reading status live in the <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research`}>Research Area → Reading List</Link>. This page manages collection only.</span>
+      </div>
 
       <div className="flex items-start justify-between gap-4 flex-wrap pb-4 border-b border-border">
         <div className="flex items-start gap-4">
@@ -362,33 +467,32 @@ export default function ProjectSourcesPage() {
               border: '1px solid color-mix(in oklch, var(--primary) 35%, transparent)',
             }}
           >
-            {isAcademicProject
-              ? <BookOpen className="size-5 text-accent-foreground" />
-              : <Rss className="size-5 text-accent-foreground" />}
+            <Rss className="size-5 text-accent-foreground" />
           </div>
           <div className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-xl font-semibold tracking-tight">{project?.name ?? 'Project sources'}</h1>
-              <Badge variant="outline">{isAcademicProject ? 'Literature sources' : 'Sources'}</Badge>
-              {isAcademicProject && <Badge variant="secondary">Academic Research</Badge>}
+              <Badge variant="outline">Sources</Badge>
             </div>
             <p className="text-sm text-muted-foreground max-w-2xl">
-              {isAcademicProject
-                ? 'Manage literature acquisition, monitor health, scans, and corpus synchronization.'
-                : 'Monitor bound sources, collection health, and source items collected for this project.'}
+              Monitor bound sources, collection health, and source items collected for this project.
             </p>
             {project && <p className="text-xs text-muted-foreground">Updated {fmt(project.updated_at)}</p>}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isAcademicProject && projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research`}><BookOpen className="size-4" />Review reading list</Link></Button>}
+          {projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research`}><BookOpen className="size-4" />Review reading list</Link></Button>}
           <Button variant="outline" className="gap-1.5 shrink-0" asChild disabled={!projectId}>
-            <Link to={projectGraphHref(projectId, projectTemplateKey)}>
+            <Link to={projectGraphHref(projectId, bindings)}>
               <Network className="size-4" />
               Open graph
             </Link>
           </Button>
           {projectId && <Button variant="secondary" className="gap-1.5 shrink-0" asChild><Link to="/sources"><Plus className="size-4" />Create reusable source</Link></Button>}
+          <Button variant="secondary" className="gap-1.5 shrink-0" onClick={() => setSaveUrlOpen(true)} disabled={!projectId}>
+            <FileText className="size-4" />
+            Save URL
+          </Button>
           <Button className="gap-1.5 shrink-0" onClick={() => setAddOpen(true)} disabled={!projectId}>
             <Plus className="size-4" />
             Add source
@@ -411,11 +515,13 @@ export default function ProjectSourcesPage() {
         />
         <MetricCard
           icon={<FileText className="size-3.5" />}
-          label={isAcademicProject ? 'Collected papers' : 'Collected items'}
+          label="Collected items"
           value={items.length}
           detail="Items matching the current filters"
         />
       </div>
+
+      {projectId && <ScreeningCriteriaCard projectId={projectId} />}
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
@@ -451,6 +557,7 @@ export default function ProjectSourcesPage() {
                       </Link>
                       <StatusBadge status={rowHealth?.status ?? binding.status} />
                       <Badge variant="outline">{binding.delivery_scope.replace('_', ' ')}</Badge>
+                      <Badge variant={binding.standing_comparison_enabled ? 'secondary' : 'outline'}>{binding.standing_comparison_enabled ? 'Standing on' : 'Standing off'}</Badge>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground truncate">{channel?.provider.display_name ?? channel?.provider.key ?? binding.binding_key} · Monitor: {channel?.name ?? 'Configured monitor'} · {channel ? sourceQueryText(channel) : ''}</p>
                     {rowHealth && (
@@ -462,9 +569,30 @@ export default function ProjectSourcesPage() {
                     {plan&&<p className="mt-2 text-xs text-muted-foreground">History import: {plan.status} · {plan.segments_completed}/{plan.segments_total} segments · {plan.items_ingested} ingestion records{plan.next_eligible_at?` · paused until ${fmt(plan.next_eligible_at)}`:''}</p>}
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <Select
+                      size="sm"
+                      ariaLabel={`Extraction profile for ${channel?.name ?? binding.source_channel_id}`}
+                      value={binding.extraction_profile?.key ?? ''}
+                      options={profiles.map(profile => ({ value: profile.key, label: profile.display_name }))}
+                      disabled={busy}
+                      onChange={value => { void updateExtractionProfile(binding, value) }}
+                    />
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => void toggleStanding(binding)}>
+                      {binding.standing_comparison_enabled ? 'Disable standing' : 'Enable standing'}
+                    </Button>
                     <Button size="sm" variant="outline" className="gap-1.5" disabled={busy} onClick={() => runScan(binding)}>
                       <Play className="size-3.5" />
                       Run scan
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5"
+                      disabled={busy || binding.status !== 'active'}
+                      onClick={() => { void relinkCollectedItems(binding) }}
+                    >
+                      <Link2 className="size-3.5" />
+                      Re-link collected items
                     </Button>
                     {channel?.channel_type === 'search'&&<Button size="sm" variant="outline" className="gap-1.5" disabled={busy || binding.status !== 'active' || Boolean(plan&&['draft','proposed','approved','running','paused'].includes(plan.status))} onClick={() => backfill(binding)}>
                       <RefreshCw className="size-3.5" />
@@ -485,13 +613,12 @@ export default function ProjectSourcesPage() {
         </div>
       </section>
 
-      {isAcademicProject && (
-        <details id="advanced" className="rounded-lg border border-border bg-card p-4">
+      <details id="advanced" className="rounded-lg border border-border bg-card p-4">
           <summary className="cursor-pointer select-none text-sm font-medium">Advanced monitor state</summary>
           <p className="mt-2 text-xs text-muted-foreground">Operational scan details for diagnosing collection gaps. These values do not describe research outcomes.</p>
           <div className="mt-3 space-y-2">
             {bindings.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No literature monitors are bound to this project.</p>
+              <p className="text-xs text-muted-foreground">No source monitors are bound to this project.</p>
             ) : bindings.map(binding => {
               const channel = channelById[binding.source_channel_id]
               const rowHealth = healthByBindingId[binding.id]
@@ -507,8 +634,7 @@ export default function ProjectSourcesPage() {
               )
             })}
           </div>
-        </details>
-      )}
+      </details>
 
       <section className="space-y-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -573,21 +699,42 @@ export default function ProjectSourcesPage() {
                     <Badge variant="muted">matched {fmt(row.matched_at)}</Badge>
                   </div>
                 </div>
-                <Button size="sm" variant="outline" asChild>
-                  <Link to={`/library/items/${row.item.id}`}>Open reader</Link>
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {isManualUrlItem(row.item) && sourceOptions.length > 0 && (
+                    <Select
+                      size="sm"
+                      ariaLabel={`Source for ${row.item.title || 'saved URL'}`}
+                      value={row.item.connection_id ?? ''}
+                      options={sourceOptions}
+                      disabled={updatingItemSourceId === row.item.id}
+                      onChange={value => { void updateProjectItemSource(row.item, value) }}
+                    />
+                  )}
+                  <Button size="sm" variant="outline" asChild>
+                    <Link to={`/library/items/${row.item.id}`}>Open reader</Link>
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}
         </div>
       </section>
 
+      {projectId && <ProjectSourceSignals projectId={projectId} channels={channels} />}
+
+      <SaveProjectUrlDialog
+        open={saveUrlOpen}
+        onOpenChange={setSaveUrlOpen}
+        sourceOptions={sourceOptions}
+        onSaved={() => { void refreshSourceModule() }}
+      />
       <AddProjectSourceDialog
         open={addOpen}
         onOpenChange={setAddOpen}
         projectId={projectId}
         channels={channels}
         bindings={bindings}
+        profiles={profiles}
         onAdded={refreshSourceModule}
       />
       <Dialog open={Boolean(bindingToRemove)} onOpenChange={open => { if (!open && !busyBindingId) setBindingToRemove(null) }}>

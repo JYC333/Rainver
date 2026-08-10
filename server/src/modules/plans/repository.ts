@@ -678,7 +678,6 @@ export class PgPlanRepository {
         runtime_profile_id: node.runtime_profile_id ?? input.runtimeProfileId,
         runtime_profile_selection_source: node.runtime_profile_id ? "explicit" : input.runtimeProfileSelectionSource,
         capability_id: node.capability_id,
-        context_artifact_ids: resolvedInputs.contextArtifactIds,
         contract_snapshot: {
           source: { kind: "plan", id: input.planId },
           project_id: input.projectId,

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CONTENT_RESOURCE_DEFINITIONS } from "../src/modules/access/contentAccessRegistry";
+import { contentResourceDefinitions } from "../src/modules/access/contentAccessRegistry";
 import { PUBLICATION_ADAPTERS, publicationAdapter } from "../src/modules/publications/publicationRegistry";
 
 describe("publication adapter registry", () => {
   it("has exactly one adapter for every publishable content type", () => {
-    const publishable = CONTENT_RESOURCE_DEFINITIONS
+    const publishable = contentResourceDefinitions()
       .filter((definition) => definition.publishable)
       .map((definition) => definition.resourceType)
       .sort();

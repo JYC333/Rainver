@@ -116,7 +116,7 @@ export class ProjectResearchSynthesisCoordinator {
           critiqueContext: input.critiqueContext,
         });
         if (!resolvedPrompt) throw new HttpError(500, "Project Research synthesis prompt is not resolvable");
-        const matrixArtifactId = await new ProjectResearchArtifactService(db).ensureLiteratureMatrix({
+        const matrixArtifactId = await new ProjectResearchArtifactService(db).ensureEvidenceMatrix({
           spaceId,
           projectId,
           workflowId,
@@ -125,7 +125,7 @@ export class ProjectResearchSynthesisCoordinator {
         });
         current.matrix_artifact_id = matrixArtifactId;
         current.artifact_ids = unique([...current.artifact_ids, matrixArtifactId]);
-        if (await literatureMatrixRowCount(db, spaceId, projectId, matrixArtifactId) === 0) {
+        if (await evidenceMatrixRowCount(db, spaceId, projectId, matrixArtifactId) === 0) {
           emptyMatrix = true;
           return false;
         }
@@ -142,7 +142,6 @@ export class ProjectResearchSynthesisCoordinator {
           instruction: resolvedPrompt.instruction,
           capability_id: "research.brief_synthesize",
           capabilities_json: RESEARCH_SYNTHESIS_CAPABILITIES,
-          context_artifact_ids: [matrixArtifactId],
           contract_snapshot: {
             source: { kind: "workflow", id: workflowId },
             project_id: projectId,
@@ -152,6 +151,7 @@ export class ProjectResearchSynthesisCoordinator {
               project_research: {
                 workflow_id: workflowId,
                 operation_id: operationId,
+                evidence_matrix_artifact_id: matrixArtifactId,
                 run_kind: current.run_kind,
                 stage_key: input.stageKey ?? "synthesis",
                 report_depth: current.report_depth,
@@ -210,7 +210,7 @@ export class ProjectResearchSynthesisCoordinator {
     if (!operation) return result;
     return this.completeWithoutReport(operation, researchState(operation.progress_json), {
       kind: "no_relevant_sources",
-      message: "Screening completed, but no relevant or maybe papers remained for synthesis.",
+      message: "Screening completed, but no relevant or maybe material remained for synthesis.",
       reasonCode: "empty_approved_corpus",
       suggestions: ["Broaden the search query, inclusion scope, provider selection, or history window."],
     });
@@ -494,7 +494,7 @@ export class ProjectResearchSynthesisCoordinator {
       operationId: input.operationId, synthesisRunId: input.runId, runKind: state.run_kind,
       researchQuestion: state.research_question, researchQuestionVersion: state.research_question_version,
       report: input.report, archiveArtifactId: input.archiveArtifactId,
-      literatureMatrixArtifactId: optionalString(state.matrix_artifact_id),
+      evidenceMatrixArtifactId: optionalString(state.matrix_artifact_id),
     });
     state.artifact_ids = unique([...state.artifact_ids, input.archiveArtifactId]);
     state.synthesis_run_id = input.runId;
@@ -875,7 +875,7 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-async function literatureMatrixRowCount(
+async function evidenceMatrixRowCount(
   db: Queryable,
   spaceId: string,
   projectId: string,
@@ -883,18 +883,18 @@ async function literatureMatrixRowCount(
 ): Promise<number> {
   const result = await db.query<{ content: string | null }>(
     `SELECT content FROM artifacts
-      WHERE id=$1 AND space_id=$2 AND project_id=$3 AND artifact_type='literature_matrix'
+      WHERE id=$1 AND space_id=$2 AND project_id=$3 AND artifact_type='evidence_matrix'
       LIMIT 1`,
     [artifactId, spaceId, projectId],
   );
   const content = result.rows[0]?.content;
-  if (!content) throw new HttpError(500, "The approved literature matrix is unavailable for synthesis");
+  if (!content) throw new HttpError(500, "The approved evidence matrix is unavailable for synthesis");
   try {
     const rows = objectValue(JSON.parse(content)).rows;
     if (!Array.isArray(rows)) throw new Error("rows is not an array");
     return rows.length;
   } catch {
-    throw new HttpError(500, "The approved literature matrix is invalid for synthesis");
+    throw new HttpError(500, "The approved evidence matrix is invalid for synthesis");
   }
 }
 

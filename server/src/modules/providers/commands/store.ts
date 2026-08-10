@@ -69,6 +69,8 @@ import {
   type ProviderPoolCredentialAddInput,
   type ProviderSpaceGrantInput,
   type ProviderTaskChainEntry,
+  type ProviderTaskAttemptRefs,
+  type ProviderTaskAttemptStart,
 } from "./types";
 
 export {
@@ -87,6 +89,8 @@ export {
   type ProviderPoolCredentialAddInput,
   type ProviderSpaceGrantInput,
   type ProviderTaskChainEntry,
+  type ProviderTaskAttemptRefs,
+  type ProviderTaskAttemptStart,
   type RotationStrategy,
 } from "./types";
 export { orderPoolMembers } from "./helpers";
@@ -743,6 +747,87 @@ class PgProviderCommandStore implements ProviderCommandStore {
     attribution: UsageAttribution,
   ): Promise<void> {
     await recordAttributedUsageObservation(this.config, input, attribution);
+  }
+
+  async beginProviderTaskAttempt(input: ProviderTaskAttemptStart): Promise<ProviderTaskAttemptRefs> {
+    const invocationId = randomUUID();
+    const controlId = randomUUID();
+    const deliveryId = randomUUID();
+    const snapshotId = randomUUID();
+    const usageSourceId = `provider-task:${deliveryId}`;
+    const now = new Date().toISOString();
+    const refs: ProviderTaskAttemptRefs = {
+      invocation_id: invocationId,
+      control_id: controlId,
+      delivery_id: deliveryId,
+      invocation_snapshot_id: snapshotId,
+      usage_source_id: usageSourceId,
+      attempt: 1,
+    };
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO provider_task_controls
+           (id,space_id,task,owner_domain,control_json,created_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6)`,
+        [controlId, input.space_id, input.task, input.owner_domain, JSON.stringify({
+          task: input.task,
+          owner_domain: input.owner_domain,
+          provider_id: input.provider_id,
+          model: input.model,
+          source_resource_type: input.metering.source_resource_type ?? null,
+          source_resource_id: input.metering.source_resource_id ?? null,
+          subject_user_id: input.metering.subject_user_id ?? null,
+        }), now],
+      );
+      await client.query(
+        `INSERT INTO provider_task_deliveries
+           (id,space_id,invocation_id,attempt,control_id,provider_id,model,
+            input_fingerprint,usage_source_id,delivery_metadata_json,created_at)
+         VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
+        [deliveryId, input.space_id, invocationId, controlId, input.provider_id,
+          input.model, input.input_fingerprint, usageSourceId, JSON.stringify({
+            delivery_kind: "provider_task",
+            task: input.task,
+            owner_domain: input.owner_domain,
+          }), now],
+      );
+      await client.query(
+        `INSERT INTO provider_task_snapshots
+           (id,space_id,delivery_id,safe_snapshot_json,status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4::jsonb,'draft',$5,$5)`,
+        [snapshotId, input.space_id, deliveryId, JSON.stringify({
+          ...refs,
+          task: input.task,
+          owner_domain: input.owner_domain,
+          provider_id: input.provider_id,
+          model: input.model,
+          input_fingerprint: input.input_fingerprint,
+        }), now],
+      );
+      await client.query("COMMIT");
+      return refs;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async completeProviderTaskAttempt(
+    refs: ProviderTaskAttemptRefs,
+    result: { status: "accepted" | "failed"; error_code?: string | null },
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE provider_task_snapshots
+          SET status=$2,error_code=$3,updated_at=$4,
+              safe_snapshot_json=safe_snapshot_json || $5::jsonb
+        WHERE id=$1 AND status='draft'`,
+      [refs.invocation_snapshot_id, result.status, result.error_code ?? null,
+        new Date().toISOString(), JSON.stringify({ status: result.status, error_code: result.error_code ?? null })],
+    );
   }
 
   async resolveProviderApiKey(spaceId: string, providerId: string): Promise<string> {

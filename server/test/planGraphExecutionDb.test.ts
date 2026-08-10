@@ -640,15 +640,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
 
     const consume = (await pool.query<{
       run_id: string;
-      resolved_inputs_json: { values: Record<string, unknown>; contextArtifactIds: string[] };
+      resolved_inputs_json: { values: Record<string, unknown> };
       contract_snapshot_json: { upstream_inputs_json: { values: Record<string, unknown> } };
-      request_json: { context_artifact_ids: string[] };
     }>(
-      `SELECT wr.run_id, wr.resolved_inputs_json, r.contract_snapshot_json, snapshot.request_json
+      `SELECT wr.run_id, wr.resolved_inputs_json, r.contract_snapshot_json
          FROM workflow_execution_node_runs wr
          JOIN workflow_execution_nodes n ON n.id = wr.node_id AND n.space_id = wr.space_id
          JOIN runs r ON r.id = wr.run_id AND r.space_id = wr.space_id
-         JOIN context_snapshots snapshot ON snapshot.id = r.context_snapshot_id AND snapshot.space_id = r.space_id
         WHERE wr.space_id = $1 AND n.execution_id = $2 AND n.node_key = 'consume'`,
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
@@ -666,7 +664,6 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       report: { artifact_id: artifactId, artifact_type: "report" },
     });
     expect(consume!.contract_snapshot_json.upstream_inputs_json.values).toEqual(consume!.resolved_inputs_json.values);
-    expect(consume!.request_json.context_artifact_ids).toContain(artifactId);
 
     await runs.markRunRunning({ run_id: consume!.run_id, space_id: SPACE, started_at: new Date().toISOString() });
     await runs.markRunTerminal({ run_id: consume!.run_id, space_id: SPACE, status: "succeeded", output_json: { result: "consumed" }, completed_at: new Date().toISOString() });
@@ -781,6 +778,11 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     actionNodeHandlerRegistry.register("test.failing_action", async () => {
       throw new ActionNodeHandlerError("deliberate test failure", { partial: true });
     });
+    actionNodeHandlerRegistry.register("test.sql_failing_action", async (context) => {
+      await context.db.query(`UPDATE automations SET name='must roll back' WHERE id=$1`, [AUTOMATION]);
+      await context.db.query(`SELECT 1/0`);
+      return { output: {} };
+    });
     await pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
@@ -822,6 +824,10 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
               contract_json: {}, metadata_json: { node_kind: "action", action_key: "test.failing_action" },
             },
             {
+              id: "sql_fail_action", title: "SQL failing action", depends_on: ["source"],
+              contract_json: {}, metadata_json: { node_kind: "action", action_key: "test.sql_failing_action" },
+            },
+            {
               id: "missing_action", title: "Unregistered action", depends_on: ["source"],
               contract_json: {}, metadata_json: { node_kind: "action", action_key: "test.does_not_exist" },
             },
@@ -845,7 +851,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
 
     const nodes = (await pool.query<{ node_key: string; status: string; blocked_reason: string | null }>(
       `SELECT node_key, status, blocked_reason FROM workflow_execution_nodes
-        WHERE execution_id = $1 AND node_key IN ('ok_action', 'fail_action', 'missing_action')
+        WHERE execution_id = $1 AND node_key IN ('ok_action', 'fail_action', 'sql_fail_action', 'missing_action')
         ORDER BY node_key`,
       [execution.workflowExecutionId],
     )).rows;
@@ -853,7 +859,10 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       { node_key: "fail_action", status: "failed", blocked_reason: "action_handler_error:deliberate test failure" },
       { node_key: "missing_action", status: "failed", blocked_reason: "action_handler_not_registered:test.does_not_exist" },
       { node_key: "ok_action", status: "done", blocked_reason: null },
+      { node_key: "sql_fail_action", status: "failed", blocked_reason: "action_handler_error:division by zero" },
     ]);
+    expect((await pool.query<{ name: string }>(`SELECT name FROM automations WHERE id=$1`, [AUTOMATION])).rows[0]?.name)
+      .toBe("Action node automation");
 
     const okRun = (await pool.query<{
       run_type: string; status: string; output_json: { echoed: string };

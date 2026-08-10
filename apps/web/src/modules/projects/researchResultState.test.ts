@@ -3,7 +3,7 @@ import type { ProjectOperation, ProjectResearchReport, ProjectResearchCheckpoint
 import { researchFailurePresentation, researchResultState, savedSetupDiffersFromOperation } from './researchResultState'
 
 const workflow = (state: Record<string, unknown> = {}): ProjectResearchWorkflow => ({
-  id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review', current_stage: 'complete', status: 'active', mode: 'agent_assisted',
+  id: 'workflow-1', project_id: 'project-1', current_stage: 'complete', status: 'active',
   state_json: { research_question: 'Old question', monitoring: { active: true }, ...state }, primary_thread_id: null, started_by_user_id: null, started_run_id: null,
   created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-18T08:00:00Z',
 })
@@ -26,7 +26,7 @@ const report = (): ProjectResearchReport => ({
 })
 
 function state(overrides: Partial<Parameters<typeof researchResultState>[0]> = {}) {
-  return researchResultState({ projectQuestion: 'Old question', workflow: workflow(), checkpoints: [], operations: [], reports: [report()], scanSummaries: [], paperCount: 12, includedCount: 4, ...overrides })
+  return researchResultState({ projectQuestion: 'Old question', workflow: workflow(), checkpoints: [], operations: [], reports: [report()], scanSummaries: [], materialCount: 12, includedCount: 4, ...overrides })
 }
 
 describe('researchResultState', () => {
@@ -62,7 +62,7 @@ describe('researchResultState', () => {
       })],
     })
     expect(result.kind).toBe('running')
-    expect(result.notices).toContain('arxiv history (1 window) is temporarily unavailable and retrying in the background; collected papers can continue through research.')
+    expect(result.notices).toContain('arxiv history (1 window) is temporarily unavailable and retrying in the background; collected material can continue through research.')
   })
 
   it('puts any failed auxiliary operation before a newer running operation', () => {
@@ -107,7 +107,7 @@ describe('researchResultState', () => {
     }
     const result = state({ scanSummaries: [summary] })
     expect(result.kind).toBe('monitoring_update')
-    expect(result.conclusion).toContain('7 new papers')
+    expect(result.conclusion).toContain('7 new items')
     expect(result.primaryAction).toEqual({ key: 'view_corpus', label: 'View update' })
   })
 
@@ -156,7 +156,7 @@ describe('researchResultState', () => {
     expect(result.kind).toBe('completed')
     expect(result.conclusion).toContain('no relevant evidence')
     expect(result.detail).toBe('Broaden the inclusion scope.')
-    expect(result.primaryAction).toEqual({ key: 'view_corpus', label: 'Review collected papers' })
+    expect(result.primaryAction).toEqual({ key: 'view_corpus', label: 'Review collected material' })
     expect(result.failure).toBeNull()
   })
 
@@ -223,7 +223,7 @@ describe('researchResultState', () => {
     const presentation = researchFailurePresentation(failed)
     expect(presentation.conclusion).toBe('History import from arXiv did not complete.')
     expect(presentation.suggestion).toContain('already retried automatically')
-    expect(presentation.suggestion).toContain('completed papers and results will be kept')
+    expect(presentation.suggestion).toContain('completed material and results will be kept')
     expect(presentation.technical).toContain('"upstream_status": 500')
   })
 

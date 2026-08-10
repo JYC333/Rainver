@@ -320,6 +320,12 @@ describe("provider proxy server", () => {
       project_id: "project-1",
       project_folder_id: "workspace-1",
       trigger_origin: "manual",
+      invocation_audit_refs: {
+        delivery_id: "delivery-1",
+        invocation_snapshot_id: "snapshot-1",
+        execution_control_snapshot_id: "control-1",
+        usage_source_id: "usage-source-1",
+      },
       ttl_ms: 60_000,
     });
 
@@ -365,7 +371,22 @@ describe("provider proxy server", () => {
           cache_read_input_tokens: 2,
         },
         usage_accuracy: "proxy_observed",
-        dimensions: { provider_proxy_route: "anthropic" },
+        idempotency_key: "usage-source-1:proxy:1",
+        metadata: {
+          runtime_context_audit_refs: {
+            delivery_id: "delivery-1",
+            invocation_snapshot_id: "snapshot-1",
+            execution_control_snapshot_id: "control-1",
+            usage_source_id: "usage-source-1",
+          },
+        },
+        dimensions: {
+          provider_proxy_route: "anthropic",
+          delivery_id: "delivery-1",
+          invocation_snapshot_id: "snapshot-1",
+          execution_control_snapshot_id: "control-1",
+          usage_source_id: "usage-source-1",
+        },
       }),
     ]);
     expect(JSON.stringify(usageObservations[0])).not.toContain("response content");
@@ -375,6 +396,21 @@ describe("provider proxy server", () => {
       source_resource_type: "run",
       source_resource_id: "run-1",
     });
+
+    const secondResponse = await fetch(`${proxy.baseUrl}/anthropic/${lease.id}/v1/messages`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${lease.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ model: "MiniMax-M2.7", messages: [] }),
+    });
+    expect(secondResponse.status).toBe(200);
+    await secondResponse.json();
+    expect(usageObservations.map((observation) => observation.idempotency_key)).toEqual([
+      "usage-source-1:proxy:1",
+      "usage-source-1:proxy:2",
+    ]);
   });
 
   it("records bounded OpenAI-compatible proxy usage", async () => {

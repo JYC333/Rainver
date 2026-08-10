@@ -9,7 +9,7 @@ import {
   type ProviderCommandStore,
   type ProviderHttpClient,
 } from "../src/modules/providers";
-import { executeRuntimeHost } from "../src/modules/runtimeHost";
+import { __setRuntimeHostDeliveryAuthorizerForTests, executeRuntimeHost } from "../src/modules/runtimeHost";
 import type { UsageObservation } from "../src/modules/usage";
 import { resolveTestUsageAttribution } from "./support/usageAttribution";
 
@@ -20,12 +20,14 @@ let app: FastifyInstance;
 // that exhaust retries don't take multiple real seconds.
 beforeEach(() => {
   __setNetworkRetryDelayForTests(async () => {});
+  __setRuntimeHostDeliveryAuthorizerForTests(async () => {});
 });
 
 afterEach(async () => {
   __setProviderCommandStoreForTests(null);
   __setProviderHttpClientForTests(null);
   __setNetworkRetryDelayForTests(null);
+  __setRuntimeHostDeliveryAuthorizerForTests(null);
   await app?.close();
 });
 
@@ -46,7 +48,6 @@ function requestBody(overrides: Record<string, unknown> = {}): Record<string, un
       task_goal: "Say hello",
       messages: [],
       inputs: { direct: null, workflow: null, upstream: null },
-      context: { context_snapshot_id: null, context_package_ref: null },
       attachments: [],
       project_folder_access: null,
       output_contract: {
@@ -70,6 +71,12 @@ function requestBody(overrides: Record<string, unknown> = {}): Record<string, un
     system_prompt: "Be direct.",
     prompt: "Say hello",
     mode: "live",
+    invocation_audit_refs: {
+      delivery_id: "delivery-1",
+      invocation_snapshot_id: "snapshot-1",
+      execution_control_snapshot_id: "control-1",
+      usage_source_id: "usage-1",
+    },
     ...overrides,
   };
 }
@@ -135,6 +142,53 @@ function fakeHttpClient(calls: string[]): ProviderHttpClient {
       );
     },
   };
+}
+
+function fallbackStore(
+  calls: string[],
+  usageObservations: UsageObservation[] = [],
+): ProviderCommandStore {
+  return {
+    async getInvocationTarget(_spaceId: string, providerId?: string | null) {
+      const id = providerId ?? "provider-1";
+      calls.push(`target:${id}`);
+      const fallback = id === "provider-2";
+      return {
+        provider: {
+          id,
+          space_id: "space-1",
+          name: fallback ? "Fallback" : "Primary",
+          provider_type: "openai",
+          base_url: fallback
+            ? "https://fallback.example.test/v1"
+            : "https://primary.example.test/v1",
+          openai_compatible_base_url: null,
+          default_model: fallback ? "fallback-model" : "primary-model",
+          available_models: [fallback ? "fallback-model" : "primary-model"],
+          enabled: true,
+          is_default: !fallback,
+        },
+        rotation_strategy: "fill_first",
+        fallback_provider_ids: fallback ? [] : ["provider-2"],
+        candidates: [{
+          member_id: fallback ? "member-2" : "member-1",
+          credential_id: fallback ? "credential-2" : "credential-1",
+          api_key: fallback ? "sk-test-fallback" : "sk-test-primary",
+        }],
+      };
+    },
+    async recordPoolOutcome(memberId: string, outcome: { kind: string }) {
+      calls.push(`outcome:${memberId}:${outcome.kind}`);
+    },
+    resolveUsageAttribution: resolveTestUsageAttribution,
+    async recordUsageObservation(input: UsageObservation) {
+      usageObservations.push(input);
+    },
+    async getTaskChain(_spaceId: string, task: string) {
+      calls.push(`task:${task}`);
+      return [{ provider_id: "provider-2", model: "fallback-model" }];
+    },
+  } as unknown as ProviderCommandStore;
 }
 
 describe("runtime host internal route", () => {
@@ -212,6 +266,42 @@ describe("runtime host internal route", () => {
       output_text: "hello world",
       usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
     });
+  });
+
+  it("does not widen a managed Delivery to a fallback provider", async () => {
+    const calls: string[] = [];
+    const usageObservations: UsageObservation[] = [];
+    __setProviderCommandStoreForTests(fallbackStore(calls, usageObservations));
+    __setProviderHttpClientForTests({
+      async fetch(url) {
+        if (String(url).includes("primary.example.test")) {
+          return new Response(JSON.stringify({ error: "temporarily unavailable" }), {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: "fallback output" } }],
+          model: "fallback-model",
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    const result = await executeRuntimeHost(
+      config(),
+      requestBody({ model: "primary-model" }) as Parameters<typeof executeRuntimeHost>[1],
+    );
+
+    expect(result).toMatchObject({ success: false, error_code: expect.any(String) });
+    expect(calls).not.toContain("target:provider-2");
+    expect(usageObservations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider_id: "provider-1",
+        usage_accuracy: "unknown",
+        dimensions: expect.objectContaining({ provider_attempt_status: "failed" }),
+      }),
+    ]));
   });
 
   it("fails a truncated provider stream instead of persisting partial output as success", async () => {
@@ -292,6 +382,23 @@ describe("runtime host internal route", () => {
     expect(calls).toEqual([]);
   });
 
+  it("rejects direct Runtime Host execution without Delivery audit refs", async () => {
+    const calls: string[] = [];
+    __setProviderCommandStoreForTests(fakeStore(calls));
+    __setProviderHttpClientForTests(fakeHttpClient(calls));
+    app = buildServer(config(), { logger: false });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/internal/runtime-host/execute",
+      headers: { "x-agent-space-internal-token": "internal-token" },
+      payload: requestBody({ invocation_audit_refs: undefined }),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(calls).toEqual([]);
+  });
+
   it("executes a provider-backed tool-disabled host turn", async () => {
     const calls: string[] = [];
     const usageObservations: UsageObservation[] = [];
@@ -337,7 +444,6 @@ describe("runtime host internal route", () => {
       "model.message_stop",
     ]);
     expect(calls).toEqual([
-      "task:runtime_host",
       "target:provider-1",
       "fetch:gpt-4o-mini",
       "outcome:member-1:success",
@@ -367,7 +473,7 @@ describe("runtime host internal route", () => {
         task: "runtime_host",
         provider_usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
         usage_accuracy: "provider_reported",
-        dimensions: { mode: "live", tool_mode: "disabled" },
+        dimensions: expect.objectContaining({ mode: "live", tool_mode: "disabled" }),
       }),
     ]);
   });
@@ -795,7 +901,6 @@ describe("runtime host internal route", () => {
     expect(res.json().error_text).toContain("getaddrinfo ENOTFOUND api.example.test");
     expect(res.json().error_text).not.toContain("server runtime host provider invocation failed");
     expect(calls).toEqual([
-      "task:runtime_host",
       "target:provider-1",
       "fetch:gpt-4o-mini",
       "fetch:gpt-4o-mini",
@@ -1216,7 +1321,6 @@ describe("runtime host internal route", () => {
     });
     expect(res.json().error_text).toContain("does not support runtime-host tools");
     expect(calls).toEqual([
-      "task:runtime_host",
       "target:provider-1",
       "outcome:member-1:failure",
     ]);

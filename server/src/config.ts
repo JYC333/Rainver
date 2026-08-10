@@ -43,6 +43,11 @@ export interface ServerConfig {
   cliToolsRoot: string;
   /** Immutable image used for one-shot Docker CLI execution. */
   cliSandboxImage: string;
+  /** Dedicated scoped Sandbox Runner endpoint. File-capable CLIs fail closed when unavailable. */
+  sandboxRunnerHost: string;
+  sandboxRunnerPort: number;
+  /** Compose-network hostname advertised to isolated Runner namespaces. */
+  sandboxRunnerServerHost: string;
   /** Root for registered workspace directories. */
   workspaceRoot: string;
   /** Root for short-lived run sandboxes (worktrees, ephemeral working dirs). */
@@ -71,9 +76,9 @@ export interface ServerConfig {
   dailyReportSchedulerIntervalSeconds: number;
   automationSchedulerEnabled: boolean;
   automationSchedulerIntervalSeconds: number;
-  memoryAccessLogRetentionEnabled: boolean;
-  memoryAccessLogRetentionDays: number;
-  memoryAccessLogPruneIntervalSeconds: number;
+  contentAccessLogRetentionEnabled: boolean;
+  contentAccessLogRetentionDays: number;
+  contentAccessLogPruneIntervalSeconds: number;
   memoryMaintenanceSchedulerEnabled: boolean;
   memoryMaintenanceSchedulerIntervalSeconds: number;
   memoryMaintenanceSchedulerBatchLimit: number;
@@ -140,6 +145,9 @@ const KNOWN_ENV_KEYS = new Set([
   "AGENT_SPACE_HOME",
   "RUNTIME_TOOLS_ROOT",
   "SERVER_CLI_SANDBOX_IMAGE",
+  "SANDBOX_RUNNER_HOST",
+  "SANDBOX_RUNNER_PORT",
+  "SANDBOX_RUNNER_SERVER_HOST",
   "WORKSPACE_ROOT",
   "SANDBOX_ROOT",
   "ARTIFACT_STORAGE_ROOT",
@@ -157,9 +165,9 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_DAILY_REPORT_SCHEDULER_INTERVAL_SECONDS",
   "SERVER_AUTOMATION_SCHEDULER_ENABLED",
   "SERVER_AUTOMATION_SCHEDULER_INTERVAL_SECONDS",
-  "SERVER_MEMORY_ACCESS_LOG_RETENTION_ENABLED",
-  "SERVER_MEMORY_ACCESS_LOG_RETENTION_DAYS",
-  "SERVER_MEMORY_ACCESS_LOG_PRUNE_INTERVAL_SECONDS",
+  "SERVER_CONTENT_ACCESS_LOG_RETENTION_ENABLED",
+  "SERVER_CONTENT_ACCESS_LOG_RETENTION_DAYS",
+  "SERVER_CONTENT_ACCESS_LOG_PRUNE_INTERVAL_SECONDS",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_ENABLED",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_INTERVAL_SECONDS",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_BATCH_LIMIT",
@@ -424,6 +432,21 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
       "invalid_sandbox_image",
     );
   }
+  const sandboxRunnerHost = env.SANDBOX_RUNNER_HOST?.trim() || "sandbox-runner";
+  if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerHost)) {
+    throw new ConfigError("SANDBOX_RUNNER_HOST must be a hostname", "invalid_sandbox_runner_host");
+  }
+  const sandboxRunnerPort = parseBoundedInt(
+    env.SANDBOX_RUNNER_PORT,
+    8020,
+    "SANDBOX_RUNNER_PORT",
+    1,
+    65_535,
+  );
+  const sandboxRunnerServerHost = env.SANDBOX_RUNNER_SERVER_HOST?.trim() || "server";
+  if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerServerHost)) {
+    throw new ConfigError("SANDBOX_RUNNER_SERVER_HOST must be a hostname", "invalid_sandbox_runner_server_host");
+  }
   const workspaceRoot = resolve(
     env.WORKSPACE_ROOT?.trim() || resolve(agentSpaceHome, "workspaces"),
   );
@@ -476,21 +499,21 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     30,
     86_400,
   );
-  const memoryAccessLogRetentionEnabled = parseBool(
-    env.SERVER_MEMORY_ACCESS_LOG_RETENTION_ENABLED,
+  const contentAccessLogRetentionEnabled = parseBool(
+    env.SERVER_CONTENT_ACCESS_LOG_RETENTION_ENABLED,
     true,
   );
-  const memoryAccessLogRetentionDays = parseBoundedInt(
-    env.SERVER_MEMORY_ACCESS_LOG_RETENTION_DAYS,
+  const contentAccessLogRetentionDays = parseBoundedInt(
+    env.SERVER_CONTENT_ACCESS_LOG_RETENTION_DAYS,
     90,
-    "SERVER_MEMORY_ACCESS_LOG_RETENTION_DAYS",
+    "SERVER_CONTENT_ACCESS_LOG_RETENTION_DAYS",
     1,
     3650,
   );
-  const memoryAccessLogPruneIntervalSeconds = parseBoundedInt(
-    env.SERVER_MEMORY_ACCESS_LOG_PRUNE_INTERVAL_SECONDS,
+  const contentAccessLogPruneIntervalSeconds = parseBoundedInt(
+    env.SERVER_CONTENT_ACCESS_LOG_PRUNE_INTERVAL_SECONDS,
     3600,
-    "SERVER_MEMORY_ACCESS_LOG_PRUNE_INTERVAL_SECONDS",
+    "SERVER_CONTENT_ACCESS_LOG_PRUNE_INTERVAL_SECONDS",
     300,
     86_400,
   );
@@ -638,6 +661,9 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     agentSpaceHome,
     cliToolsRoot,
     cliSandboxImage,
+    sandboxRunnerHost,
+    sandboxRunnerPort,
+    sandboxRunnerServerHost,
     workspaceRoot,
     sandboxRoot,
     artifactStorageRoot,
@@ -654,9 +680,9 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     dailyReportSchedulerIntervalSeconds,
     automationSchedulerEnabled,
     automationSchedulerIntervalSeconds,
-    memoryAccessLogRetentionEnabled,
-    memoryAccessLogRetentionDays,
-    memoryAccessLogPruneIntervalSeconds,
+    contentAccessLogRetentionEnabled,
+    contentAccessLogRetentionDays,
+    contentAccessLogPruneIntervalSeconds,
     memoryMaintenanceSchedulerEnabled,
     memoryMaintenanceSchedulerIntervalSeconds,
     memoryMaintenanceSchedulerBatchLimit,

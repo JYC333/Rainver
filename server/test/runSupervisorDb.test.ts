@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { PgVerificationRepository } from "../src/modules/runs/verification/repository";
 import { PgRunSupervisor } from "../src/modules/runs/supervisor";
@@ -33,6 +33,7 @@ beforeAll(async () => {
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(
       `[run-supervisor-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`,
     );

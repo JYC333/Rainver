@@ -1,6 +1,8 @@
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import { randomUUID } from "node:crypto";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
+import type { ExtractionProfileMaterializationInput } from "../extractionProfiles/registry";
 import { canonicalAcademicIdentity } from "./identity";
 
 interface SourceItemForMaterialization {
@@ -9,6 +11,7 @@ interface SourceItemForMaterialization {
   title: string;
   metadata_json: unknown;
   reference_object_id: string | null;
+  reference_project_id: string | null;
   created_by_user_id: string | null;
   owner_user_id: string | null;
   visibility: string;
@@ -110,22 +113,24 @@ function academicMetadataFromItem(item: SourceItemForMaterialization): AcademicI
  */
 export async function materializeAcademicPaperFromSourceItem(
   db: Queryable,
-  input: { spaceId: string; sourceItemId: string },
+  input: ExtractionProfileMaterializationInput,
 ): Promise<MaterializeAcademicPaperResult | null> {
   return withQueryableTransaction(db, (tx) => materializeAcademicPaperInTransaction(tx, input));
 }
 
 async function materializeAcademicPaperInTransaction(
   db: Queryable,
-  input: { spaceId: string; sourceItemId: string },
+  input: ExtractionProfileMaterializationInput,
 ): Promise<MaterializeAcademicPaperResult | null> {
   const itemResult = await db.query<SourceItemForMaterialization>(
     `SELECT si.id, si.space_id, si.title, si.metadata_json,
-            sir.reference_object_id, si.created_by_user_id,
+            sir.reference_object_id, reference.primary_project_id AS reference_project_id, si.created_by_user_id,
             si.owner_user_id, si.visibility, si.access_level
        FROM source_items si
        LEFT JOIN source_item_references sir
          ON sir.source_item_id = si.id AND sir.space_id = si.space_id
+       LEFT JOIN space_objects reference
+         ON reference.id = sir.reference_object_id AND reference.space_id = sir.space_id
       WHERE si.space_id = $1 AND si.id = $2 AND si.deleted_at IS NULL
       LIMIT 1
       FOR UPDATE OF si`,
@@ -133,7 +138,12 @@ async function materializeAcademicPaperInTransaction(
   );
   const item = itemResult.rows[0];
   if (!item) return null;
-  if (item.reference_object_id) return { objectId: item.reference_object_id, created: false };
+  if (item.reference_object_id) {
+    if (item.reference_project_id && item.reference_project_id !== input.projectId) {
+      throw new Error("Academic paper is already materialized for a different Project");
+    }
+    return { objectId: item.reference_object_id, created: false };
+  }
 
   const academic = academicMetadataFromItem(item);
   if (!academic) return null;
@@ -155,8 +165,8 @@ async function materializeAcademicPaperInTransaction(
     );
   }
 
-  const existing = await db.query<{ object_id: string }>(
-    `SELECT ap.object_id
+  const existing = await db.query<{ object_id: string; primary_project_id: string | null }>(
+    `SELECT ap.object_id, so.primary_project_id
        FROM academic_papers ap
        JOIN space_objects so ON so.id = ap.object_id AND so.space_id = ap.space_id
       WHERE ap.space_id = $1
@@ -170,6 +180,10 @@ async function materializeAcademicPaperInTransaction(
   );
   const now = new Date().toISOString();
   const existingObjectId = existing.rows[0]?.object_id;
+  const existingProjectId = existing.rows[0]?.primary_project_id ?? null;
+  if (existingObjectId && existingProjectId && existingProjectId !== input.projectId) {
+    throw new Error("Academic paper is already materialized for a different Project");
+  }
   if (existingObjectId) {
     await db.query(
       `UPDATE academic_papers
@@ -188,23 +202,27 @@ async function materializeAcademicPaperInTransaction(
   }
 
   const objectId = randomUUID();
-  const title = (item.title?.trim() || academic.arxivId || academic.openalexId || academic.semanticScholarId || academic.doi || "Academic paper").slice(0, 1024);
-  await db.query(
-    `INSERT INTO space_objects (
-       id, space_id, object_type, title, summary, status, visibility, access_level,
-       owner_user_id, created_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, 'source', $3, NULL, 'processed', $4, $5, $6, $7, $8, $8)`,
-    [
-      objectId,
-      input.spaceId,
-      title,
-      item.visibility,
-      item.access_level,
-      item.owner_user_id,
-      item.created_by_user_id,
-      now,
-    ],
-  );
+  // No slice here: the writer projects the label to the root column's width in
+  // one place. Slicing at 1024 was past `space_objects.title`'s 512, so a long
+  // paper title failed the insert rather than being shortened.
+  const title = item.title?.trim() || academic.arxivId || academic.openalexId || academic.semanticScholarId || academic.doi || "Academic paper";
+  const object = buildSpaceObjectInsert({
+    id: objectId,
+    spaceId: input.spaceId,
+    objectType: "source",
+    title,
+    visibility: item.visibility,
+    accessLevel: item.access_level,
+    ownerUserId: item.owner_user_id,
+    primaryProjectId: input.projectId,
+    // Background ingestion has no acting user or run, but the SourceItem it
+    // derives from has an owner, and "this exists because that user's source
+    // produced it" is accurate attribution. Without this the object would be
+    // untraceable to anyone (B12H).
+    createdByUserId: item.created_by_user_id ?? item.owner_user_id,
+    createdAt: now,
+  });
+  await db.query(object.sql, object.params);
   if (item.visibility === "selected_users") {
     await inheritContentAccessGrants(db, {
       spaceId: input.spaceId,
@@ -216,8 +234,8 @@ async function materializeAcademicPaperInTransaction(
     });
   }
   await db.query(
-    `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
-     VALUES ($1, $2, 'paper', $3, $4::jsonb)`,
+    `INSERT INTO sources (object_id, space_id, status, source_type, uri, metadata_json)
+     VALUES ($1, $2, 'processed', 'paper', $3, $4::jsonb)`,
     [
       objectId,
       input.spaceId,

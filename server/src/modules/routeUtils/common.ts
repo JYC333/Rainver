@@ -158,6 +158,21 @@ export function boolQuery(value: string | undefined, fallback = false): boolean 
   throw new HttpError(422, `Invalid boolean value ${JSON.stringify(value)}`);
 }
 
+/**
+ * A comma-separated query-string list (`?collection_ids=a,b,c`), de-duplicated,
+ * or null when the parameter is absent or carries nothing.
+ *
+ * Bounded on purpose: these values go into an `= ANY(...)` predicate, and an
+ * unbounded list is a cheap way to make the database do unbounded work.
+ */
+export function csvQuery(value: string | undefined, max = 200): string[] | null {
+  if (value === undefined) return null;
+  const items = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+  if (items.length === 0) return null;
+  if (items.length > max) throw new HttpError(422, `at most ${max} comma-separated values are allowed`);
+  return items;
+}
+
 export function optionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
@@ -177,6 +192,16 @@ export function numberValue(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+// A confidence is a probability: any module that records one validates it the
+// same way, so this lives beside the other shared parsers rather than inside
+// whichever module happened to need it first.
+export function confidence(value: unknown): number | null {
+  const parsed = numberValue(value);
+  if (parsed === null) return null;
+  if (parsed < 0 || parsed > 1) throw new HttpError(422, "confidence must be between 0 and 1");
+  return parsed;
 }
 
 export function optionalObject(value: unknown): Record<string, unknown> | null {

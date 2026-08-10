@@ -52,7 +52,7 @@ export default function KnowledgeRelationsPanel({
               <div key={r.id} className="py-3 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant="secondary">{r.relation_type}</Badge>
+                    <Badge variant="secondary">{r.link_type}</Badge>
                     <Badge variant="outline">{r.status}</Badge>
                     <Badge variant="muted">current is {currentSide}</Badge>
                   </div>

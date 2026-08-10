@@ -91,6 +91,19 @@ G6 imports are confined to `apps/web/src/components/graph/core/createGraphRender
 and tests that mock or assert that boundary. `@antv/g-webgl` is loaded lazily
 only when the selected renderer is `webgl`.
 
+The built-in Graph route is lazy-loaded by the module registry. The Project
+Inquiry Map also imports `GraphView` only when its **Relations** tab mounts, so
+opening the Project, Focus view, Map view, or Map's **Structure** tab does not
+download the graph renderer.
+
+GraphView, G6, and WebGL build chunks use stable graph-specific prefixes. They
+are excluded from the PWA application-shell precache and use a separate
+`CacheFirst` runtime cache after their first successful online load. Therefore
+a device that has never opened a graph needs a connection for that first graph
+visit; subsequent visits can reuse the cached renderer offline. This keeps the
+large optional renderer out of every install without making it reload on every
+graph visit.
+
 No domain module, API client, or server file may import G6 or pass G6-specific
 option objects as part of its public contract. Renderer replacement is therefore
 scoped to `apps/web/src/components/graph/` internals:
@@ -146,7 +159,7 @@ direct graph interaction writes.
 
 Domain surfaces consume Graph View by requesting a `GraphProjection` from the
 core graph API or by linking into the built-in `/graph` page with the relevant
-query parameters. Project Profiles use this path for focused graph lenses such as
+query parameters. Extraction profiles use this path for focused graph lenses such as
 `/graph?project_id=...&lens_id=academic_citation_v1`.
 
 Domain modules may choose node/edge kinds and theme hints through the projection
@@ -195,6 +208,9 @@ Use the smallest layer that proves the change:
 - `GraphView`: component tests with a mocked G6 renderer in jsdom;
 - renderer import boundary: grep-style web test that only graph internals import
   G6 packages;
+- bundle boundary: source-level web test that Inquiry uses a dynamic graph
+  import and the PWA configuration excludes stable graph chunks from its shell
+  precache while registering their runtime cache;
 - backend projection and view state: real-DB server tests, because visibility,
   CTE traversal, aggregation, truncation, and upsert behavior depend on SQL;
 - domain graph producers: route tests that parse responses with

@@ -51,9 +51,9 @@ Each step adds trust validation and human review opportunity.
 | `status` | string | `active` \| `archived` \| `deleted` |
 | `current_focus` | text (nullable) | Generic foreground/display focus for non-Inquiry work; Auto Research does not read or write it as a Question authority |
 | `settings_json` | JSON (nullable) | Flexible per-project configuration |
-| `template_key` | string | Creation-time Project Template; first-class, not stored in settings JSON; provenance only — never gates Area/capability visibility |
-| `primary_mode` | string | Current presentation/progress focus; changing it does not move domain data |
+| `primary_mode` | string | How this Project advances: `research`, `delivery`, `operations`, or `learning`. Presentation/progress focus only; changing it does not move domain data |
 | `active_brief_version_id` | FK → project_brief_versions | Current immutable Brief version, constrained to the same Project/Space |
+| `active_instruction_version_id` | FK → project_instruction_versions | Current approved Project Instruction, constrained to the same Project/Space |
 | `created_at` / `updated_at` | datetime | Standard timestamps |
 | `archived_at` | datetime (nullable) | Set when archived |
 | `deleted_at` | datetime (nullable) | Soft-delete marker |
@@ -148,58 +148,127 @@ They must be sanitized before write; source refs may identify public pointers
 but must not embed raw private memory, memo excerpts, document bodies, or other
 concrete project content.
 
-### Project Kernel and Templates
+### Project Kernel
 
-Every Project is created with an immutable `project_brief_versions` v1 row,
-even when all optional Brief fields are empty. Later edits append another
-version and move `projects.active_brief_version_id`; they never overwrite a
-Brief. `project_mode_transitions` is likewise append-only. A Primary Mode
-transition changes Project-shell presentation only — every installed Project
-Area remains reachable independent of `primary_mode`, and the transition does
-not convert, copy, or reclassify domain rows.
+Every Project is created with an immutable, published `project_brief_versions`
+v1 row, even when all optional Brief fields are empty. Later edits append a
+draft; a writer submits it for review and only a Project owner or Space
+owner/admin may publish it and move `projects.active_brief_version_id`.
+Each Brief version freezes the Project status, current focus, confirmed
+decisions, primary mode, workspace identity/boundary, source references, and
+authorship alongside goal/scope/success/constraints/assumptions. Goal-only UI
+edits carry forward the user-owned aggregate fields; the server snapshots the
+current Project-owned status/focus/mode in the same transaction.
+`project_instruction_versions` follows the same lifecycle; only the active
+published Instruction is runtime-authoritative. Brief writer authority and
+Instruction/publish owner-level authority are rechecked and locked inside the
+mutating transaction, so concurrent member revocation wins deterministically.
+`project_mode_transitions` is likewise append-only.
 
-Project Templates are code-owned creation defaults selected when a Project is
-created. A Template bundles an initial Primary Mode and starter Workflow
-Template keys. It is not a permanent Project type or a post-create feature
-gate — Template origin is provenance only and must never gate which Areas or
-capabilities a Project shows. The selection is stored in the first-class
-`projects.template_key` column. The canonical module and routes are
-`server/src/modules/projectTemplates/`, `/project-templates`, and
-`/projects/{projectId}/template`; there are no Preset compatibility aliases.
+`primary_mode` is the system's one classification axis, and it classifies by
+**how work advances**, not by subject matter: `research`, `delivery`,
+`operations`, `learning`. `inquiry` and `decision` were absorbed into
+`research` — asking is how research starts and deciding is where it ends, and
+a Project that advances by delivery makes decisions too, which is why neither
+was ever a way of advancing work. Both remain first-class entities with their
+own Areas and their own `entity_summaries` rows, and Inquiry's pending
+Candidates still reach the shell through its attention adapter.
 
-The built-in Templates are `blank` and `academic_research`. Academic Research reuses normal Project
-Sources plus the arXiv, OpenAlex, and Semantic Scholar providers and their monitors, `academic_paper_v1` extraction profile
-key, and `academic_citation_v1` graph lens id. Its advertised sections are
-`source_monitoring`, `corpus`, and `project_graph`; paper/citation objects are
-represented through the core relation/object model and surfaced through the
-project corpus and graph lens, not through a second project hierarchy. Academic
-projects render a compact Academic Research workflow/status surface with
-adaptive query discovery, provider monitors, and an entry to the dedicated
-Research Area. Paper triage, reading state, living documents, and report
-snapshots no longer share the Project overview surface.
+A Primary Mode transition changes Project-shell presentation only — every
+installed Project Area remains reachable independent of `primary_mode`, and
+the transition does not convert, copy, or reclassify domain rows. What it does
+change is which entities hold a placeholder row on the Overview, which is a
+static per-Mode declaration in `overviewRegistry`, not per-Project state:
+switching Mode takes effect immediately and there is nothing to migrate.
 
-A project source binding whose `extraction_policy_json.profile_key` is
-`academic_paper_v1` materializes matching academic-provider source items into a
-paper object (`space_objects` + `sources` + `academic_papers`, deduped per
-space by DOI, arXiv, OpenAlex, and Semantic Scholar ids) before the normal Project Corpus sync runs — see
-`materializeAcademicPaperFromSourceItem`
-(`server/src/modules/academic/paperMaterializer.ts`). Once a
-`source_item_references` row links the SourceItem to the Reference object, the
-object is picked up by the existing corpus/graph sync with no Profile-specific
-wiring. The materializer performs its dedupe read and all Reference writes in
-one transaction and serializes overlapping DOI/provider identities with
-transaction-scoped advisory locks. Those provider identifiers are stored in
-trimmed lowercase canonical form; the schema rejects non-canonical direct
-writes, including empty values and surrounding whitespace, so equivalent
-variants cannot bypass the identity lock or uniqueness checks. Project routing
-isolates this best-effort materialization behind a savepoint, so a rejected
-paper cannot leave the surrounding Source transaction unusable.
+### Creation presets nothing but the Mode
+
+Creating a Project writes a name, an optional Brief, and `primary_mode`. It
+binds no Sources, creates no Workflow, and installs no starter content.
+
+There was a **Project Template** here, and its removal is worth recording
+because the concept was rescued twice before it was retired. It began as a
+project type carrying `sections` and `starter_workflow_template_keys`; R1
+deleted those workflow templates for changing no concrete behaviour, leaving a
+descriptor nothing consumed. It was then re-purposed as a source-binding
+bundle, justified as *the only thing that writes a `profile_key` into a
+binding's `extraction_policy_json`* — true at the time, and falsified shortly
+afterwards when the Project Sources surface gained its own extraction-profile
+selector for new and existing bindings, with a registry default behind it.
+Nobody noticed the justification had expired. A later pass stripped its
+Primary Mode and `sections`, leaving a pack that saved roughly three clicks in
+the Sources Area and only when the Space already held matching connections.
+
+Every job it ever held has another home: classification is `primary_mode`;
+starting shape is `MODE_PLACEHOLDER_ENTITIES` plus each Area's empty state;
+extraction profiles are chosen per binding in Project Sources; Workflows are
+started explicitly. Nothing should reintroduce a creation-time preset without
+first naming which of these it is not.
+
+Academic research is a set of Sources and an extraction profile, not a project
+type. Binding active arXiv and OpenAlex channels with the `academic_paper_v1`
+profile is done from Project Sources like any other binding; paper/citation
+objects are represented through the core relation/object model and surfaced
+through the project corpus and graph lens, not through a second project
+hierarchy. The generic standing/focus Project Research surface belongs to the
+Research Area and is reached the same way by every Project. Material triage,
+reading state, Project Notes, and report snapshots do not share the Project
+Overview surface either.
+
+Screening criteria are generic with one declared extension point. `include_keywords`,
+`exclude_keywords`, the date range and `required_evidence_fields` apply to any
+domain. `source_restrictions` is where material may come from — journals,
+outlets and sites are one concept, so it replaced the academic-only `venues`.
+Domain-specific axes live in `domain_criteria_json`, whose **legal keys come from
+the extraction profiles the Project's active source bindings name**: writing a
+key no bound profile declares is refused with the legal set named, rather than
+accepted and ignored. `academic_paper_v1` declares `methods`, which is what that
+column used to be; `generic_document_v1` declares none, so a Project screening
+only web material has no domain axis to screen on. This is the middle path
+between a fixed paper-shaped column every domain carries and an unconstrained
+JSON bag nobody can validate.
+
+The Project Sources surface reads and writes these criteria. It renders generic
+fields for every Project and renders each domain-specific field only when the
+API's `available_domain_criteria` reports that an active bound extraction
+profile declares it. Saving criteria updates the `project_criteria` snapshot on
+existing non-archived project post-processing rules; Auto Research rule creation
+and reuse load the same current criteria. The structured screening instruction
+therefore applies keywords, exclusions, domain axes, date bounds, source
+restrictions, and required evidence fields to every item decision instead of
+leaving the criteria as storage-only metadata.
+
+Project source bindings may select an extraction profile through
+`extraction_policy_json.profile_key`. The registry owns dispatch while each
+domain registers its materializer: `academic_paper_v1` creates
+`space_objects` + `sources` + `academic_papers`, and
+`generic_document_v1` creates a generic `source` object keyed by the
+SourceItem's canonical URI. Initial ingest only creates Project item links and
+SourceItem corpus rows. Materialization runs later, when the Project corpus row
+reaches `relevant` or `included` through either automated screening or an
+explicit user triage action.
+
+Both profiles write the resulting Reference through
+`source_item_references`; the existing corpus promotion then replaces the
+SourceItem target with `object_id` while preserving triage/read state and
+SourceItem provenance. Newly materialized objects carry
+`space_objects.primary_project_id`, so the shared content-access predicate
+requires Project membership, and they are graphable through the ordinary
+`source` ontology registration without a lens-specific branch. Materializer
+failures are isolated behind a savepoint so one rejected item does not abort the
+surrounding source/corpus transaction.
+
+Migration choice for the ingest-to-triage behavior change: existing Reference
+objects and already-promoted corpus rows are left unchanged. There is no
+destructive rewrite or bulk reassignment of their Project scope. Future
+materialization, including reruns for SourceItem rows that have not yet acquired
+a Reference, follows the post-triage rule.
 
 The `project_research` module (`/api/v1/projects/{id}/research/*`, see below)
 adds a project-owned research workflow foundation on top of Project Corpus:
 research profile state for the general workflow API, workflow/stage/checkpoint
 state, Artifact-per-stage links, project screening criteria, and a
-literature-matrix read model. The general workflow-start endpoint may require
+evidence-matrix read model. The general workflow-start endpoint may require
 an approved profile, while the Auto Research initial-intake endpoint collects
 its own research question and execution selection in one explicit setup action.
 Question refinement persists a versioned bounded research context and returns
@@ -241,29 +310,61 @@ provenance.
 
 ### Research Area
 
-`/projects/:projectId/research` is the project-owned Area for three living
-research documents plus immutable report snapshots:
+`/projects/:projectId/research` is the project-owned, three-tab Area for the
+Reading List, Checklist, and immutable Report snapshots. Project Notes are a
+separate surface at `/projects/:projectId/notes`; the reserved research roles
+described below supply baselines to research services without creating a
+duplicate Notebook tab:
 
-- `research_notebooks` owns one notebook per project. Its fixed
-  `research_notebook_sections` rows (`understanding`, `questions`, `ideas`,
-  `experiments`) store canonical Tiptap JSON, server-derived normalized text and
-  hash, and an optimistic version. Reader resolves a section id as document type
-  `research_notebook`, so ordinary annotations and hash-mismatch behavior apply.
+- Project research notes are ordinary Notes, not a table of their own. Each is a `notes` row
+  under the project's auto-created Knowledge Notes collection
+  (`note_collections.system_role='project'`) carrying `primary_project_id`, so a
+  project may have any number of them, or none. They store canonical Tiptap
+  JSON, server-derived normalized text and hash, and an optimistic version.
+
+  Four of them carry a **system-reserved role** in `notes.project_role`
+  (`understanding`, `questions`, `ideas`, `experiments`), scoped to
+  `notes.role_project_id`, with a partial unique index enforcing one note per
+  role per project. The role is what identifies the research baseline —
+  **never the note's title**, which is a creation-time default the user is free
+  to change. Membership belongs to the registry in
+  `modules/knowledge/noteProjectRoles.ts`; the column carries only a format
+  constraint (B12F). `server/test/noteProjectRoleGuard.test.ts` fails if any
+  code resolves a project note by title again.
+
+  A role with no note is a reported state, not an empty one:
+  `resolveNotebookNote` returns `{ present: false, role, reason }`, and the
+  focused monitoring comparison stops its stage and records
+  `comparison_missing_baseline_role`; a standing batch records
+  `blocked_baseline` and the missing role. Neither compares new material
+  against an absent understanding.
 - the Reading List is a Project Corpus read model joined to
-  `research_paper_cards`. A deep-analysis run resolves
-  `project_research.paper_card`, creates the initial WHY/HOW/WHAT card directly,
+  `research_evidence_cards`. A deep-analysis run resolves
+  `project_research.evidence_card`, creates the initial WHY/HOW/WHAT card directly,
   and records run/prompt provenance. Once a person edits a card, AI
   regeneration never overwrites it.
 - `research_checklist_items` is the ordered progress document. People use CRUD
   directly; synthesis ideas/limitations and integrity alerts add
   `origin='agent'` items directly, dismissable like any other item.
 
+Reading-list cards carry a "jot a note" action (`POST
+/api/v1/knowledge/notes/jot`) that creates or appends to a note and records the
+`note_link` in one call. It is offered only on rows with an `object_id`: a
+corpus row targets exactly one of `object_id` / `source_item_id` /
+`evidence_id`, and only the first is a `space_objects` row a link can point at.
+Papers reach it because `academic/paperMaterializer` materializes them as
+Source objects.
+
 AI writes to the notebook are direct co-edits, not proposals (revised D2).
 Every write path — user save, seeding, monitoring, ad-hoc analysis, rollback —
-goes through `notebookWriteService.writeNotebookSection`, which bumps the
-optimistic version and records a full-content row in
-`research_notebook_section_revisions` (source, block-op diff, user/run
-attribution). AI edits are expressed as block-level ops (`append` / `insert` /
+goes through the shared note writer (`knowledge/noteWriter.ts`), which bumps
+the optimistic version, records a full-content row in `note_revisions`
+(source, block-op diff, user/run attribution), and refreshes the retrieval
+projection. The last of those used to be the caller's job, and only the
+user-facing route did it: a "current understanding" an agent had maintained for
+weeks stayed stale in search until a human saved it by hand. Starter notes are
+created through the same writer as any other note rather than by a second
+implementation of the same insert. AI edits are expressed as block-level ops (`append` / `insert` /
 `replace` / `delete` against top-level Tiptap blocks), so untouched blocks are
 carried over byte-identical and user formatting survives. The UI highlights the
 latest AI edit with its diff and offers one-click rollback; restoring any
@@ -271,10 +372,12 @@ revision writes a new version, so history is never destroyed. An ad-hoc run
 whose base version was overtaken degrades to a clearly labeled append instead
 of merging blindly.
 
-The first completed synthesis seeds only empty version-1 notebook sections.
-Later report snapshots never overwrite evolved sections; legacy projects with
+The first completed synthesis seeds only empty version-1 role-carrying notes.
+Later report snapshots never overwrite evolved notes; legacy projects with
 reports but no notebook are seeded from the latest non-rejected report on first
-Area initialization. The Ask-AI entry is separately budgeted: at most
+Area initialization. Area initialization also adopts pre-role starter notes by
+title once — the only legitimate title match left, because it reconstructs the
+binding the old resolver created rather than being a binding of its own. The Ask-AI entry is separately budgeted: at most
 `RESEARCH_ADHOC_DAILY_RUN_LIMIT` `research.adhoc_analyze` runs per project per
 UTC day, enforced at queue time. Its output contract is a `notebook_update` ops
 document applied by the research reconciler on run completion. `POST
@@ -284,12 +387,14 @@ normal domain-owned `idea_review` checkpoint: the execution-per-pass graph may
 finish, but the operation and report remain `waiting_review` /
 `awaiting_review` until a project writer approves or rejects the checkpoint.
 
-Notebook sections also persist referenced source-item ids. Applied AI updates
-merge their `refs` into that durable set, so integrity monitoring audits the
-papers the living understanding actually depends on instead of inferring
-citations from prose.
+Notes also persist referenced source-item ids, on `note_revisions.refs_json`.
+Applied AI updates merge their `refs` into that set — each write starts from
+the latest revision's list — so integrity monitoring audits the material the
+living understanding actually depends on instead of inferring citations from
+prose. `notes.refs_json` used to hold a second copy of the same list, kept in
+step by hand and read back by nothing; it was removed (N8), leaving one owner.
 
-### Automatic academic research lifecycle
+### Automatic Project Research lifecycle
 
 Initial intake starts with a stateless, managed-Provider question-refinement
 interaction. The client may carry at most three rounds of clarification; the
@@ -399,13 +504,19 @@ draft. Saving a draft persists the context/strategy selection,
 history scope, monitoring field, and execution selection without creating a
 backfill plan or execution operation. Materialized Source Monitors are derived
 from the strategy rather than accepted as client-selected channel ids. Every
-Inquiry-scoped draft writes the FK-backed `primary_thread_id`; that column is
-the sole Workflow ownership authority. A partial unique index permits at most
-one non-archived Workflow per Project Inquiry. The server reuses that row under
-the Project mutation lock, and the Project start route resumes only its editable
-draft or sends started research to the existing operation. `state_json` keeps
-the versioned wording snapshot used by execution but is never an ownership
-fallback.
+Inquiry-scoped draft writes one structural `about` edge from the
+`research_workflow` root object to the pinned `inquiry_thread`. That active edge
+is the sole Workflow-to-Thread authority; `primary_thread_id` survives only as
+a derived API field. Partial unique indexes over the edge's
+`primary_inquiry_thread` role enforce one active pin on each side, including
+under concurrent writers. The Workflow root carries Project scope, visibility,
+provenance, title, and timestamps, while `project_research_workflows` carries
+only domain status and execution state. Reads require the Workflow root and
+filter the edge unless both endpoints are readable. The server reuses that
+aggregate under the Project mutation lock, and the Project start route resumes
+only its editable draft or sends started research to the existing operation.
+`state_json` keeps the versioned wording snapshot used by execution but is
+never an ownership fallback.
 Before discovery, the setup UI asks which providers to evaluate: arXiv and OpenAlex
 start selected, while anonymous Semantic Scholar is opt-in because its traffic
 shares a provider-wide rate-limit pool. The project UI shows a compact intake summary and opens the full setup
@@ -448,7 +559,7 @@ authorizes the history import for this Project Research operation; Auto Research
 does not create a second `source_backfill_start` proposal. Generic Source and
 agent-triggered history plans remain proposal-gated. After the history window
 and post-processing drain, a `screening_gate` must be approved before synthesis.
-The resulting `literature_matrix` includes `relevant`, `included`, and `maybe`
+The resulting `evidence_matrix` includes `relevant`, `included`, and `maybe`
 corpus rows, is refreshed on retries, and is attached explicitly to the managed
 synthesis run as a bounded evidence pack. Its source-connection metadata keeps
 the normal source-consent and provider-egress checks in force. Synthesis is not
@@ -533,22 +644,54 @@ the queue is flushed into one incremental operation after the historical
 operation reaches a terminal review state. This keeps ingestion available while
 preventing concurrent operations from overwriting workflow state.
 
-Incremental runs are created by successful project-bound post-processing or an
+Incremental focused runs are created by successful project-bound post-processing or an
 explicit trigger after monitoring is active. A 48-hour overlap around the
 stored `submittedDate`/`lastUpdatedDate` watermark protects against scan gaps,
 while arXiv id/DOI/source-item dedupe keeps the corpus idempotent. After
 incremental screening is approved, the managed `research.monitor_compare` pass
 resolves `project_research.monitor_compare` and compares every relevant/maybe
-paper with the current `understanding` section. It classifies each paper as
+material item with the current `understanding` section. It classifies each item as
 `supports`, `contradicts`, or `new_direction`, writes the stance and comparison
-detail to the paper card and scan outcome, and completes without producing a
-new formal report. Supporting evidence is recorded silently; contradictions
-and new directions append one labeled, dated block to the `understanding`
-section directly (a rollbackable `ai_monitoring` revision carrying source
-refs). Formal synthesis remains an explicit report-snapshot action.
+detail to the evidence card and scan outcome, and completes without producing
+a new formal report. Formal synthesis remains an explicit report-snapshot
+action.
 
-Every completed live scan has an append-only `research_scan_summaries` outcome
-for each participating research workflow. Reconciliation-backed outcomes store
+Standing comparison is a separate Project-level service and does not require a
+research Workflow or Inquiry Thread. A per-binding
+`standing_comparison_enabled` switch lets `ProjectSourceRoutingService`
+collect only newly landed or genuinely reactivated material; Sources does no
+analysis. Enabling it
+idempotently ensures the four role Notes (`understanding`, `questions`, `ideas`,
+and `experiments`). One pending batch per Project accumulates a 15-minute window, sends
+at most six eligible corpus items per comparison Run, and admits at most 20
+standing comparison Runs per UTC project-day. Project row locking serializes
+collection, dispatch, and budget admission. A missing `understanding` role is
+durably visible as `blocked_baseline`; a writer can repair and requeue blocked
+or failed batches from Standing overview.
+
+Terminal standing Runs write `research_evidence_cards` and a workflow-free
+`research_scan_summaries` row (`workflow_id IS NULL`). A `new_direction` also
+writes an advice card carrying `source.raise_as_question` and an idempotent
+Inquiry Thread input. Background comparison is inert: it never creates a
+Thread or edits a Note. A Project writer may explicitly action the card; that
+command locks the card and creates or returns the idempotent Inquiry Thread in
+the same transaction, then marks the card actioned. Repeated clicks cannot
+create duplicate Threads. Dismiss is a separate terminal user choice.
+
+Every Project overview is the presentation entry point for both research modes;
+Nothing about a Project's creation gates either mode. Its controlled **Standing
+overview** is selected first and
+shows the daily budget, open advice, and recent Project inflow without requiring
+a Workflow or Thread. Advice and inflow rows are filtered through the same
+SourceItem read policy as Project Sources, so Project membership alone never
+reveals a private source owner's title, excerpt, or derived advice. The sibling
+**Focus workbench** contains the existing
+Thread-scoped stage progression and controls. The Research Area remains a
+separate three-tab document surface: Reading List, Checklist, and Reports.
+
+Every completed live scan has an append-only `research_scan_summaries` outcome:
+focused scans are scoped to a participating research Workflow, while standing
+scan windows are scoped directly to the Project. Reconciliation-backed outcomes store
 the scan window, completion time, new-item count, relevant/maybe/excluded
 counts, comparison details, and supports/contradicts/new-direction counts; a
 successful zero-item source scan also writes an explicit zero row.
@@ -792,12 +935,13 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | POST | `/projects/{id}/folders/{folderId}/unregister` | Remove only the registration row; never touches disk |
 | POST | `/projects/{id}/folders/scan` | Scan for unregistered directories eligible to connect |
 | GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads |
-| GET | `/project-templates` | List built-in Project Template descriptors |
-| GET | `/projects/{id}/template` | Read the Project's creation-time Template key |
 | PUT | `/projects/{id}/research/initial-intake` | Save or update the explicit body `workflow_id`; omitting it creates a new draft Workflow |
 | POST | `/projects/{id}/research/initial-intake/start` | Start or idempotently resume the explicit body `workflow_id`; omitting it creates/reuses by its selected Inquiry Thread |
 | GET | `/projects/{id}/research/workflow` | List research workflows for the project |
 | GET | `/projects/{id}/research/scan-summaries` | List immutable monitoring scan outcomes newest-first; an absent date is not synthesized as a zero-result scan |
+| GET | `/projects/{id}/research/standing` | Read the standing switch aggregate, daily budget use, recent inflow, batches, and open advice |
+| POST | `/projects/{id}/research/standing/advice/{adviceId}/action` | Idempotently create the advised Inquiry Thread and mark the card actioned after Project writer authorization |
+| POST | `/projects/{id}/research/standing/advice/{adviceId}/dismiss` | Dismiss standing advice after Project writer authorization |
 | GET | `/projects/{id}/research/question/assessment?thread_id=…` | Restore the Thread's durable assessment session, ordered messages, latest structured framework, and explicit assessment baseline |
 | POST | `/projects/{id}/research/question/refine` | Persist one Thread-scoped user turn, run refinement from server-owned completed history, and return the updated durable session; `establish_assessment_baseline` atomically promotes a successful result to the comparison baseline |
 | GET | `/projects/{id}/research/question/assessment/confirmations?thread_id=…` | List immutable confirmed framework snapshots newest-first |
@@ -820,9 +964,9 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | GET | `/projects/{id}/research/reports` | List immutable structured reports, newest first |
 | GET | `/projects/{id}/research/reports/{reportId}` | Read combined content, Reader projection, safe resolved references, provenance, integrity, and archive descriptors |
 | POST | `/projects/{id}/research/reports/{reportId}/integrity` | Run report integrity and attach its system archive |
-| GET / PUT | `/projects/{id}/research/screening-criteria` | Read / upsert project screening criteria (keywords, methods, date range, venues, required evidence fields) |
-| GET | `/projects/{id}/research/literature-matrix` | Literature matrix read model over included/maybe corpus papers, with academic metadata and evidence/annotation counts |
-| POST | `/projects/{id}/research/literature-matrix/rebuild` | Backfill the project corpus from sources, then return the refreshed matrix |
+| GET / PUT | `/projects/{id}/research/screening-criteria` | Read / upsert generic criteria plus profile-declared domain axes (keywords, date range, source restrictions, required evidence fields) |
+| GET | `/projects/{id}/research/evidence-matrix` | Evidence matrix read model over included/maybe corpus objects, with optional academic metadata and evidence/annotation counts |
+| POST | `/projects/{id}/research/evidence-matrix/rebuild` | Backfill the project corpus from sources, then return the refreshed matrix |
 | GET / POST | `/projects/{id}/experiments/definitions` | List or create Experiment Definitions |
 | GET / PATCH | `/projects/{id}/experiments/definitions/{definitionId}` | Read or update a Definition |
 | GET / POST | `/projects/{id}/experiments/definitions/{definitionId}/versions` | List or create immutable executor-config Versions |
@@ -841,7 +985,7 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 One synthesis run atomically materializes one `project_research_reports` row and
 one hidden `research_report.archive.v1` Artifact. Reports are readable while
 `awaiting_review`; idea approval moves them to `complete`, rejection to
-`rejected`. Literature matrix and integrity archives are explicit report FKs.
+`rejected`. Evidence matrix and integrity archives are explicit report FKs.
 Historical Artifact links and synthesis Artifact list routes do not exist.
 
 ### Inquiry and Experiment capabilities
@@ -967,8 +1111,7 @@ space.
   Creating a Room requires Project writer authority and every human roster
   member must already have Project read access. All later Room operations
   re-check that ACL, so Project revocation immediately removes Room access.
-- Project creation chooses a Project Template and atomically records the initial
-  Brief and Mode Transition. A Template is creation-time provenance/defaults,
+- Project creation atomically records the initial Brief and Mode Transition,
   not a permanent Project type; Primary Mode can later change without moving
   or converting Folder-owned data.
 - Project Detail also shows recent Sources recommendations from project-linked
@@ -976,10 +1119,11 @@ space.
   review and follow-up; accepting durable Knowledge still goes through proposal
   review.
 - **Publishing a public summary** (`review_status` other than `draft`) requires
-  project-**owner**-level authority — the project `owner_user_id` or a space
-  `owner`/`admin`. A project `member` (writer) can stage drafts but cannot
-  self-approve. The draft generator only ever writes `draft`. This gives the
-  project owner a review gate before content becomes space-public.
+  project-**owner**-level authority — the project `owner_user_id`, an active
+  Project member with role `owner`, or a space `owner`/`admin`. A project
+  `member` (writer) can stage drafts but cannot self-approve. The draft
+  generator only ever writes `draft`. This gives Project owners a review gate
+  before content becomes space-public.
 - `settings_json` is free-form per-project configuration and may carry private
   operational detail. `GET /projects` and `GET /projects/{id}` redact it to
   `null` for non-writers; only project writers see it. `name`, `description`,
@@ -1010,14 +1154,45 @@ space.
 ## Project Kernel and Inquiry
 
 The Project Shell reads `/projects/{id}/overview` and composes the active Brief
-Version, Primary Mode projection, per-user Attention, and every registered
-Area's summary through registered domain adapters (`area_summaries` — all
-installed Areas are always reachable and returned, including empty ones, independent
-of `primary_mode` or Template origin). The same response exposes Template
-provenance and a readiness checklist for the Brief, Provider, Agent, Project
-Source, and execution-enabled Folder. Checklist rows are links to their owning
-setup surfaces; required inputs depend on the selected Template, and missing
-inputs do not create a starter Workflow or hide an Area. Workflow creation
+Version, Primary Mode projection, per-user Attention, and one summary row per
+entity through registered domain adapters (`entity_summaries`). A row appears
+when the Project holds data of that kind, or when the current Mode declares it
+a placeholder so a Project can see where that work would go before any of it
+exists. `entity_summaries` is never a list of Areas: every installed Area stays
+reachable through the navigation shell whatever it contains, independent of
+`primary_mode`.
+
+Placeholders are declared per Mode in `MODE_PLACEHOLDER_ENTITIES`, in the order
+the rows should read, and `assertPlaceholderEntitiesProvided` fails at startup
+when a Mode names an entity no summary provides — a placeholder nobody supplies
+is a row that silently never appears, which is the omission the entity registry
+exists to prevent. The order is part of the contract: a placeholder must not
+move as data arrives, or the Overview reorders itself under the reader.
+
+The same response exposes a readiness checklist for the
+Brief, Provider, Agent, Project Source, and execution-enabled Folder. Checklist
+rows are links to their owning setup surfaces. Whether Provider, Agent and
+Source are *required* follows the Primary Mode: a research Project needs all
+three, a delivery Project does not. This used to be read off the Project's
+creation-time Template, which could not answer the question. Missing inputs do
+not create a starter Workflow or hide an Area.
+
+The readiness checklist and Attention are rendered by the persistent
+navigation shell, which is on screen from every Area, and by nothing else. The
+Overview page is a thin aggregation layer over Areas: the Brief goal and
+current focus, the current Mode's next actions, the cross-domain Activity
+timeline, and one summary row per entity linking into the Area that owns it.
+All four blocks remain present when empty so changing Mode does not change the
+page skeleton. The Overview can edit the goal and current focus directly;
+changing the goal appends an immutable Brief draft while preserving the other
+fields, then makes review and publish explicit. Submitted Briefs remain visible
+in that dialog so an authorized Project or Space owner can complete the publish
+handoff. Its Project Instruction dialog uses the same review/publish lifecycle
+and resets after publication so another immutable version can be created.
+It hosts no Area's working surface — Project Research, Project Sources, and
+Project Folders are reached through Research, Sources, and Files & Code, each
+of which owns its own creation and configuration actions rather than
+delegating them back to the Overview. Workflow creation
 remains an explicit user command after its required inputs are ready.
 Mode transitions append history only;
 they do not enable/disable an Area and do not translate domain records. The
@@ -1119,9 +1294,16 @@ Canonical Knowledge still requires the existing promotion Proposal.
 
 ## Project navigation and review
 
-All Project routes share one persistent grouped navigation shell:
-Project; Explore (Inquiry, Research, Sources, Files & Code, Experiments); Decide & Learn
-(Decisions, Learning, Knowledge Review); and Execute (Delivery, Operations).
+All Project routes share one persistent grouped navigation shell, and its
+fourteen entries are the same for every Project:
+Project (Overview, Notes, Rooms); Explore (Inquiry, Research, Sources, Digest,
+Files & Code, Experiments); Decide & Learn (Decisions, Learning, Knowledge
+Review); and Execute (Delivery, Operations). Primary Mode does not add, remove,
+or reorder an entry — navigation position carries muscle
+memory, and a sidebar that grows as a Project is used costs more than the
+clutter it saves. An Area with nothing in it is still reachable and opens on an
+empty state offering the first action.
+
 Changing Primary Mode changes foreground projection, not object ownership or
 visibility.
 

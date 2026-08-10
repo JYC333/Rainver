@@ -169,24 +169,24 @@ describe("knowledge retrieval protocol contracts", () => {
     }).adaptive_return).toBe(true);
   });
 
-  it("parses object_kind filters and metadata without widening object_type", () => {
+  it("parses object_profile filters and metadata without widening object_type", () => {
     const request = RetrievalSearchRequestSchema.parse({
       query: "alpha",
       object_types: ["knowledge_item"],
-      object_kinds: ["decision"],
+      object_profiles: ["decision"],
     });
-    expect(request.object_kinds).toEqual(["decision"]);
+    expect(request.object_profiles).toEqual(["decision"]);
 
     expect(RetrievalSearchRequestSchema.safeParse({
       query: "alpha",
-      object_kinds: ["Decision"],
+      object_profiles: ["Decision"],
     }).success).toBe(false);
 
     const brief = RetrievalBriefRequestSchema.parse({
       query: "alpha",
-      object_kinds: ["decision"],
+      object_profiles: ["decision"],
     });
-    expect(brief.object_kinds).toEqual(["decision"]);
+    expect(brief.object_profiles).toEqual(["decision"]);
   });
 
   it("keeps retrieval explain trace summaries aggregate-only", () => {

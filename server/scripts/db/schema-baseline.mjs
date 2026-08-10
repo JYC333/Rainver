@@ -1,6 +1,5 @@
 import {
   copyFileSync,
-  cpSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -23,7 +22,7 @@ const databaseFeatures = JSON.parse(
   readFileSync(join(serverRoot, "src", "db", "schema", "database-features.json"), "utf8"),
 );
 
-function generateInto(outDir) {
+function generateInto(outDir, { reportOutput = true } = {}) {
   const bin = process.platform === "win32"
     ? join(serverRoot, "node_modules", ".bin", "drizzle-kit.cmd")
     : join(serverRoot, "node_modules", ".bin", "drizzle-kit");
@@ -38,9 +37,13 @@ function generateInto(outDir) {
     encoding: "utf8",
     env: { ...process.env, COREPACK_ENABLE_AUTO_PIN: "0" },
   });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.status !== 0) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    throw new Error(`drizzle-kit generate failed with exit code ${result.status ?? "unknown"}`);
+  }
+  if (reportOutput && result.stdout) process.stdout.write(result.stdout);
+  if (reportOutput && result.stderr) process.stderr.write(result.stderr);
   addGeneratedDatabaseFeatures(join(outDir, generatedSqlName));
 }
 
@@ -67,6 +70,18 @@ function normalizedSql(path) {
   return readFileSync(path, "utf8").replaceAll("\r\n", "\n").trimEnd();
 }
 
+function preserveUnchangedMetadata(previousDir, generatedDir) {
+  if (!existsSync(previousDir)) return;
+  const previousSql = join(previousDir, generatedSqlName);
+  const generatedSql = join(generatedDir, generatedSqlName);
+  const previousSnapshot = join(previousDir, "meta", "0000_snapshot.json");
+  const generatedSnapshot = join(generatedDir, "meta", "0000_snapshot.json");
+  if (normalizedSql(previousSql) === normalizedSql(generatedSql)) {
+    copyFileSync(previousSnapshot, generatedSnapshot);
+    copyFileSync(join(previousDir, "meta", "_journal.json"), join(generatedDir, "meta", "_journal.json"));
+  }
+}
+
 function assertSingleBaseline(root) {
   const sqlFiles = readdirSync(root).filter((name) => name.endsWith(".sql"));
   if (sqlFiles.length !== 1 || sqlFiles[0] !== generatedSqlName) {
@@ -90,33 +105,33 @@ function assertSingleMigration() {
 }
 
 function generate() {
-  const tempRoot = mkdtempSync(join(tmpdir(), "agent-space-schema-baseline-"));
-  const staged = `${drizzleDir}.next`;
+  const previous = `${drizzleDir}.previous`;
+  rmSync(previous, { recursive: true, force: true });
+  if (existsSync(drizzleDir)) renameSync(drizzleDir, previous);
   try {
-    generateInto(tempRoot);
-    assertSingleBaseline(tempRoot);
-    rmSync(staged, { recursive: true, force: true });
-    cpSync(tempRoot, staged, { recursive: true });
-    rmSync(drizzleDir, { recursive: true, force: true });
-    renameSync(staged, drizzleDir);
+    generateInto(drizzleDir);
+    assertSingleBaseline(drizzleDir);
+    preserveUnchangedMetadata(previous, drizzleDir);
     copyFileSync(join(drizzleDir, generatedSqlName), baselineMigration);
     assertSingleMigration();
+    rmSync(previous, { recursive: true, force: true });
     console.log("schema-baseline: rebuilt drizzle/0000_baseline.sql and migrations/0001_baseline.sql");
-  } finally {
-    rmSync(tempRoot, { recursive: true, force: true });
-    rmSync(staged, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(drizzleDir, { recursive: true, force: true });
+    if (existsSync(previous)) renameSync(previous, drizzleDir);
+    throw error;
   }
 }
 
 function check() {
   if (!existsSync(drizzleDir) || !existsSync(baselineMigration)) {
-    throw new Error("Generated schema baseline is missing; run pnpm run schema:generate");
+    throw new Error("Generated schema baseline is missing; run npm run schema:generate");
   }
   assertSingleBaseline(drizzleDir);
   assertSingleMigration();
   const tempRoot = mkdtempSync(join(tmpdir(), "agent-space-schema-check-"));
   try {
-    generateInto(tempRoot);
+    generateInto(tempRoot, { reportOutput: false });
     assertSingleBaseline(tempRoot);
     if (
       normalizedSnapshot(join(tempRoot, "meta", "0000_snapshot.json"))

@@ -5,56 +5,44 @@ import { runs } from "./runs";
 import { artifacts } from "./artifacts";
 import { projects } from "./projects";
 import { spaces } from "./spaces";
+import { spaceObjects } from "./knowledge";
 import { claims } from "./knowledge";
 import { projectOperations } from "./projectOperations";
 import { inquiryThreads } from "./inquiry";
 import { projectResearchContextVersions } from "./projectResearchContext";
+import { sourceItems } from "./sources";
 
-// Project-owned Academic Research workflow foundation. Runs/Artifacts/
+// Project-owned Research workflow foundation. Runs/Artifacts/
 // Proposals keep their existing authority boundaries — these tables only
 // track workflow state, human checkpoints, and which Artifacts belong to
 // which workflow stage.
 
 export const projectResearchWorkflows = pgTable("project_research_workflows", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
+	// Ontology aggregate root. Identity, visibility, Project scope,
+	// provenance, title, and timestamps live on `space_objects`.
+	objectId: varchar("object_id", { length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
-	workflowType: varchar("workflow_type", { length: 32 }).notNull(),
 	currentStage: varchar("current_stage", { length: 64 }),
 	status: varchar({ length: 16 }).default('active').notNull(),
-	mode: varchar({ length: 16 }).default('manual').notNull(),
 	stateJson: jsonb("state_json").default({}).notNull(),
 	startedByUserId: varchar("started_by_user_id", { length: 36 }),
 	startedRunId: varchar("started_run_id", { length: 36 }),
-	// Canonical, indexed, FK-enforced Inquiry ownership. state_json may carry
-	// an execution snapshot of the Thread wording/version, but it is never used
-	// to resolve Workflow ownership. Mirrors experiment_definitions.primary_hypothesis_thread_id
-	// (B12C: the owning domain holds the FK to Inquiry, not the reverse).
-	// Nullable for Workflow types that are not scoped to an Inquiry Thread.
-	primaryThreadId: varchar("primary_thread_id", { length: 36 }),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_project_research_workflows_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_project_research_workflows_project_status").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.status.asc().nullsLast()),
-	index("ix_project_research_workflows_thread_id").using("btree", table.primaryThreadId.asc().nullsLast()),
-	uniqueIndex("uq_project_research_workflows_active_thread").using(
-		"btree",
-		table.spaceId.asc().nullsLast(),
-		table.projectId.asc().nullsLast(),
-		table.primaryThreadId.asc().nullsLast(),
-	).where(sql`${table.primaryThreadId} IS NOT NULL AND ${table.status} <> 'archived'`),
-	unique("uq_project_research_workflows_id_space_id").on(table.id, table.spaceId),
+	unique("uq_project_research_workflows_id_space_id").on(table.objectId, table.spaceId),
+	unique("uq_project_research_workflows_id_project_space").on(table.objectId, table.projectId, table.spaceId),
+	foreignKey({
+		columns: [table.objectId, table.spaceId],
+		foreignColumns: [spaceObjects.id, spaceObjects.spaceId],
+		name: "project_research_workflows_object_id_fkey",
+	}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.projectId, table.spaceId],
 			foreignColumns: [projects.id, projects.spaceId],
 			name: "project_research_workflows_project_id_fkey"
 		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.primaryThreadId, table.projectId, table.spaceId],
-			foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
-			name: "project_research_workflows_thread_fkey"
-		}),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
@@ -75,9 +63,7 @@ export const projectResearchWorkflows = pgTable("project_research_workflows", {
 			foreignColumns: [runs.id, runs.spaceId],
 			name: "project_research_workflows_started_run_id_fkey"
 		}),
-	check("ck_project_research_workflows_workflow_type", sql`(workflow_type)::text = ANY (ARRAY[('literature_review'::character varying)::text, ('empirical_paper'::character varying)::text, ('theory_paper'::character varying)::text, ('paper_review'::character varying)::text, ('revision'::character varying)::text])`),
 	check("ck_project_research_workflows_status", sql`(status)::text = ANY (ARRAY[('not_started'::character varying)::text, ('active'::character varying)::text, ('paused'::character varying)::text, ('completed'::character varying)::text, ('archived'::character varying)::text])`),
-	check("ck_project_research_workflows_mode", sql`(mode)::text = ANY (ARRAY[('manual'::character varying)::text, ('agent_assisted'::character varying)::text, ('autonomous'::character varying)::text])`),
 	check("ck_project_research_workflows_state_object", sql`jsonb_typeof(state_json) = 'object'::text`),
 ]);
 
@@ -103,7 +89,7 @@ export const projectResearchQuestionAssessmentSessions = pgTable("project_resear
 	index("ix_project_research_question_assessment_sessions_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.updatedAt.desc().nullsLast()),
 	foreignKey({
 		columns: [table.threadId, table.projectId, table.spaceId],
-		foreignColumns: [inquiryThreads.id, inquiryThreads.projectId, inquiryThreads.spaceId],
+		foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId],
 		name: "project_research_question_assessment_sessions_thread_fkey"
 	}).onDelete("cascade"),
 	foreignKey({
@@ -163,7 +149,7 @@ export const researchScanSummaries = pgTable("research_scan_summaries", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
-	workflowId: varchar("workflow_id", { length: 36 }).notNull(),
+	workflowId: varchar("workflow_id", { length: 36 }),
 	operationId: varchar("operation_id", { length: 36 }),
 	scanKey: varchar("scan_key", { length: 256 }).notNull(),
 	scanWindowStart: timestamp("scan_window_start", { withTimezone: true, mode: 'string' }),
@@ -180,12 +166,13 @@ export const researchScanSummaries = pgTable("research_scan_summaries", {
 	integrityAlertsJson: jsonb("integrity_alerts_json").default([]).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-	uniqueIndex("uq_research_scan_summaries_workflow_scan").using("btree", table.spaceId.asc().nullsLast(), table.workflowId.asc().nullsLast(), table.scanKey.asc().nullsLast()),
+	uniqueIndex("uq_research_scan_summaries_workflow_scan").using("btree", table.spaceId.asc().nullsLast(), table.workflowId.asc().nullsLast(), table.scanKey.asc().nullsLast()).where(sql`workflow_id IS NOT NULL`),
+	uniqueIndex("uq_research_scan_summaries_standing_scan").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.scanKey.asc().nullsLast()).where(sql`workflow_id IS NULL`),
 	unique("uq_research_scan_summaries_id_space").on(table.id, table.spaceId),
 	index("ix_research_scan_summaries_project_scanned_at").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.scannedAt.desc().nullsLast()),
 	foreignKey({
 		columns: [table.workflowId, table.spaceId],
-		foreignColumns: [projectResearchWorkflows.id, projectResearchWorkflows.spaceId],
+		foreignColumns: [projectResearchWorkflows.objectId, projectResearchWorkflows.spaceId],
 		name: "research_scan_summaries_workflow_id_fkey"
 	}).onDelete("cascade"),
 	foreignKey({
@@ -206,6 +193,60 @@ export const researchScanSummaries = pgTable("research_scan_summaries", {
 	check("ck_research_scan_summaries_nonnegative_counts", sql`new_item_count >= 0 AND relevant_count >= 0 AND maybe_count >= 0 AND excluded_count >= 0 AND supports_count >= 0 AND contradicts_count >= 0 AND new_direction_count >= 0`),
 	check("ck_research_scan_summaries_comparisons_array", sql`jsonb_typeof(comparisons_json) = 'array'`),
 	check("ck_research_scan_summaries_integrity_alerts_array", sql`jsonb_typeof(integrity_alerts_json) = 'array'`),
+]);
+
+/** Durable accumulation window for workflow-free Project standing comparison. */
+export const projectResearchStandingBatches = pgTable("project_research_standing_batches", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	status: varchar({ length: 32 }).default("pending").notNull(),
+	sourceItemIdsJson: jsonb("source_item_ids_json").default([]).notNull(),
+	windowStartedAt: timestamp("window_started_at", { withTimezone: true, mode: "string" }).notNull(),
+	readyAt: timestamp("ready_at", { withTimezone: true, mode: "string" }).notNull(),
+	runId: varchar("run_id", { length: 36 }),
+	missingBaselineRole: varchar("missing_baseline_role", { length: 32 }),
+	error: text(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+	completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_project_research_standing_batches_open_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()).where(sql`status = 'pending'`),
+	unique("uq_project_research_standing_batches_id_space").on(table.id, table.spaceId),
+	index("ix_project_research_standing_batches_project_ready").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.readyAt.asc().nullsLast()),
+	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "project_research_standing_batches_project_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.runId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "project_research_standing_batches_run_fkey" }),
+	check("ck_project_research_standing_batches_status", sql`status IN ('pending','running','completed','blocked_baseline','budget_exhausted','failed')`),
+	check("ck_project_research_standing_batches_items_array", sql`jsonb_typeof(source_item_ids_json) = 'array'`),
+]);
+
+/** User-facing suggestions produced by standing comparison and explicitly actioned by a user. */
+export const projectResearchStandingAdvice = pgTable("project_research_standing_advice", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	sourceItemId: varchar("source_item_id", { length: 36 }).notNull(),
+	batchId: varchar("batch_id", { length: 36 }).notNull(),
+	detail: text().notNull(),
+	affectedSectionsJson: jsonb("affected_sections_json").default([]).notNull(),
+	status: varchar({ length: 16 }).default("open").notNull(),
+	actionId: varchar("action_id", { length: 128 }).notNull(),
+	actionInputJson: jsonb("action_input_json").notNull(),
+	idempotencyKey: varchar("idempotency_key", { length: 128 }).notNull(),
+	createdByRunId: varchar("created_by_run_id", { length: 36 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	unique("uq_project_research_standing_advice_project_source").on(table.spaceId, table.projectId, table.sourceItemId),
+	unique("uq_project_research_standing_advice_idempotency").on(table.spaceId, table.idempotencyKey),
+	index("ix_project_research_standing_advice_project_status").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.status.asc().nullsLast()),
+	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "project_research_standing_advice_project_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.batchId, table.spaceId], foreignColumns: [projectResearchStandingBatches.id, projectResearchStandingBatches.spaceId], name: "project_research_standing_advice_batch_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.sourceItemId, table.spaceId], foreignColumns: [sourceItems.id, sourceItems.spaceId], name: "project_research_standing_advice_source_item_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.createdByRunId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "project_research_standing_advice_run_fkey" }),
+	check("ck_project_research_standing_advice_status", sql`status IN ('open','actioned','dismissed')`),
+	check("ck_project_research_standing_advice_sections_array", sql`jsonb_typeof(affected_sections_json) = 'array'`),
+	check("ck_project_research_standing_advice_action_input_object", sql`jsonb_typeof(action_input_json) = 'object'`),
 ]);
 
 export const projectResearchCheckpoints = pgTable("project_research_checkpoints", {
@@ -230,7 +271,7 @@ export const projectResearchCheckpoints = pgTable("project_research_checkpoints"
 	index("ix_project_research_checkpoints_status").using("btree", table.spaceId.asc().nullsLast(), table.status.asc().nullsLast()),
 	foreignKey({
 			columns: [table.workflowId, table.spaceId],
-			foreignColumns: [projectResearchWorkflows.id, projectResearchWorkflows.spaceId],
+			foreignColumns: [projectResearchWorkflows.objectId, projectResearchWorkflows.spaceId],
 			name: "project_research_checkpoints_workflow_id_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
@@ -269,7 +310,7 @@ export const projectResearchReports = pgTable("project_research_reports", {
 	normalizedText: text("normalized_text").notNull(),
 	contentHash: varchar("content_hash", { length: 64 }).notNull(),
 	archiveArtifactId: varchar("archive_artifact_id", { length: 36 }).notNull(),
-	literatureMatrixArtifactId: varchar("literature_matrix_artifact_id", { length: 36 }),
+	evidenceMatrixArtifactId: varchar("evidence_matrix_artifact_id", { length: 36 }),
 	integrityArtifactId: varchar("integrity_artifact_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -279,7 +320,7 @@ export const projectResearchReports = pgTable("project_research_reports", {
 	index("ix_project_research_reports_workflow").using("btree", table.workflowId.asc().nullsLast()),
 	foreignKey({
 		columns: [table.workflowId, table.spaceId],
-		foreignColumns: [projectResearchWorkflows.id, projectResearchWorkflows.spaceId],
+		foreignColumns: [projectResearchWorkflows.objectId, projectResearchWorkflows.spaceId],
 		name: "project_research_reports_workflow_id_fkey"
 	}).onDelete("cascade"),
 	foreignKey({
@@ -305,7 +346,7 @@ export const projectResearchReports = pgTable("project_research_reports", {
 	foreignKey({
 		columns: [table.archiveArtifactId, table.spaceId], foreignColumns: [artifacts.id, artifacts.spaceId], name: "project_research_reports_archive_artifact_id_fkey"
 	}),
-	foreignKey({ columns: [table.literatureMatrixArtifactId, table.spaceId], foreignColumns: [artifacts.id, artifacts.spaceId], name: "project_research_reports_matrix_artifact_id_fkey" }),
+	foreignKey({ columns: [table.evidenceMatrixArtifactId, table.spaceId], foreignColumns: [artifacts.id, artifacts.spaceId], name: "project_research_reports_matrix_artifact_id_fkey" }),
 	foreignKey({ columns: [table.integrityArtifactId, table.spaceId], foreignColumns: [artifacts.id, artifacts.spaceId], name: "project_research_reports_integrity_artifact_id_fkey" }),
 	check("ck_project_research_reports_run_kind", sql`run_kind IN ('baseline', 'historical_backfill', 'incremental', 'question_rescreen', 'synthesis_only')`),
 	check("ck_project_research_reports_status", sql`status IN ('awaiting_review', 'complete', 'rejected')`),
@@ -315,11 +356,12 @@ export const projectResearchReports = pgTable("project_research_reports", {
 ]);
 
 // Project-owned screening criteria (include/exclude keywords,
-// methods, date range, venues/source types, required evidence fields) used
-// to focus paper triage. One row per project; AI screening suggestions and
+// profile-declared domain criteria, date range, source restrictions,
+// required evidence fields) used
+// to focus material triage. One row per project; AI screening suggestions and
 // the corpus/matrix read models consume this, but project_corpus_items.
 // triage_status (gated by triage_confirmed_by_user) remains the durable,
-// user-confirmed source of truth — this table never itself marks a paper
+// user-confirmed source of truth — this table never itself marks material
 // included/excluded.
 export const projectResearchScreeningCriteria = pgTable("project_research_screening_criteria", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -327,10 +369,17 @@ export const projectResearchScreeningCriteria = pgTable("project_research_screen
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	includeKeywordsJson: jsonb("include_keywords_json").default([]).notNull(),
 	excludeKeywordsJson: jsonb("exclude_keywords_json").default([]).notNull(),
-	methodsJson: jsonb("methods_json").default([]).notNull(),
+	// Domain-specific screening axes, keyed by what the bound extraction profile
+	// declares (R4/D12). `methods` was a column, which forced every domain to
+	// carry an irrelevant domain-shaped criterion; an unconstrained bag would have been the
+	// opposite mistake, so the legal keys come from the profile registry and the
+	// column only guarantees the shape.
+	domainCriteriaJson: jsonb("domain_criteria_json").default({}).notNull(),
 	dateRangeStart: timestamp("date_range_start", { withTimezone: true, mode: 'string' }),
 	dateRangeEnd: timestamp("date_range_end", { withTimezone: true, mode: 'string' }),
-	venuesJson: jsonb("venues_json").default([]).notNull(),
+	// Journals, outlets and sites are the same concept: where material may come
+	// from. `venues` named only the academic half of it.
+	sourceRestrictionsJson: jsonb("source_restrictions_json").default([]).notNull(),
 	requiredEvidenceFieldsJson: jsonb("required_evidence_fields_json").default([]).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -349,8 +398,8 @@ export const projectResearchScreeningCriteria = pgTable("project_research_screen
 		}),
 	check("ck_project_research_screening_criteria_include_keywords_array", sql`jsonb_typeof(include_keywords_json) = 'array'::text`),
 	check("ck_project_research_screening_criteria_exclude_keywords_array", sql`jsonb_typeof(exclude_keywords_json) = 'array'::text`),
-	check("ck_project_research_screening_criteria_methods_array", sql`jsonb_typeof(methods_json) = 'array'::text`),
-	check("ck_project_research_screening_criteria_venues_array", sql`jsonb_typeof(venues_json) = 'array'::text`),
+	check("ck_project_research_screening_criteria_domain_criteria_object", sql`jsonb_typeof(domain_criteria_json) = 'object'::text`),
+	check("ck_project_research_screening_criteria_source_restrictions_array", sql`jsonb_typeof(source_restrictions_json) = 'array'::text`),
 	check("ck_project_research_screening_criteria_evidence_fields_array", sql`jsonb_typeof(required_evidence_fields_json) = 'array'::text`),
 	check("ck_project_research_screening_criteria_date_range", sql`(date_range_start IS NULL) OR (date_range_end IS NULL) OR (date_range_start <= date_range_end)`),
 ]);
@@ -393,12 +442,12 @@ export const projectResearchClaimLinks = pgTable("project_research_claim_links",
 		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.workflowId],
-			foreignColumns: [projectResearchWorkflows.id],
+			foreignColumns: [projectResearchWorkflows.objectId],
 			name: "project_research_claim_links_workflow_delete_fkey"
 		}).onDelete("set null"),
 	foreignKey({
 			columns: [table.workflowId, table.spaceId],
-			foreignColumns: [projectResearchWorkflows.id, projectResearchWorkflows.spaceId],
+			foreignColumns: [projectResearchWorkflows.objectId, projectResearchWorkflows.spaceId],
 			name: "project_research_claim_links_workflow_id_fkey"
 		}),
 	foreignKey({

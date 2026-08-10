@@ -34,6 +34,8 @@ import {
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
 import { runOutputResult } from "./orchestrationResults";
 import { runFinalizationReconcilerRegistry } from "./finalizationReconcilerRegistry";
+import { outputVisibilityForTaint, parseRunContextTaint } from "./contextTaint";
+import type { ContentVisibility } from "../access/contentAccessTypes";
 
 export interface RunMaterializationResult {
   items: RunMaterializationItemSummary[];
@@ -394,9 +396,26 @@ export class RunMaterializationService {
       if (STRUCTURED_PACKET_PROPOSAL_TYPES.has(proposalType)) {
         await validateClaimObjectProposalPacket(proposalType, payload);
       }
-      const projectId = stringValue(spec.project_id)
+      const requestedVisibility = normalizeVisibility(stringValue(spec.visibility));
+      let proposalVisibility = requestedVisibility;
+      let projectId = stringValue(spec.project_id)
         ?? stringValue(payload.project_id)
         ?? input.run.project_id;
+      if (proposalType === "memory_create") {
+        const placement = memoryLearningPlacement(input.run, requestedVisibility);
+        projectId = placement.projectId;
+        proposalVisibility = placement.visibility;
+        payload.target_scope = placement.scope;
+        payload.target_visibility = placement.visibility;
+        payload.owner_user_id = placement.ownerUserId;
+        delete payload.agent_id;
+        delete payload.project_folder_id;
+      } else if (
+        proposalType === "memory_update"
+        && derivedOutputVisibility(input.run, requestedVisibility, false) !== "space_shared"
+      ) {
+        throw new Error("tainted agent learning cannot mutate an existing shared memory; create a personal memory instead");
+      }
       await assertProjectInSpace(this.db, input.run.space_id, projectId);
       if (projectId) payload.project_id = projectId;
       else delete payload.project_id;
@@ -433,8 +452,11 @@ export class RunMaterializationService {
         riskLevel: normalizeRisk(stringValue(spec.risk_level), proposalType),
         urgency: normalizeUrgency(stringValue(spec.urgency)),
         preview: booleanValue(spec.preview) ?? input.run.mode === "dry_run",
-        visibility: normalizeVisibility(stringValue(spec.visibility)),
-        projectFolderId: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
+        visibility: proposalVisibility,
+        requestedVisibility,
+        projectFolderId: proposalType.startsWith("memory_")
+          ? null
+          : stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
         projectId,
         status: input.proposalStatus,
       });
@@ -528,7 +550,10 @@ export class RunMaterializationService {
         JSON.stringify([input.mimeType]),
         input.preview,
         now,
-        JSON.stringify(sanitizeEvidenceJson(input.metadata)),
+        JSON.stringify(sanitizeEvidenceJson({
+          ...input.metadata,
+          context_taint: contextTaintForRun(input.run),
+        })),
         visibility,
         input.run.instructed_by_user_id ?? null,
         input.run.project_id ?? null,
@@ -544,6 +569,7 @@ export class RunMaterializationService {
         targetResourceId: id,
         inheritedAt: now,
       });
+      await this.grantTaintOwners(input.run, "artifact", id, now);
     }
     return id;
   }
@@ -559,10 +585,12 @@ export class RunMaterializationService {
     urgency: string;
     preview: boolean;
     visibility: string;
+    requestedVisibility: string;
     projectFolderId: string | null;
     projectId: string | null;
     status: "pending" | "staged";
   }): Promise<string> {
+    const taint = contextTaintForRun(input.run);
     const visibility = derivedOutputVisibility(
       input.run,
       input.visibility,
@@ -574,7 +602,17 @@ export class RunMaterializationService {
       proposalType: input.proposalType,
       title: input.title,
       summary: input.summary,
-      payload: input.payload,
+      payload: {
+        ...input.payload,
+        context_taint: taint,
+        requested_output_visibility: input.requestedVisibility,
+        ...(taint?.non_instructing_owner_user_ids.length && input.requestedVisibility === "space_shared"
+          ? {
+              requires_approval_type: "egress_content_owner",
+              required_egress_approver_user_ids: taint.non_instructing_owner_user_ids,
+            }
+          : {}),
+      },
       rationale: input.rationale,
       riskLevel: input.riskLevel,
       urgency: input.urgency,
@@ -595,8 +633,36 @@ export class RunMaterializationService {
         targetResourceId: row.id,
         inheritedAt: new Date().toISOString(),
       });
+      await this.grantTaintOwners(input.run, "proposal", row.id, new Date().toISOString());
     }
     return row.id;
+  }
+
+  private async grantTaintOwners(
+    run: RunRecord,
+    resourceType: "artifact" | "proposal",
+    resourceId: string,
+    now: string,
+  ): Promise<void> {
+    const taint = contextTaintForRun(run);
+    const users = taint?.non_instructing_owner_user_ids ?? [];
+    if (users.length === 0) return;
+    await this.db.query(
+      `INSERT INTO content_access_grants (
+         id, space_id, resource_type, resource_id, grantee_user_id,
+         granted_by_user_id, access_level, created_at, updated_at
+       )
+       SELECT gen_random_uuid()::varchar, $1, $2, $3, member.user_id,
+              $4, 'full', $6, $6
+         FROM unnest($5::varchar[]) AS member(user_id)
+         JOIN space_memberships membership
+           ON membership.space_id = $1
+          AND membership.user_id = member.user_id
+          AND membership.status = 'active'
+       ON CONFLICT (space_id, resource_type, resource_id, grantee_user_id)
+       DO NOTHING`,
+      [run.space_id, resourceType, resourceId, run.instructed_by_user_id ?? users[0], users, now],
+    );
   }
 }
 
@@ -769,7 +835,7 @@ function normalizeUrgency(value: string | null): string {
 }
 
 function normalizeVisibility(value: string | null): string {
-  return value && ["space_shared", "selected_users"].includes(value)
+  return value && ["private", "space_shared", "selected_users"].includes(value)
     ? value
     : "space_shared";
 }
@@ -784,9 +850,54 @@ function derivedOutputVisibility(
   run: RunRecord,
   requested: string,
   allowPrivate: boolean,
-): string {
-  if (run.visibility !== "selected_users") return requested;
-  return allowPrivate && requested === "private" ? "private" : "selected_users";
+): ContentVisibility {
+  const runVisibility = persistedVisibility(run.visibility ?? "space_shared");
+  const requestedVisibility = persistedVisibility(
+    !allowPrivate && runVisibility === "selected_users" && requested === "private"
+      ? "selected_users"
+      : requested,
+  );
+  return outputVisibilityForTaint({
+    requestedVisibility,
+    runVisibility,
+    taint: contextTaintForRun(run),
+  });
+}
+
+function memoryLearningPlacement(
+  run: RunRecord,
+  requestedVisibility: string,
+): {
+  scope: "user" | "project";
+  projectId: string | null;
+  visibility: ContentVisibility;
+  ownerUserId: string;
+} {
+  const ownerUserId = run.instructed_by_user_id;
+  if (!ownerUserId) throw new Error("agent learning requires instructed_by_user_id");
+  const visibility = derivedOutputVisibility(run, requestedVisibility, false);
+  if (visibility === "space_shared" && run.project_id) {
+    return { scope: "project", projectId: run.project_id, visibility, ownerUserId };
+  }
+  return {
+    scope: "user",
+    projectId: null,
+    visibility: visibility === "space_shared" ? "private" : visibility,
+    ownerUserId,
+  };
+}
+
+function persistedVisibility(value: string): ContentVisibility {
+  if (value === "private" || value === "space_shared" || value === "selected_users") return value;
+  throw new Error(`Invalid persisted output visibility: ${value}`);
+}
+
+function contextTaintForRun(run: RunRecord) {
+  const taint = parseRunContextTaint(run.context_taint_json);
+  if (run.has_context_taint && !taint) {
+    throw new Error(`Run ${run.id} has_context_taint without a valid context_taint_json summary`);
+  }
+  return taint;
 }
 
 function titleForProposal(proposalType: string): string {

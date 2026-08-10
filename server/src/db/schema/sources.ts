@@ -70,6 +70,7 @@ export const extractionJobs = pgTable("extraction_jobs", {
 export const sourceItems = pgTable("source_items", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	visibility: varchar({ length: 32 }).default('private').notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
@@ -112,6 +113,7 @@ export const sourceItems = pgTable("source_items", {
 	index("ix_source_items_item_type").using("btree", table.itemType.asc().nullsLast()),
 	index("ix_source_items_occurred_at").using("btree", table.occurredAt.asc().nullsLast()),
 	index("ix_source_items_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_source_items_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_source_items_raw_artifact_id").using("btree", table.rawArtifactId.asc().nullsLast()),
 	index("ix_source_items_source_domain").using("btree", table.sourceDomain.asc().nullsLast()),
 	index("ix_source_items_source_external_id").using("btree", table.sourceExternalId.asc().nullsLast()),
@@ -124,8 +126,10 @@ export const sourceItems = pgTable("source_items", {
 	index("ix_source_items_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_source_items_summary_artifact_id").using("btree", table.summaryArtifactId.asc().nullsLast()),
 	index("ix_source_items_visibility").using("btree", table.visibility.asc().nullsLast()),
-	uniqueIndex("uq_source_items_active_canonical_uri").using("btree", table.spaceId.asc().nullsLast(), table.canonicalUri.asc().nullsLast()).where(sql`((canonical_uri IS NOT NULL) AND (deleted_at IS NULL))`),
-	uniqueIndex("uq_source_items_active_source_uri").using("btree", table.spaceId.asc().nullsLast(), table.sourceUri.asc().nullsLast()).where(sql`((source_uri IS NOT NULL) AND (deleted_at IS NULL))`),
+	uniqueIndex("uq_source_items_active_canonical_uri_personal").using("btree", table.spaceId.asc().nullsLast(), table.canonicalUri.asc().nullsLast()).where(sql`canonical_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NULL`),
+	uniqueIndex("uq_source_items_active_canonical_uri_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.canonicalUri.asc().nullsLast()).where(sql`canonical_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NOT NULL`),
+	uniqueIndex("uq_source_items_active_source_uri_personal").using("btree", table.spaceId.asc().nullsLast(), table.sourceUri.asc().nullsLast()).where(sql`source_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NULL`),
+	uniqueIndex("uq_source_items_active_source_uri_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.sourceUri.asc().nullsLast()).where(sql`source_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NOT NULL`),
 	unique("uq_source_items_id_space").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.extractedArtifactId],
@@ -158,10 +162,15 @@ export const sourceItems = pgTable("source_items", {
 			name: "source_items_owner_user_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "source_items_space_id_fkey"
-		}),
+		columns: [table.spaceId],
+		foreignColumns: [spaces.id],
+		name: "source_items_space_id_fkey"
+	}),
+	foreignKey({
+		columns: [table.projectId, table.spaceId],
+		foreignColumns: [projects.id, projects.spaceId],
+		name: "source_items_project_id_fkey"
+	}),
 	check("ck_source_items_content_state", sql`(content_state)::text = ANY (ARRAY[('metadata_only'::character varying)::text, ('excerpt_saved'::character varying)::text, ('content_queued'::character varying)::text, ('content_saved'::character varying)::text, ('snapshot_queued'::character varying)::text, ('snapshot_saved'::character varying)::text, ('extraction_failed'::character varying)::text, ('content_unavailable'::character varying)::text])`),
 	check("ck_source_items_item_type", sql`(item_type)::text = ANY (ARRAY[('external_url'::character varying)::text, ('feed_entry'::character varying)::text, ('activity_record'::character varying)::text, ('artifact'::character varying)::text, ('run_event'::character varying)::text, ('file'::character varying)::text, ('document'::character varying)::text, ('log'::character varying)::text])`),
 	check("ck_source_items_retention_policy", sql`(retention_policy)::text = ANY (ARRAY[('metadata_only'::character varying)::text, ('summary_only'::character varying)::text, ('full_text'::character varying)::text, ('full_snapshot'::character varying)::text, ('archived'::character varying)::text])`),
@@ -175,6 +184,7 @@ export const sourceItems = pgTable("source_items", {
 export const sourceSnapshots = pgTable("source_snapshots", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	visibility: varchar({ length: 32 }).default('private').notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
@@ -195,6 +205,7 @@ export const sourceSnapshots = pgTable("source_snapshots", {
 	index("ix_source_snapshots_connection_id").using("btree", table.connectionId.asc().nullsLast()),
 	index("ix_source_snapshots_content_hash").using("btree", table.contentHash.asc().nullsLast()),
 	index("ix_source_snapshots_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_source_snapshots_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_source_snapshots_snapshot_type").using("btree", table.snapshotType.asc().nullsLast()),
 	index("ix_source_snapshots_source_item_id").using("btree", table.sourceItemId.asc().nullsLast()),
 	index("ix_source_snapshots_space_id").using("btree", table.spaceId.asc().nullsLast()),
@@ -221,10 +232,15 @@ export const sourceSnapshots = pgTable("source_snapshots", {
 			name: "source_snapshots_source_item_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "source_snapshots_space_id_fkey"
-		}),
+		columns: [table.spaceId],
+		foreignColumns: [spaces.id],
+		name: "source_snapshots_space_id_fkey"
+	}),
+	foreignKey({
+		columns: [table.projectId, table.spaceId],
+		foreignColumns: [projects.id, projects.spaceId],
+		name: "source_snapshots_project_id_fkey"
+	}),
 	check("ck_source_snapshots_capture_method", sql`(capture_method)::text = ANY (ARRAY[('manual'::character varying)::text, ('connection_scan'::character varying)::text, ('full_text'::character varying)::text, ('snapshot'::character varying)::text, ('internal'::character varying)::text, ('custom_source_handler'::character varying)::text, ('source_recipe'::character varying)::text])`),
 	check("ck_source_snapshots_snapshot_type", sql`(snapshot_type)::text = ANY (ARRAY[('metadata'::character varying)::text, ('raw'::character varying)::text, ('extracted'::character varying)::text, ('summary'::character varying)::text])`),
 	check("ck_source_snapshots_trust_level", sql`(trust_level)::text = ANY (ARRAY[('trusted'::character varying)::text, ('normal'::character varying)::text, ('untrusted'::character varying)::text])`),
@@ -236,6 +252,7 @@ export const sourceSnapshots = pgTable("source_snapshots", {
 export const sourceConnections = pgTable("source_connections", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	providerConnectorId: varchar("provider_connector_id", { length: 36 }).notNull(),
 	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
 	credentialId: varchar("credential_id", { length: 36 }),
@@ -264,11 +281,13 @@ export const sourceConnections = pgTable("source_connections", {
 	index("ix_source_connections_credential_id").using("btree", table.credentialId.asc().nullsLast()),
 	index("ix_source_connections_deleted_at").using("btree", table.deletedAt.asc().nullsLast()),
 	index("ix_source_connections_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_source_connections_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_source_connections_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_source_connections_space_status").using("btree", table.spaceId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_source_connections_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_source_connections_visibility").using("btree", table.visibility.asc().nullsLast()),
-	uniqueIndex("uq_source_connections_active_owner_mapping").using("btree", table.spaceId.asc().nullsLast(), table.ownerUserId.asc().nullsLast(), table.providerConnectorId.asc().nullsLast(), table.name.asc().nullsLast()).where(sql`deleted_at IS NULL AND status <> 'archived'`),
+	uniqueIndex("uq_source_connections_active_owner_mapping_personal").using("btree", table.spaceId.asc().nullsLast(), table.ownerUserId.asc().nullsLast(), table.providerConnectorId.asc().nullsLast(), table.name.asc().nullsLast()).where(sql`deleted_at IS NULL AND status <> 'archived' AND project_id IS NULL`),
+	uniqueIndex("uq_source_connections_active_owner_mapping_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.ownerUserId.asc().nullsLast(), table.providerConnectorId.asc().nullsLast(), table.name.asc().nullsLast()).where(sql`deleted_at IS NULL AND status <> 'archived' AND project_id IS NOT NULL`),
 	unique("uq_source_connections_id_provider_connector_space").on(table.id, table.providerConnectorId, table.spaceId),
 	foreignKey({
 			columns: [table.providerConnectorId],
@@ -286,10 +305,15 @@ export const sourceConnections = pgTable("source_connections", {
 			name: "source_connections_owner_user_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "source_connections_space_id_fkey"
-		}),
+		columns: [table.spaceId],
+		foreignColumns: [spaces.id],
+		name: "source_connections_space_id_fkey"
+	}),
+	foreignKey({
+		columns: [table.projectId, table.spaceId],
+		foreignColumns: [projects.id, projects.spaceId],
+		name: "source_connections_project_id_fkey"
+	}),
 	foreignKey({
 			columns: [table.activeHandlerVersionId],
 			foreignColumns: [sourceHandlerVersions.id],
@@ -525,6 +549,7 @@ export const sourcePostProcessingItemDecisions = pgTable("source_post_processing
 export const readerAnnotations = pgTable("reader_annotations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
 	documentType: varchar("document_type", { length: 32 }).notNull(),
 	documentId: varchar("document_id", { length: 36 }).notNull(),
 	annotationType: varchar("annotation_type", { length: 32 }).notNull(),
@@ -544,12 +569,18 @@ export const readerAnnotations = pgTable("reader_annotations", {
 	index("ix_reader_annotations_space_document").using("btree", table.spaceId.asc().nullsLast(), table.documentType.asc().nullsLast(), table.documentId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_reader_annotations_space_user").using("btree", table.spaceId.asc().nullsLast(), table.createdByUserId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_reader_annotations_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_reader_annotations_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_reader_annotations_space_visibility").using("btree", table.spaceId.asc().nullsLast(), table.visibility.asc().nullsLast(), table.status.asc().nullsLast()),
 	foreignKey({
-			columns: [table.spaceId],
+		columns: [table.spaceId],
 			foreignColumns: [spaces.id],
 			name: "reader_annotations_space_id_fkey"
-		}),
+	}),
+	foreignKey({
+		columns: [table.projectId, table.spaceId],
+		foreignColumns: [projects.id, projects.spaceId],
+		name: "reader_annotations_project_id_fkey"
+	}),
 	foreignKey({
 			columns: [table.createdByUserId],
 			foreignColumns: [users.id],

@@ -170,7 +170,7 @@ export default function OperationsAreaPage() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="font-medium">Research</h2>
-          <p className="text-xs text-muted-foreground">Every literature search this Project is running, one per Question or Hypothesis Thread — not just the last one you had open.</p>
+          <p className="text-xs text-muted-foreground">Every evidence search this Project is running, one per Question or Hypothesis Thread — not just the last one you had open.</p>
         </div>
         <Button size="sm" variant="outline" asChild>
           {/* Question/Hypothesis definition lives on the Inquiry page now —
@@ -179,7 +179,7 @@ export default function OperationsAreaPage() {
           <Link to={`/projects/${projectId}/inquiry?research_intent=1`}><Plus className="size-3.5" />New search</Link>
         </Button>
       </div>
-      {researchOperations.length === 0 && <p className="text-sm text-muted-foreground">No literature searches yet.</p>}
+      {researchOperations.length === 0 && <p className="text-sm text-muted-foreground">No evidence searches yet.</p>}
       {researchOperations.map(operation => {
         const workflowId = String(operation.progress_json.workflow_id ?? '')
         const workflow = workflowById.get(workflowId)

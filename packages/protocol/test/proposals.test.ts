@@ -91,11 +91,11 @@ describe("proposal review contracts", () => {
 
     expect(
       ProposalAcceptOutSchema.parse({
-        proposal: { ...proposal(), status: "accepted", proposal_type: "object_kind_create" },
-        result_type: "object_kind",
-        result: { object_kind: { id: "kind-1" } },
+        proposal: { ...proposal(), status: "accepted", proposal_type: "object_profile_create" },
+        result_type: "object_profile",
+        result: { object_profile: { id: "kind-1" } },
       }).result_type,
-    ).toBe("object_kind");
+    ).toBe("object_profile");
 
     expect(
       ProposalAcceptOutSchema.parse({

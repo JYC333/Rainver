@@ -20,6 +20,7 @@ import type { PgJobQueueRepository } from "../jobs/repository";
 import { SourceExtractionWorker } from "../sources/extractionWorker";
 import { enqueueDueSourceChannelScans } from "../sources/scanSchedule";
 import { enqueueDueSourcePostProcessingRules } from "../sources/postProcessing/scheduler";
+import { enqueuePendingSourceAnnotationWork } from "../sourceAnnotation/scheduler";
 import {
   enqueueDueCustomSourceHandlerRuns,
   reclaimStuckCustomSourceHandlerRuns,
@@ -103,6 +104,17 @@ export function buildSourceSchedulerTasks(
         const enqueued = await enqueueDueSourcePostProcessingRules(config, queue);
         if (enqueued > 0) {
           log?.info(`[scheduler] source enqueued ${enqueued} post-processing job(s)`);
+        }
+      },
+    });
+    tasks.push({
+      name: "source_annotation_sweep",
+      intervalSeconds,
+      runOnStart: true,
+      run: async () => {
+        const enqueued = await enqueuePendingSourceAnnotationWork(config, queue);
+        if (enqueued > 0) {
+          log?.info(`[scheduler] source annotation swept ${enqueued} space(s)`);
         }
       },
     });

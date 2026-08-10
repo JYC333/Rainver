@@ -159,6 +159,8 @@ export class SourceRecipeCreateService {
       const channel = await channels.create(
         identity,
         {
+          project_id: optionalString(body.project_id),
+          visibility: optionalString(body.visibility),
           provider_key: "custom_source",
           name,
           source_name: name,

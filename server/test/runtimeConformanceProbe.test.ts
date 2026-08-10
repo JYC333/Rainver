@@ -20,8 +20,8 @@ describe("LocalCliConformanceProbeRunner", () => {
     const root = await mkdtemp(join(tmpdir(), "aspace-conformance-"));
     roots.push(root);
     const executor = {
-      async runCommand(input: { command: string[]; docker?: { sandbox_cwd: string } }): Promise<CliExecutionResult> {
-        expect(input.docker?.sandbox_cwd).toContain(join(root, "sandboxes", "conformance"));
+      async runCommand(input: { command: string[]; cwd: string | null }): Promise<CliExecutionResult> {
+        expect(input.cwd).toContain(join(root, "sandboxes", "conformance"));
         return {
           returncode: 0,
           stdout: '{"result":"PASS"}\n',
@@ -48,7 +48,7 @@ describe("LocalCliConformanceProbeRunner", () => {
           expect(runId).toContain("conformance-");
           expect(spaceId).toBe("space-1");
           expect(runtime).toBe("opencode");
-          expect(executorMode).toBe("docker");
+          expect(executorMode).toBe("worktree");
           return {
             granted: true,
             profile_id: "profile-1",

@@ -1,10 +1,13 @@
 import type {
+  InvocationDelivery,
   RunAdapterResultEnvelope,
   RunExecuteRequest,
   RunInputEnvelope,
   RunJobResult,
   RunMaterializationItemSummary,
   RuntimeSemanticEvent,
+  ExecutionControlSnapshot,
+  TurnContextRequest,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
@@ -41,13 +44,23 @@ import type { RunSandboxManagerPort } from "../projectFolders";
 import {
   getRuntimeAdapterSpec,
   isVendorCliAdapter,
-  targetFormatForAdapter,
   type RuntimeExecutorFamily,
 } from "../runtimeAdapters";
 import type { RunMaterializationService } from "./materializationService";
-import type { ContextPrepareInput, ContextPrepareResult } from "../context";
+import {
+  createProductionRuntimeContextInvocationGateway,
+  RuntimeContextCliContinuityService,
+  WorkContextService,
+  type RuntimeContextGatewayPort,
+  type RuntimeContextInvocationGatewayPort,
+} from "../runtimeContext";
 import { loadActionRegistry } from "../policy/actionRegistry";
 import { enforce, type EnforceResult } from "../policy/service";
+import {
+  ExecutionControlSnapshotRepository,
+  type EffectiveRunContextBindings,
+} from "../policy/executionControlSnapshots";
+import { RuntimeContextPolicyRepository } from "../policy/runtimeContextPolicyRepository";
 import { RuntimeToolRegistry } from "../runtimeTools";
 import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies";
 import { PgRouteDecisionRepository } from "../routing/repository";
@@ -82,6 +95,10 @@ import type {
   VerificationResultRecord,
 } from "./verification";
 import { assembleRunInputEnvelope } from "./runInputEnvelope";
+import {
+  createRunInvocationAttemptLifecycle,
+  type RunInvocationAttemptLifecycle,
+} from "./runtimeContextAttempts";
 import { publishChatTextDelta } from "../streaming/conversationDeltaBus";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker";
 import {
@@ -124,6 +141,14 @@ export interface RunExecutionRepositoryPort {
     error_code?: string;
     error_message?: string;
   }>;
+  bindRunToWorkContext(input: {
+    run_id: string;
+    space_id: string;
+    project_id: string | null;
+    project_folder_id: string | null;
+    agent_id: string;
+    runtime_profile_id: string | null;
+  }): Promise<RunRecord | null>;
   updateRunSandboxLevel(input: {
     run_id: string;
     space_id: string;
@@ -192,11 +217,29 @@ export interface RunExecutionAdapterDeps {
   managedApi?: ManagedApiNoToolAdapterDeps;
   vendorCli?: VendorCliAdapterDeps;
   materializer?: RunMaterializationService;
-  contextPreparer?: RunContextPrepareClient;
+  runtimeContextGateway?: RuntimeContextInvocationGatewayPort
+    & Partial<Pick<RuntimeContextGatewayPort, "ingestRuntimeEvent" | "recordRuntimeEventGap">>;
+  ensureWorkContextSetup?: (
+    identity: { spaceId: string; userId: string },
+    scopeId: string,
+    invocation: { agentId: string; runtimeProfileId: string | null },
+  ) => Promise<Record<string, unknown>>;
   workspaceManager?: RunSandboxManagerPort;
   codePatchCollector?: RunCodePatchCollectorPort;
   verificationEngine?: VerificationEnginePort;
   policyEnforcer?: RunPolicyEnforcer;
+  executionControlSnapshotWriter?: (
+    run: RunRecord,
+    inputs: {
+      cliCredentialProfileId: string | null;
+      policyDecisionRecordIds: string[];
+    },
+    effectiveBindings?: EffectiveRunContextBindings,
+  ) => Promise<ExecutionControlSnapshot>;
+  workContextResolver?: (
+    run: RunRecord,
+    requiredSetupRef?: { type: "work_context_setup"; id: string; version: string } | null,
+  ) => Promise<EffectiveRunContextBindings>;
   runtimeToolVersionResolver?: RunRuntimeToolVersionResolver;
   delegationProjector?: RunDelegationLifecycleProjectorPort;
   /**
@@ -222,6 +265,7 @@ export interface RunExecutionAdapterDeps {
       runtime_state_key: string;
     }): Promise<boolean>;
   };
+  cliContinuity?: RuntimeContextCliContinuityService;
 }
 
 export interface RunRouteResolverPort {
@@ -243,10 +287,6 @@ export type RunRuntimeToolVersionResolver = (input: {
   runtime: string;
   requestedVersion: string | null;
 }) => Promise<string>;
-
-export interface RunContextPrepareClient {
-  prepare(input: ContextPrepareInput): Promise<ContextPrepareResult>;
-}
 
 export interface RunCodePatchCollectorPort {
   collect(input: {
@@ -272,6 +312,8 @@ export interface RunExecutionInput extends RunExecuteRequest {
   abort_signal?: AbortSignal;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   text_delta_sink?: (delta: string) => void;
+  invocation_delivery?: InvocationDelivery;
+  invocation_attempts?: RunInvocationAttemptLifecycle;
 }
 
 type RuntimeAdapterExecutor = (
@@ -289,17 +331,17 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
         run,
         run_input: input.run_input ?? assembleRunInputEnvelope(run, {
           prompt: input.prompt,
-          contextSnapshotId: run.context_snapshot_id,
           riskLevel: input.risk_level,
         }),
         model: input.model ?? null,
         system_prompt: input.system_prompt ?? run.system_prompt ?? null,
         prompt: input.prompt ?? null,
         context_text: input.context_text ?? null,
-        context_snapshot_id: run.context_snapshot_id,
         max_tokens: input.max_tokens ?? null,
         text_delta_sink: input.text_delta_sink,
         abort_signal: input.abort_signal,
+        invocation_delivery: input.invocation_delivery,
+        invocation_attempts: input.invocation_attempts,
       },
       deps.managedApi,
     ),
@@ -310,7 +352,6 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
         run,
         run_input: input.run_input ?? assembleRunInputEnvelope(run, {
           prompt: input.prompt,
-          contextSnapshotId: run.context_snapshot_id,
           riskLevel: input.risk_level,
         }),
         prompt: input.prompt ?? null,
@@ -323,6 +364,8 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
         process_registry: deps.processRegistry,
         runtime_event_sink: input.runtime_event_sink,
         text_delta_sink: input.text_delta_sink,
+        invocation_delivery: input.invocation_delivery,
+        invocation_attempts: input.invocation_attempts,
       },
       deps.vendorCli,
     ),
@@ -360,6 +403,9 @@ interface PreparedRuntimeContext {
   base_commit_sha: string | null;
   run_input: RunInputEnvelope;
   exchange: RunExchangeHandle | null;
+  invocation_delivery: InvocationDelivery | null;
+  invocation_attempts: RunInvocationAttemptLifecycle | null;
+  cli_execution_lease: { binding_id: string; lease_id: string } | null;
 }
 
 interface ResolvedRuntimePolicy {
@@ -367,6 +413,7 @@ interface ResolvedRuntimePolicy {
   adapter_config: Record<string, unknown>;
   risk_level: string | null;
   required_sandbox_level: string | null;
+  policy_decision_record_ids: string[];
 }
 
 export class RunOrchestrationService {
@@ -376,6 +423,15 @@ export class RunOrchestrationService {
   private readonly usageRecorder: ((observation: UsageObservation) => Promise<void>) | null;
   private readonly conversationRuntimeSessions:
     NonNullable<RunExecutionAdapterDeps["conversationRuntimeSessions"]> | null;
+  private readonly executionControlSnapshotWriter:
+    NonNullable<RunExecutionAdapterDeps["executionControlSnapshotWriter"]> | null;
+  private readonly workContextResolver:
+    NonNullable<RunExecutionAdapterDeps["workContextResolver"]> | null;
+  private readonly runtimeContextGateway: (RuntimeContextInvocationGatewayPort
+    & Partial<Pick<RuntimeContextGatewayPort, "ingestRuntimeEvent" | "recordRuntimeEventGap">>) | null;
+  private readonly ensureWorkContextSetup:
+    NonNullable<RunExecutionAdapterDeps["ensureWorkContextSetup"]> | null;
+  private readonly cliContinuity: RuntimeContextCliContinuityService | null;
 
   constructor(
     private readonly config: ServerConfig,
@@ -403,6 +459,41 @@ export class RunOrchestrationService {
     this.conversationRuntimeSessions = adapters.conversationRuntimeSessions
       ?? (repository instanceof PgRunRepository && config.databaseUrl
         ? new PgConversationRuntimeSessionRepository(getDbPool(config.databaseUrl))
+        : null);
+    this.cliContinuity = adapters.cliContinuity
+      ?? (repository instanceof PgRunRepository && config.databaseUrl
+        ? new RuntimeContextCliContinuityService(getDbPool(config.databaseUrl))
+        : null);
+    const databaseUrl = config.databaseUrl;
+    this.runtimeContextGateway = adapters.runtimeContextGateway
+      ?? (repository instanceof PgRunRepository && databaseUrl
+        ? createProductionRuntimeContextInvocationGateway(getDbPool(databaseUrl), config)
+        : null);
+    this.ensureWorkContextSetup = adapters.ensureWorkContextSetup
+      ?? (repository instanceof PgRunRepository && databaseUrl
+        ? (identity, scopeId, invocation) => new WorkContextService(getDbPool(databaseUrl))
+            .ensureForInvocation(identity, scopeId, invocation)
+        : null);
+    this.workContextResolver = adapters.workContextResolver
+      ?? (repository instanceof PgRunRepository && databaseUrl
+        ? (run, requiredSetupRef) => new ExecutionControlSnapshotRepository(getDbPool(databaseUrl))
+            .resolveEffectiveBindingsForRun(run, requiredSetupRef)
+        : null);
+    this.executionControlSnapshotWriter = adapters.executionControlSnapshotWriter
+      ?? (repository instanceof PgRunRepository && databaseUrl
+          ? async (run, inputs, effectiveBindings) => {
+            const pool = getDbPool(databaseUrl);
+            const snapshots = new ExecutionControlSnapshotRepository(pool);
+            const effective = effectiveBindings ?? await snapshots.resolveEffectiveBindingsForRun(run);
+            const resolved = await new RuntimeContextPolicyRepository(pool).resolveForExecution({
+              spaceId: run.space_id,
+              projectId: effective.projectId,
+              projectFolderId: effective.projectFolderId,
+              agentId: effective.agentId,
+              userId: run.instructed_by_user_id ?? run.owner_user_id ?? null,
+            });
+            return snapshots.createForRun(run, resolved, inputs, effective);
+          }
         : null);
   }
 
@@ -471,8 +562,38 @@ export class RunOrchestrationService {
       executionLockHeld = false;
     };
     try {
+      let effectiveBindings = this.workContextResolver
+        ? await this.workContextResolver(run)
+        : undefined;
+      if (effectiveBindings && this.ensureWorkContextSetup) {
+        const userId = run.instructed_by_user_id ?? run.owner_user_id;
+        if (!userId) throw new RunPreparationError("work_context_user_required", "Managed Runtime Context requires an instructing user.");
+        const ensuredSetup = await this.ensureWorkContextSetup(
+          { spaceId: run.space_id, userId },
+          effectiveBindings.workContextScopeId,
+          {
+            agentId: run.agent_id,
+            runtimeProfileId:
+              run.requested_runtime_profile_id
+              ?? effectiveBindings.runtimeProfileId
+              ?? run.runtime_profile_id
+              ?? null,
+          },
+        );
+        const ensuredSetupRef = workContextSetupRef(ensuredSetup);
+        if (!ensuredSetupRef) {
+          throw new RunPreparationError(
+            "work_context_setup_invalid",
+            "Managed Runtime Context setup did not return an immutable version reference.",
+          );
+        }
+        effectiveBindings = this.workContextResolver
+          ? await this.workContextResolver(run, ensuredSetupRef)
+          : effectiveBindings;
+      }
+      const proposedContextBoundRun = applyEffectiveWorkContextBindings(run, effectiveBindings);
       const currentAuthorization =
-        await this.repository.checkRunExecutionAuthorization?.(run)
+        await this.repository.checkRunExecutionAuthorization?.(proposedContextBoundRun)
         ?? { allowed: true };
       if (!currentAuthorization.allowed) {
         const rejected = await this.publishRunTerminalWithConversationRuntime({
@@ -514,7 +635,37 @@ export class RunOrchestrationService {
             ?? "Run execution authorization is no longer active.",
         };
       }
-      const routedRun = this.routeResolver ? await this.routeResolver.routeRun(run) : run;
+      if (effectiveBindings?.workContextSetupRef && !effectiveBindings.agentId) {
+        throw new RunPreparationError(
+          "work_context_agent_required",
+          "Work Context Setup requires an active Agent.",
+        );
+      }
+      const persistedContextBoundRun = effectiveBindings?.workContextSetupRef
+        ? await this.repository.bindRunToWorkContext({
+            run_id: run.id,
+            space_id: run.space_id,
+            project_id: effectiveBindings.projectId,
+            project_folder_id: effectiveBindings.projectFolderId,
+            agent_id: effectiveBindings.agentId!,
+            runtime_profile_id: effectiveBindings.runtimeProfileId,
+          })
+        : run;
+      if (!persistedContextBoundRun) {
+        throw new RunPreparationError(
+          "work_context_binding_stale",
+          "Work Context Setup could not be bound to the queued Run.",
+        );
+      }
+      const contextBoundRun = applyEffectiveWorkContextBindings(
+        persistedContextBoundRun,
+        effectiveBindings,
+      );
+      const routed = this.routeResolver ? await this.routeResolver.routeRun(contextBoundRun) : contextBoundRun;
+      // Routing persists only route-owned columns. Reapply the immutable Setup
+      // bindings to the returned read model so policy, sandbox preparation, and
+      // adapter execution all observe the same Project/Folder/Agent selection.
+      const routedRun = applyEffectiveWorkContextBindings(routed, effectiveBindings);
       const dispatchContract = await this.repository.checkRunDispatchContract(routedRun);
       if (!dispatchContract.allowed) {
         await this.cleanupRuntimeContext(preparedRuntime, run);
@@ -595,21 +746,30 @@ export class RunOrchestrationService {
           skip_reason: "run_not_queued",
         };
       }
-      await this.markDelegatedRunRunningBestEffort(running);
+      const contextBoundRunning = applyEffectiveWorkContextBindings(running, effectiveBindings);
+      await this.markDelegatedRunRunningBestEffort(contextBoundRunning);
 
       // Policy gate + server-owned adapter resolution first. The run row and
       // agent/runtime configuration own the adapter and sandbox level; request
       // bodies never override executable paths, permissions, or runtime policy.
-      const resolved = await this.enforceRuntimePolicy(running, input);
+      const resolved = await this.enforceRuntimePolicy(contextBoundRunning, input);
       const effectiveRun: RunRecord = {
-        ...running,
+        ...contextBoundRunning,
         adapter_type: resolved.adapter_type,
         // Honor the policy-resolved sandbox level (e.g. ephemeral for a
         // no-workspace CLI run); the stored row level is the creation-time
         // default and is not re-derived under server authority.
         required_sandbox_level:
-          resolved.required_sandbox_level ?? running.required_sandbox_level,
+          resolved.required_sandbox_level ?? contextBoundRunning.required_sandbox_level,
       };
+      const executionControlSnapshot = this.executionControlSnapshotWriter
+        ? await this.executionControlSnapshotWriter(effectiveRun, {
+            cliCredentialProfileId: isVendorCliAdapter(effectiveRun.adapter_type)
+              ? stringConfigValue(resolved.adapter_config.credential_profile_id)
+              : null,
+            policyDecisionRecordIds: resolved.policy_decision_record_ids,
+          }, effectiveBindings)
+        : null;
       // Persist the resolved level so the run read model / trace reflects what
       // actually executed (not the creation-time default).
       if (
@@ -652,6 +812,7 @@ export class RunOrchestrationService {
         started_at: startedAt,
         metadata_json: {
           adapter_type: effectiveRun.adapter_type,
+          execution_control_snapshot_id: executionControlSnapshot?.id ?? null,
           command_source: input.command_source,
           worker_id: input.worker_id,
         },
@@ -667,16 +828,58 @@ export class RunOrchestrationService {
         project_folder_id: effectiveRun.project_folder_id,
         metadata_json: {
           adapter_type: effectiveRun.adapter_type,
+          execution_control_snapshot_id: executionControlSnapshot?.id ?? null,
           command_source: input.command_source,
           worker_id: input.worker_id,
         },
       });
 
-      preparedRuntime = await this.prepareRuntimeContext(effectiveRun, effectiveInput);
-      let adapterResult = await this.invokeAdapter(
+      preparedRuntime = await this.prepareRuntimeContext(
         effectiveRun,
-        inputWithPreparedRuntime(effectiveInput, preparedRuntime),
+        effectiveInput,
+        executionControlSnapshot,
+        effectiveBindings,
       );
+      let adapterResult: RunAdapterResultEnvelope;
+      try {
+        adapterResult = await this.invokeAdapter(
+          effectiveRun,
+          {
+            ...inputWithPreparedRuntime(effectiveInput, preparedRuntime),
+            invocation_delivery: preparedRuntime.invocation_delivery ?? undefined,
+            invocation_attempts: preparedRuntime.invocation_attempts ?? undefined,
+          },
+        );
+      } catch (error) {
+        if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts
+          && !isManagedApiAdapter(effectiveRun.adapter_type)) {
+          await preparedRuntime.invocation_attempts.acknowledge(preparedRuntime.invocation_delivery, {
+            success: false,
+            error_code: "runtime_adapter_transport_failed",
+          });
+          await preparedRuntime.invocation_attempts.finalize(
+            preparedRuntime.invocation_delivery,
+            "runtime_adapter_transport_failed",
+          );
+        }
+        throw error;
+      }
+      if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts
+        && !isManagedApiAdapter(effectiveRun.adapter_type)) {
+        await preparedRuntime.invocation_attempts.acknowledge(preparedRuntime.invocation_delivery, adapterResult);
+        await preparedRuntime.invocation_attempts.finalize(
+          preparedRuntime.invocation_delivery,
+          adapterResult.error_code ?? null,
+        );
+      }
+      if (adapterResult.error_code === "runtime_session_invalid"
+        && preparedRuntime.cli_execution_lease
+        && this.cliContinuity) {
+        const replacement = await this.cliContinuity.rotateMissingVendorState(
+          preparedRuntime.cli_execution_lease.binding_id,
+        );
+        preparedRuntime.cli_execution_lease.binding_id = replacement.id;
+      }
       if (preparedRuntime.exchange) {
         const exchange = await this.runExchange.collect(
           preparedRuntime.exchange,
@@ -719,6 +922,10 @@ export class RunOrchestrationService {
         };
       }
       await this.appendRuntimeSemanticEvents(effectiveRun, adapterResult);
+      await this.syncCliContinuityVendorSessionBestEffort(
+        preparedRuntime.invocation_delivery,
+        adapterResult,
+      );
       const executionIdentity = input.job_id ?? step?.id ?? effectiveRun.id;
       const completedAt = adapterResult.completed_at ?? new Date().toISOString();
       const waitingForDependency = waitingForDependencyFromAdapter(adapterResult);
@@ -848,6 +1055,17 @@ export class RunOrchestrationService {
       let verificationResults: VerificationResultRecord[] = [];
       let semanticFailure = semanticRunFailure(adapterResult, []);
       let validationStarted = false;
+      // Delivery persists accumulated input taint after `effectiveRun` was
+      // loaded. Carry the live values into every output-producing consumer so
+      // materialization and patch collection cannot publish with stale
+      // visibility authority.
+      const materializationRun: RunRecord = currentAfterAdapter
+        ? {
+            ...effectiveRun,
+            has_context_taint: currentAfterAdapter.has_context_taint,
+            context_taint_json: currentAfterAdapter.context_taint_json,
+          }
+        : effectiveRun;
       const materialization = { items: [], errors: [] } as {
         items: RunMaterializationItemSummary[];
         errors: string[];
@@ -863,7 +1081,7 @@ export class RunOrchestrationService {
         });
         validationStarted = true;
         verificationResults = await this.adapters.verificationEngine.verify({
-          run: effectiveRun,
+          run: materializationRun,
           sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
           base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
           output_json: adapterResult.output_json,
@@ -874,7 +1092,7 @@ export class RunOrchestrationService {
       if (adapterResult.success && !semanticFailure) {
         if (this.adapters.materializer) {
           const persisted = await this.adapters.materializer.materializeAdapterResult({
-            run: running,
+            run: materializationRun,
             adapterResult,
             sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
             exchange_output_cwd: preparedRuntime?.exchange?.output_dir ?? null,
@@ -885,7 +1103,7 @@ export class RunOrchestrationService {
           materialization.errors.push(...persisted.errors);
         }
         const codePatch = await this.collectCodePatch(
-          effectiveRun,
+          materializationRun,
           preparedRuntime,
           "staged",
         );
@@ -895,7 +1113,7 @@ export class RunOrchestrationService {
         }
         if (this.adapters.verificationEngine) {
           const postMaterialization = await this.adapters.verificationEngine.verify({
-            run: effectiveRun,
+            run: materializationRun,
             sandbox_cwd: preparedRuntime?.sandbox_cwd ?? null,
             base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
             output_json: adapterResult.output_json,
@@ -1409,6 +1627,7 @@ export class RunOrchestrationService {
       adapter_config: { ...runtimeConfig, ...callerConfig },
       risk_level: riskLevel,
       required_sandbox_level: requiredSandboxLevel,
+      policy_decision_record_ids: [],
     };
     const policyRequest: Parameters<typeof enforce>[2] = {
       action: "runtime.execute",
@@ -1433,15 +1652,16 @@ export class RunOrchestrationService {
       force_record: false,
     };
     if (!this.hasGrantedApproval(run, "policy_requires_approval_runtime_execute")) {
-      await this.enforcePolicyRequest(
+      const decisionId = await this.enforcePolicyRequest(
         policyRequest,
         "policy_requires_approval_runtime_execute",
         "policy_denied_runtime_execute",
         "runtime.execute denied by policy.",
       );
+      if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
     if (run.model_provider_id && !this.hasGrantedApproval(run, "policy_requires_approval_runtime_use_credential")) {
-      await this.enforcePolicyRequest(
+      const decisionId = await this.enforcePolicyRequest(
         {
           action: "runtime.use_credential",
           actor_type: "run",
@@ -1472,6 +1692,7 @@ export class RunOrchestrationService {
         "policy_denied_runtime_use_credential",
         "runtime.use_credential denied by policy.",
       );
+      if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
     if (isVendorCliAdapter(run.adapter_type)) {
       const credentialProfileId = stringConfigValue(base.adapter_config.credential_profile_id);
@@ -1489,7 +1710,7 @@ export class RunOrchestrationService {
         );
       }
       if (!this.hasGrantedApproval(run, "policy_requires_approval_runtime_use_credential")) {
-        await this.enforcePolicyRequest(
+        const decisionId = await this.enforcePolicyRequest(
           {
             action: "runtime.use_credential",
             actor_type: "run",
@@ -1521,6 +1742,7 @@ export class RunOrchestrationService {
           "policy_denied_runtime_use_credential",
           "runtime.use_credential denied by policy.",
         );
+        if (decisionId) base.policy_decision_record_ids.push(decisionId);
       }
     }
     return base;
@@ -1551,7 +1773,7 @@ export class RunOrchestrationService {
     requiresApprovalCode: string,
     deniedCode: string,
     fallbackMessage: string,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const policy = this.adapters.policyEnforcer
       ? await this.adapters.policyEnforcer(policyRequest)
       : await enforce(this.config, await loadActionRegistry(), policyRequest);
@@ -1561,6 +1783,7 @@ export class RunOrchestrationService {
       }
       throw new RunPreparationError(deniedCode, policy.message ?? fallbackMessage);
     }
+    return policy.policy_decision_record_id ?? null;
   }
 
   private hasGrantedApproval(run: RunRecord, approvalCode: string): boolean {
@@ -1575,6 +1798,8 @@ export class RunOrchestrationService {
   private async prepareRuntimeContext(
     run: RunRecord,
     input: RunExecutionInput,
+    control: ExecutionControlSnapshot | null,
+    effectiveBindings?: EffectiveRunContextBindings,
   ): Promise<PreparedRuntimeContext> {
     const prepared: PreparedRuntimeContext = {
       prompt: input.prompt ?? run.prompt ?? null,
@@ -1588,57 +1813,80 @@ export class RunOrchestrationService {
       base_commit_sha: null,
       run_input: input.run_input ?? assembleRunInputEnvelope(run, {
         prompt: input.prompt,
-        contextSnapshotId: run.context_snapshot_id,
         riskLevel: input.risk_level,
       }),
       exchange: null,
+      invocation_delivery: null,
+      invocation_attempts: null,
+      cli_execution_lease: null,
     };
 
     try {
-      let conversationPromptOverride: string | null = null;
-      if (isResumableCliConversation(run)) {
-        const runtime = recordValue(recordValue(run.model_override_json).conversation_runtime);
-        if (runtime.schema_version !== "conversation_runtime.v1") {
+      let cliBinding: Awaited<ReturnType<RuntimeContextCliContinuityService["prepareBinding"]>> | null = null;
+      if (isVendorCliAdapter(run.adapter_type) && this.cliContinuity) {
+        if (!control || !effectiveBindings?.workContextSetupRef) {
           throw new RunPreparationError(
-            "runtime_session_invalid",
-            "CLI conversation is missing its runtime-session snapshot.",
+            "runtime_context_authority_missing",
+            "CLI execution requires a persisted Work Context authority and continuity service.",
           );
         }
-        const stateKey = stringConfigValue(runtime.runtime_state_key);
-        const bindingId = stringConfigValue(runtime.binding_id);
-        const contextFingerprint = stringConfigValue(runtime.context_fingerprint);
-        const replayPrompt = stringConfigValue(runtime.replay_prompt);
-        if (!stateKey || !bindingId || !contextFingerprint || !replayPrompt) {
+        const userId = run.instructed_by_user_id ?? run.owner_user_id;
+        const agentId = effectiveBindings.agentId ?? run.agent_id;
+        const runtimeProfileId = effectiveBindings.runtimeProfileId ?? run.requested_runtime_profile_id;
+        if (!userId || !agentId || !runtimeProfileId) {
           throw new RunPreparationError(
             "runtime_session_invalid",
-            "CLI conversation has an invalid runtime-session snapshot.",
+            "CLI work-scope identity is incomplete.",
           );
         }
-        const externalSessionId = stringConfigValue(runtime.runtime_session_id);
-        const state = await prepareConversationRuntimeState({
+        cliBinding = await this.cliContinuity.prepareBinding({
+          spaceId: run.space_id,
+          workContextScopeId: effectiveBindings.workContextScopeId,
+          setupId: effectiveBindings.workContextSetupRef.id,
+          setupVersion: Number(effectiveBindings.workContextSetupRef.version),
+          userId,
+          agentId,
+          runtimeProfileId,
+          credentialProfileId: stringConfigValue(prepared.adapter_config.credential_profile_id),
+          adapterType: run.adapter_type ?? "unknown",
+          providerId: run.model_provider_id,
+          model: resolvedRunModel(run, input.model),
+          agentVersionId: run.agent_version_id,
+          runtimeToolVersion: stringConfigValue(prepared.adapter_config.runtime_tool_version),
+          control,
+        });
+        const cliLeaseId = await this.cliContinuity.acquireExecutionLease(cliBinding.id);
+        prepared.cli_execution_lease = { binding_id: cliBinding.id, lease_id: cliLeaseId };
+        cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLeaseId);
+        let state = await prepareConversationRuntimeState({
           agent_space_home: this.config.agentSpaceHome,
           sandbox_root: this.config.sandboxRoot,
-          state_key: stateKey,
-          resume_requested: Boolean(externalSessionId),
+          state_key: cliBinding.runtime_state_key,
+          resume_requested: Boolean(cliBinding.vendor_session_id),
         });
-        if (
-          isLightweightCliConversation(run)
-          || workingDirScopeForLevel(run.required_sandbox_level) === "ephemeral"
-        ) {
+        if (cliBinding.vendor_session_id && !state.resume) {
+          cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id);
+          prepared.cli_execution_lease.binding_id = cliBinding.id;
+          state = await prepareConversationRuntimeState({
+            agent_space_home: this.config.agentSpaceHome,
+            sandbox_root: this.config.sandboxRoot,
+            state_key: cliBinding.runtime_state_key,
+            resume_requested: false,
+          });
+        }
+        if (workingDirScopeForLevel(run.required_sandbox_level) === "ephemeral") {
           prepared.sandbox_cwd = state.cwd;
           prepared.context_cwd = state.cwd;
           prepared.sandbox_kind = "conversation_session";
         }
         prepared.adapter_config.conversation_runtime = {
-          binding_id: bindingId,
-          runtime_state_key: stateKey,
-          runtime_session_id: state.resume ? externalSessionId : null,
-          context_fingerprint: contextFingerprint,
+          binding_id: cliBinding.id,
+          runtime_state_key: cliBinding.runtime_state_key,
+          runtime_session_id: state.resume ? cliBinding.vendor_session_id : null,
+          cli_known_cursor: cliBinding.cli_known_cursor,
+          generation: cliBinding.generation,
+          rotation_reason: cliBinding.rotation_reason,
         };
-        if (!state.resume) {
-          prepared.prompt = replayPrompt;
-          conversationPromptOverride = replayPrompt;
-        }
       }
 
       if (isVendorCliAdapter(run.adapter_type) && !prepared.sandbox_cwd) {
@@ -1704,112 +1952,56 @@ export class RunOrchestrationService {
         }
       }
 
-      if (isLightweightCliConversation(run)) {
-        const runtime = recordValue(prepared.adapter_config.conversation_runtime);
-        const resumed = Boolean(stringConfigValue(runtime.runtime_session_id));
-        prepared.prompt = [
-          ...(resumed ? [] : [run.system_prompt]),
-          prepared.context_text,
-          prepared.prompt,
-        ].filter((part): part is string => Boolean(part?.trim())).join("\n\n");
-        prepared.context_text = null;
-        prepared.adapter_config.context_file_already_rendered = true;
-        prepared.run_input = {
-          ...prepared.run_input,
-          tool_grants: [],
-        };
-        this.applySupervisorRetryContext(run, prepared);
-        return prepared;
-      }
-
-      if (prepared.sandbox_kind === "read_only_project") {
-        prepared.adapter_config.read_only_workspace = {
-          workspace_cwd: prepared.sandbox_cwd,
-          context_cwd: prepared.context_cwd,
-        };
-      }
-      const contextPreparer = this.adapters.contextPreparer;
-      if (!contextPreparer) {
-        this.applySupervisorRetryContext(run, prepared);
+      // Every managed or CLI execution enters the Gateway only after any required
+      // workspace has been prepared, so the accepted Delivery cannot bypass
+      // the adapter's sandbox and exchange prerequisites.
+      if (this.runtimeContextGateway) {
+        if (!control || !effectiveBindings?.workContextSetupRef) {
+          throw new RunPreparationError(
+            "runtime_context_authority_missing",
+            "Managed execution requires a persisted control and Work Context Setup.",
+          );
+        }
+        const attempts = createRunInvocationAttemptLifecycle({
+          gateway: this.runtimeContextGateway,
+          run,
+          control,
+          model: resolvedRunModel(run, input.model),
+          turn: {
+            work_context_scope_id: effectiveBindings.workContextScopeId,
+            expected_setup_version: Number(effectiveBindings.workContextSetupRef.version),
+            current_message_ref: currentRuntimeContextInputRef(run),
+            one_off_refs: [],
+            retrieval_intent: input.prompt ?? run.prompt ?? null,
+            invocation_purpose: "agent_task",
+          },
+          cliBinding,
+        });
+        prepared.invocation_attempts = attempts;
+        prepared.invocation_delivery = await attempts.prepare();
         await this.prepareRunExchange(run, prepared);
         return prepared;
       }
-      const contextResult = await contextPreparer.prepare({
-        runId: run.id,
-        spaceId: run.space_id,
-        adapterType: run.adapter_type,
-        sandboxCwd: prepared.context_cwd,
-        targetFormat: targetFormatForAdapter(run.adapter_type),
-        workspacePath: prepared.cleanup?.project_folder_root ?? null,
-        ...(conversationPromptOverride !== null
-          ? { promptOverride: conversationPromptOverride }
-          : {}),
-      });
-      prepared.prompt = contextResult.runtime_prompt ?? prepared.prompt;
-      prepared.context_text = contextResult.runtime_context_text ?? prepared.context_text;
-      if (contextResult.context_rendered) {
-        prepared.context_text = null;
-        prepared.adapter_config.context_file_already_rendered = true;
-        prepared.adapter_config.context_target_format = contextResult.target_format ?? null;
-      }
-      prepared.run_input = assembleRunInputEnvelope(run, {
-        prompt: prepared.prompt,
-        contextSnapshotId: contextResult.context_snapshot_id,
-        riskLevel: prepared.risk_level,
-      });
-      this.applySupervisorRetryContext(run, prepared);
-      await this.prepareRunExchange(run, prepared);
-      return prepared;
+
+      throw new RunPreparationError(
+        "runtime_context_gateway_unavailable",
+        "Managed execution requires the Runtime Context Gateway.",
+      );
     } catch (error) {
       await this.cleanupRuntimeContext(prepared, run);
-      throw toRunPreparationError(error, "context_prepare_failed");
+      throw toRunPreparationError(error, "runtime_context_delivery_failed");
     }
-  }
-
-  private applySupervisorRetryContext(
-    run: RunRecord,
-    prepared: PreparedRuntimeContext,
-  ): void {
-    const error = recordValue(run.error_json);
-    if (error.error_code !== "supervisor_retry_scheduled") return;
-    const reasonCode = stringConfigValue(error.reason_code);
-    const attemptNumber =
-      typeof error.attempt_number === "number"
-      && Number.isInteger(error.attempt_number)
-      && error.attempt_number > 0
-        ? error.attempt_number
-        : null;
-    if (!reasonCode || attemptNumber === null) return;
-    const retryContext = [
-      "[Supervisor retry]",
-      `This is physical attempt ${attemptNumber}.`,
-      `The previous attempt did not complete acceptably (${reasonCode}).`,
-      "Re-attempt the original task and correct that failure; do not merely repeat the prior response.",
-    ].join("\n");
-    prepared.prompt = [prepared.prompt, retryContext]
-      .filter((part): part is string => Boolean(part?.trim()))
-      .join("\n\n");
-    prepared.run_input = {
-      ...prepared.run_input,
-      task_goal: prepared.prompt,
-      inputs: {
-        ...prepared.run_input.inputs,
-        direct: {
-          ...recordValue(prepared.run_input.inputs.direct),
-          prompt: prepared.prompt,
-          supervisor_retry: {
-            reason_code: reasonCode,
-            attempt_number: attemptNumber,
-          },
-        },
-      },
-    };
   }
 
   private async cleanupRuntimeContext(
     prepared: PreparedRuntimeContext | null,
     run: RunRecord,
   ): Promise<void> {
+    if (prepared?.cli_execution_lease && this.cliContinuity) {
+      const lease = prepared.cli_execution_lease;
+      prepared.cli_execution_lease = null;
+      await this.cliContinuity.releaseExecutionLease(lease.binding_id, lease.lease_id).catch(() => {});
+    }
     if (prepared?.exchange) {
       await this.runExchange.cleanup(prepared.exchange).catch(() => {});
       prepared.exchange = null;
@@ -1915,7 +2107,7 @@ export class RunOrchestrationService {
     };
     const promise = this.invokeAdapterUnbounded(run, adapterInput);
     if (!timeoutMs || timeoutMs <= 0) return promise;
-    // Local CLI adapters own their deadline: LocalCliCommandExecutor terminates
+    // Local CLI adapters own their deadline: the scoped Runner terminates
     // the process group and waits for exit. Racing that cleanup here would
     // release the Job while the child process was still alive.
     if (spec?.executor_family === "local_cli") return promise;
@@ -2112,6 +2304,8 @@ export class RunOrchestrationService {
       return;
     }
     const metadata = recordValue(adapterResult.metadata_json);
+    const auditRefs = recordValue(metadata.runtime_context_audit_refs);
+    const usageSourceId = stringConfigValue(auditRefs.usage_source_id);
     if (
       stringConfigValue(metadata.runtime_provider_id)
       || !stringConfigValue(metadata.credential_profile_id)
@@ -2168,9 +2362,20 @@ export class RunOrchestrationService {
         usage_details: details,
         usage_accuracy: "provider_reported",
         dedupe_confidence: "high",
-        idempotency_key: `local-cli:${executionIdentity}:${index}`,
+        idempotency_key: usageSourceId
+          ? `${usageSourceId}:${index}`
+          : `local-cli:${executionIdentity}:${index}`,
+        metadata: usageSourceId ? { runtime_context_audit_refs: auditRefs } : {},
         dimensions: {
           runtime_profile_id: run.runtime_profile_id ?? null,
+          ...(usageSourceId
+            ? {
+                delivery_id: stringConfigValue(auditRefs.delivery_id),
+                invocation_snapshot_id: stringConfigValue(auditRefs.invocation_snapshot_id),
+                execution_control_snapshot_id: stringConfigValue(auditRefs.execution_control_snapshot_id),
+                usage_source_id: usageSourceId,
+              }
+            : {}),
         },
       });
     }
@@ -2283,6 +2488,27 @@ export class RunOrchestrationService {
     }
   }
 
+  private async syncCliContinuityVendorSessionBestEffort(
+    delivery: InvocationDelivery | null,
+    adapterResult: RunAdapterResultEnvelope,
+  ): Promise<void> {
+    if (!this.cliContinuity || !delivery?.cli_session || !adapterResult.success) return;
+    const externalSessionId = stringConfigValue(
+      recordValue(adapterResult.metadata_json).external_session_id,
+    );
+    if (!externalSessionId) return;
+    try {
+      await this.cliContinuity.recordVendorSession({
+        bindingId: delivery.cli_session.binding_ref.id,
+        runtimeStateKey: delivery.cli_session.runtime_state_key,
+        vendorSessionId: externalSessionId,
+      });
+    } catch {
+      // The accepted Delivery and canonical Context Event ledger remain the
+      // authority; a stale vendor cache binding is reconstructed next turn.
+    }
+  }
+
   private async invalidateConversationRuntimeSessionBestEffort(
     run: RunRecord,
   ): Promise<void> {
@@ -2313,7 +2539,10 @@ export class RunOrchestrationService {
     run: RunRecord,
     event: RuntimeSemanticEvent,
   ): Promise<void> {
-    await this.appendRunEventBestEffort({
+    const critical = /^(policy_checked|tool_call_|approval_)/.test(event.type);
+    let canonical: unknown = null;
+    try {
+      canonical = await this.repository.appendRunEvent({
       run_id: run.id,
       space_id: run.space_id,
       event_type: event.type,
@@ -2325,7 +2554,41 @@ export class RunOrchestrationService {
         call_id: event.call_id ?? null,
         ...recordValue(event.metadata_json),
       },
-    });
+      });
+    } catch (error) {
+      if (critical) throw error;
+      try {
+        await this.runtimeContextGateway?.recordRuntimeEventGap?.({
+          invocation_id: run.id,
+          event_type: event.type,
+          canonical_ref: { type: "run", id: run.id },
+          semantic_role: "reference_data",
+          token_estimate: 0,
+        }, error instanceof Error ? error.message : String(error));
+      } catch {
+        // A shared database outage can prevent both canonical and gap writes;
+        // terminal reconciliation remains the final detector.
+      }
+      return;
+    }
+    const canonicalId = stringConfigValue(recordValue(canonical).id);
+    if (!canonicalId || !this.runtimeContextGateway?.ingestRuntimeEvent) {
+      if (critical && this.runtimeContextGateway && !this.runtimeContextGateway.ingestRuntimeEvent) {
+        throw new Error("Critical runtime event capture is unavailable");
+      }
+      return;
+    }
+    try {
+      await this.runtimeContextGateway.ingestRuntimeEvent({
+        invocation_id: run.id,
+        event_type: event.type,
+        canonical_ref: { type: "run_event", id: canonicalId },
+        semantic_role: "reference_data",
+        token_estimate: Math.ceil((event.summary?.length ?? 0) / 4),
+      });
+    } catch (error) {
+      if (critical) throw error;
+    }
   }
 
   private async markDelegatedRunRunningBestEffort(run: RunRecord): Promise<void> {
@@ -2375,24 +2638,55 @@ function conversationRuntimeTerminalSync(
   };
 }
 
-function isLightweightCliConversation(run: RunRecord): boolean {
-  return (
-    isVendorCliAdapter(run.adapter_type) &&
-    recordValue(run.model_override_json).execution_mode === "conversation_lightweight.v1"
-  );
+function applyEffectiveWorkContextBindings(
+  run: RunRecord,
+  bindings: EffectiveRunContextBindings | undefined,
+): RunRecord {
+  if (!bindings) return run;
+  return {
+    ...run,
+    project_id: bindings.projectId,
+    project_folder_id: bindings.projectFolderId,
+    ...(bindings.agentId ? { agent_id: bindings.agentId } : {}),
+    ...(bindings.runtimeProfileId
+      ? {
+          requested_runtime_profile_id: bindings.runtimeProfileId,
+          runtime_profile_selection_source: "explicit" as const,
+        }
+      : {}),
+  };
 }
 
-function isResumableCliConversation(run: RunRecord): boolean {
-  if (!isVendorCliAdapter(run.adapter_type)) return false;
-  const executionMode = recordValue(run.model_override_json).execution_mode;
-  return (
-    executionMode === "conversation_lightweight.v1"
-    || executionMode === "room_conversation.v1"
-  );
+function workContextSetupRef(
+  value: Record<string, unknown>,
+): { type: "work_context_setup"; id: string; version: string } | null {
+  const id = typeof value.id === "string" ? value.id : null;
+  const version = typeof value.version === "number" || typeof value.version === "string"
+    ? String(value.version)
+    : null;
+  return id && version ? { type: "work_context_setup", id, version } : null;
 }
 
 function isChatTurnRun(run: RunRecord): boolean {
   return recordValue(recordValue(run.model_override_json).chat_turn).schema_version === "chat_turn.v1";
+}
+
+function currentRuntimeContextInputRef(run: RunRecord): TurnContextRequest["current_message_ref"] {
+  const chatTurn = recordValue(recordValue(run.model_override_json).chat_turn);
+  const messageId = stringConfigValue(chatTurn.user_message_id);
+  if (chatTurn.schema_version === "chat_turn.v1" && messageId) {
+    return { type: "message", id: messageId };
+  }
+  return { type: "run_request", id: run.id };
+}
+
+function isManagedApiAdapter(adapterType: string | null): boolean {
+  return getRuntimeAdapterSpec(adapterType)?.executor_family === "managed_api";
+}
+
+function resolvedRunModel(run: RunRecord, requested: string | null | undefined): string | null {
+  return requested
+    ?? stringConfigValue(recordValue(run.model_override_json).model);
 }
 
 function outputJsonWithVerification(

@@ -17,7 +17,7 @@ import { runCliLogin, sendCliLoginInput } from "./loginEngine";
 import { CLI_LOGIN_ADAPTERS, cliLoginAdapterFor } from "./loginAdapters";
 import { readClaudeTokenUsage, unsupportedTokenUsage, type TokenUsage } from "./usageReader";
 import { readCodexTokenUsage } from "./codexUsageReader";
-import { probeClaudeQuota, type QuotaResult } from "./usageProbe";
+import type { QuotaResult } from "./usageProbe";
 import { probeClaudeOAuthQuota } from "./claudeOAuthUsageProbe";
 import { probeCodexQuota } from "./codexUsageProbe";
 import { CLI_USAGE_REFRESH_INTERVAL_SECONDS } from "./usageScheduler";
@@ -26,6 +26,9 @@ import { CLI_USAGE_REFRESH_INTERVAL_SECONDS } from "./usageScheduler";
 const CLI_USAGE_REFRESH_INTERVAL_MS = CLI_USAGE_REFRESH_INTERVAL_SECONDS * 1000;
 import { RuntimeToolRegistry } from "../../runtimeTools";
 import { resolveNetworkProfileRepository } from "../../networkProfiles";
+import { SandboxRunnerCliCommandExecutor } from "../../sandboxRunner/client";
+import { subscriptionEgressLeases, type SubscriptionRuntime } from "../proxy/subscriptionEgress";
+import { SandboxRunnerPtyFactory } from "../../sandboxRunner/ptyFactory";
 import { isSpaceOwnerOrAdmin } from "../../access/roles";
 import {
   ProviderCommandNotFoundError,
@@ -536,56 +539,19 @@ export class CliCredentialBroker {
               runtime,
               profile_id: profile.id,
               source: "claude_oauth_usage_api",
-              fallback_source: "claude_pty_usage_fallback",
               error: errorSummary(oauthError),
             },
-            "Claude OAuth usage probe failed; falling back to PTY usage probe",
+            "Claude OAuth usage probe failed; application-server CLI fallback is disabled",
           );
-          // HOME with .claude symlinked to the profile, so the CLI fallback
-          // authenticates with managed credentials and never touches host HOME.
-          const probeRunId = `usage-probe-${randomUUID()}`;
-          const probeHome = await this.createTempHome(probeRunId, profile);
-          try {
-            quota = await probeClaudeQuota(probeHome, new RuntimeToolRegistry(this.config));
-            if (quota.available) {
-              this.logger?.info(
-                {
-                  runtime,
-                  profile_id: profile.id,
-                  source: "claude_pty_usage_fallback",
-                  available: quota.available,
-                  session_pct: quota.session_pct,
-                  week_pct: quota.week_pct,
-                  error: quota.error,
-                },
-                "Claude PTY usage fallback probe succeeded",
-              );
-            } else {
-              this.logger?.warn(
-                {
-                  runtime,
-                  profile_id: profile.id,
-                  source: "claude_pty_usage_fallback",
-                  available: quota.available,
-                  error: quota.error,
-                },
-                "Claude PTY usage fallback probe returned no quota",
-              );
-            }
-          } catch (ptyError) {
-            this.logger?.warn(
-              {
-                runtime,
-                profile_id: profile.id,
-                source: "claude_pty_usage_fallback",
-                error: errorSummary(ptyError),
-              },
-              "Claude PTY usage fallback probe failed",
-            );
-            throw ptyError;
-          } finally {
-            await this.cleanupRunHome(probeRunId);
-          }
+          quota = {
+            available: false,
+            session_pct: null,
+            session_resets: null,
+            week_pct: null,
+            week_resets: null,
+            checked_at: null,
+            error: errorSummary(oauthError),
+          };
         }
       }
       quota.checked_at = new Date().toISOString();
@@ -606,14 +572,26 @@ export class CliCredentialBroker {
       } else {
         const probeRunId = `usage-probe-codex-${randomUUID()}`;
         const probeHome = await this.createTempHome(probeRunId, profile);
+        const probeWorkspace = join(this.config.sandboxRoot, "usage-probes", probeRunId);
+        await mkdir(probeWorkspace, { recursive: true, mode: 0o700 });
+        const egress = subscriptionEgressLeases.create("codex_cli", 30_000);
         try {
           quota = await probeCodexQuota(
-            profile.source_path,
+            join(probeHome, ".codex"),
             probeHome,
             new RuntimeToolRegistry(this.config),
+            undefined,
+            {
+              executor: new SandboxRunnerCliCommandExecutor(this.config, "codex_cli"),
+              run_id: probeRunId,
+              workspace_cwd: probeWorkspace,
+              proxy_url: egress.proxy_url,
+            },
           );
         } finally {
+          subscriptionEgressLeases.revoke(egress.id);
           await this.cleanupRunHome(probeRunId);
+          await rm(probeWorkspace, { recursive: true, force: true });
         }
       }
       quota.checked_at = new Date().toISOString();
@@ -1119,10 +1097,31 @@ export class CliCredentialBroker {
     sessionKey = `${runtime}:${profile.id}`;
     const loginHome = join(this.loginHomesRoot, safeRuntime, resolvedProfileId ?? "default");
     const tools = new RuntimeToolRegistry(this.config);
+    const loginRunId = `login-${randomUUID()}`;
+    const loginWorkspace = join(this.config.sandboxRoot, "logins", loginRunId);
+    await mkdir(loginWorkspace, { recursive: true, mode: 0o700 });
+    const egress = subscriptionEgressLeases.create(runtime as SubscriptionRuntime, 15 * 60_000);
     reply.raw.write(sse({ type: "profile", profile_id: resolvedProfileId }));
-    await runCliLogin(runtime, adapter, profileDir, (event) => {
-      reply.raw.write(sse(event));
-    }, undefined, tools, loginHome, resolvedProfileId, sessionKey);
+    try {
+      await runCliLogin(runtime, adapter, profileDir, (event) => {
+        reply.raw.write(sse(event));
+      }, undefined, tools, loginHome, resolvedProfileId, sessionKey,
+      new SandboxRunnerPtyFactory(
+        this.config,
+        runtime as SubscriptionRuntime,
+        loginRunId,
+        loginWorkspace,
+        egress.proxy_url,
+      ));
+    } finally {
+      subscriptionEgressLeases.revoke(egress.id);
+      await rm(loginWorkspace, { recursive: true, force: true });
+    }
+    await db.query(
+      `UPDATE cli_credential_profiles SET updated_at=now()
+        WHERE id=$1 AND owner_user_id=$2`,
+      [resolvedProfileId, userId],
+    );
     reply.raw.end();
   }
 

@@ -5,10 +5,12 @@ import {
   type ProjectAttentionItem,
 } from "../projects/attentionRegistry";
 import {
+  projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
   type ModeOverviewProjection,
-  type ProjectModeAreaAdapter,
-  type ProjectAreaSummary,
+  type ProjectEntitySummary,
+  type ProjectEntitySummaryAdapter,
+  type ProjectModeProjectionAdapter,
 } from "../projects/overviewRegistry";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 
@@ -38,7 +40,7 @@ async function deliveryTasks(
   return result.rows;
 }
 
-const deliveryModeAdapter: ProjectModeAreaAdapter = {
+const deliveryModeAdapter: ProjectModeProjectionAdapter = {
   mode: "delivery",
   async getOverviewProjection(db, identity, projectId): Promise<ModeOverviewProjection> {
     const tasks = await deliveryTasks(db, identity, projectId);
@@ -64,14 +66,6 @@ const deliveryModeAdapter: ProjectModeAreaAdapter = {
         href: `/projects/${projectId}/delivery`,
         kind: open.length > 0 ? "execute" : "plan",
       }],
-    };
-  },
-  async getAreaSummary(db, identity, projectId): Promise<ProjectAreaSummary> {
-    const tasks = await deliveryTasks(db, identity, projectId);
-    const open = tasks.filter((task) => !["done", "cancelled"].includes(task.status));
-    return {
-      count: open.length,
-      status: open.some((task) => task.status === "blocked") ? "blocked" : "ok",
     };
   },
 };
@@ -103,7 +97,26 @@ const deliveryAttentionAdapter: ProjectAttentionAdapter = {
   },
 };
 
+/** Tasks are Delivery's entity. The Mode projection above says what to do
+ *  next; this row says how much of it there is. */
+const deliveryTaskSummaryAdapter: ProjectEntitySummaryAdapter = {
+  entityType: "task",
+  label: "Tasks",
+  detail: "Work items assigned and tracked",
+  href: (projectId) => `/projects/${projectId}/delivery`,
+
+  async getSummary(db, identity, projectId): Promise<ProjectEntitySummary> {
+    const tasks = await deliveryTasks(db, identity, projectId);
+    const open = tasks.filter((task) => !["done", "cancelled"].includes(task.status));
+    return {
+      count: open.length,
+      status: open.some((task) => task.status === "blocked") ? "blocked" : "ok",
+    };
+  },
+};
+
 export function registerTasksProjectIntegration(): void {
   projectModeProjectionRegistry.register(deliveryModeAdapter);
+  projectEntitySummaryRegistry.register(deliveryTaskSummaryAdapter);
   projectAttentionRegistry.register(deliveryAttentionAdapter);
 }

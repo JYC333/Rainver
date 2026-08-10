@@ -79,6 +79,7 @@ describe("ContentAccessService", () => {
       {
         visibility: "selected_users",
         access_level: "summary",
+        project_id: null,
         grants: [{ user_id: "member-1", access_level: "full" }],
       },
     );
@@ -102,6 +103,7 @@ describe("ContentAccessService", () => {
       {
         visibility: "space_shared",
         access_level: "summary",
+        project_id: null,
         grants: [{ user_id: "member-1", access_level: "full" }],
       },
     );
@@ -124,7 +126,7 @@ describe("ContentAccessService", () => {
       { spaceId: "space-1", userId: "owner-1" },
       "artifact",
       "artifact-1",
-      { visibility: "space_shared", access_level: "full", grants: [] },
+      { visibility: "space_shared", access_level: "full", project_id: null, grants: [] },
     );
 
     expect(result).toMatchObject({ visibility: "space_shared", grants: [] });
@@ -139,10 +141,29 @@ describe("ContentAccessService", () => {
       { spaceId: "space-1", userId: "owner-1" },
       "artifact",
       "artifact-1",
-      { visibility: "private", access_level: "full", grants: [] },
+      { visibility: "private", access_level: "full", project_id: null, grants: [] },
     );
 
     expect(db.grants).toEqual([]);
+  });
+
+  it("rejects and rolls back a visibility demotion without an exposure disclosure", async () => {
+    const db = new AccessDb();
+    db.resource.visibility = "space_shared";
+    const service = new ContentAccessService(db as never);
+
+    await expect(service.updatePolicy(
+      { spaceId: "space-1", userId: "owner-1" },
+      "artifact",
+      "artifact-1",
+      { visibility: "private", access_level: "full", project_id: null, grants: [] },
+    )).rejects.toMatchObject({
+      statusCode: 409,
+      responseBody: { code: "demotion_disclosure_required" },
+    });
+
+    expect(db.resource.visibility).toBe("space_shared");
+    expect(db.calls.map((call) => call.sql.trim())).toContain("ROLLBACK");
   });
 
   it("rolls back when any grantee is not an active Space member", async () => {
@@ -156,6 +177,7 @@ describe("ContentAccessService", () => {
       {
         visibility: "selected_users",
         access_level: "full",
+        project_id: null,
         grants: [{ user_id: "outsider-1", access_level: "full" }],
       },
     )).rejects.toMatchObject({ statusCode: 422 });

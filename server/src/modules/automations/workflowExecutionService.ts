@@ -362,7 +362,6 @@ export class WorkflowExecutionService {
         runtime_profile_id: node.runtime_profile_id,
         runtime_profile_selection_source: node.runtime_profile_id ? "explicit" : "default",
         capability_id: node.capability_id,
-        context_artifact_ids: resolvedInputs.contextArtifactIds,
         workflow_version_id: input.target.versionId,
         contract_snapshot: {
           source: { kind: "workflow", id: input.target.versionId },
@@ -453,6 +452,13 @@ export class WorkflowExecutionService {
       `INSERT INTO workflow_execution_node_runs (id, space_id, node_id, run_id, role, resolved_inputs_json, created_at) VALUES ($1, $2, $3, $4, 'primary', $5::jsonb, $6)`,
       [randomUUID(), input.identity.spaceId, node.id, run.id, JSON.stringify(resolvedInputs), now],
     );
+    // Action handlers execute inside the WorkflowExecution transaction. A
+    // PostgreSQL statement error aborts that transaction until rollback; the
+    // failure recorder below must therefore have a savepoint to roll back to,
+    // otherwise it masks the actionable error with 25P02 and records nothing.
+    const transactional = typeof (input.db as Queryable & { release?: unknown }).release === "function";
+    const actionSavepoint = "workflow_action_handler";
+    if (transactional) await input.db.query(`SAVEPOINT ${actionSavepoint}`);
     try {
       const result = await handler({
         db: input.db,
@@ -513,6 +519,7 @@ export class WorkflowExecutionService {
             WHERE id=$1 AND space_id=$2`,
           [node.id, input.identity.spaceId, completedAt],
         );
+        if (transactional) await input.db.query(`RELEASE SAVEPOINT ${actionSavepoint}`);
         return;
       }
       await input.db.query(
@@ -521,7 +528,12 @@ export class WorkflowExecutionService {
           WHERE id=$1 AND space_id=$2`,
         [node.id, input.identity.spaceId, completedAt],
       );
+      if (transactional) await input.db.query(`RELEASE SAVEPOINT ${actionSavepoint}`);
     } catch (error) {
+      if (transactional) {
+        await input.db.query(`ROLLBACK TO SAVEPOINT ${actionSavepoint}`);
+        await input.db.query(`RELEASE SAVEPOINT ${actionSavepoint}`);
+      }
       const failedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : String(error);
       const outputJson = error instanceof ActionNodeHandlerError ? error.outputJson : {};

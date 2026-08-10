@@ -138,18 +138,21 @@ capability/prompt/agent/runtime bindings, verification-recipe references, node
 contract metadata, and approval checkpoints. The protocol schema rejects
 duplicate/unknown dependencies and cycles, and caps definitions at 30 nodes.
 
-The built-in research templates are synchronized as system evolvable assets
-with approved built-in versions. User or space versions use the existing draft
-→ evaluation → promotion-proposal → approval path; the generic evolvable asset
-APIs do not grant approval directly.
+Project Research does not publish built-in workflow presets from its capability
+pack. Its internal immutable execution-per-pass definitions are created under
+`project_research.*` asset keys when a managed pass needs them; they are
+execution provenance, not user-selectable domain Templates. User or space
+workflow versions still use the existing draft → evaluation →
+promotion-proposal → approval path; the generic evolvable asset APIs do not
+grant approval directly.
 
 ### ProjectWorkflowProfile / Saved Workflow Preset
 
 `ProjectWorkflowProfile` is the database/API name for a saved project workflow
 preset. Product UI should call it a **Saved preset** rather than forcing users
-to learn another profile concept. For example, a project can save a
-`research.technical_survey` preset with project-source collection and
-`research_report.archive.v1` output.
+to learn another profile concept. For example, a Project can save a preset for
+a genuine user-authored Workflow whose source and output defaults differ from
+its base definition.
 
 Saved presets are scoped by `space_id` and `project_id`. They store reusable
 workflow defaults such as source mode and output artifact types. They do not
@@ -190,10 +193,10 @@ pure functions that produce deterministic:
   `agents/openai.yaml`
 - generic prompt blocks for `model_api`
 
-Context preparation writes generated Claude/Codex runtime skill files into the
-per-run sandbox when an enabled binding is selected for the run/adapter. The
-compiled context references those generated files through a mandatory runtime
-skill section; `model_api` bindings render inline prompt blocks.
+Runtime Context turns selected Claude/Codex skill renderings into typed,
+mandatory delegated-instruction items and persists them through the Gateway as
+ordered Delivery message blocks. No vendor instruction file is written.
+`model_api` bindings use the same path with their inline prompt block.
 
 ### WorkflowRunDraft
 
@@ -233,13 +236,11 @@ single primary capability field for compatibility.
 The framework is exposed through existing product areas rather than a separate
 plugin boundary:
 
-- Project detail pages include a Research workflow panel. The panel can run a
-  workflow directly from a template without creating a saved preset. Saving or
-  updating a `ProjectWorkflowProfile` is optional and used only to reuse
-  defaults. The panel builds `WorkflowRunDraft` payloads, shows warning/prompt/
-  output provenance, selects an Agent runtime profile only when multiple
-  enabled runtime choices exist, and queues normal agent runs through
-  `/api/v1/agents/:agentId/runs`.
+- Project Research uses its own governed standing and Thread-scoped focus
+  services. It does not expose the deleted zero-difference research workflow
+  presets. Internal passes still execute through immutable Workflow Executions,
+  while user-facing Project Research controls call the domain application
+  service rather than constructing generic run drafts in the browser.
 - The Capabilities page remains the control-plane inspection surface. It shows
   built-in packs/templates, GitHub skill package preview/import, imported skill
   review/convert proposal actions, and imported package details including
@@ -258,7 +259,7 @@ execution remains a normal queued agent run.
 
 ## Research Example
 
-Research starts as a capability pack with workflow templates and artifact type
+Research starts as a capability pack with reusable actions and artifact type
 mappings, not as a product plugin.
 
 The built-in `research` pack includes:
@@ -269,12 +270,9 @@ The built-in `research` pack includes:
 - `research.brief_synthesize`
 - `research.idea_generate`
 
-It also includes workflow templates:
-
-- `research.academic_literature_review`
-- `research.news_scan`
-- `research.market_research`
-- `research.technical_survey`
+It deliberately includes no built-in workflow templates. A preset is admitted
+only when it changes concrete behaviour or configuration; the four former
+label-only research templates were removed under that rule.
 
 The synthesis output artifact type is `research_report.archive.v1`; the
 user-facing report is the corresponding `project_research_reports` row.
@@ -317,15 +315,15 @@ one.
   closed.
 - Skill import and conversion are atomic units of work: a partial failure leaves
   no orphaned source, draft version, or runtime binding behind.
-- Runtime-generated Claude/Codex skill files are generated per run/sandbox, not
-  committed as source-of-truth files.
+- Claude/Codex renderer file representations are converted to Delivery content;
+  they are never written into the runtime sandbox.
 - `runtime_skill.render` is checked before rendering. The runtime provider must
   prove that an enabled capability enablement selected the binding. Enabled
   bindings of any risk may render because high/critical review happens at the
   owner-approved `capability_enable` proposal. Direct render policy checks
   without enablement proof fall back to registry approval.
-- Runtime skill source refs and retrieval trace record binding/version/path/hash
-  metadata, not raw generated file content.
+- Safe Invocation Snapshots record the selected binding/version source ref and
+  delivered content hash, not raw rendered instructions.
 - Unsupported source hosts fail closed in the MVP.
 - Private-network URL import is rejected in the MVP.
 
@@ -353,8 +351,8 @@ Policy actions:
 
 `skill.import`, `skill.convert`, `capability.update`, `capability.enable`,
 `capability.disable`, and `runtime_skill.binding_update` are proposal-governed
-actions enforced through `proposal.apply`. `runtime_skill.render` is wired
-directly in context preparation. `runtime_skill.execute` remains reserved until
+actions enforced through `proposal.apply`. `runtime_skill.render` is enforced
+during Runtime Context acquisition before Gateway Delivery. `runtime_skill.execute` remains reserved until
 a native execution path exists.
 
 ## Module Ownership
@@ -365,7 +363,7 @@ a native execution path exists.
   and project workflow profiles.
 - `runtimeAdapters` remains the adapter type/spec registry.
 - `runs` remains the execution lifecycle owner.
-- `context` remains the run context compiler and vendor context file writer.
+- `runtimeContext` remains the sole typed acquisition, planning, Delivery, and continuity authority.
 - `proposals` remains the review/apply orchestrator.
 
 ## Current Limitations

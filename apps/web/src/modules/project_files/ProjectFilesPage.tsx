@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { Folder, GitBranch, FileDiff, Loader, RefreshCw, Settings as SettingsIcon } from 'lucide-react'
+import { Folder, GitBranch, FileDiff, Loader, Plus, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { projectFoldersApi } from '../../api/client'
@@ -11,7 +11,9 @@ import { Select } from '../../components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Button } from '../../components/ui/button'
+import { ConfirmDialog } from '../../components/ui/dialog'
 import { CenterEmpty, DiffViewer, FileTreeNode, FileViewer, STATUS_VARIANT } from './ProjectFilesParts'
+import { CreateProjectFolderDialog } from './CreateProjectFolderDialog'
 
 type CenterView =
   | { mode: 'empty' }
@@ -28,6 +30,8 @@ export default function ProjectFilesPage() {
   const [folders, setFolders] = useState<ProjectFolder[]>([])
   const [selectedFolder, setSelectedFolder] = useState<ProjectFolder | null>(null)
   const [foldersLoading, setFoldersLoading] = useState(true)
+  const [createFolderOpen, setCreateFolderOpen] = useState(false)
+  const [folderToUnregister, setFolderToUnregister] = useState<ProjectFolder | null>(null)
 
   const [fileTree, setFileTree] = useState<FileNode | null>(null)
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
@@ -39,22 +43,36 @@ export default function ProjectFilesPage() {
   const [centerView, setCenterView] = useState<CenterView>({ mode: 'empty' })
   const [centerLoading, setCenterLoading] = useState(false)
 
-  useEffect(() => {
+  const loadFolders = useCallback(async () => {
     if (!projectId) return
     setFoldersLoading(true)
-    projectFoldersApi.list(projectId, { limit: '200' })
-      .then(page => {
-        setFolders(page.items)
-        setSelectedFolder(current => {
-          if (current && page.items.some(f => f.id === current.id)) return current
-          const target = preselectedId ? page.items.find(f => f.id === preselectedId) : null
-          return target ?? page.items[0] ?? null
-        })
+    try {
+      const page = await projectFoldersApi.list(projectId, { limit: '200' })
+      setFolders(page.items)
+      setSelectedFolder(current => {
+        if (current && page.items.some(f => f.id === current.id)) return current
+        const target = preselectedId ? page.items.find(f => f.id === preselectedId) : null
+        return target ?? page.items[0] ?? null
       })
-      .catch(e => toast.error(errMsg(e)))
-      .finally(() => setFoldersLoading(false))
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setFoldersLoading(false)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
+
+  useEffect(() => { void loadFolders() }, [loadFolders])
+
+  async function unregisterFolder(folder: ProjectFolder) {
+    try {
+      await projectFoldersApi.unregister(projectId, folder.id)
+      toast.success('Project Folder unregistered')
+      await loadFolders()
+    } catch (e) {
+      toast.error(errMsg(e))
+    }
+  }
 
   const loadTree = useCallback(async (folder: ProjectFolder) => {
     setTreeLoading(true)
@@ -127,7 +145,13 @@ export default function ProjectFilesPage() {
         <EmptyState
           title="No Project Folders yet"
           description="Create a managed Folder, clone a repository, or connect an allowed existing directory. Chat and non-file workflows remain available without a Folder."
-          action={<Button asChild><Link to={`/projects/${projectId}?create_folder=1`}>Create or connect Folder</Link></Button>}
+          action={<Button onClick={() => setCreateFolderOpen(true)}>Create or connect Folder</Button>}
+        />
+        <CreateProjectFolderDialog
+          projectId={projectId}
+          open={createFolderOpen}
+          onOpenChange={setCreateFolderOpen}
+          onCreated={() => { void loadFolders() }}
         />
       </div>
     )
@@ -135,6 +159,27 @@ export default function ProjectFilesPage() {
 
   return (
     <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100vh - 56px)' }}>
+      <CreateProjectFolderDialog
+        projectId={projectId}
+        open={createFolderOpen}
+        onOpenChange={setCreateFolderOpen}
+        onCreated={() => { void loadFolders() }}
+      />
+      {/* This toolbar button acts on whichever Folder is selected rather than
+          on one the user pointed at in a list, and unregistering removes the
+          registration row outright, so name the target before doing it. */}
+      <ConfirmDialog
+        open={Boolean(folderToUnregister)}
+        onOpenChange={open => { if (!open) setFolderToUnregister(null) }}
+        title={`Unregister “${folderToUnregister?.name ?? ''}”?`}
+        description="This Project stops tracking the Folder. The directory itself is never deleted, moved, or rewritten."
+        confirmLabel="Unregister Folder"
+        onConfirm={() => {
+          const target = folderToUnregister
+          setFolderToUnregister(null)
+          if (target) void unregisterFolder(target)
+        }}
+      />
       <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b bg-card">
         <div
           className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
@@ -163,6 +208,19 @@ export default function ProjectFilesPage() {
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setCreateFolderOpen(true)}>
+            <Plus className="size-3.5" />
+            New Folder
+          </Button>
+          {selectedFolder && (
+            <button
+              onClick={() => setFolderToUnregister(selectedFolder)}
+              title={`Unregister ${selectedFolder.name}`}
+              className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-destructive"
+            >
+              <Trash2 className="size-3" />
+            </button>
+          )}
           {selectedFolder && (
             <Link
               to={`/projects/${projectId}/folders/${selectedFolder.id}`}

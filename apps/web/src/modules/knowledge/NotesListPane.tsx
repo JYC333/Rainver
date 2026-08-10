@@ -6,19 +6,24 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { fmt } from './notesPageModel'
 
 export function NotesListPane({
-  loading, hasSpace, hasCollections, collection, notes, searching, creating, canCreateNote, onOpen, onNew, titleFor,
+  loading, hasSpace, hasCollections, collection, notes, searching, creating, canCreateNote,
+  onOpen, onNew, titleFor, folderNamesFor,
 }: {
   loading: boolean
   hasSpace: boolean
   hasCollections: boolean
   collection: NoteCollection | null
   notes: NoteSummary[]
+  /** True while the list is a search result over the whole surface rather than
+   * one folder's contents. */
   searching: boolean
   creating: boolean
   canCreateNote: boolean
   onOpen: (id: string) => void
   onNew: () => void
   titleFor: (id: string) => string
+  /** Which folders a note lives in — shown on search results, which span them. */
+  folderNamesFor: (note: NoteSummary) => string[]
 }) {
   if (loading) return <div className="p-6"><Skeleton className="h-32 w-full" /></div>
 
@@ -30,7 +35,7 @@ export function NotesListPane({
     )
   }
 
-  if (!hasCollections || !collection) {
+  if (!hasCollections || (!collection && !searching)) {
     return (
       <div className="p-6">
         <EmptyState title="No note folders" description="Create a folder to start organizing notes." />
@@ -42,7 +47,7 @@ export function NotesListPane({
     return (
       <div className="p-6">
         <EmptyState
-          title={searching ? 'No matching notes' : `${collection.name} is empty`}
+          title={searching ? 'No matching notes' : `${collection?.name ?? 'This folder'} is empty`}
           description={searching ? 'Try a different search term.' : canCreateNote ? 'Create a note in this folder.' : 'Archived notes appear here after you archive them.'}
           action={!searching && canCreateNote ? (
             <Button size="sm" onClick={onNew} disabled={creating}>
@@ -67,6 +72,11 @@ export function NotesListPane({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1.5 mb-1">
                 <h2 className="font-medium text-sm">{titleFor(note.id)}</h2>
+                {searching && folderNamesFor(note).map(name => (
+                  <span key={name} className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    {name}
+                  </span>
+                ))}
               </div>
               {note.excerpt && <p className="text-sm text-muted-foreground line-clamp-2">{note.excerpt}</p>}
             </div>

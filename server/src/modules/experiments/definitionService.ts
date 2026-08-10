@@ -1,3 +1,5 @@
+import { contentReadSql } from "../access/contentAccessSql";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -64,6 +66,16 @@ function versionToOut(row: VersionRow): Record<string, unknown> {
  * change; see experiments/runService.ts for the managed_code_comparison
  * config shape it replaces).
  */
+
+// An Experiment Definition is an ontology object (ADR 0012): the former `name`
+// is the root's `title`, and ownership, provenance, and timestamps come from
+// `space_objects`.
+const DEFINITION_FROM = `experiment_definitions d
+     JOIN space_objects so ON so.id = d.object_id AND so.space_id = d.space_id`;
+const DEFINITION_COLUMNS = `d.object_id AS id, d.space_id, d.project_id, so.title AS name, d.objective,
+    d.primary_hypothesis_thread_id, d.status, d.baseline_run_id, d.best_run_id,
+    so.created_by_user_id, so.created_at, so.updated_at`;
+
 export class ExperimentDefinitionService {
   constructor(private readonly db: Queryable) {}
 
@@ -76,13 +88,24 @@ export class ExperimentDefinitionService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       if (threadId) await this.assertThreadInProject(db, identity.spaceId, projectId, threadId);
       const id = randomUUID();
+      const object = buildSpaceObjectInsert({
+        id,
+        spaceId: identity.spaceId,
+        objectType: "experiment",
+        title: name,
+        ownerUserId: identity.userId,
+        primaryProjectId: projectId,
+        createdByUserId: identity.userId,
+        createdAt: now,
+      });
+      await db.query(object.sql, object.params);
       await db.query(
         `INSERT INTO experiment_definitions (
-           id, space_id, project_id, name, objective, primary_hypothesis_thread_id, status, created_by_user_id, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7, $8, $8)`,
-        [id, identity.spaceId, projectId, name, optionalString(body.objective), threadId, identity.userId, now],
+           object_id, space_id, project_id, objective, primary_hypothesis_thread_id, status
+         ) VALUES ($1, $2, $3, $4, $5, 'draft')`,
+        [id, identity.spaceId, projectId, optionalString(body.objective), threadId],
       );
-      const row = await this.definitionRow(identity.spaceId, projectId, id, db);
+      const row = await this.definitionRow(identity.spaceId, projectId, id, identity.userId, db);
       if (!row) throw new HttpError(500, "Failed to create Experiment Definition");
       return definitionToOut(row);
     });
@@ -97,7 +120,7 @@ export class ExperimentDefinitionService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const current = await this.definitionRow(identity.spaceId, projectId, definitionId, db);
+      const current = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (!current) throw new HttpError(404, "Experiment Definition not found");
       const status = body.status === undefined ? current.status : (enumValue(body.status, DEFINITION_STATUSES) ?? current.status);
       const threadId = body.primary_hypothesis_thread_id === undefined ? current.primary_hypothesis_thread_id : optionalString(body.primary_hypothesis_thread_id);
@@ -118,13 +141,17 @@ export class ExperimentDefinitionService {
       }
       const now = new Date().toISOString();
       await db.query(
-        `UPDATE experiment_definitions SET status=$4, objective=$5, primary_hypothesis_thread_id=$6, updated_at=$7
-          WHERE id=$1 AND space_id=$2 AND project_id=$3`,
+        `UPDATE experiment_definitions SET status=$4, objective=$5, primary_hypothesis_thread_id=$6
+          WHERE object_id=$1 AND space_id=$2 AND project_id=$3`,
         [definitionId, identity.spaceId, projectId, status,
           body.objective === undefined ? current.objective : optionalString(body.objective),
-          threadId, now],
+          threadId],
       );
-      const updated = await this.definitionRow(identity.spaceId, projectId, definitionId, db);
+      await db.query(
+        `UPDATE space_objects SET updated_at=$1 WHERE id=$2 AND space_id=$3`,
+        [now, definitionId, identity.spaceId],
+      );
+      const updated = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (!updated) throw new HttpError(500, "Failed to update Experiment Definition");
       return definitionToOut(updated);
     });
@@ -133,15 +160,20 @@ export class ExperimentDefinitionService {
   async listDefinitions(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<DefinitionRow>(
-      `SELECT * FROM experiment_definitions WHERE space_id=$1 AND project_id=$2 ORDER BY created_at DESC, id ASC`,
-      [identity.spaceId, projectId],
+      // Same reason as Decision Cases: the root's visibility is what decides
+      // who sees an Experiment now that it is an ontology object.
+      `SELECT ${DEFINITION_COLUMNS} FROM ${DEFINITION_FROM}
+        WHERE d.space_id=$1 AND d.project_id=$2
+          AND ${contentReadSql("space_object", "so", "$3")}
+        ORDER BY so.created_at DESC, d.object_id ASC`,
+      [identity.spaceId, projectId, identity.userId],
     );
     return rows.rows.map(definitionToOut);
   }
 
   async getDefinition(identity: SpaceUserIdentity, projectId: string, definitionId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const row = await this.definitionRow(identity.spaceId, projectId, definitionId);
+    const row = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId);
     if (!row) throw new HttpError(404, "Experiment Definition not found");
     const versions = await this.db.query<VersionRow>(
       `SELECT * FROM experiment_versions WHERE space_id=$1 AND definition_id=$2 ORDER BY version DESC`,
@@ -166,7 +198,7 @@ export class ExperimentDefinitionService {
     }
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const definition = await this.definitionRow(identity.spaceId, projectId, definitionId, db);
+      const definition = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (!definition) throw new HttpError(404, "Experiment Definition not found");
       if (definition.status === "completed" || definition.status === "archived") {
         throw new HttpError(409, `Cannot add a Version to a ${definition.status} Experiment`);
@@ -202,7 +234,7 @@ export class ExperimentDefinitionService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const definition = await this.definitionRow(identity.spaceId, projectId, definitionId, db);
+      const definition = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (!definition) throw new HttpError(404, "Experiment Definition not found");
       if (definition.status === "completed" || definition.status === "archived") {
         throw new HttpError(409, `Cannot approve a Version on a ${definition.status} Experiment`);
@@ -231,7 +263,7 @@ export class ExperimentDefinitionService {
 
   async listVersions(identity: SpaceUserIdentity, projectId: string, definitionId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await this.requireDefinition(identity.spaceId, projectId, definitionId);
+    await this.requireDefinition(identity.spaceId, projectId, definitionId, identity.userId);
     const rows = await this.db.query<VersionRow>(
       `SELECT * FROM experiment_versions WHERE space_id=$1 AND definition_id=$2 ORDER BY version DESC`,
       [identity.spaceId, definitionId],
@@ -239,16 +271,29 @@ export class ExperimentDefinitionService {
     return rows.rows.map(versionToOut);
   }
 
-  private async definitionRow(spaceId: string, projectId: string, definitionId: string, db: Queryable = this.db): Promise<DefinitionRow | null> {
+  /**
+   * The single-Definition lookup. It applies the object read gate for the same
+   * reason the list does: a visibility rule that holds for the list but not for
+   * a direct fetch is not a rule.
+   */
+  private async definitionRow(
+    spaceId: string,
+    projectId: string,
+    definitionId: string,
+    viewerUserId: string,
+    db: Queryable = this.db,
+  ): Promise<DefinitionRow | null> {
     const result = await db.query<DefinitionRow>(
-      `SELECT * FROM experiment_definitions WHERE id=$1 AND space_id=$2 AND project_id=$3`,
-      [definitionId, spaceId, projectId],
+      `SELECT ${DEFINITION_COLUMNS} FROM ${DEFINITION_FROM}
+        WHERE d.object_id=$1 AND d.space_id=$2 AND d.project_id=$3
+          AND ${contentReadSql("space_object", "so", "$4")}`,
+      [definitionId, spaceId, projectId, viewerUserId],
     );
     return result.rows[0] ?? null;
   }
 
-  async requireDefinition(spaceId: string, projectId: string, definitionId: string, db: Queryable = this.db): Promise<DefinitionRow> {
-    const row = await this.definitionRow(spaceId, projectId, definitionId, db);
+  async requireDefinition(spaceId: string, projectId: string, definitionId: string, viewerUserId: string, db: Queryable = this.db): Promise<DefinitionRow> {
+    const row = await this.definitionRow(spaceId, projectId, definitionId, viewerUserId, db);
     if (!row) throw new HttpError(404, "Experiment Definition not found");
     return row;
   }
@@ -256,7 +301,7 @@ export class ExperimentDefinitionService {
   private async assertThreadInProject(db: Queryable, spaceId: string, projectId: string, threadId: string): Promise<void> {
     const thread = await db.query(
       `SELECT 1 FROM inquiry_threads
-        WHERE id=$1 AND space_id=$2 AND project_id=$3 AND kind='hypothesis'`,
+        WHERE object_id=$1 AND space_id=$2 AND project_id=$3 AND kind='hypothesis'`,
       [threadId, spaceId, projectId],
     );
     if (!thread.rows[0]) {

@@ -12,7 +12,8 @@ import { writeNote } from "../src/modules/knowledge/noteRevisionService";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { PgReaderRepository } from "../src/modules/reader/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 const SPACE = "11111111-1111-4111-8111-111111111111"; const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const PROJECT = "55555555-5555-4555-8555-555555555555";
 const PROVIDER = "99999999-9999-4999-8999-999999999999";
@@ -22,6 +23,7 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[research-area-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
@@ -38,7 +40,7 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => { await pool?.end(); await database?.stop(); });
 afterEach(() => { __setProviderHttpClientForTests(null); });
-beforeEach(async () => { if (!available || !pool) return; await pool.query(`TRUNCATE research_checklist_items,research_paper_cards,note_revisions,note_collection_items,note_collections,notes,space_objects,project_corpus_items,source_items,projects,space_memberships,users,spaces,runs,agent_runtime_profiles,agent_versions,agents,model_provider_space_grants,model_providers CASCADE`); const now = new Date().toISOString(); await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]); await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
+beforeEach(async () => { if (!available || !pool) return; await pool.query(`TRUNCATE research_checklist_items,research_evidence_cards,note_revisions,note_collection_items,note_collections,notes,space_objects,project_corpus_items,source_items,projects,space_memberships,users,spaces,runs,agent_runtime_profiles,agent_versions,agents,model_provider_space_grants,model_providers CASCADE`); const now = new Date().toISOString(); await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]); await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
   await pool.query(`INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at) VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`, [PROVIDER, SPACE, USER, now]);
   await pool.query(`INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at) VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`, [randomUUID(), PROVIDER, SPACE, USER, now]);
 });
@@ -151,12 +153,12 @@ describe("Research Area (real Postgres)", () => {
     await pool.query(`INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,read_status,created_at,updated_at) VALUES ($1,$2,$3,$4,'candidate','active','relevant',true,'unread',$5,$5)`, [corpus, SPACE, PROJECT, item, now]);
     await seedCorpusSourceProvenance(corpus, item, now);
     const service = new ProjectResearchAreaService(pool);
-    const first = await service.materializePaperCardsFromDeepAnalysis({ spaceId: SPACE, projectId: PROJECT, runId: randomUUID(), summaries: [{ source_item_id: item, summary_markdown: "WHY: Relevant\nHOW: Experiment\nWHAT: Result" }] });
+    const first = await service.materializeEvidenceCardsFromDeepAnalysis({ spaceId: SPACE, projectId: PROJECT, runId: randomUUID(), summaries: [{ source_item_id: item, summary_markdown: "WHY: Relevant\nHOW: Experiment\nWHAT: Result" }] });
     expect(first).toBe(1);
-    await service.upsertPaperCard({ spaceId: SPACE, userId: USER }, PROJECT, item, { why_md: "My reason", how_md: "My method", what_md: "My result" });
-    const second = await service.materializePaperCardsFromDeepAnalysis({ spaceId: SPACE, projectId: PROJECT, runId: randomUUID(), summaries: [{ source_item_id: item, summary_markdown: "WHY: Replaced\nHOW: Replaced\nWHAT: Replaced" }] });
+    await service.upsertEvidenceCard({ spaceId: SPACE, userId: USER }, PROJECT, item, { why_md: "My reason", how_md: "My method", what_md: "My result" });
+    const second = await service.materializeEvidenceCardsFromDeepAnalysis({ spaceId: SPACE, projectId: PROJECT, runId: randomUUID(), summaries: [{ source_item_id: item, summary_markdown: "WHY: Replaced\nHOW: Replaced\nWHAT: Replaced" }] });
     expect(second).toBe(0);
-    expect((await pool.query(`SELECT why_md,edited_by_user FROM research_paper_cards WHERE source_item_id=$1`, [item])).rows[0]).toEqual({ why_md: "My reason", edited_by_user: true });
+    expect((await pool.query(`SELECT why_md,edited_by_user FROM research_evidence_cards WHERE source_item_id=$1`, [item])).rows[0]).toEqual({ why_md: "My reason", edited_by_user: true });
   });
 
   it("materializes every monitoring stance as an Evidence Signal and only escalates material comparisons", async () => {
@@ -175,14 +177,13 @@ describe("Research Area (real Postgres)", () => {
       kind: "question" as const,
       statement: String(thread.statement),
     }];
-    await pool.query(
-      `INSERT INTO project_research_workflows (id,space_id,project_id,workflow_type,status,mode,state_json,started_by_user_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'literature_review','active','autonomous',$6::jsonb,$4,$5,$5)`,
-      [workflow, SPACE, PROJECT, USER, now, JSON.stringify({
+    await insertResearchWorkflowFixture(pool, {
+      id: workflow, spaceId: SPACE, projectId: PROJECT, startedByUserId: USER,
+      primaryThreadId: String(thread.id), state: {
         research_question: "Does the effect replicate?",
         thread_scope: threadScope,
-      })],
-    );
+      }, now,
+    });
     await pool.query(
       `INSERT INTO project_operations (
          id, space_id, project_id, kind, title, status, progress_json,
@@ -224,7 +225,20 @@ describe("Research Area (real Postgres)", () => {
     expect((await pool.query(`SELECT supports_count,contradicts_count,new_direction_count FROM research_scan_summaries WHERE operation_id=$1`, [operation])).rows[0])
       .toEqual({ supports_count: 1, contradicts_count: 1, new_direction_count: 0 });
     // The notebook is untouched — monitoring no longer co-edits it directly.
-    const section = (await pool.query(`SELECT n.version,n.plain_text,n.refs_json FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id WHERE so.primary_project_id=$1 AND so.title='Current understanding'`, [PROJECT])).rows[0];
+    // Resolved by role, and refs read from the note's latest revision: the
+    // title binding and `notes.refs_json` are both gone (NA, N8).
+    const section = (await pool.query(
+      `SELECT n.version, n.plain_text, nr.refs_json
+         FROM notes n
+         JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
+         LEFT JOIN LATERAL (
+           SELECT refs_json FROM note_revisions
+            WHERE note_id=n.object_id AND space_id=n.space_id
+            ORDER BY version DESC LIMIT 1
+         ) nr ON true
+        WHERE n.role_project_id=$1 AND n.project_role='understanding'`,
+      [PROJECT],
+    )).rows[0];
     expect(section).toMatchObject({ version: 1, refs_json: [] });
 
     const signals = (await pool.query<{ classification: string; is_material: boolean; status: string; thread_id: string }>(
@@ -276,11 +290,10 @@ describe("Research Area (real Postgres)", () => {
     const now = new Date().toISOString(); const workflow = randomUUID(); const sourceItem = randomUUID();
     const service = new ProjectResearchAreaService(pool);
     const area = await service.initializeArea({ spaceId: SPACE, userId: USER }, PROJECT);
-    await pool.query(
-      `INSERT INTO project_research_workflows (id,space_id,project_id,workflow_type,current_stage,status,mode,state_json,started_by_user_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'literature_review','monitoring','active','autonomous','{}'::jsonb,$4,$5,$5)`,
-      [workflow, SPACE, PROJECT, USER, now],
-    );
+    await insertResearchWorkflowFixture(pool, {
+      id: workflow, spaceId: SPACE, projectId: PROJECT, startedByUserId: USER,
+      currentStage: "monitoring", now,
+    });
     await pool.query(
       `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,metadata_json,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
        VALUES ($1,$2,$3,'space_shared','feed_entry','Cited paper',$4::jsonb,$5,$5,'excerpt_saved','summary_only',$5,$5)`,
@@ -294,7 +307,16 @@ describe("Research Area (real Postgres)", () => {
     );
     await seedCorpusSourceProvenance(corpusItemId, sourceItem, now);
     const understandingId = area.notes[0]!.id;
-    await pool.query(`UPDATE notes SET refs_json=$2::jsonb WHERE object_id=$1`, [understandingId, JSON.stringify([sourceItem])]);
+    // Refs live on `note_revisions` now (N8), and the only writer is
+    // `writeNote` — so the fixture goes through it rather than reaching past
+    // it into a column, which is what let the old copy drift in the first place.
+    await writeNote(pool, {
+      spaceId: SPACE,
+      noteId: understandingId,
+      content: { kind: "doc", doc: { type: "doc", content: [] } },
+      source: "ai_adhoc",
+      refs: [sourceItem],
+    });
     const monitor = new ProjectResearchIntegrityMonitorService(pool, async () => ({ message: { "updated-by": [
       { DOI: "10.1000/retraction", type: "retraction", source: "retraction-watch" },
     ] } }));

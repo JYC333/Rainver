@@ -86,6 +86,7 @@ const docPayload: ReaderDocumentPayload = {
   document_type: 'source_item',
   document_id: 'item-1',
   space_id: 'space-1',
+  project_id: null,
   title: 'Signals in Long-Form Reading',
   plain_text: 'First paragraph.\n\nSecond paragraph.',
   normalized_text: 'First paragraph. Second paragraph.',
@@ -108,6 +109,7 @@ function makeAnnotation(overrides: Partial<ReaderAnnotation> = {}): ReaderAnnota
   return {
     id: 'ann-1',
     space_id: 'space-1',
+    project_id: null,
     document_type: 'source_item',
     document_id: 'item-1',
     annotation_type: 'highlight',
@@ -295,7 +297,6 @@ describe('LibraryItemReaderPage', () => {
       document_id: 'item-1',
       annotation_type: 'highlight',
       quote_text: 'Second paragraph.',
-      visibility: 'private',
       anchor_json: expect.objectContaining({
         schema_version: 1,
         normalizer: 'plain_text_v1',

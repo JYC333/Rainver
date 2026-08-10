@@ -3,8 +3,14 @@
 ## Status
 
 **IMPLEMENTED** — frontend reading surface lives in
-`apps/web/src/modules/library/`. Backend collection reads are served by Sources;
-document and annotation reads use the shared Reader API under `/api/v1/reader/*`.
+`apps/web/src/modules/library/`. Cross-source delivery is owned by the
+`informationDigest` backend module; raw collection and per-source briefing
+reads remain in Sources. Document and annotation reads use the shared Reader
+API under `/api/v1/reader/*`.
+
+Reader annotation creation has no visibility picker. An annotation inherits its
+document's Space, `project_id`, and visibility; annotation-derived Evidence then
+inherits the annotation's scope and access policy.
 
 ## Purpose
 
@@ -31,11 +37,53 @@ source pipeline, subscription model, data model, and API.
   These are soft read-time filters over source metadata, URL/domain hints, and
   MIME/content-type hints. They are not source import requirements and do not
   create hard schema categories.
-- Library digests (`/library/digests`, `/library/digests/:connectionId/:date`):
-  one followed source connection x local-day entry per successful
-  post-processing output group when the current user's subscription has
-  `digest_enabled=true`, with rendered digest markdown, item decision groups,
-  per-item summaries, and links into the item reader.
+- Library daily digest (`/library/digests`): one deterministic cross-source
+  selection per reader and UTC day from subscribed channels with
+  `digest_enabled=true`. Before selection, the automatic deterministic fact
+  layer accounts for newly annotated items using this reader's private state;
+  explicitly ignored items do not affect coverage or topic candidates. The
+  cold branch ranks by recency plus source-diversity fairness; warming/warm
+  profiles add explicit topic-match scores. Every persisted slot records its
+  quota key, matched topic, component scores, and rationale.
+  The private profile card lets the owner accept/dismiss recurring-phrase
+  suggestions, directly create/edit/archive topics, configure maturity,
+  ranking, decay, cooldown and probe parameters, apply optional idempotent
+  starter packs, or explicitly queue a bounded annotation backfill. None is a
+  prerequisite for cold-start delivery.
+  A second, separately budgeted "Outside your usual view" section draws the
+  configured number of items from the owner-private serendipity standby pool. Its first quota is
+  reserved for a genuinely distant domain when one is available; remaining
+  capacity prefers adjacent domains, with depth/genre inversion and a visible
+  explanation. It never reads or writes implicit feedback into the interest
+  profile.
+  Each delivered serendipity item offers exactly one explicit response:
+  Interesting (default 7-day cooldown), Neutral (default 30-day cooldown), or Never this
+  direction again (permanent owner blocklist). Active cooldowns affect both
+  standby delivery and weekly probe rotation. The permanent block also closes
+  still-pending system Source recommendations for that direction, but never
+  changes an accepted subscription.
+  Annotation v2 also carries an objective normalized stance target and
+  conclusion direction. When standby material contains the opposite direction
+  on a target the reader has actually read, the remaining non-distant slot
+  prefers it and explains the opposition; absent a real match, ordinary
+  adjacent/exploration selection continues.
+  Any personal digest item can be filed one-way into an active Project Corpus;
+  the existing Project writer gate remains authoritative and the digest sends
+  only the source-item reference plus provenance metadata for that action.
+- Per-source run briefings remain below the daily selection and at
+  `/library/digests/:connectionId/:date`; they are diagnostics/history for one
+  processing rule, not the cross-source aggregation unit.
+- Project digest (`/projects/:projectId/digest`): one shared snapshot per
+  Project/day from Source items entering the Project Corpus that day. It uses
+  Project triage/confidence rather than personal interests and has no
+  serendipity quota. Each member's rendering joins their own
+  `source_item_user_states`; private reading state is never copied into the
+  shared digest.
+  Item-level team reading counts render only at 3 or more active-member
+  readers. If a Project has at least 3 active members, its digest may also list
+  Project Corpus domains with zero active-member reads as anonymous team blind
+  spots. Below that cohort threshold neither counts nor blind spots are
+  returned.
 - Single-item reader routes:
   - `/library/items/:itemId`
   - `/library/digests/:connectionId/:date/items/:itemId`
@@ -55,6 +103,29 @@ source pipeline, subscription model, data model, and API.
 ## Flow
 
 ```
+source_connection_user_subscriptions (subscribed + digest_enabled)
+  + source_channel_item_links + source_item_annotations
+  + owner-private interest profile when maturity != cold
+  -> information_digests + information_digest_items
+  -> GET /api/v1/spaces/:spaceId/information-digests/personal
+  -> /library/digests
+
+weekly information_digest probe
+  + code-owned domain gaps + Brave Source connector (configured hard budget; default 3 requests)
+  + pending recommendations for existing space-shared Sources
+  -> information_digest_serendipity_pool
+  -> separate daily serendipity quota (no delivery-time network call)
+
+explicit serendipity response
+  -> information_digest_serendipity_feedback (one immutable response/item)
+  -> information_digest_serendipity_domain_states (cooldown or manual block)
+  -X interest_profiles / interest_topics / interest_profile_* facts
+
+project_corpus_items created today + source_item_annotations
+  -> one information_digests Project snapshot
+  -> GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests
+  -> /projects/:projectId/digest
+
 source_connection_user_subscriptions (subscribed + digest_enabled)
   + source_post_processing_runs/artifacts/decisions
   -> GET /api/v1/sources/briefings
@@ -97,10 +168,12 @@ it does not mutate project source bindings or source subscriptions.
 - `apps/web/src/modules/library/`
 - `apps/web/src/components/reader/`
 - `server/src/modules/reader/`
+- `server/src/modules/informationDigest/`
 - `server/src/modules/sources/postProcessing/`
 - `server/migrations/0001_baseline.sql`
 
 ## Related Docs
 
+- [information-digest.md](information-digest.md)
 - [activity-inbox.md](activity-inbox.md)
 - [sources.md](sources.md)

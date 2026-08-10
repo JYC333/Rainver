@@ -52,7 +52,8 @@ Routes must live in module route files, not in `server.ts` or a shared API direc
 For capability/workflow/open-skill work, keep the ownership split explicit:
 `catalog` reads raw on-disk manifests, `capabilities` owns the product control
 plane, `runtimeAdapters` owns runtime adapter type metadata, `runs` owns
-execution, and generated runtime skill files are adapter artifacts.
+execution, and `runtimeContext` converts approved skill renderings into typed
+Delivery items without writing vendor instruction files.
 
 ## Public Facades And Imports
 
@@ -192,7 +193,7 @@ Deferred contribution points:
 Private/personal modules (e.g. diary) must default to `can_contribute_context: "opt_in"`
 and not contribute context unless the user has explicitly enabled it in settings. Editor-owned
 plugin documents may write their own domain tables directly; extracting them into Memory,
-Knowledge, ContextBuilder, or FlashCards must go through proposal/sources flows.
+Knowledge, Runtime Context acquisition, or FlashCards must go through proposal/sources flows.
 
 ## Ports
 
@@ -204,7 +205,7 @@ Use a `Protocol`/`ABC` when callers need substitution or tests need a fake. Exis
 | Provider command/store boundary | `server/src/modules/providers` |
 | Runtime adapter services | `server/src/modules/runs` and `runtimeAdapters` |
 | Memory repositories/read auth | `server/src/modules/memory` |
-| Context preparation | `server/src/modules/context` |
+| Runtime Context preparation and continuity | `server/src/modules/runtimeContext` |
 | Policy gateway | `server/src/modules/policy` |
 
 Do not add ports for their own sake. A facade export is enough for a single concrete service

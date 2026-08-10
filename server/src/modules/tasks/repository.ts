@@ -19,9 +19,9 @@ import { PgJobQueueRepository } from "../jobs/repository";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
 import { contractRouteHints, type RunBudgetSource } from "../runs/contractSnapshot";
 import { runToOut } from "../runs/runReadModel";
-import { PgRunContextRepository } from "../context/repository";
 import { PgUsageRepository } from "../usage/repository";
 import { contentReadSql } from "../access/contentAccessSql";
+import { recordDetailRead } from "../contentAccess/audit";
 import { isContentVisibility } from "../access/contentAccessTypes";
 import {
   bounded01,
@@ -310,7 +310,14 @@ export class PgTaskRepository {
 
   async getTask(identity: SpaceUserIdentity, taskId: string) {
     const row = await getVisibleTaskRow(this.pool, identity, taskId);
-    return row ? taskOut(row) : null;
+    if (!row) return null;
+    await recordDetailRead(this.pool, {
+      spaceId: identity.spaceId,
+      viewerUserId: identity.userId,
+      resourceType: "task",
+      resourceId: taskId,
+    });
+    return taskOut(row);
   }
 
   async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
@@ -463,9 +470,7 @@ export class PgTaskRepository {
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSources);
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
-      const contextArtifactIds = contextArtifactIdsFromBody(body.context_artifact_ids);
       const projectFolderId = optionalString(body.project_folder_id) ?? task.project_folder_id;
-      await validateContextArtifactAttachments(client, identity, contextArtifactIds, projectFolderId, null);
       const run = await new PgRunRepository(client).createQueuedRun({
         agent_id: agentId,
         space_id: identity.spaceId,
@@ -480,7 +485,6 @@ export class PgTaskRepository {
         instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
         scheduled_at: toDbDate(body.scheduled_at),
         parent_run_id: optionalString(body.parent_run_id),
-        context_artifact_ids: contextArtifactIds,
         contract_snapshot: {
           source: { kind: "task", id: task.id },
           project_id: task.project_id,
@@ -613,7 +617,7 @@ export class PgTaskRepository {
     const rows = await this.pool.query<TaskRunListRow>(
       `SELECT tr.id AS task_run_id, tr.space_id AS task_run_space_id, tr.task_id AS task_run_task_id,
               tr.run_id AS task_run_run_id, tr.role AS task_run_role, tr.created_at AS task_run_created_at,
-              r.id, r.space_id, r.agent_id, r.agent_version_id, r.context_snapshot_id, r.run_type,
+              r.id, r.space_id, r.agent_id, r.agent_version_id, r.run_type,
               r.status, r.mode, r.prompt, r.instruction, r.project_folder_id, r.session_id,
               r.parent_run_id, r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.model_provider_id, r.model_override_json, r.required_sandbox_level,
@@ -806,39 +810,6 @@ function budgetSourcesFromPolicy(value: unknown): RunBudgetSource[] {
       || kind === "delegation"
       || kind === "plan";
   });
-}
-
-function contextArtifactIdsFromBody(value: unknown): string[] {
-  if (value === null || value === undefined) return [];
-  if (!Array.isArray(value)) throw new HttpError(422, "context_artifact_ids must be an array");
-  if (value.length > 8) throw new HttpError(422, "context_artifact_ids must contain at most 8 items");
-  return value.map((item) => {
-    if (typeof item !== "string" || !item.trim()) {
-      throw new HttpError(422, "context_artifact_ids must contain non-empty strings");
-    }
-    return item.trim();
-  });
-}
-
-async function validateContextArtifactAttachments(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  artifactIds: readonly string[],
-  projectFolderId: string | null,
-  projectId: string | null,
-): Promise<void> {
-  if (artifactIds.length === 0) return;
-  const selections = await new PgRunContextRepository(db).selectArtifactAttachments({
-    spaceId: identity.spaceId,
-    userId: identity.userId,
-    projectFolderId,
-    projectId,
-    artifactIds,
-  });
-  const blocked = selections.find((selection) => selection.item.approved === false);
-  if (!blocked) return;
-  const reason = optionalString(blocked.item.rejection_reason) ?? "artifact is not attachable";
-  throw new HttpError(422, `context_artifact_ids invalid: ${reason}`);
 }
 
 async function getVisibleTaskRow(db: Queryable, identity: SpaceUserIdentity, taskId: string): Promise<TaskRow | null> {

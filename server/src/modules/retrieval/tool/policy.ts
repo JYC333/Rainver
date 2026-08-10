@@ -30,7 +30,7 @@ export interface RetrievalToolPolicyInput {
   mode?: RetrievalSearchMode;
   maxResults?: number;
   objectTypes?: RetrievalObjectType[];
-  objectKinds?: string[];
+  objectProfiles?: string[];
   includeTrace?: boolean;
   surface?: string | null;
   sourcePolicyDenied?: boolean;
@@ -85,7 +85,7 @@ export async function enforceRetrievalToolCallPolicy(
         mode: input.mode ?? null,
         max_results: input.maxResults ?? null,
         object_type_count: input.objectTypes?.length ?? null,
-        object_kind_count: input.objectKinds?.length ?? null,
+        object_profile_count: input.objectProfiles?.length ?? null,
         include_trace: input.includeTrace ?? null,
         source_policy_denied: input.sourcePolicyDenied === true,
         egress_policy_denied: input.egressPolicyDenied === true,

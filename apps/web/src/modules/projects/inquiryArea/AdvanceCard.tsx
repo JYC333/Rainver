@@ -151,6 +151,8 @@ export function AdvanceCard({
           threadId={detail.id}
           advice={advice}
           canAct={canAct}
+          startedWorkflow={startedWorkflow}
+          onOpenTab={onOpenTab}
           onChanged={onChanged}
         />
 

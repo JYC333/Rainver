@@ -8,6 +8,13 @@ export const usageModule: ServerModule = {
 
 export { normalizeUsageObservation } from "./normalizer";
 export {
+  estimateModelTokens,
+  resolveModelWindow,
+  trimTextToModelTokens,
+  type ModelWindowOverride,
+  type ModelWindowSpec,
+} from "./modelCatalog";
+export {
   PgUsageRepository,
   usageRepositoryFromPool,
   type UsageQueryFilters,

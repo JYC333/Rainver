@@ -8,6 +8,7 @@ import {
   inquiryApi, notesApi, projectsApi, projectResearchApi, spacesApi,
 } from '../../api/client'
 import { errMsg } from '../../lib/utils'
+import { currentPendingContextVersion } from './currentPendingContextVersion'
 import type {
   InquiryCandidate, InquiryEvidenceSignal, InquiryIteration, InquiryThread, InquiryThreadAdvice,
   InquiryThreadDetail, NoteSummary, Project, ProjectBriefVersion, ProjectCorpusItem,
@@ -28,6 +29,7 @@ import { ThreadNavigator } from './inquiryArea/ThreadNavigator'
 import { ThreadTabs } from './inquiryArea/ThreadTabs'
 import { CreateThreadDialog } from './inquiryArea/dialogs'
 import { draftWorkflowFor, isQuestionRefined, startedWorkflowFor, type ThreadTabId } from './inquiryArea/nextFocus'
+import { useDeclareProjectCaptureTarget } from './notes/projectCaptureTarget'
 
 type ViewId = 'focus' | 'map' | 'review'
 
@@ -36,7 +38,7 @@ const EMPTY_CORPUS = new Map<string, ProjectCorpusItem>()
 
 export default function InquiryAreaPage() {
   const { projectId } = useParams<{ projectId: string }>()
-  const { activeSpaceId } = useSpace()
+  const { activeSpaceId, spaces, userId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [project, setProject] = useState<Project | null>(null)
@@ -61,6 +63,10 @@ export default function InquiryAreaPage() {
   // Project's titles.
   const [corpus, setCorpus] = useState<{ projectId: string; items: Map<string, ProjectCorpusItem> } | null>(null)
 
+  // What this Area is currently about, so a capture made from here hangs on the
+  // Thread rather than falling into the Project inbox (U11).
+  useDeclareProjectCaptureTarget(detail ? { objectId: detail.id, title: detail.statement } : null)
+
   const [threadTab, setThreadTab] = useState<ThreadTabId>('evidence')
   const [createOpen, setCreateOpen] = useState(false)
   const [createKind, setCreateKind] = useState<'question' | 'hypothesis'>('question')
@@ -81,7 +87,7 @@ export default function InquiryAreaPage() {
   }, [setSearchParams])
 
   // Best-effort and separate from the main load: whether a Thread has a
-  // literature search isn't part of the Inquiry read model, and a failure
+  // evidence search isn't part of the Inquiry read model, and a failure
   // here must not block Thread loading.
   useEffect(() => {
     if (!projectId) return
@@ -246,7 +252,7 @@ export default function InquiryAreaPage() {
       {searchIntent && view === 'focus' && (
         <div className="flex items-center gap-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-2">
           <p className="flex-1 text-sm">
-            Pick the Question or Hypothesis you want to search for, then use its next step to start the literature search.
+            Pick the Question or Hypothesis you want to search for, then use its next step to start evidence collection.
           </p>
           <Button size="sm" variant="ghost" onClick={() => setSearchIntent(false)} aria-label="Dismiss">
             <X className="size-4" />
@@ -352,6 +358,7 @@ export default function InquiryAreaPage() {
         onOpenChange={setGoalDialogOpen}
         projectId={projectId}
         briefVersion={briefVersion}
+        canPublish={project?.current_user_can_approve_context === true || project?.owner_user_id === userId || ['owner', 'admin'].includes(spaces.find(space => space.id === activeSpaceId)?.role ?? '')}
         onSaved={async () => { setGoalDialogOpen(false); await loadProjectScope() }}
       />
     </div>
@@ -363,38 +370,71 @@ export default function InquiryAreaPage() {
  * here to fill it in, so this Area keeps the editor without giving the goal a
  * permanent card that competes with Thread work.
  */
-function GoalEditDialog({ open, onOpenChange, projectId, briefVersion, onSaved }: {
+function GoalEditDialog({ open, onOpenChange, projectId, briefVersion, canPublish, onSaved }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   projectId: string
   briefVersion: ProjectBriefVersion | null
+  canPublish: boolean
   onSaved: () => void
 }) {
   const [goal, setGoal] = useState(briefVersion?.goal ?? '')
   const [saving, setSaving] = useState(false)
+  const [draft, setDraft] = useState<ProjectBriefVersion | null>(null)
+  const [correctionSource, setCorrectionSource] = useState<ProjectBriefVersion | null>(null)
 
-  useEffect(() => { if (open) setGoal(briefVersion?.goal ?? '') }, [open, briefVersion])
+  useEffect(() => {
+    if (!open) return
+    setGoal(briefVersion?.goal ?? '')
+    setDraft(null)
+    setCorrectionSource(null)
+    void projectsApi.listBriefVersions(projectId)
+      .then(versions => {
+        const pending = currentPendingContextVersion(versions)
+        setDraft(pending)
+        if (pending) setGoal(pending.goal ?? '')
+      })
+      .catch(error => toast.error(errMsg(error)))
+  }, [open, briefVersion, projectId])
 
   async function save() {
     setSaving(true)
     try {
-      // Brief Versions are immutable snapshots — carry the rest of the active
-      // version forward so editing the goal alone cannot blank out
+      // Brief Versions are immutable snapshots — carry the rest of the version
+      // being corrected (or the active version for a fresh edit) so editing the goal cannot blank out
       // scope/success/constraints/assumptions set by an earlier version.
-      await projectsApi.createBriefVersion(projectId, {
+      const source = correctionSource ?? briefVersion
+      const created = await projectsApi.createBriefVersion(projectId, {
         goal: goal.trim() || null,
-        scope_included: briefVersion?.scope_included ?? null,
-        scope_excluded: briefVersion?.scope_excluded ?? null,
-        success_definition: briefVersion?.success_definition ?? null,
-        constraints: briefVersion?.constraints ?? null,
-        assumptions: briefVersion?.assumptions ?? null,
+        scope_included: source?.scope_included ?? null,
+        scope_excluded: source?.scope_excluded ?? null,
+        success_definition: source?.success_definition ?? null,
+        constraints: source?.constraints ?? null,
+        assumptions: source?.assumptions ?? null,
+        confirmed_decisions: source?.confirmed_decisions ?? [],
+        workspace_identity: source?.workspace_identity ?? {},
+        workspace_boundary: source?.workspace_boundary ?? {},
+        source_refs: source?.source_refs ?? [],
       })
-      onSaved()
+      setDraft(created)
+      setCorrectionSource(null)
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
       setSaving(false)
     }
+  }
+
+  async function transition(publish: boolean) {
+    if (!draft) return
+    setSaving(true)
+    try {
+      const updated = publish
+        ? await projectsApi.publishBrief(projectId, draft.id)
+        : await projectsApi.submitBriefForReview(projectId, draft.id)
+      setDraft(updated)
+      if (updated.status === 'published') onSaved()
+    } catch (error) { toast.error(errMsg(error)) } finally { setSaving(false) }
   }
 
   return (
@@ -408,11 +448,15 @@ function GoalEditDialog({ open, onOpenChange, projectId, briefVersion, onSaved }
         </DialogHeader>
         <div className="space-y-1.5 py-2">
           <Label>Goal</Label>
-          <Textarea value={goal} onChange={event => setGoal(event.target.value)} placeholder="What is this project ultimately trying to achieve?" rows={4} />
+          <Textarea value={goal} onChange={event => setGoal(event.target.value)} disabled={Boolean(draft)} placeholder="What is this project ultimately trying to achieve?" rows={4} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+          {draft && <Button variant="outline" onClick={() => { setCorrectionSource(draft); setDraft(null); setGoal(draft.goal ?? '') }} disabled={saving}>Create corrected version</Button>}
+          {!draft && <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>}
+          {draft?.status === 'draft' && <Button onClick={() => void transition(false)} disabled={saving}>Submit for review</Button>}
+          {draft?.status === 'in_review' && canPublish && <Button onClick={() => void transition(true)} disabled={saving}>Publish</Button>}
+          {draft?.status === 'in_review' && !canPublish && <span className="text-sm text-muted-foreground">Awaiting Project owner review</span>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

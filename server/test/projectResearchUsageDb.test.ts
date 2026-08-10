@@ -2,12 +2,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
 import { PgUsageRepository } from "../src/modules/usage/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // The project research review read model must use the canonical usage ledger.
 // Provider-reported usage must remain visible in the review UI through the
@@ -35,6 +36,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-usage-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -98,13 +100,10 @@ beforeEach(async () => {
        $5,$5,$6,'{}'::jsonb,$7,$7,$7,$7)`,
     [RUN, SPACE, AGENT, VERSION, OWNER, PROJECT, now],
   );
-  await pool.query(
-    `INSERT INTO project_research_workflows (
-       id, space_id, project_id, workflow_type, current_stage, status, mode,
-       state_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,'literature_review','idea_review','active','agent_assisted','{}'::jsonb,$4,$4)`,
-    [WORKFLOW, SPACE, PROJECT, now],
-  );
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "idea_review", now,
+  });
   await pool.query(
     `INSERT INTO project_operations (
        id, space_id, project_id, kind, title, status, created_by_user_id,

@@ -15,7 +15,7 @@ export interface RetrievalBriefArtifactContext {
   projectId?: string | null;
   query: string;
   objectTypes?: RetrievalObjectType[];
-  objectKinds?: string[];
+  objectProfiles?: string[];
   maxResults: number;
   mode: RetrievalSearchMode;
   includeTrace: boolean;
@@ -49,7 +49,7 @@ export function buildRetrievalBriefArtifactSpec(
     visibility: "private",
     query: input.query,
     object_types: input.objectTypes ?? null,
-    object_kinds: input.objectKinds ?? null,
+    object_profiles: input.objectProfiles ?? null,
     max_results: input.maxResults,
     mode: input.mode,
     include_trace: input.includeTrace,
@@ -65,8 +65,8 @@ export function buildRetrievalBriefArtifactSpec(
     item_refs: input.response.items.map((item) => ({
       object_type: item.object_type,
       object_id: item.object_id,
-      object_kind: item.object_kind ?? null,
-      object_kind_label: item.object_kind_label ?? null,
+      object_profile: item.object_profile ?? null,
+      object_profile_label: item.object_profile_label ?? null,
       title: item.title,
       score: item.score,
       matched_fields: item.matched_fields,

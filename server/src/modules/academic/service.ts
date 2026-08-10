@@ -95,6 +95,8 @@ export class AcademicService {
     return withDbTransaction(this.pool, async (client) => {
       const row = await this.repository.createPaper(client, {
         spaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+        visibility: requiredString(body.visibility, "visibility"),
         title,
         summary: optionalString(body.summary),
         doi,
@@ -148,7 +150,7 @@ export class AcademicService {
     return new PgKnowledgeRepository(this.pool).proposeObjectRelation(identity, {
       from_object_id: paperObjectId,
       to_object_id: personObjectId,
-      relation_type: "authored_by",
+      link_type: "authored_by",
       metadata: {
         author_position: numberValue(body.author_position),
         is_corresponding: body.is_corresponding === true,
@@ -177,7 +179,7 @@ export class AcademicService {
     return new PgKnowledgeRepository(this.pool).proposeObjectRelation(identity, {
       from_object_id: citingPaperObjectId,
       to_object_id: citedPaperObjectId,
-      relation_type: "cites",
+      link_type: "cites",
       rationale: "Academic citation link requested.",
     });
   }

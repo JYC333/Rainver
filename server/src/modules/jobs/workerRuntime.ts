@@ -6,10 +6,9 @@ import { JobWorker } from "./worker";
 import { registerAgentRunHandler } from "../runs/agentRunHandler";
 import { registerMemoryConsolidationHandler } from "../activity/consolidationJob";
 import { registerDailyCaptureReportHandler } from "../dailyReports/jobHandler";
-import { registerContextDigestRefreshHandler } from "../context/digestJob";
 import { registerSourceExtractionHandler } from "../sources/extractionJob";
 import { registerSourcePostProcessingHandler } from "../sources/postProcessing/job";
-import { registerSessionCondenseHandler } from "../sessions/condenseJob";
+import { registerSourceAnnotationHandler } from "../sourceAnnotation";
 import { registerRetrievalEmbeddingHandler } from "../retrieval/embedding/job";
 import type { PluginHost } from "../plugins/host";
 import { PgRunRepository } from "../runs/repository";
@@ -22,7 +21,9 @@ import { registerInquiryAdviceHandler } from "../inquiry/adviceJob";
 import { registerExperimentReconcileHandler } from "../experiments/reconcileJob";
 import type { RuntimeHostLogger } from "../runtimeHost";
 import { finalizeChatTurn } from "../runs/chatTurnFinalizer";
+import type { ChatTurnFinalizerDeps } from "../runs/chatTurnFinalizer";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults";
+import { registerRuntimeContextCheckpointHandler } from "../runtimeContext/continuity/job";
 
 const POLL_INTERVAL_MS = 1_000;
 const RECLAIM_INTERVAL_MS = 120_000;
@@ -53,16 +54,16 @@ export function buildJobHandlerRegistry(
   registerAgentRunHandler(registry, config, runtimeHostLogger);
   registerMemoryConsolidationHandler(registry, config);
   registerDailyCaptureReportHandler(registry, config);
-  registerContextDigestRefreshHandler(registry, config);
   registerSourceExtractionHandler(registry, config);
   registerSourcePostProcessingHandler(registry, config);
-  registerSessionCondenseHandler(registry, config);
+  registerSourceAnnotationHandler(registry, config);
   registerRetrievalEmbeddingHandler(registry, config);
   registerEvaluationHarnessHandler(registry, config);
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);
   registerInquiryAdviceHandler(registry, config);
+  registerRuntimeContextCheckpointHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   return registry;
@@ -175,6 +176,7 @@ export async function reconcileTerminalChatRuns(
   log?: JobsWorkerLogger,
   materializer: Pick<RunMaterializationService, "finalizeRun"> =
     RunMaterializationService.fromConfig(config),
+  finalizerDeps: ChatTurnFinalizerDeps = {},
 ): Promise<void> {
   const pending = await runs.listTerminalChatRunsAwaitingCompletion();
   for (const item of pending) {
@@ -189,7 +191,7 @@ export async function reconcileTerminalChatRuns(
       }
       const current = await runs.getRun(item.space_id, item.id);
       if (current && isHardTerminalRunStatus(current.status)) {
-        await finalizeChatTurn(config, runs, current);
+        await finalizeChatTurn(config, runs, current, finalizerDeps);
       }
     } catch (error) {
       log?.warn(

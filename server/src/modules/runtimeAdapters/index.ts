@@ -6,7 +6,6 @@ export {
   isLocalCliRuntimeAdapter,
   isVendorCliAdapter,
   listRuntimeAdapterSpecs,
-  targetFormatForAdapter,
   type LocalCliRuntimeAdapterSpec,
   type RuntimeAdapterSpec,
   type RuntimeAdapterType,

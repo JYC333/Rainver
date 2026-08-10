@@ -17,12 +17,11 @@ durable position on this boundary.
 1. **Code** — implementation truth; always wins over docs
 2. `server/src/db/schema/` — database schema authoring source
 3. `server/migrations/` — generated/applied database SQL artifacts
-4. `packages/protocol/src/` — shared public DTOs and wire contracts
-5. `server/src/gateway/routeRegistry.ts` — active backend route registry
-6. `server/src/modules/` — active backend module implementations
-7. `apps/web/src/modules/registry.ts` — active frontend modules and nav items
-8. `.agent/BOUNDARIES.md` — architectural invariants; load for any structural change
-9. `.agent/decisions/` — accepted architectural decisions
+4. `server/src/` — backend implementation, including the active gateway route registry and modules
+5. `packages/protocol/src/` — shared public DTOs and wire contracts
+6. `apps/web/src/modules/registry.ts` — active frontend modules and nav items
+7. `.agent/BOUNDARIES.md` — architectural invariants; load for any structural change
+8. `.agent/decisions/` — accepted architectural decisions
 
 Docs in `.agent/architecture/` describe **current state**, not target-state speculation. Temporary
 reports in `.agent/reports/` are not source of truth and should be deleted after consolidation.
@@ -34,6 +33,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | What you need | Link |
 |---|---|
 | Current active focus and short-term priorities | [tasks/current-focus.md](tasks/current-focus.md) |
+| Implemented Runtime Context architecture and decision record | [architecture/MEMORY_CONTEXT_RUNTIME.md](architecture/MEMORY_CONTEXT_RUNTIME.md) · [modules/runtime-context.md](modules/runtime-context.md) · [decisions/0014-unified-runtime-context-engine.md](decisions/0014-unified-runtime-context-engine.md) |
 | Security and access boundary reference | [architecture/SECURITY_AND_ACCESS_BOUNDARIES.md](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md) |
 | Test layer and product invariant philosophy | [architecture/TESTING_STRATEGY.md](architecture/TESTING_STRATEGY.md) |
 | Local-first compatibility position | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) |
@@ -41,6 +41,8 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Layer map and cross-cutting concerns | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | How to run, test, and build | [COMMANDS.md](COMMANDS.md) |
 | Practical gotchas | [WORKING_TIPS.md](WORKING_TIPS.md) |
+| Repository-wide product and domain glossary | [GLOSSARY.md](GLOSSARY.md) |
+| Runtime and extension terminology | [architecture/GLOSSARY.md](architecture/GLOSSARY.md) |
 
 ---
 
@@ -51,6 +53,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Doc | What it covers |
 |---|---|
 | [architecture/PRODUCT_AND_BOUNDARIES.md](architecture/PRODUCT_AND_BOUNDARIES.md) | Product identity, current enforcement points, architecture fitness checks |
+| [architecture/PROJECTS.md](architecture/PROJECTS.md) | Current Project and Project Folder ownership, Project kernel, modes, lifecycle, and information flow |
 | [architecture/PRODUCT_ACCEPTANCE.md](architecture/PRODUCT_ACCEPTANCE.md) | Deterministic gate, manual Project acceptance procedure, evidence requirements, and opt-in real integration smoke |
 | [architecture/NON_GOALS_AND_DISABLED_SURFACES.md](architecture/NON_GOALS_AND_DISABLED_SURFACES.md) | Disabled surfaces, allowed surfaces, non-goals |
 | [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) | Capability line roadmap, future risks |
@@ -75,6 +78,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/MODULES.md](architecture/MODULES.md) | Current backend module map, support packages, ownership, registries, facades |
 | [architecture/MODULE_DEVELOPMENT_GUIDE.md](architecture/MODULE_DEVELOPMENT_GUIDE.md) | How to add/change backend modules and extension hooks |
 | [architecture/DATABASE_AND_TRANSACTIONS.md](architecture/DATABASE_AND_TRANSACTIONS.md) | UnitOfWork, transaction ownership, external call boundary, PostgreSQL rules |
+| [architecture/DATA_AUTHORITY_MATRIX.md](architecture/DATA_AUTHORITY_MATRIX.md) | Cross-domain data authorities, canonical writers, and read-model boundaries |
 | [architecture/MEMORY_MODEL.md](architecture/MEMORY_MODEL.md) | Memory scopes, visibility, access control |
 | [architecture/MEMORY_MAINTENANCE.md](architecture/MEMORY_MAINTENANCE.md) | Current Memory maintenance scan, report/packet, durable job, scheduler, and first UI surface |
 | [architecture/PROPOSALS.md](architecture/PROPOSALS.md) | Proposal types, lifecycle, apply flow |
@@ -88,6 +92,8 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Doc | What it covers |
 |---|---|
 | [architecture/EXECUTION_MODEL.md](architecture/EXECUTION_MODEL.md) | Run, RunStep, Job, Artifact, Proposal, actor identity, credential resolver |
+| [architecture/AGENT_RUNTIME_AUTHORITY.md](architecture/AGENT_RUNTIME_AUTHORITY.md) | Design-time AgentVersion versus deployment-time AgentRuntimeProfile authority |
+| [architecture/RUNTIME_ADAPTER_STANDARD.md](architecture/RUNTIME_ADAPTER_STANDARD.md) | Runtime adapter contract, isolation, conformance, and lifecycle standard |
 | [architecture/RUNS_AND_OUTPUTS.md](architecture/RUNS_AND_OUTPUTS.md) | Run outputs, materialization, boundaries |
 | [architecture/VERIFICATION_ENGINE.md](architecture/VERIFICATION_ENGINE.md) | A2 deterministic verification lifecycle, result authority, and deferred verifier types |
 | [architecture/PLAN_GRAPH_EXECUTION.md](architecture/PLAN_GRAPH_EXECUTION.md) | Task-first Agent Planning, Plan Nodes, fixed Workflow Execution, bounded approval, scheduling, and reconciliation |
@@ -102,17 +108,27 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/SERVER_OWNERSHIP.md](architecture/SERVER_OWNERSHIP.md) | Current server ownership and deferred surfaces |
 | [architecture/SERVER_MODULE_CONVENTION.md](architecture/SERVER_MODULE_CONVENTION.md) | Server-owned module structure, route registry, error envelope |
 | [architecture/SYSTEM_ACTIONS.md](architecture/SYSTEM_ACTIONS.md) | System action registry, gateway exposure, policy, proposal, grant, idempotency, and audit boundaries |
+| [architecture/OFFICIAL_OPTIONAL_MODULES.md](architecture/OFFICIAL_OPTIONAL_MODULES.md) | Official optional-module packaging, enablement, migrations, and host boundaries |
 
 ### Memory / Activity / Proposal
 
 | Doc | What it covers |
 |---|---|
 | [architecture/MEMORY_ACTIVITY_PROVENANCE.md](architecture/MEMORY_ACTIVITY_PROVENANCE.md) | Activity-first capture, provenance chain, trust gate, memory write boundaries |
+| [architecture/MEMORY_CONTEXT_RUNTIME.md](architecture/MEMORY_CONTEXT_RUNTIME.md) | Current Memory-to-context runtime assembly, authorization, snapshots, and injection boundaries |
 | [architecture/MEMORY_MODEL.md](architecture/MEMORY_MODEL.md) | Memory scopes, visibility, access control |
 | [architecture/SHARED_SPACE_MEMORY_ISOLATION.md](architecture/SHARED_SPACE_MEMORY_ISOLATION.md) | Design proposal: shared system assistant + per-user memory isolation in multi-member spaces (personal vs space tier, promotion-gated sharing) |
 | [architecture/PROPOSALS.md](architecture/PROPOSALS.md) | Proposal types, lifecycle, apply flow |
 | [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Planned Memory-quality work after Knowledge-first retrieval: duplicate signals, ranking, synthesis + gap loop, consolidation cycle |
 | [architecture/EVOLUTION_SIGNAL_SYSTEM.md](architecture/EVOLUTION_SIGNAL_SYSTEM.md) | Current rule-based evolution signal emitters, target resolution, deduplication, A2 verification facts, and deferred A3/C3 hooks |
+
+### Sources / Evidence / Provenance
+
+| Doc | What it covers |
+|---|---|
+| [architecture/SOURCE_EVIDENCE_FOUNDATION.md](architecture/SOURCE_EVIDENCE_FOUNDATION.md) | Source evidence data model, extraction lifecycle, reader artifacts, and accepted evidence boundaries |
+| [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md) | Custom Source handler registry, configuration, execution, and safety boundaries |
+| [architecture/SOURCE_PROVENANCE_MATRIX.md](architecture/SOURCE_PROVENANCE_MATRIX.md) | Source ingestion and derivation provenance requirements by materialization path |
 
 ### Project Folder / Sandbox / Artifact
 
@@ -158,13 +174,15 @@ Load only the module docs relevant to your task.
 | Long-term memory | [modules/memory.md](modules/memory.md) |
 | Raw input and event capture | [modules/activity.md](modules/activity.md) |
 | Activity inbox UI and quick capture | [modules/activity-inbox.md](modules/activity-inbox.md) |
+| Source connections, ingestion, extraction, and Project bindings | [modules/sources.md](modules/sources.md) |
 | Sources-derived reading library | [modules/library.md](modules/library.md) |
+| Personal and Project information digests | [modules/information-digest.md](modules/information-digest.md) |
 | Personal assistant and capture | [modules/assistant-capture.md](modules/assistant-capture.md) |
 | Memory review UI | [modules/memory-review.md](modules/memory-review.md) |
 | Policy and permission engine | [modules/policy.md](modules/policy.md) |
 | Proposal / approval system | [modules/proposals.md](modules/proposals.md) |
 | Capability lifecycle | [modules/capability.md](modules/capability.md) |
-| Context assembly and vendor files | [modules/context-compiler.md](modules/context-compiler.md) |
+| Runtime Context acquisition, planning, delivery, and continuity | [modules/runtime-context.md](modules/runtime-context.md) |
 | Sandbox execution | [modules/sandbox.md](modules/sandbox.md) |
 | Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
 | Runtime tools / adapter types | [modules/runtime-adapters.md](modules/runtime-adapters.md) |
@@ -198,7 +216,10 @@ Load only the module docs relevant to your task.
 | [0008](decisions/0008-credential-channel-isolation.md) | Credential channel isolation |
 | [0009](decisions/0009-capability-workflow-open-skill-system.md) | Capability, Workflow, and Open Skill framework |
 | [0010](decisions/0010-agent-workbench-product-direction.md) | Personal + small-team Agent Workbench direction, dogfooding checkpoint, dual runtime stance |
-| [0011](decisions/0011-domain-owned-inquiry-model.md) | New Project domains (Inquiry Thread, Experiment, Decision Case) are domain-owned, not `space_objects`; `object_relations` scope unchanged; generic association maps to `retrieval_edges`; `WorkflowExecution` node_kind extended for Action/Model/Checkpoint |
+| [0011](decisions/0011-inquiry-domain-model.md) | Project domain aggregate roots (Inquiry Thread, Experiment, Decision Case) are `space_objects` rows; their internal tables stay domain-private; cross-aggregate edges use `object_relations`; `WorkflowExecution` node_kind extended for Action/Model/Checkpoint. Rewritten 2026-08-04 — decisions 1-3 reversed by ADR 0012 |
+| [0012](decisions/0012-ontology-ownership-and-language-alignment.md) | `ontology` module owns `space_objects`/`object_relations`/object profiles; root contract drops `status`; aggregate-root membership rule; definition authority is code in registerable registries; Interface as an explicit primitive; Link Type / Object Profile naming; Action `applies_to` |
+| [0013](decisions/0013-personal-team-content-boundary.md) | Personal vs team content boundary: creation context decides Space/scope/visibility, capture lands in the personal Space, filing is a transformation, Run-level context taint narrows derived output, cross-person read auditing; amends ADR 0001 for per-user aggregated cross-Space reads |
+| [0014](decisions/0014-unified-runtime-context-engine.md) | Accepted clean cutover to one Runtime Context Gateway for Agent task context, with separate Retrieval/Policy/Usage authorities, typed deliveries, event/checkpoint continuity, product-owned Project context, and per-work-scope CLI isolation |
 
 ---
 
@@ -249,7 +270,7 @@ load all docs for every task.
 Additional agent rules:
 - Never write to `instance/` from code in `core/`.
 - Never write active memory directly — use proposals.
-- Never write vendor context files to the real Project Folder — write to sandbox only.
+- Never turn Runtime Context into vendor context files; adapters consume the accepted Delivery directly.
 - Read `BOUNDARIES.md` before making structural changes.
 - New backend routes go in `server/src/modules/<module>/routes.ts` and
   the module is registered in `server/src/gateway/routeRegistry.ts`.
@@ -258,6 +279,9 @@ Additional agent rules:
 - Do not treat `.agent/reports/` content as durable source of truth.
 - `.agent/architecture/` docs describe **current state**. Do not add target-state aspirations
   without a scoped implementation task.
+- `server/test/agentGuides.test.ts` keeps bundle targets, relative links, INDEX coverage,
+  and the shared core of `AGENTS.md` / `CLAUDE.md` from drifting. Update the canonical
+  guide structure and its invariant together when intentionally changing these rules.
 
 ---
 
@@ -272,7 +296,7 @@ AI coding assistants toward the right entry points. They are not canonical archi
 |---|---|
 | `.agent/INDEX.md` | Section headers in `CLAUDE.md` / `AGENTS.md` |
 | `.agent/context-bundles.yaml` | Task-type context directives in vendor files |
-| `.agent/architecture/*.md` | Summarized constraints injected by ContextCompiler |
+| `.agent/architecture/*.md` | Current-state architecture constraints for repository work; never implicit runtime prompt input |
 
 Generated files (`CLAUDE.md`, `AGENTS.md`, sandbox prompt files, runtime-specific context
 files) are **disposable adapter outputs**, not canonical docs. When they conflict with

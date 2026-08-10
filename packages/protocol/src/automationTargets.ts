@@ -67,6 +67,16 @@ export const AUTOMATION_TARGET_REGISTRY = [
     description: "Run the aggregate Context Ops review cycle and persist review artifacts.",
   },
   {
+    target_type: "information_digest",
+    kind: "maintenance",
+    user_selectable: false,
+    spawns_runs: "one",
+    requires_project_binding: false,
+    credential_grant_required: false,
+    current_enforcement_point: "server/src/modules/informationDigest/automationTarget.ts",
+    description: "Build one deterministic personal or Project cross-source daily digest.",
+  },
+  {
     target_type: "autonomous_tick",
     kind: "control_plane",
     user_selectable: false,

@@ -86,9 +86,9 @@ describeWithPostgres("observe-only autonomy candidate lifecycle", () => {
   it("deduplicates one logical candidate across repeated and concurrent ticks without creating a Run", async () => {
     await pool!.query(
       `INSERT INTO projects (
-         id, space_id, owner_user_id, name, status, template_key, primary_mode,
+         id, space_id, owner_user_id, name, status, primary_mode,
          created_at, updated_at
-       ) VALUES ($1, $2, $3, 'Digest Project', 'active', 'blank', 'delivery', $4, $4)`,
+       ) VALUES ($1, $2, $3, 'Digest Project', 'active', 'delivery', $4, $4)`,
       [PROJECT, SPACE, USER, "2026-07-24T12:00:00.000Z"],
     );
     const tick = () => new AutonomyService(pool!).observeTick({

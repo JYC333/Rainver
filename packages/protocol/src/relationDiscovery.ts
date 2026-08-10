@@ -71,7 +71,7 @@ export const RelationDiscoveryProposedActionSchema = z.union([
       proposal_type: z.literal("object_relation_create"),
       from_object_id: IdSchema,
       to_object_id: IdSchema,
-      relation_type: z.string(),
+      link_type: z.string(),
       confidence: z.number().min(0).max(1),
       evidence_summary: z.string(),
     })

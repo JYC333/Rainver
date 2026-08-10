@@ -49,7 +49,7 @@ describe("capability/workflow/open-skill protocol schemas", () => {
         description: "Research pack.",
         version: "0.1.0",
         capability_ids: [capability.id],
-        workflow_template_ids: ["research.technical_survey"],
+        workflow_template_ids: ["test.research_workflow"],
         artifact_types: ["research_report.archive.v1"],
         source_kind: "builtin",
         status: "available",
@@ -58,7 +58,7 @@ describe("capability/workflow/open-skill protocol schemas", () => {
 
     expect(
       WorkflowTemplateSchema.parse({
-        id: "research.technical_survey",
+        id: "test.research_workflow",
         name: "Technical Survey",
         description: "Survey technical sources.",
         category: "research",
@@ -78,7 +78,7 @@ describe("capability/workflow/open-skill protocol schemas", () => {
         id: "profile-1",
         space_id: "space-1",
         project_id: "project-1",
-        workflow_template_id: "research.technical_survey",
+        workflow_template_id: "test.research_workflow",
         name: "Survey",
         enabled: true,
         config_json: { source_mode: "project_sources" },

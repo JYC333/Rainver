@@ -15,17 +15,13 @@ class SeedClient {
 }
 
 describe("space default seeds", () => {
-  it("uses the current memory_entries schema without retired scope_id", async () => {
+  it("does not seed policy text into user/project memory", async () => {
     const client = new SeedClient();
 
-    await seedSpaceDefaults(client as unknown as PoolClient, "space-1");
+    await seedSpaceDefaults(client as unknown as PoolClient, "space-1", "user-1");
 
     const memoryInserts = client.queries.filter(call => call.sql.includes("INSERT INTO memory_entries"));
-    expect(memoryInserts).toHaveLength(3);
-    for (const insert of memoryInserts) {
-      expect(insert.sql).toContain("scope_type");
-      expect(insert.sql).not.toContain("scope_id");
-      expect(insert.sql).toContain("'system', 'semantic'");
-    }
+    expect(memoryInserts).toHaveLength(0);
+    expect(client.queries.some(call => call.sql.includes("INSERT INTO runtime_context_policy_versions"))).toBe(true);
   });
 });

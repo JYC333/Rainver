@@ -1,3 +1,5 @@
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { objectStatusScalarSql } from "../../db/objectStatusSql";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "../../db/pool";
 import { HttpError, type Queryable } from "../routeUtils/common";
@@ -39,7 +41,7 @@ export interface AcademicCitationRow {
 }
 
 const PAPER_COLUMNS = `
-  so.id AS object_id, so.space_id, so.title, so.summary, so.status,
+  so.id AS object_id, so.space_id, so.title, so.summary, ${objectStatusScalarSql("so")} AS status,
   ap.doi, ap.arxiv_id, ap.pmid, ap.openalex_id, ap.publication_date, ap.venue,
   ap.paper_type, ap.cited_by_count, ap.reference_count, ap.created_at, ap.updated_at
 `;
@@ -51,6 +53,8 @@ export class AcademicRepository {
     client: PoolClient,
     input: {
       spaceId: string;
+      projectId: string | null;
+      visibility: string;
       title: string;
       summary: string | null;
       doi: string | null;
@@ -66,16 +70,22 @@ export class AcademicRepository {
   ): Promise<AcademicPaperRow> {
     const objectId = randomUUID();
     const now = new Date().toISOString();
+    const object = buildSpaceObjectInsert({
+      id: objectId,
+      spaceId: input.spaceId,
+      objectType: "source",
+      title: input.title,
+      summary: input.summary,
+      visibility: input.visibility,
+      ownerUserId: input.createdByUserId,
+      primaryProjectId: input.projectId,
+      createdByUserId: input.createdByUserId,
+      createdAt: now,
+    });
+    await client.query(object.sql, object.params);
     await client.query(
-      `INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility, access_level, owner_user_id,
-         created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, 'source', $3, $4, 'raw', 'space_shared', 'full', $5, $5, $6, $6)`,
-      [objectId, input.spaceId, input.title, input.summary, input.createdByUserId, now],
-    );
-    await client.query(
-      `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
-       VALUES ($1, $2, 'paper', $3, '{}'::jsonb)`,
+      `INSERT INTO sources (object_id, space_id, status, source_type, uri, metadata_json)
+       VALUES ($1, $2, 'raw', 'paper', $3, '{}'::jsonb)`,
       [objectId, input.spaceId, input.sourceUri],
     );
     await client.query(
@@ -111,7 +121,7 @@ export class AcademicRepository {
       `SELECT ${PAPER_COLUMNS}
          FROM space_objects so
          JOIN academic_papers ap ON ap.object_id = so.id AND ap.space_id = so.space_id
-        WHERE so.id = $1 AND so.space_id = $2 AND so.status <> 'deleted'
+        WHERE so.id = $1 AND so.space_id = $2 AND ${objectStatusScalarSql("so")} <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$3")}
         LIMIT 1`,
       [objectId, spaceId, userId],
@@ -139,7 +149,7 @@ export class AcademicRepository {
       `SELECT ${PAPER_COLUMNS}
          FROM space_objects so
          JOIN academic_papers ap ON ap.object_id = so.id AND ap.space_id = so.space_id
-        WHERE so.space_id = $1 AND so.status <> 'deleted' AND (${clauses.join(" OR ")})
+        WHERE so.space_id = $1 AND ${objectStatusScalarSql("so")} <> 'deleted' AND (${clauses.join(" OR ")})
           AND ${contentReadSql("space_object", "so", "$2")}
         LIMIT 1`,
       params,
@@ -155,7 +165,7 @@ export class AcademicRepository {
     const params: unknown[] = [spaceId, userId];
     const clauses = [
       "so.space_id = $1",
-      "so.status <> 'deleted'",
+      `${objectStatusScalarSql("so")} <> 'deleted'`,
       contentReadSql("space_object", "so", "$2"),
     ];
     if (filters.q) {
@@ -228,7 +238,7 @@ export class AcademicRepository {
   async personExists(spaceId: string, objectId: string, userId: string): Promise<boolean> {
     const result = await this.db.query(
       `SELECT 1 FROM space_objects so
-        WHERE so.id = $1 AND so.space_id = $2 AND so.object_type = 'person' AND so.status <> 'deleted'
+        WHERE so.id = $1 AND so.space_id = $2 AND so.object_type = 'person' AND ${objectStatusScalarSql("so")} <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$3")}
         LIMIT 1`,
       [objectId, spaceId, userId],
@@ -249,7 +259,7 @@ export class AcademicRepository {
        JOIN relation_people person ON person.object_id = so.id AND person.space_id = so.space_id
       WHERE orl.space_id = $1
         AND orl.from_object_id = $2
-        AND orl.relation_type = 'authored_by'
+        AND orl.link_type = 'authored_by'
         AND orl.status = 'active'
         AND ${contentReadSql("space_object", "so", "$3")}
       ORDER BY author_position NULLS LAST, so.title ASC`,
@@ -264,7 +274,7 @@ export class AcademicRepository {
          FROM object_relations orl
          JOIN space_objects so ON so.id = orl.to_object_id AND so.space_id = orl.space_id
          JOIN academic_papers ap ON ap.object_id = so.id AND ap.space_id = so.space_id
-        WHERE orl.space_id = $1 AND orl.from_object_id = $2 AND orl.relation_type = 'cites' AND orl.status = 'active'
+        WHERE orl.space_id = $1 AND orl.from_object_id = $2 AND orl.link_type = 'cites' AND orl.status = 'active'
           AND ${contentReadSql("space_object", "so", "$3")}
         ORDER BY so.title ASC`,
       [spaceId, paperObjectId, userId],
@@ -278,7 +288,7 @@ export class AcademicRepository {
          FROM object_relations orl
          JOIN space_objects so ON so.id = orl.from_object_id AND so.space_id = orl.space_id
          JOIN academic_papers ap ON ap.object_id = so.id AND ap.space_id = so.space_id
-        WHERE orl.space_id = $1 AND orl.to_object_id = $2 AND orl.relation_type = 'cites' AND orl.status = 'active'
+        WHERE orl.space_id = $1 AND orl.to_object_id = $2 AND orl.link_type = 'cites' AND orl.status = 'active'
           AND ${contentReadSql("space_object", "so", "$3")}
         ORDER BY so.title ASC`,
       [spaceId, paperObjectId, userId],

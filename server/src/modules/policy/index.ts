@@ -18,3 +18,6 @@ export const policyModule: ServerModule = {
 export { enforce, enforceProposalApply } from "./service";
 export { computeDecision, checkProposalApplyPolicy } from "./gateway";
 export { loadActionRegistry } from "./actionRegistry";
+export { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository";
+export { resolveRuntimeContextPolicies } from "./runtimeContextPolicyResolver";
+export { ExecutionControlSnapshotRepository } from "./executionControlSnapshots";

@@ -265,13 +265,13 @@ export class CustomSourceMaterializationService {
     const itemId = randomUUID();
     await this.db.query(
       `INSERT INTO source_items (
-         id, space_id, connection_id, item_type, title, source_uri, canonical_uri,
+         id, space_id, project_id, connection_id, item_type, title, source_uri, canonical_uri,
          source_domain, source_external_id, author, occurred_at, first_seen_at,
          last_seen_at, content_hash, excerpt, content_state,
          retention_policy, metadata_json, created_at, updated_at,
          owner_user_id, visibility, access_level
        ) VALUES (
-         $1, $2::varchar, $3::varchar, 'external_url', $4, $5, $5,
+         $1, $2::varchar, (SELECT project_id FROM source_connections WHERE space_id=$2::varchar AND id=$3::varchar), $3::varchar, 'external_url', $4, $5, $5,
          $6, $7, $8, $9::timestamptz, $10,
          $10, $11, $12, $13,
          $15, $14::jsonb, $10, $10,
@@ -363,11 +363,11 @@ export class CustomSourceMaterializationService {
     const snapshotId = randomUUID();
     await this.db.query(
       `INSERT INTO source_snapshots (
-         id, space_id, source_item_id, connection_id, snapshot_type, artifact_id,
+         id, space_id, project_id, source_item_id, connection_id, snapshot_type, artifact_id,
          content_hash, source_uri, capture_method, trust_level, metadata_json,
          captured_at, created_at, updated_at, owner_user_id, visibility, access_level
        ) VALUES (
-         $1, $2::varchar, $3::varchar, $4::varchar, $5, $6,
+         $1, $2::varchar, (SELECT project_id FROM source_items WHERE space_id=$2::varchar AND id=$3::varchar), $3::varchar, $4::varchar, $5, $6,
          $7, NULL, $10, 'untrusted', $8::jsonb,
          $9, $9, $9,
          (SELECT owner_user_id FROM source_items WHERE space_id = $2::varchar AND id = $3::varchar),
@@ -408,8 +408,8 @@ export class CustomSourceMaterializationService {
     descriptor: SourceMaterializationDescriptor,
   ): Promise<void> {
     const now = new Date().toISOString();
-    const item = await this.db.query<{ owner_user_id: string | null; visibility: string; access_level: string }>(
-      `SELECT owner_user_id, visibility, access_level FROM source_items WHERE space_id=$1 AND id=$2`,
+    const item = await this.db.query<{ project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
+      `SELECT project_id, owner_user_id, visibility, access_level FROM source_items WHERE space_id=$1 AND id=$2`,
       [run.spaceId, sourceItemId],
     );
     if (!item.rows[0]) throw new Error("Custom Source Evidence target disappeared");
@@ -419,6 +419,7 @@ export class CustomSourceMaterializationService {
     };
     const evidenceId = await upsertCanonicalEvidence(this.db, {
       spaceId: run.spaceId,
+      projectId: item.rows[0].project_id,
       ownerUserId: item.rows[0].owner_user_id,
       visibility: item.rows[0].visibility,
       accessLevel: item.rows[0].access_level,

@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import type { CustomSourceHandlerOutput, CustomSourcePolicyEnvelope } from "@agent-space/protocol" with {
   "resolution-mode": "import",
 };
@@ -17,17 +16,16 @@ import {
 import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner";
 
 // Real-PostgreSQL integration tests for CustomSourceMaterializationService.
-// Exercises the actual INSERT statements against the real schema (CHECK
-// constraints in particular — see test/fixtures/sourceCustomSourceMaterializerSchema.sql)
-// so constraint mismatches (e.g. an artifacts.trust_level value that's valid
-// for source_snapshots but not artifacts) surface here instead of in prod.
+// Exercises the actual INSERT statements against the real migrated schema
+// (CHECK constraints in particular) so constraint mismatches — e.g. an
+// artifacts.trust_level value that is valid for source_snapshots but not
+// artifacts — surface here instead of in prod.
+//
+// It used to load a hand-maintained SQL copy of the schema, which defeated the
+// entire point: the copy drifted from the real shape and the suite could no
+// longer fail when code and production disagreed.
 //
 // Skips gracefully when Docker is unavailable so `npm test` runs everywhere.
-
-const SCHEMA = readFileSync(
-  join(process.cwd(), "test/fixtures/sourceCustomSourceMaterializerSchema.sql"),
-  "utf8",
-);
 
 const SPACE_A = "space-a";
 
@@ -80,14 +78,14 @@ function instanceSettings(
 
 beforeAll(async () => {
   try {
-    container = await getTestPostgres(__filename, { empty: true });
+    container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
     artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-materializer-artifacts-"));
     config = { ...loadConfig({}), artifactStorageRoot };
     service = new CustomSourceMaterializationService(pool, config, instanceSettings());
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[source-custom-source-materializer] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -108,7 +106,37 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE jobs, retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects,
-      extracted_evidence, source_snapshots, source_items, artifacts, source_handler_runs, source_connections`,
+      extracted_evidence, source_snapshots, source_items, artifacts, source_handler_runs,
+      source_handler_versions, source_connections, source_provider_connectors, source_providers,
+      source_connectors, space_memberships, users, spaces CASCADE`,
+  );
+  // The real schema enforces the space/user chain and the connector/provider
+  // mapping behind every source_connections row.
+  await pool.query(
+    `INSERT INTO users (id, display_name, status, created_at, updated_at)
+     VALUES ('user-1', 'User', 'active', now(), now())`,
+  );
+  await pool.query(
+    `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
+     VALUES ($1, 'Space A', 'team', 'user-1', now(), now())`,
+    [SPACE_A],
+  );
+  await pool.query(
+    `INSERT INTO source_connectors (
+       id, connector_key, display_name, connector_type, ingestion_mode, status,
+       capabilities_json, created_at, updated_at
+     ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
+  );
+  await pool.query(
+    `INSERT INTO source_providers (
+       id, provider_key, display_name, provider_kind, category, status,
+       capabilities_json, created_at, updated_at
+     ) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`,
+  );
+  await pool.query(
+    `INSERT INTO source_provider_connectors (
+       id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at
+     ) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`,
   );
 });
 
@@ -116,21 +144,53 @@ afterEach(async () => {
   if (sandboxFilesRoot) await rm(sandboxFilesRoot, { recursive: true, force: true });
 });
 
-async function seedRun(): Promise<{ connId: string; runId: string }> {
+async function insertConnection(connId: string): Promise<void> {
+  await pool!.query(
+    `INSERT INTO source_connections (
+       id, space_id, provider_connector_id, owner_user_id, name, status,
+       capture_policy, trust_level, consent_json, policy_json, config_json,
+       created_at, updated_at
+     ) VALUES ($1, $2, 'mapping-custom-source', 'user-1', 'Custom source', 'active',
+       'extract_text', 'normal', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+    [connId, SPACE_A],
+  );
+}
+
+async function seedRun(): Promise<{ connId: string; runId: string; versionId: string }> {
   const connId = randomUUID();
   const runId = randomUUID();
-  await pool!.query(`INSERT INTO source_connections (id, space_id) VALUES ($1, $2)`, [connId, SPACE_A]);
+  const versionId = randomUUID();
+  await insertConnection(connId);
+  await pool!.query(
+    `INSERT INTO source_handler_versions (
+       id, space_id, source_connection_id, version_number, language, entrypoint,
+       manifest_json, policy_envelope_json, checksum, status, created_at
+     ) VALUES ($1, $2, $3, 1, 'typescript_node', 'handler.ts',
+       '{}'::jsonb, '{}'::jsonb, 'checksum', 'active', now())`,
+    [versionId, SPACE_A, connId],
+  );
   await pool!.query(
     `INSERT INTO source_handler_runs (id, space_id, source_connection_id, handler_version_id, status, created_at)
      VALUES ($1, $2, $3, $4, 'running', now())`,
-    [runId, SPACE_A, connId, randomUUID()],
+    [runId, SPACE_A, connId, versionId],
   );
-  return { connId, runId };
+  return { connId, runId, versionId };
+}
+
+/** A second handler run against an existing connection's handler version. */
+async function seedAnotherRun(connId: string, versionId: string): Promise<string> {
+  const runId = randomUUID();
+  await pool!.query(
+    `INSERT INTO source_handler_runs (id, space_id, source_connection_id, handler_version_id, status, created_at)
+     VALUES ($1, $2, $3, $4, 'running', now())`,
+    [runId, SPACE_A, connId, versionId],
+  );
+  return runId;
 }
 
 async function seedConnection(): Promise<{ connId: string }> {
   const connId = randomUUID();
-  await pool!.query(`INSERT INTO source_connections (id, space_id) VALUES ($1, $2)`, [connId, SPACE_A]);
+  await insertConnection(connId);
   return { connId };
 }
 
@@ -283,13 +343,14 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
     if (!available || !service) return;
     const { connId, runId } = await seedRun();
     await pool!.query(
+      // owner_user_id is required for a private item (ck_source_items_private_owner).
       `INSERT INTO source_items (
-         id, space_id, connection_id, item_type, title, source_uri, canonical_uri,
+         id, space_id, owner_user_id, connection_id, item_type, title, source_uri, canonical_uri,
          source_domain, source_external_id, first_seen_at, last_seen_at,
          content_hash, excerpt, content_state,
          retention_policy, metadata_json, created_at, updated_at
        ) VALUES (
-         $1, $2, $3, 'external_url', 'Old title', 'https://example.com/research/article-1',
+         $1, $2, 'user-1', $3, 'external_url', 'Old title', 'https://example.com/research/article-1',
          'https://example.com/research/article-1', 'example.com', 'article-1', now(), now(),
          'old-hash', 'Old excerpt', 'content_saved',
          'full_text', '{}'::jsonb, now(), now()
@@ -409,7 +470,7 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
 
   it("re-materializing the same external_id updates the existing item instead of duplicating it", async () => {
     if (!available || !service) return;
-    const { connId, runId } = await seedRun();
+    const { connId, runId, versionId } = await seedRun();
     await service.materialize({
       run: { runId, spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: randomUUID() },
       policyEnvelope: POLICY_ENVELOPE,
@@ -417,12 +478,7 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
       rawOutputJson: validOutput(),
     });
 
-    const runId2 = randomUUID();
-    await pool!.query(
-      `INSERT INTO source_handler_runs (id, space_id, source_connection_id, handler_version_id, status, created_at)
-       VALUES ($1, $2, $3, $4, 'running', now())`,
-      [runId2, SPACE_A, connId, randomUUID()],
-    );
+    const runId2 = await seedAnotherRun(connId, versionId);
     const result = await service.materialize({
       run: { runId: runId2, spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: randomUUID() },
       policyEnvelope: POLICY_ENVELOPE,
@@ -439,7 +495,7 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
 
   it("writes the policy envelope's retention_policy instead of a hardcoded value, on both insert and update", async () => {
     if (!available || !service) return;
-    const { connId, runId } = await seedRun();
+    const { connId, runId, versionId } = await seedRun();
     await service.materialize({
       run: { runId, spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: randomUUID() },
       policyEnvelope: { ...POLICY_ENVELOPE, retention_policy: "metadata_only" },
@@ -464,12 +520,7 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
     const evidenceAfterInsert = await pool!.query(`SELECT count(*)::int AS n FROM extracted_evidence`);
     expect(evidenceAfterInsert.rows[0]!.n).toBe(0);
 
-    const runId2 = randomUUID();
-    await pool!.query(
-      `INSERT INTO source_handler_runs (id, space_id, source_connection_id, handler_version_id, status, created_at)
-       VALUES ($1, $2, $3, $4, 'running', now())`,
-      [runId2, SPACE_A, connId, randomUUID()],
-    );
+    const runId2 = await seedAnotherRun(connId, versionId);
     const updateResult = await service.materialize({
       run: { runId: runId2, spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: randomUUID() },
       policyEnvelope: { ...POLICY_ENVELOPE, retention_policy: "full_snapshot" },

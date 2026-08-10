@@ -23,7 +23,6 @@ function input(): RunInputEnvelope {
     task_goal: "Produce outputs",
     messages: [],
     inputs: { direct: null, workflow: null, upstream: null },
-    context: { context_snapshot_id: null, context_package_ref: null },
     attachments: [],
     project_folder_access: null,
     output_contract: {

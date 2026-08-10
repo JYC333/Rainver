@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scanObjectSchemaSuggestions } from "../src/modules/knowledge/objectSchemaSuggestions";
+import { scanObjectSchemaSuggestions } from "../src/modules/ontology/objectSchemaSuggestions";
 import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
 
 class FakeObjectSchemaSuggestionDb implements Queryable {
@@ -11,11 +11,13 @@ class FakeObjectSchemaSuggestionDb implements Queryable {
     if (/\b(?:content|plain_text|raw_text|claim_text|summary)\b/.test(sqlWithoutStringLiterals)) {
       throw new Error("object schema suggestion scan must not select raw content columns");
     }
-    if (/s\.status/.test(sql)) throw new Error("source usage must read status from space_objects, not sources");
+    // Inverted by ADR 0012: domain status left the root, so a reader that
+    // knows its object type must read the extension table's own column.
+    if (/so\.status/.test(sql)) throw new Error("status must be read from the owning extension table, not space_objects");
     if (/FROM sources s/.test(sql) && /so\.status = 'active'/.test(sql)) {
       throw new Error("source space_object status must use the source lifecycle, not active");
     }
-    if (/FROM space_object_kinds/.test(sql)) {
+    if (/FROM space_object_profiles/.test(sql)) {
       return {
         rows: [
           {
@@ -41,12 +43,12 @@ class FakeObjectSchemaSuggestionDb implements Queryable {
     if (/FROM knowledge_items ki/.test(sql)) {
       return {
         rows: [
-          { object_id: "decision-1", object_kind: "decision" },
-          { object_id: "decision-2", object_kind: "decision" },
-          { object_id: "decision-3", object_kind: "decision" },
-          { object_id: "procedure-1", object_kind: "procedure" },
-          { object_id: "procedure-2", object_kind: "procedure" },
-          { object_id: "summary-hidden", object_kind: "summary" },
+          { object_id: "decision-1", object_profile: "decision" },
+          { object_id: "decision-2", object_profile: "decision" },
+          { object_id: "decision-3", object_profile: "decision" },
+          { object_id: "procedure-1", object_profile: "procedure" },
+          { object_id: "procedure-2", object_profile: "procedure" },
+          { object_id: "summary-hidden", object_profile: "summary" },
         ] as Row[],
         rowCount: 6,
       };
@@ -90,8 +92,8 @@ class FakeObjectSchemaSuggestionDb implements Queryable {
     if (/FROM claims c/.test(sql)) {
       return {
         rows: [
-          { object_id: "claim-1", object_kind: "fact" },
-          { object_id: "claim-hidden", object_kind: "belief" },
+          { object_id: "claim-1", object_profile: "fact" },
+          { object_id: "claim-hidden", object_profile: "belief" },
         ] as Row[],
         rowCount: 2,
       };
@@ -111,10 +113,10 @@ class FakeObjectSchemaSuggestionDb implements Queryable {
     if (/FROM sources s/.test(sql)) {
       return {
         rows: [
-          { object_id: "source-1", object_kind: "paper", metadata_json: {} },
+          { object_id: "source-1", object_profile: "paper", metadata_json: {} },
           {
             object_id: "source-hidden",
-            object_kind: "email",
+            object_profile: "email",
             metadata_json: { source_connection_id: "source-restricted" },
           },
         ] as Row[],
@@ -142,20 +144,20 @@ describe("scanObjectSchemaSuggestions", () => {
     });
 
     expect(report.findings.map((finding) => finding.kind).sort()).toEqual([
-      "deprecated_kind_usage",
-      "missing_object_kind",
-      "unused_active_kind",
+      "deprecated_profile_usage",
+      "missing_object_profile",
+      "unused_active_profile",
     ]);
-    expect(report.findings.find((finding) => finding.kind === "missing_object_kind")?.proposed_action).toMatchObject({
-      proposal_type: "object_kind_create",
+    expect(report.findings.find((finding) => finding.kind === "missing_object_profile")?.proposed_action).toMatchObject({
+      proposal_type: "object_profile_create",
       key: "procedure",
       status: "draft",
     });
-    expect(report.findings.some((finding) => finding.object_kind === "summary")).toBe(false);
+    expect(report.findings.some((finding) => finding.object_profile === "summary")).toBe(false);
     expect(report.counts).toMatchObject({
-      missing_object_kind: 1,
-      deprecated_kind_usage: 1,
-      unused_active_kind: 1,
+      missing_object_profile: 1,
+      deprecated_profile_usage: 1,
+      unused_active_profile: 1,
     });
     expect(report.access_safety).toEqual({
       only_visible_usage: true,
@@ -177,9 +179,9 @@ describe("scanObjectSchemaSuggestions", () => {
       },
     });
 
-    const objectKinds = report.findings.map((finding) => finding.object_kind);
-    expect(objectKinds).toEqual(expect.arrayContaining(["fact", "paper"]));
-    expect(objectKinds).not.toEqual(expect.arrayContaining(["summary", "belief", "email"]));
+    const objectProfiles = report.findings.map((finding) => finding.object_profile);
+    expect(objectProfiles).toEqual(expect.arrayContaining(["fact", "paper"]));
+    expect(objectProfiles).not.toEqual(expect.arrayContaining(["summary", "belief", "email"]));
     expect(report.access_safety.raw_content_read).toBe(false);
   });
 });

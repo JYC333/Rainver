@@ -19,7 +19,6 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     agent_id: "agent-manager",
     agent_version_id: "version-manager",
     runtime_profile_id: "profile-manager",
-    context_snapshot_id: "snapshot-1",
     run_type: "agent",
     status: "running",
     mode: "live",
@@ -86,10 +85,6 @@ function request(): RuntimeHostExecuteRequest {
       task_goal: "Ask two reviewers.",
       messages: [],
       inputs: { direct: null, workflow: null, upstream: null },
-      context: {
-        context_snapshot_id: "snapshot-1",
-        context_package_ref: "context_snapshot:snapshot-1",
-      },
       attachments: [],
       project_folder_access: null,
       output_contract: {
@@ -117,7 +112,6 @@ function request(): RuntimeHostExecuteRequest {
     project_id: null,
     project_folder_id: null,
     capability_id: null,
-    context_snapshot_id: "snapshot-1",
     tool_mode: "disabled",
     tool_bindings: [],
   };

@@ -42,10 +42,10 @@ import { knowledgePromotionModule } from "../modules/knowledgePromotion";
 import { projectReviewModule } from "../modules/projectReview";
 import { decisionsModule } from "../modules/decisions";
 import { learningModule } from "../modules/learning";
-import { projectTemplatesModule } from "../modules/projectTemplates";
 import { projectResearchModule } from "../modules/projectResearch";
 import { researchModule } from "../modules/research";
 import { policyModule } from "../modules/policy";
+import { runtimeContextModule } from "../modules/runtimeContext";
 import { contentAccessModule } from "../modules/contentAccess";
 import { proposalsModule } from "../modules/proposals";
 import { sessionsModule } from "../modules/sessions";
@@ -55,13 +55,15 @@ import { agentGroupsModule } from "../modules/agentGroups";
 import { roomsModule } from "../modules/rooms";
 import { personalMemoryGrantsModule } from "../modules/personalMemoryGrants";
 import { memoryModule } from "../modules/memory";
-import { contextModule } from "../modules/context";
 import { contextOpsModule } from "../modules/contextOps";
 import { askSpaceModule } from "../modules/askSpace";
+import { captureFilingModule } from "../modules/captureFiling";
+import { crossSpaceRetrievalModule } from "../modules/crossSpaceRetrieval";
 import { activityModule } from "../modules/activity";
 import { publicationsModule } from "../modules/publications";
 import { sourcesModule } from "../modules/sources";
 import { readerModule } from "../modules/reader";
+import { informationDigestModule } from "../modules/informationDigest";
 import { knowledgeModule } from "../modules/knowledge";
 import { relationsModule } from "../modules/relations";
 import { academicModule } from "../modules/academic";
@@ -131,10 +133,10 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   projectReviewModule,
   decisionsModule,
   learningModule,
-  projectTemplatesModule,
   projectResearchModule,
   researchModule,
   policyModule,
+  runtimeContextModule,
   contentAccessModule,
   proposalsModule,
   sessionsModule,
@@ -144,13 +146,15 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   roomsModule,
   personalMemoryGrantsModule,
   memoryModule,
-  contextModule,
   contextOpsModule,
   askSpaceModule,
+  captureFilingModule,
+  crossSpaceRetrievalModule,
   activityModule,
   publicationsModule,
   sourcesModule,
   readerModule,
+  informationDigestModule,
   knowledgeModule,
   relationsModule,
   academicModule,

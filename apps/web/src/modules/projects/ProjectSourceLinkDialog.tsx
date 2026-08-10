@@ -8,7 +8,7 @@ import { Select } from '../../components/ui/select'
 import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialogContent } from '../sources/SourceMonitorDialog'
 import { useSourceSetupCatalog } from '../sources/useSourceSetupCatalog'
-import type { ProjectSourceBinding, SourceChannel } from '../../types/api'
+import type { ProjectExtractionProfile, ProjectSourceBinding, SourceChannel } from '../../types/api'
 
 interface ProjectSourceLinkDialogProps {
   projectId: string
@@ -39,6 +39,9 @@ export function ProjectSourceLinkDialog({
   const [requestedMode, setRequestedMode] = useState<'link' | 'create' | null>(null)
   const [channelId, setChannelId] = useState('')
   const [backfillHistory, setBackfillHistory] = useState(defaultBackfillHistory)
+  const [standingComparison, setStandingComparison] = useState(true)
+  const [profiles, setProfiles] = useState<ProjectExtractionProfile[]>([])
+  const [profileKey, setProfileKey] = useState('')
   const [linking, setLinking] = useState(false)
   const sourceOptions = useMemo(
     () => channels
@@ -58,7 +61,14 @@ export function ProjectSourceLinkDialog({
     if (!open) return
     setChannelId(sourceOptions[0]?.value ?? '')
     setBackfillHistory(defaultBackfillHistory)
-  }, [allowCreate, defaultBackfillHistory, open, sourceOptions])
+    setStandingComparison(true)
+    void projectsApi.sourceExtractionProfiles(projectId)
+      .then(rows => {
+        setProfiles(rows)
+        setProfileKey(rows.find(row => row.is_default)?.key ?? rows[0]?.key ?? '')
+      })
+      .catch(error => toast.error(errMsg(error)))
+  }, [allowCreate, defaultBackfillHistory, open, projectId, sourceOptions])
 
   useEffect(() => {
     if (catalogError) toast.error(errMsg(catalogError))
@@ -74,6 +84,8 @@ export function ProjectSourceLinkDialog({
       const binding = await projectsApi.createSourceBinding(projectId, {
         source_channel_id: channelId,
         backfill_history: backfillHistory,
+        standing_comparison_enabled: standingComparison,
+        extraction_policy: { profile_key: profileKey },
       })
       if (binding.backfill_result) {
         toast.success(`Source linked; ${binding.backfill_result.created_links} project items added`)
@@ -148,6 +160,28 @@ export function ProjectSourceLinkDialog({
                   <Select value={channelId} options={sourceOptions} onChange={setChannelId} />
                 )}
               </div>
+              <div className="space-y-1.5">
+                <Label>Extraction profile</Label>
+                <Select
+                  value={profileKey}
+                  options={profiles.map(profile => ({ value: profile.key, label: profile.display_name }))}
+                  onChange={setProfileKey}
+                  ariaLabel="Extraction profile"
+                />
+                <p className="text-xs text-muted-foreground">Controls how triage-approved material becomes a Project object.</p>
+              </div>
+              <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-primary"
+                  checked={standingComparison}
+                  onChange={event => setStandingComparison(event.target.checked)}
+                />
+                <span>
+                  <span className="block font-medium text-foreground">Compare new material with this Project</span>
+                  <span className="text-muted-foreground">Use the bounded Standing Research budget to surface possible new directions.</span>
+                </span>
+              </label>
               <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-xs">
                 <input
                   type="checkbox"
@@ -164,7 +198,7 @@ export function ProjectSourceLinkDialog({
             <DialogFooter>
               <Button variant="ghost" onClick={() => handleOpenChange(false)}>Cancel</Button>
               {allowCreate && <Button variant="outline" onClick={createNewSource}>Create new source</Button>}
-              <Button onClick={() => { void submit() }} disabled={linking || !channelId}>
+              <Button onClick={() => { void submit() }} disabled={linking || !channelId || !profileKey}>
                 {linking ? 'Linking…' : 'Link source'}
               </Button>
             </DialogFooter>

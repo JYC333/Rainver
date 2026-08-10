@@ -10,7 +10,7 @@ Relations is the reusable relationship data foundation for Agent Space. It owns
 people and organization records, identity handles, affiliation edges, and
 provenance links that can be used by normal life, team, and research workflows.
 
-Academic research is a Project Profile layered on these core modules. It is not a
+Academic research is a set of Sources and an extraction profile layered on these core modules. It is not a
 separate plugin, not a second Project hierarchy, and not a top-level product
 route. Academic-specific paper metadata lives in the `academic` module and
 connects to the same `space_objects` / `object_relations` graph used by the rest
@@ -26,6 +26,11 @@ The registered backend modules are:
 | `academic` | `/api/v1/academic*` | Academic paper metadata, paper authorship edges, and paper citation edges. |
 
 Relations writes object-backed records through the shared object model:
+
+- Direct person, organization, and academic-paper creation uses the shared
+  access creation resolver. Context-free records land private in Personal
+  Space; a Project creation is shared, Project-scoped, and written only after
+  Project writer authorization.
 
 - `relation_people` extends `space_objects` rows whose `object_type` is
   `person`.
@@ -68,7 +73,7 @@ Relations does not own:
 
 ## Project And Academic Workflow
 
-The `academic_research` Project Profile reuses:
+The `academic_paper_v1` extraction profile reuses:
 
 - Project Sources for source monitoring and item collection;
 - Project Corpus for the project-specific set of collected papers, evidence,

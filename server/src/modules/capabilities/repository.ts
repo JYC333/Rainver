@@ -992,6 +992,9 @@ async function insertRuntimeBindingsWithDb(input: {
   ];
   const bindings: CapabilityRuntimeBinding[] = [];
   for (const spec of specs) {
+    await input.db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      `runtime-skill-authority:${input.spaceId}:${input.capabilityId}`,
+    ]);
     const id = randomUUID();
     await input.db.query(
       `INSERT INTO capability_runtime_bindings (

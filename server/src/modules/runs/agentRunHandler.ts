@@ -4,7 +4,6 @@ import { RunMaterializationService } from "./materializationService";
 import { RunOrchestrationService } from "./orchestrationService";
 import { PgRunRepository } from "./repository";
 import { sharedCliProcessRegistry } from "./processRegistry";
-import { ContextPrepareService } from "../context";
 import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
 import { PgVerificationEngine } from "./verification";
 import {
@@ -28,10 +27,8 @@ export function registerAgentRunHandler(
 
   const repository = PgRunRepository.fromConfig(config);
   const materializer = RunMaterializationService.fromConfig(config);
-  const contextPreparer = new ContextPrepareService(config);
   const orchestration = new RunOrchestrationService(config, repository, {
     materializer,
-    contextPreparer,
     workspaceManager: PgRunSandboxManager.fromConfig(config),
     codePatchCollector: PgCodePatchCollector.fromConfig(config),
     verificationEngine: PgVerificationEngine.fromConfig(config),
@@ -232,6 +229,13 @@ async function handleAgentRun(
     } else if (kind === "managed_experiment") {
       await queue.enqueue({
         job_type: "managed_experiment_reconcile",
+        space_id: job.space_id,
+        user_id: job.user_id,
+        payload: { run_id: runId },
+      });
+    } else if (workflowInput.project_research_standing !== undefined) {
+      await queue.enqueue({
+        job_type: "project_research_standing_reconcile",
         space_id: job.space_id,
         user_id: job.user_id,
         payload: { run_id: runId },

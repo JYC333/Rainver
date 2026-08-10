@@ -7,9 +7,8 @@ import type {
   KnowledgeContentFormat,
   KnowledgeCreateProposalBody,
   KnowledgeItemKind,
-  KnowledgeVisibility,
   Proposal,
-  SpaceObjectKindOut,
+  SpaceObjectProfileOut,
 } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -23,7 +22,6 @@ import KnowledgeProposalNotice from './KnowledgeProposalNotice'
 import {
   KNOWLEDGE_FORMATS,
   KNOWLEDGE_ITEM_KINDS,
-  KNOWLEDGE_VISIBILITIES,
   parseOptionalConfidence,
   parseTags,
   validateConfidence,
@@ -34,12 +32,11 @@ interface CreateForm {
   title: string
   content: string
   content_format: KnowledgeContentFormat
-  visibility: KnowledgeVisibility
   tags: string
   confidence: string
   project_id: string
   project_folder_id: string
-  object_kind_fields: string
+  object_profile_fields: string
   rationale: string
 }
 
@@ -48,12 +45,11 @@ const EMPTY_CREATE_FORM: CreateForm = {
   title: '',
   content: '',
   content_format: 'markdown',
-  visibility: 'space_shared',
   tags: '',
   confidence: '',
   project_id: '',
   project_folder_id: '',
-  object_kind_fields: '',
+  object_profile_fields: '',
   rationale: '',
 }
 
@@ -63,27 +59,27 @@ interface KnowledgeCreateProposalFormProps {
 
 export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: KnowledgeCreateProposalFormProps) {
   const [form, setForm] = useState<CreateForm>(EMPTY_CREATE_FORM)
-  const [objectKinds, setObjectKinds] = useState<SpaceObjectKindOut[]>([])
+  const [objectProfiles, setObjectProfiles] = useState<SpaceObjectProfileOut[]>([])
   const [lastProposal, setLastProposal] = useState<Proposal | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (!hasOperationalSpace) {
-      setObjectKinds([])
+      setObjectProfiles([])
       return
     }
     objectSchemaApi.listKinds({ base_object_type: 'knowledge_item', status: 'active', limit: 100 })
-      .then(page => setObjectKinds(page.items.filter(kind => isKnowledgeItemKind(kind.key))))
-      .catch(() => setObjectKinds([]))
+      .then(page => setObjectProfiles(page.items.filter(kind => isKnowledgeItemKind(kind.key))))
+      .catch(() => setObjectProfiles([]))
   }, [hasOperationalSpace])
 
   const kindOptions = useMemo(() => {
-    const labels = new Map(objectKinds.map(kind => [kind.key, kind.label]))
+    const labels = new Map(objectProfiles.map(kind => [kind.key, kind.label]))
     return KNOWLEDGE_ITEM_KINDS.map(kind => ({
       value: kind,
       label: labels.get(kind) ? `${labels.get(kind)} (${kind})` : kind,
     }))
-  }, [objectKinds])
+  }, [objectProfiles])
 
   function setField<K extends keyof CreateForm>(key: K, value: CreateForm[K]) {
     setForm(f => ({ ...f, [key]: value }))
@@ -103,14 +99,14 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
       toast.error('Confidence must be a number from 0 to 1')
       return
     }
-    let objectKindFields: Record<string, unknown> | undefined
-    if (form.object_kind_fields.trim()) {
+    let objectProfileFields: Record<string, unknown> | undefined
+    if (form.object_profile_fields.trim()) {
       try {
-        const parsed = JSON.parse(form.object_kind_fields) as unknown
+        const parsed = JSON.parse(form.object_profile_fields) as unknown
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('object_kind_fields must be a JSON object')
+          throw new Error('object_profile_fields must be a JSON object')
         }
-        objectKindFields = parsed as Record<string, unknown>
+        objectProfileFields = parsed as Record<string, unknown>
       } catch (e) {
         toast.error(errMsg(e))
         return
@@ -121,14 +117,13 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
       title: form.title.trim(),
       content: form.content,
       content_format: form.content_format,
-      visibility: form.visibility,
       tags: parseTags(form.tags),
       confidence,
       project_id: form.project_id.trim() || null,
       project_folder_id: form.project_folder_id.trim() || null,
       source_run_id: null,
       source_refs: [],
-      ...(objectKindFields ? { object_kind_fields: objectKindFields } : {}),
+      ...(objectProfileFields ? { object_profile_fields: objectProfileFields } : {}),
       rationale: form.rationale.trim() || null,
     }
     setSubmitting(true)
@@ -164,10 +159,6 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
           <Select value={form.content_format} onChange={v => setField('content_format', v as KnowledgeContentFormat)} options={KNOWLEDGE_FORMATS.map(f => ({ value: f, label: f }))} />
         </div>
         <div>
-          <Label>Visibility</Label>
-          <Select value={form.visibility} onChange={v => setField('visibility', v as KnowledgeVisibility)} options={KNOWLEDGE_VISIBILITIES.map(v => ({ value: v, label: v }))} />
-        </div>
-        <div>
           <Label>Tags</Label>
           <Input value={form.tags} onChange={e => setField('tags', e.target.value)} placeholder="comma, separated" />
         </div>
@@ -197,8 +188,8 @@ export default function KnowledgeCreateProposalForm({ hasOperationalSpace }: Kno
         <p className="mt-1 text-xs text-muted-foreground">Run and source provenance is attached by the owning extraction/review flow, not entered manually.</p>
         <div className="grid gap-3 md:grid-cols-2 mt-3">
           <div className="md:col-span-2">
-            <Label>object_kind_fields JSON</Label>
-            <Textarea value={form.object_kind_fields} onChange={e => setField('object_kind_fields', e.target.value)} placeholder='optional, e.g. {"risk":"low"}' />
+            <Label>object_profile_fields JSON</Label>
+            <Textarea value={form.object_profile_fields} onChange={e => setField('object_profile_fields', e.target.value)} placeholder='optional, e.g. {"risk":"low"}' />
           </div>
         </div>
       </div>

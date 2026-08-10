@@ -10,7 +10,7 @@ import { SpaceLink as Link } from '../../core/spaceNav'
  */
 export function ResearchTabsLegend({ projectId }: { projectId: string }) {
   return (
-    <section aria-label="Where Academic Research work happens" className="rounded-lg border border-border bg-muted/10 p-4 lg:p-5">
+    <section aria-label="Where Project Research work happens" className="rounded-lg border border-border bg-muted/10 p-4 lg:p-5">
       <h2 className="text-sm font-semibold">Where this Project's Areas fit in</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         The research loop lives in three Areas. Everything else becomes useful once you have findings to act on.
@@ -30,7 +30,7 @@ export function ResearchTabsLegend({ projectId }: { projectId: string }) {
           <div className="flex items-center gap-2 text-xs font-medium"><BookOpen className="size-3.5 text-accent-foreground" />
             <Link className="hover:underline" to={`/projects/${projectId}/research`}>Research Area</Link>
           </div>
-          <p className="mt-1.5 text-xs text-muted-foreground">Your working notebook and reading list, plus the generated report snapshots.</p>
+          <p className="mt-1.5 text-xs text-muted-foreground">Your reading list, checklist, and generated report snapshots. Working notes live in Project Notes.</p>
         </div>
       </div>
       <p className="mt-3 text-xs text-muted-foreground">

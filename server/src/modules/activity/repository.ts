@@ -20,6 +20,7 @@ import { assertProjectReadable } from "../projects/access";
 import type { ProposalOut } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { assessActivityMemoryDuplicate } from "./memoryDedup";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
+import { recordDetailRead } from "../contentAccess/audit";
 import { contentResourceDefinition } from "../access/contentAccessRegistry";
 import { isContentVisibility } from "../access/contentAccessTypes";
 import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
@@ -230,7 +231,15 @@ export class PgActivityRepository {
           AND ${contentReadSql("activity", "ar", "$3")}`,
       [activityId, identity.spaceId, identity.userId],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    if (!row) return null;
+    await recordDetailRead(this.db, {
+      spaceId: identity.spaceId,
+      viewerUserId: identity.userId,
+      resourceType: "activity",
+      resourceId: activityId,
+    });
+    return row;
   }
 
   async getOut(identity: SpaceUserIdentity, activityId: string): Promise<Record<string, unknown> | null> {

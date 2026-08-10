@@ -29,10 +29,6 @@ describe("run orchestration contract", () => {
         workflow: null,
         upstream: { items: [{ source_run_id: "run-0", value: { count: 2 } }] },
       },
-      context: {
-        context_snapshot_id: "snapshot-1",
-        context_package_ref: "context_snapshot:snapshot-1",
-      },
       attachments: [
         {
           kind: "artifact",

@@ -26,6 +26,13 @@ durable product knowledge, memory, tasks, or project state. It captures,
 normalizes, extracts, snapshots, and links candidate material while preserving
 proposal gates for durable writes.
 
+Direct Source, Source Recipe, Custom Source, manual URL, and standalone
+Evidence creation use the shared creation-context resolver. The source chain
+stores `project_id`: Connections created inside a Project are shared and
+Project-scoped; context-free Sources are private in Personal Space. Items,
+Snapshots, Evidence, Reader annotations, and their grants inherit the parent
+Source/Document context rather than choosing a new default.
+
 The frontend module id is `sources`, the route is `/sources`, and API paths use
 `/api/v1/sources/*`. Sources owns the user-facing Source configuration
 (external origins) and their Monitors (provider searches, feed subscriptions,
@@ -69,6 +76,9 @@ for jobs, rules, and troubleshooting.
 - `SourceChannelItemLink`, which preserves every channel hit for a globally
   deduplicated `SourceItem`.
 - `SourceItem` candidate records.
+- Space-shared objective item annotations: domain, depth, genre, topic
+  candidates, summary, plus annotation-v2 normalized stance target/polarity.
+  Stance describes the item's conclusion, never a reader's view or relevance.
 - `ExtractionJob` scan, extraction, snapshot, manual URL, and normalization
   jobs.
 - `SourceSnapshot` records backed by artifacts.
@@ -79,6 +89,17 @@ for jobs, rules, and troubleshooting.
   Projects module; Sources only hands newly materialized items/evidence to the
   hook.
 - Sources reader annotations and comments.
+- The source recommendation/subscription state machine. Serendipity discovery
+  creates only `pending` recommendations for active space-shared channels;
+  `GET /api/v1/sources/recommendations` and the Sources page let the reader
+  explicitly Follow, Dismiss, or Mute them. Pending is never treated as a
+  subscription. An explicit Information Digest "Never this direction again"
+  block may dismiss only still-pending system recommendations linked to that
+  blocked domain; it never changes an accepted subscription.
+- Materialization of bounded external-discovery samples as owner-private,
+  metadata-only `SourceItem` rows, followed by the ordinary annotation job.
+  Information Digest owns the probe budget and standby pool, not this Sources
+  normalization boundary.
 - Per-user source item read state (`source_item_user_states`), used by Library
   and the reader.
 - Custom Source handler versions, handler runs, backend create/test/activate
@@ -92,7 +113,8 @@ for jobs, rules, and troubleshooting.
 - Memory writes.
 - Wiki writes.
 - Task writes.
-- Project-owned source creation.
+- A second Project-specific source model; Project-scoped Sources use the same
+  canonical Source tables and `project_id`.
 - Runtime adapter marketplace.
 - Capability marketplace.
 - General plugin marketplace.
@@ -264,10 +286,11 @@ provider catalog, renders provider-owned setup fields (including the arXiv
 category picker), and creates a reusable Source with one or more independent
 Monitors. Project binding happens through the Project Sources surface and
 `project_source_bindings`; creating a monitor outside a project does not bind it
-implicitly. The Academic Research Project Profile reuses the same provider and
-monitor models, and its Project Sources section feeds the Project Corpus and
-the core Graph `academic_citation_v1` project lens when source items, evidence,
-and object links are materialized.
+implicitly. Templates reuse the same provider and monitor models. Graph
+presentation is derived from active binding profile descriptors: for example,
+the academic profile advertises the core `academic_citation_v1` lens, while the
+generic-document profile does not advertise a specialized lens. A Project's
+stored Template key is provenance and is never consulted for this decision.
 Source health is exposed as read models instead of raw run tables:
 `/sources/source-health` reports source-level health for visible connections.
 Project binding health is Project-owned at
@@ -375,6 +398,16 @@ or save URLs into a project collection through an already-bound source, run scan
 backfill existing source items/evidence, and inspect source health. Projects do
 not own raw source connections.
 
+Each binding persists an extraction profile and a
+`standing_comparison_enabled` switch. The profile registry has exactly one
+default; ordinary writer-created bindings use `generic_document_v1` unless the
+writer explicitly selects another registered profile, and unknown keys are
+rejected. The Project Sources UI exposes the registry descriptors, active
+profile, and Standing state. The direct-binding UI defaults Standing on. Template
+recommendations persist their declared profile and also default Standing on;
+both paths idempotently ensure the Project's four Research baseline Notes before
+monitoring begins.
+
 Removing a Project binding disconnects it from normal Project reads and UI. The
 row is retained as an internal archive for operation/backfill/proposal history;
 re-adding the same Source restores that archived binding.
@@ -404,6 +437,14 @@ decision table. `source_post_processing_item_decisions` remains the
 source-item-level post-processing record; Project corpus rows may point to the
 latest decision and map its relevance into project `triage_status` while keeping
 project `read_status` separate from the personal Library state.
+
+Once a SourceItem corpus row reaches `relevant` or `included`, Projects
+resolves the active binding's extraction profile and materializes the item
+behind a savepoint. The generic document profile requires `canonical_uri` and
+creates a project-scoped, graphable `source` object; the academic profile uses
+the same post-triage trigger. Both profiles link the object through
+`source_item_references`, after which the existing corpus promotion preserves
+triage/read state and provenance while populating `object_id`.
 
 For deduped items, auto-linking also considers `SourceSnapshot.connection_id`
 rows for the same item, not only `SourceItem.connection_id`.
@@ -497,7 +538,11 @@ owns that job, the rule cursor, and the run audit rows:
   `include_criteria`/`exclude_criteria`/`must_have`/`nice_to_have` lists, and
   an optional `decision_policy` (default wording is used when absent). The
   profile is rule-level, so multiple sources can reuse the same agent with
-  different screening criteria.
+  different screening criteria. Project-bound Auto Research rules additionally
+  carry `relevance_profile.project_criteria`, sourced from the Project Research
+  screening-criteria record. Criteria saves refresh existing non-archived rules,
+  and rule creation/reuse loads the current record; instruction rendering makes
+  the Project criteria part of every automated item decision.
   `isRelevanceScreeningEnabled(actions, inputConfig)` (`postProcessing/repository.ts`)
   is the single predicate — screening is active when `mark_items` is on
   **or** `relevance_profile.enabled` is true — and both the prompt

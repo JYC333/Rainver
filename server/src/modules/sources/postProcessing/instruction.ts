@@ -255,6 +255,7 @@ function relevanceScreeningGuidance(
   if (profile?.exclude_criteria.length) lines.push(`- Exclude: ${profile.exclude_criteria.join("; ")}`);
   if (profile?.must_have.length) lines.push(`- Must have: ${profile.must_have.join("; ")}`);
   if (profile?.nice_to_have.length) lines.push(`- Nice to have: ${profile.nice_to_have.join("; ")}`);
+  lines.push(...projectCriteriaGuidance(profile?.project_criteria));
   const policy = profile?.decision_policy;
   lines.push(
     `- relevant: ${policy?.relevant ?? DEFAULT_DECISION_POLICY.relevant}`,
@@ -268,6 +269,29 @@ function relevanceScreeningGuidance(
     "- For Maybe items include a short reason and what would make them worth follow-up.",
     "- Do not write long summaries for Not relevant items.",
   );
+  return lines;
+}
+
+function projectCriteriaGuidance(
+  criteria: NonNullable<SourcePostProcessingInputConfig["relevance_profile"]>["project_criteria"],
+): string[] {
+  if (!criteria) return [];
+  const lines = ["- Project screening criteria:"];
+  if (criteria.include_keywords.length) lines.push(`  - Include keywords/concepts: ${criteria.include_keywords.join("; ")}`);
+  if (criteria.exclude_keywords.length) lines.push(`  - Exclude keywords/concepts: ${criteria.exclude_keywords.join("; ")}`);
+  for (const [key, values] of Object.entries(criteria.domain_criteria)) {
+    if (values.length) lines.push(`  - ${key}: ${values.join("; ")}`);
+  }
+  if (criteria.date_range_start || criteria.date_range_end) {
+    lines.push(`  - Publication date: ${criteria.date_range_start ?? "unbounded"} to ${criteria.date_range_end ?? "unbounded"}`);
+  }
+  if (criteria.source_restrictions.length) {
+    lines.push(`  - Allowed journals, outlets, or sites: ${criteria.source_restrictions.join("; ")}`);
+  }
+  if (criteria.required_evidence_fields.length) {
+    lines.push(`  - Required evidence fields: ${criteria.required_evidence_fields.join("; ")}`);
+  }
+  lines.push("  - Apply these criteria to every item and explain any unmet restriction in the decision reason.");
   return lines;
 }
 

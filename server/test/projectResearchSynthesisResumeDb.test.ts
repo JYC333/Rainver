@@ -2,11 +2,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for a second, compounding bug on top of the
 // reconcileOperation stage-clobber fix: `queueSynthesis`'s idempotency guard
@@ -44,6 +45,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-synthesis-resume-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -84,11 +86,10 @@ beforeEach(async () => {
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','screening','active','agent_assisted','{}'::jsonb,$4,$4)`,
-    [WORKFLOW, SPACE, PROJECT, now],
-  );
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "screening", now,
+  });
 });
 
 async function seedStuckOperation(): Promise<void> {
@@ -151,7 +152,7 @@ describe("ProjectResearchOrchestrator.decideCheckpoint resuming a stuck synthesi
     expect(operation.rows[0]!.status).toBe("active");
 
     const workflow = await pool!.query<{ current_stage: string }>(
-      `SELECT current_stage FROM project_research_workflows WHERE id=$1`,
+      `SELECT current_stage FROM project_research_workflows WHERE object_id=$1`,
       [WORKFLOW],
     );
     expect(workflow.rows[0]!.current_stage).toBe("synthesis");

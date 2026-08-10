@@ -22,7 +22,7 @@ export const ProviderCompletionInternalRequestSchema = z.object({
   user: z.string(),
   max_tokens: z.number().int().positive().optional(),
   /**
-   * Auxiliary-task name (e.g. "reflector", "condenser"). When the space has a
+   * Auxiliary-task name (for example, a retrieval or checkpoint extractor). When the space has a
    * ProviderTaskPolicy for this task, its chain takes precedence over
    * `provider_id`, which then acts as the safety-net provider.
    */

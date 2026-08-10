@@ -9,7 +9,7 @@ import { ResearchMonitorMaterializer } from "../src/modules/research/discovery/m
 import { ResearchStrategyActivationService } from "../src/modules/research/discovery/strategyActivationService";
 import { ResearchQueryRepository } from "../src/modules/research/queryPlanning/repository";
 import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -58,6 +58,7 @@ beforeAll(async () => {
     );
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[research-monitor-materializer-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);

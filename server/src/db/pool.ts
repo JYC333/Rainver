@@ -31,7 +31,7 @@ export function getDbPool(databaseUrl: string): Pool {
       // *estimated* cost crosses jit_above_cost even though actual execution
       // touches almost no rows. Postgres then spends seconds JIT-compiling
       // expression code for a query that runs in milliseconds without it
-      // (observed: a 63-row literature-matrix query went from ~2.8s to
+      // (observed: a 63-row evidence-matrix query went from ~2.8s to
       // ~150ms with JIT off, no query change). Passed as a startup
       // parameter so it applies to every physical connection with no extra
       // per-connection round trip.

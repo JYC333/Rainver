@@ -127,6 +127,11 @@ back to a fake database, because that can validate SQL shape while missing
 constraints, transactions, locks, JSON queries, triggers, and cross-table
 invariants.
 
+The unavailable-runtime path is limited to an explicitly unavailable shared
+container or a PostgreSQL connection error. Migration, schema, seed, service
+construction, and other setup errors must be rethrown so they fail the suite;
+they must never be converted into `available = false`.
+
 Database fakes are allowed only for narrowly scoped, database-free unit tests
 whose stated purpose is SQL/parameter shape or a pure adapter boundary. Such
 tests must not be used to prove product behavior or to duplicate coverage
@@ -189,3 +194,25 @@ npx vitest run
 Do not point tests at a real mode data tree. Integration tests that need
 Postgres must use explicit test fixtures or the Docker-native ops helpers,
 never a live dev/prod instance directory.
+
+## Flake Attribution
+
+A rotating handful of failures across different files each run is a contention
+signal, not a regression. Diagnose it by re-running the failing file alone and
+by stashing the change: a file that fails at 30s under full fan-out and passes
+in under a second by itself is not testing what its failure claims.
+
+The web suite carries two settings for this, each with its reason in the file:
+`apps/web/vitest.config.ts` caps the pool at 6 workers rather than starting a
+jsdom environment on every core, and `apps/web/src/test/setup.ts` sets
+testing-library's `asyncUtilTimeout` to 15s because the real cause was
+`findBy*` giving up while a lazy chunk was still transforming, not vitest's own
+test timeout. Do not lower either to "speed the suite up" without re-running
+the full suite several times — the first attempt at this raised the wrong
+timeout and did not settle it.
+
+Hand-written subset schemas under `server/test/fixtures/*.sql` are a known
+drift source: they are copies of the real schema and nothing regenerates them,
+so a column renamed in `server/migrations/0001_baseline.sql` stays stale there
+until a test happens to touch it. Grep them when a schema change renames or
+drops a column.

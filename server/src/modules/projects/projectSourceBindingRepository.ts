@@ -7,6 +7,7 @@ import { contentDecisionFromDb } from "../access/contentAccessQuery";
 import { projectSourceBindingOut } from "../sources/sourceRepositoryMappers";
 import { PROJECT_SOURCE_BINDING_COLUMNS, type ProjectSourceBindingRow } from "../sources/sourceRepositoryRows";
 import { recomputeProjectSourceBindingLinks } from "./projectSourceRoutingService";
+import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry";
 
 const PROJECT_SOURCE_DELIVERY_SCOPES = new Set(["project_members", "source_subscribers"]);
 
@@ -38,7 +39,7 @@ export class ProjectSourceBindingRepository {
         ORDER BY priority DESC, updated_at DESC, id DESC`,
       params,
     );
-    return rows.rows.map(projectSourceBindingOut);
+    return rows.rows.map(projectSourceBindingWithProfileOut);
   }
 
   async createProjectSourceBinding(identity: SpaceUserIdentity, body: Record<string, unknown>) {
@@ -73,10 +74,11 @@ export class ProjectSourceBindingRepository {
                 priority = $3::int,
                 delivery_scope = $4,
                 collection_notifications_enabled = $5::boolean,
-                filters_json = $6::jsonb,
-                routing_policy_json = $7::jsonb,
-                extraction_policy_json = $8::jsonb,
-                updated_at = $9
+                standing_comparison_enabled = $6::boolean,
+                filters_json = $7::jsonb,
+                routing_policy_json = $8::jsonb,
+                extraction_policy_json = $9::jsonb,
+                updated_at = $10
           WHERE space_id = $1 AND id = $2
           RETURNING ${PROJECT_SOURCE_BINDING_COLUMNS}`,
         [
@@ -85,23 +87,24 @@ export class ProjectSourceBindingRepository {
           numberValue(body.priority) ?? 0,
           deliveryScope,
           booleanBody(body.collection_notifications_enabled, "collection_notifications_enabled", true),
+          booleanBody(body.standing_comparison_enabled, "standing_comparison_enabled", false),
           JSON.stringify(objectValue(body.filters)),
           JSON.stringify(objectValue(body.routing_policy)),
           JSON.stringify(objectValue(body.extraction_policy)),
           now,
         ],
       );
-      const out = projectSourceBindingOut(restored.rows[0]!);
+      const out = projectSourceBindingWithProfileOut(restored.rows[0]!);
       if (!booleanBody(body.backfill_history, "backfill_history", false)) return out;
       return { ...out, backfill_result: await this.backfillProjectSourceBindingRow(identity, restored.rows[0]!) };
     }
     const result = await this.db.query<ProjectSourceBindingRow>(
       `INSERT INTO project_source_bindings (
          id, space_id, project_id, source_channel_id, binding_key,
-         status, priority, delivery_scope, collection_notifications_enabled,
+         status, priority, delivery_scope, collection_notifications_enabled, standing_comparison_enabled,
          filters_json, routing_policy_json, extraction_policy_json,
          created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, 'active', $6::int, $7, $8::boolean, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $13)
+       ) VALUES ($1, $2, $3, $4, $5, 'active', $6::int, $7, $8::boolean, $9::boolean, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $14)
        RETURNING ${PROJECT_SOURCE_BINDING_COLUMNS}`,
       [
         randomUUID(),
@@ -112,6 +115,7 @@ export class ProjectSourceBindingRepository {
         numberValue(body.priority) ?? 0,
         deliveryScope,
         booleanBody(body.collection_notifications_enabled, "collection_notifications_enabled", true),
+        booleanBody(body.standing_comparison_enabled, "standing_comparison_enabled", false),
         JSON.stringify(objectValue(body.filters)),
         JSON.stringify(objectValue(body.routing_policy)),
         JSON.stringify(objectValue(body.extraction_policy)),
@@ -120,7 +124,7 @@ export class ProjectSourceBindingRepository {
       ],
     );
     const row = result.rows[0]!;
-    const out = projectSourceBindingOut(row);
+    const out = projectSourceBindingWithProfileOut(row);
     if (!booleanBody(body.backfill_history, "backfill_history", false)) return out;
     return {
       ...out,
@@ -148,10 +152,11 @@ export class ProjectSourceBindingRepository {
               priority = $5::int,
               delivery_scope = $6,
               collection_notifications_enabled = $7::boolean,
-              filters_json = $8::jsonb,
-              routing_policy_json = $9::jsonb,
-              extraction_policy_json = $10::jsonb,
-              updated_at = $11
+              standing_comparison_enabled = $8::boolean,
+              filters_json = $9::jsonb,
+              routing_policy_json = $10::jsonb,
+              extraction_policy_json = $11::jsonb,
+              updated_at = $12
         WHERE space_id = $1
           AND id = $2
         RETURNING ${PROJECT_SOURCE_BINDING_COLUMNS}`,
@@ -163,13 +168,14 @@ export class ProjectSourceBindingRepository {
         numberValue(body.priority) ?? row.priority,
         deliveryScope,
         booleanBody(body.collection_notifications_enabled, "collection_notifications_enabled", row.collection_notifications_enabled),
+        booleanBody(body.standing_comparison_enabled, "standing_comparison_enabled", row.standing_comparison_enabled),
         JSON.stringify(body.filters === undefined ? row.filters_json ?? {} : objectValue(body.filters)),
         JSON.stringify(body.routing_policy === undefined ? row.routing_policy_json ?? {} : objectValue(body.routing_policy)),
         JSON.stringify(body.extraction_policy === undefined ? row.extraction_policy_json ?? {} : objectValue(body.extraction_policy)),
         now,
       ],
     );
-    const out = projectSourceBindingOut(updated.rows[0]!);
+    const out = projectSourceBindingWithProfileOut(updated.rows[0]!);
     if (status === "active") {
       await this.backfillProjectSourceBindingRow(identity, updated.rows[0]!);
     } else {
@@ -410,6 +416,22 @@ export class ProjectSourceBindingRepository {
     }
     return scope;
   }
+}
+
+function projectSourceBindingWithProfileOut(row: ProjectSourceBindingRow) {
+  const out = projectSourceBindingOut(row);
+  const policy = out.extraction_policy_json as Record<string, unknown>;
+  const profileKey = typeof policy.profile_key === "string" ? policy.profile_key : null;
+  const profile = profileKey ? defaultExtractionProfileRegistry.get(profileKey) : null;
+  return {
+    ...out,
+    extraction_profile: profile ? {
+      key: profile.key,
+      display_name: profile.displayName,
+      entity_type: profile.entityType,
+      graph_lens_id: profile.graphLensId ?? null,
+    } : null,
+  };
 }
 
 function booleanBody(value: unknown, field: string, fallback: boolean): boolean {

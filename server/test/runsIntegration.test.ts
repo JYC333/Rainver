@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository";
-import { contextSnapshotToOut } from "../src/modules/runs/runReadModel";
 import {
   NonTerminalRunError,
   PostRunFinalizationService,
@@ -30,6 +29,7 @@ beforeAll(async () => {
     pool = new Pool({ connectionString: container.getConnectionUri() });
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[runs-integration] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -48,7 +48,7 @@ beforeEach(async () => {
   const now = new Date().toISOString();
   await pool.query("TRUNCATE spaces, users CASCADE");
   await pool.query(
-    "TRUNCATE content_access_grants, space_memberships, actors, agents, agent_versions, agent_runtime_profiles, agent_run_groups, agent_run_group_members, agent_run_messages, context_snapshots, runs, run_delegations, run_steps, run_events, run_execution_locks, run_evaluations, verification_results, run_finalizations, jobs, job_events, artifacts, tasks, task_runs, task_evaluations CASCADE",
+    "TRUNCATE content_access_grants, space_memberships, actors, agents, agent_versions, agent_runtime_profiles, agent_run_groups, agent_run_group_members, agent_run_messages, runs, run_delegations, run_steps, run_events, run_execution_locks, run_evaluations, verification_results, run_finalizations, jobs, job_events, artifacts, tasks, task_runs, task_evaluations CASCADE",
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
@@ -254,7 +254,7 @@ async function seedJob(
 }
 
 describe("runs repositories against real PostgreSQL", () => {
-  it("creates a queued run with a linked minimal context snapshot", async (ctx) => {
+  it("creates a queued run without a legacy context snapshot", async (ctx) => {
     if (!available) return ctx.skip();
     const repo = new PgRunRepository(pool!);
     const { agentId, versionId } = await seedAgent();
@@ -267,29 +267,15 @@ describe("runs repositories against real PostgreSQL", () => {
       run_type: "agent",
       trigger_origin: "manual",
       prompt: "hello",
-      context_artifact_ids: ["artifact-1", "artifact-1", "artifact-2"],
     });
 
     expect(run.status).toBe("queued");
     expect(run.agent_version_id).toBe(versionId);
-    expect(run.context_snapshot_id).toBeTruthy();
-    const snapshot = await pool!.query<{ run_id: string; agent_id: string; request_json: unknown }>(
-      "SELECT run_id, agent_id, request_json FROM context_snapshots WHERE id = $1",
-      [run.context_snapshot_id],
+    const snapshots = await pool!.query(
+      "SELECT id FROM invocation_snapshots WHERE invocation_id = $1",
+      [run.id],
     );
-    expect(snapshot.rows[0]).toMatchObject({ run_id: run.id, agent_id: agentId });
-    expect(snapshot.rows[0]?.request_json).toMatchObject({
-      context_artifact_ids: ["artifact-1", "artifact-2"],
-    });
-    const snapshotRecord = await repo.getContextSnapshot("space-1", run.context_snapshot_id);
-    expect(contextSnapshotToOut(snapshotRecord)).toMatchObject({
-      id: run.context_snapshot_id,
-      run_id: run.id,
-      agent_id: agentId,
-      request_json: {
-        context_artifact_ids: ["artifact-1", "artifact-2"],
-      },
-    });
+    expect(snapshots.rows).toEqual([]);
     await expect(repo.getRun("space-1", run.id)).resolves.toMatchObject({
       id: run.id,
       system_prompt: "You are a test agent.",
@@ -802,33 +788,4 @@ describe("runs repositories against real PostgreSQL", () => {
     });
   });
 
-  it("deduplicates concurrent session condense jobs by source Run", async (ctx) => {
-    if (!available) return ctx.skip();
-    const jobs = new PgJobQueueRepository(pool!);
-    const input = {
-      job_type: "session_condense",
-      space_id: "space-1",
-      user_id: "user-1",
-      agent_id: "agent-1",
-      payload: {
-        session_id: "session-1",
-        source_run_id: "run-1",
-      },
-    };
-
-    const [first, concurrent] = await Promise.all([
-      jobs.enqueue(input),
-      jobs.enqueue(input),
-    ]);
-
-    expect(concurrent.id).toBe(first.id);
-    const rows = await pool!.query<{ id: string }>(
-      `SELECT id
-         FROM jobs
-        WHERE space_id = 'space-1'
-          AND job_type = 'session_condense'
-          AND payload_json->>'source_run_id' = 'run-1'`,
-    );
-    expect(rows.rows).toEqual([{ id: first.id }]);
-  });
 });

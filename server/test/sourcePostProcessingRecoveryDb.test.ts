@@ -2,13 +2,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService";
 import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundServices";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for ensureItemsProcessed dispatching only the items
 // that still lack a decision. Before this fix, any recovery pass with even
@@ -46,6 +47,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[source-post-processing-recovery-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -229,15 +231,9 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
       PROJECT,
       { kind: "question", statement: "Research" },
     );
-    await pool.query(
-      `INSERT INTO project_research_workflows (
-         id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at
-       ) VALUES ($1,$2,$3,'literature_review','monitoring','active','autonomous',$4::jsonb,$5,$5)`,
-      [
-        WORKFLOW,
-        SPACE,
-        PROJECT,
-        JSON.stringify({
+    await insertResearchWorkflowFixture(pool, {
+      id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+      currentStage: "monitoring", primaryThreadId: String(thread.id), state: {
           channel_ids: [CHANNEL],
           source_post_processing_rule_ids: [RULE],
           monitoring: { active: true, field: "submittedDate" },
@@ -248,10 +244,8 @@ describe("SourcePostProcessingRecoveryService.ensureItemsProcessed (real Postgre
           question_refine_skipped: false,
           agent_id: AGENT,
           runtime_profile_id: "profile-1",
-        }),
-        now,
-      ],
-    );
+        }, now,
+    });
     const runId = randomUUID();
     await pool.query(
       `INSERT INTO source_post_processing_runs (

@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useOutletContext, useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { CornerDownLeft, Link2, Trash2, X } from 'lucide-react'
+import { CornerDownLeft, Link2, Share2, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { knowledgeApi, notesApi, ApiRequestError } from '../../api/client'
+import {
+  NOTE_LINK_TARGET_TYPE_VALUES,
+  systemActionsForObjectType,
+  type NoteLinkTargetType,
+  type NoteSystemActionId,
+} from '@agent-space/protocol'
+import { inquiryApi, knowledgeApi, notesApi, ApiRequestError } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg, isNotFoundError } from '../../lib/utils'
-import type { EntityLink, EntityLinkType, KnowledgeItemSummary, Note, NoteRevision, NoteSummary } from '../../types/api'
+import type { EntityLink, EntityLinkType, KnowledgeItemSummary, Note, NoteProjectShare, NoteRevision, NoteSummary } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { Label } from '../../components/ui/label'
@@ -25,8 +30,15 @@ import {
   type RichTextDocument,
   type RichTextEditorHandle,
 } from '../../components/editor'
-import type { NotesOutletContext } from './NotesPage'
 
+/**
+ * Checked against the widened target list (NB): all five still read sensibly
+ * for every offered kind — a note references a Source, is derived from a
+ * Claim, belongs to a Question. None needed constraining, because a
+ * `note_link` is navigational and carries no graph authority (N4); the
+ * backend validates the link type's name but deliberately not its endpoints,
+ * so a combination that reads oddly is a wording choice, not a broken edge.
+ */
 const LINK_TYPE_OPTIONS: { value: EntityLinkType; label: string }[] = [
   { value: 'related_to', label: 'related to' },
   { value: 'references', label: 'references' },
@@ -35,31 +47,85 @@ const LINK_TYPE_OPTIONS: { value: EntityLinkType; label: string }[] = [
   { value: 'belongs_to', label: 'belongs to' },
 ]
 
-const TARGET_KIND_OPTIONS = [
-  { value: 'note', label: 'Note' },
-  { value: 'knowledge_item', label: 'Wiki' },
-]
+const TARGET_KIND_LABELS: Record<NoteLinkTargetType, string> = {
+  note: 'Note',
+  knowledge_item: 'Wiki',
+  source: 'Source',
+  claim: 'Claim',
+  inquiry_thread: 'Question',
+}
 
-type StatusPanel = 'links' | 'backlinks' | 'history' | null
+/**
+ * Derived from the shared vocabulary, not hand-written. The previous version
+ * of this array listed `note` and `knowledge_item` only, while the backend
+ * accepted more — so evidence, sources and open questions were reachable by
+ * the API and offered by nothing, which is why notes and research never met.
+ * `server/test/noteLinkTargetsGuard.test.ts` fails if the two diverge again.
+ */
+const TARGET_KIND_OPTIONS = NOTE_LINK_TARGET_TYPE_VALUES.map(value => ({
+  value,
+  label: TARGET_KIND_LABELS[value],
+}))
+
+/** The kinds whose candidates come from retrieval search rather than a list endpoint. */
+const SEARCHED_TARGET_KINDS: readonly NoteLinkTargetType[] = ['source', 'claim', 'inquiry_thread']
+
+/**
+ * Which actions the selection bar offers is the registry's answer, not this
+ * file's: `applies_to` exists so a surface showing an object asks what it can
+ * offer instead of hard-coding a menu, and a hand-maintained copy of a backend
+ * list is the exact defect that left the link picker offering two of five
+ * target kinds.
+ *
+ * Only the wording is local. The registry's `title` is descriptive prose for
+ * audit and policy surfaces ("Promote a passage to a Knowledge Item"), which
+ * is not what fits a selection toolbar. `satisfies` makes a registry addition
+ * fail to compile here until it has a label, so the two cannot drift apart in
+ * the direction that matters.
+ */
+const NOTE_ACTION_LABELS = {
+  'note.promote_to_knowledge': 'Promote to knowledge',
+  'note.raise_as_question': 'Raise as a question',
+  'note.link_to_evidence': 'Link to evidence',
+} satisfies Record<NoteSystemActionId, string>
+
+const NOTE_SELECTION_ACTIONS: readonly { id: NoteSystemActionId; label: string }[] =
+  systemActionsForObjectType('note').map(definition => ({
+    id: definition.id as NoteSystemActionId,
+    label: NOTE_ACTION_LABELS[definition.id as NoteSystemActionId],
+  }))
+
+type StatusPanel = 'links' | 'backlinks' | 'shares' | 'history' | null
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
 }
 
+export interface NoteEditorProps {
+  /** The note to edit. Which note is open is the surface's decision, not this
+   * component's — it used to read `useParams()`, which pinned it to one route. */
+  noteId: string
+  /** Report the resolved/saved note so the surface's tab label and list stay in sync. */
+  onNoteResolved: (note: Note) => void
+}
+
 /**
- * The open-note editor for the Notes section. Rendered into {@link NotesPage}'s
- * Outlet at `/knowledge/notes/:noteId`, so the section tree + tabs stay mounted.
+ * The one open-note editor. Every notes surface mounts this component — there is
+ * deliberately no second implementation, because the previous Project notebook
+ * card was a subset of it and drifted (no actions, no links) the moment the two
+ * existed side by side.
  *
  * Layout is a full-bleed document: a borderless title + body that fill the pane,
  * with a bottom status bar. Links and backlinks are not rendered inline — they
- * live behind status-bar chips that open upward panels on demand. The editor
- * reports the resolved note up to the section so the open tab label stays in
- * sync (see {@link NotesOutletContext}).
+ * live behind status-bar chips that open upward panels on demand.
+ *
+ * The component takes no position on where it is mounted: no `useParams`, no
+ * `useOutletContext`. The links it renders to *other* notes stay on the global
+ * `/knowledge/notes/:id` route on purpose — a backlink can come from a note
+ * outside the current surface, and the global route can show any of them.
  */
-export default function NoteEditor() {
-  const { noteId = '' } = useParams()
+export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) {
   const { activeSpaceId } = useSpace()
-  const { onNoteResolved } = useOutletContext<NotesOutletContext>()
 
   const [note, setNote] = useState<Note | null>(null)
   const [loading, setLoading] = useState(true)
@@ -85,15 +151,27 @@ export default function NoteEditor() {
   const [backlinks, setBacklinks] = useState<EntityLink[]>([])
   const [noteOptions, setNoteOptions] = useState<NoteSummary[]>([])
   const [wikiOptions, setWikiOptions] = useState<KnowledgeItemSummary[]>([])
-  const [linkKind, setLinkKind] = useState('note')
+  const [linkKind, setLinkKind] = useState<NoteLinkTargetType>('note')
+  // Sources, claims and questions have no list endpoint of their own here, so
+  // their candidates come from retrieval search, filtered to the chosen kind.
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<{ value: string; label: string }[]>([])
+  const [searching, setSearching] = useState(false)
   const [linkTargetId, setLinkTargetId] = useState('')
   const [linkType, setLinkType] = useState<EntityLinkType>('related_to')
   const [linking, setLinking] = useState(false)
 
   const [panel, setPanel] = useState<StatusPanel>(null)
   const statusBarRef = useRef<HTMLDivElement>(null)
+  const [selection, setSelection] = useState('')
+  const [actionBusy, setActionBusy] = useState<NoteSystemActionId | null>(null)
 
   const [revisions, setRevisions] = useState<NoteRevision[] | null>(null)
+  // Which other Projects can read this note (U8). Loaded with the note rather
+  // than behind the chip: the count has to be on the chip before it is opened,
+  // because "who else can see this" is not something a user thinks to check.
+  const [shares, setShares] = useState<NoteProjectShare[]>([])
+  const [revokingProjectId, setRevokingProjectId] = useState<string | null>(null)
   const [historyBusy, setHistoryBusy] = useState(false)
 
   const titleById = useMemo(() => {
@@ -102,6 +180,30 @@ export default function NoteEditor() {
     wikiOptions.forEach(w => map.set(w.id, { title: w.title, to: `/knowledge/wiki/${w.id}` }))
     return map
   }, [noteOptions, wikiOptions])
+
+  const loadShares = useCallback(async (id: string) => {
+    try {
+      setShares(await notesApi.shares(id))
+    } catch {
+      // Advisory: a note still reads and edits fine without its share list.
+    }
+  }, [])
+
+  const revokeShare = useCallback(async (projectId: string, projectName: string | null) => {
+    const current = noteRef.current
+    if (!current) return
+    setRevokingProjectId(projectId)
+    try {
+      const updated = await notesApi.revokeShare(current.id, projectId)
+      onNoteResolved(updated)
+      await loadShares(current.id)
+      toast.success(`No longer shared with ${projectName ?? 'that project'}`)
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setRevokingProjectId(null)
+    }
+  }, [loadShares, onNoteResolved])
 
   const loadLinks = useCallback(async (id: string) => {
     try {
@@ -228,6 +330,7 @@ export default function NoteEditor() {
     // Clear the previous note's links so stale counts don't linger mid-switch.
     setLinks([])
     setBacklinks([])
+    setShares([])
 
     // Cache hit → render instantly, then revalidate quietly in the background.
     const cached = noteCacheRef.current.get(noteId)
@@ -235,6 +338,7 @@ export default function NoteEditor() {
       seedFromNote(cached)
       setLoading(false)
       void loadLinks(cached.id)
+      void loadShares(cached.id)
       void revalidate(noteId)
       return
     }
@@ -249,6 +353,7 @@ export default function NoteEditor() {
       // Links aren't on the critical path (they live behind a footer panel), so
       // fetch them without blocking the editor from rendering.
       void loadLinks(n.id)
+      void loadShares(n.id)
     } catch (e) {
       if (isNotFoundError(e)) setNotFound(true)
       else toast.error(errMsg(e))
@@ -256,7 +361,7 @@ export default function NoteEditor() {
     } finally {
       setLoading(false)
     }
-  }, [noteId, activeSpaceId, loadLinks, onNoteResolved, seedFromNote, revalidate])
+  }, [noteId, activeSpaceId, loadLinks, loadShares, onNoteResolved, seedFromNote, revalidate])
 
   useEffect(() => { load() }, [load])
 
@@ -266,6 +371,44 @@ export default function NoteEditor() {
     notesApi.list({ status: 'active', limit: 100 }).then(p => setNoteOptions(p.items)).catch(() => {})
     knowledgeApi.list({ status: 'active', limit: 100 }).then(p => setWikiOptions(p.items)).catch(() => {})
   }, [activeSpaceId])
+
+  // Candidates for the search-backed kinds. Debounced, and guarded against a
+  // slow response for an earlier query landing after a newer one.
+  useEffect(() => {
+    if (!activeSpaceId || !SEARCHED_TARGET_KINDS.includes(linkKind)) {
+      setSearchResults([])
+      return
+    }
+    const query = searchQuery.trim()
+    if (!query) {
+      setSearchResults([])
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    const timer = setTimeout(() => {
+      knowledgeApi.search({ query, object_types: [linkKind], max_results: 20 })
+        .then(response => {
+          if (cancelled) return
+          setSearchResults(response.items.map(item => ({ value: item.object_id, label: item.title })))
+        })
+        .catch(() => { if (!cancelled) setSearchResults([]) })
+        .finally(() => { if (!cancelled) setSearching(false) })
+    }, 250)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [activeSpaceId, linkKind, searchQuery])
+
+  // The editor is contenteditable, so the browser's own selection is the
+  // selection — no extra plumbing through the shared RichTextEditor, which
+  // every other surface would then carry for one caller's benefit.
+  useEffect(() => {
+    function onSelectionChange() {
+      const text = window.getSelection()?.toString().trim() ?? ''
+      setSelection(text.length > 1 ? text : '')
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => document.removeEventListener('selectionchange', onSelectionChange)
+  }, [])
 
   // Dismiss the open status-bar panel on outside click / Escape.
   useEffect(() => {
@@ -306,6 +449,36 @@ export default function NoteEditor() {
     }
   }
 
+  async function runSelectionAction(actionId: NoteSystemActionId) {
+    if (!note || !selection) return
+    setActionBusy(actionId)
+    try {
+      if (actionId === 'note.promote_to_knowledge') {
+        await notesApi.promote(note.id, { content: selection })
+        // A proposal, not an item — promotion does not bypass the review gate.
+        toast.success('Promotion proposed for review')
+      } else if (actionId === 'note.raise_as_question') {
+        if (!note.primary_project_id) {
+          toast.error('Move this note into a project before raising a question from it')
+          return
+        }
+        await inquiryApi.raiseFromNote(note.primary_project_id, {
+          note_object_id: note.id,
+          statement: selection,
+        })
+        toast.success('Question raised and linked to this note')
+      } else {
+        // Linking needs a target, so this opens the picker with the passage in
+        // hand rather than guessing what the user meant to link it to.
+        setPanel('links')
+      }
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
   async function removeLink(linkId: string) {
     if (!note) return
     try {
@@ -322,9 +495,19 @@ export default function NoteEditor() {
     return <span>{type} · {id.slice(0, 8)}</span>
   }
 
-  const targetChoices = linkKind === 'note'
-    ? noteOptions.filter(n => n.id !== note?.id).map(n => ({ value: n.id, label: n.title }))
-    : wikiOptions.map(w => ({ value: w.id, label: w.title }))
+  const usesSearch = SEARCHED_TARGET_KINDS.includes(linkKind)
+  const targetChoices = usesSearch
+    ? searchResults
+    : linkKind === 'note'
+      ? noteOptions.filter(n => n.id !== note?.id).map(n => ({ value: n.id, label: n.title }))
+      : wikiOptions.map(w => ({ value: w.id, label: w.title }))
+  // "None available" is wrong before a search has been typed — the list is
+  // empty because nothing was asked for, not because nothing matched.
+  const targetPlaceholder = targetChoices.length
+    ? 'Select…'
+    : usesSearch
+      ? (searching ? 'Searching…' : searchQuery.trim() ? 'No matches' : 'Type to search')
+      : 'None available'
 
   function togglePanel(next: Exclude<StatusPanel, null>) {
     setPanel(cur => {
@@ -384,6 +567,27 @@ export default function NoteEditor() {
             className="mt-4 flex-1"
             onChange={scheduleSave}
           />
+          {/* NE: the actions the registry declares for a `note`, scoped to the
+              selection. A note usually holds several ideas, so acting on the
+              whole note would promote all of them as one item. */}
+          {selection && (
+            <div className="sticky bottom-2 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-2 shadow-sm">
+              <span className="truncate text-xs text-muted-foreground" title={selection}>
+                “{selection.length > 60 ? `${selection.slice(0, 60)}…` : selection}”
+              </span>
+              {NOTE_SELECTION_ACTIONS.map(action => (
+                <Button
+                  key={action.id}
+                  size="sm"
+                  variant="outline"
+                  disabled={actionBusy !== null}
+                  onClick={() => void runSelectionAction(action.id)}
+                >
+                  {actionBusy === action.id ? 'Working…' : action.label}
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -408,13 +612,17 @@ export default function NoteEditor() {
 
             <div className="mt-3 space-y-2 border-t border-border pt-3">
               <div className="flex items-end gap-2">
-                <div className="w-[88px] shrink-0">
+                <div className="w-[110px] shrink-0">
                   <Label className="text-xs">Kind</Label>
                   <Select
                     size="sm"
                     dropUp
                     value={linkKind}
-                    onChange={v => { setLinkKind(v); setLinkTargetId('') }}
+                    onChange={v => {
+                      setLinkKind(v as NoteLinkTargetType)
+                      setLinkTargetId('')
+                      setSearchQuery('')
+                    }}
                     options={TARGET_KIND_OPTIONS}
                   />
                 </div>
@@ -425,10 +633,19 @@ export default function NoteEditor() {
                     dropUp
                     value={linkTargetId}
                     onChange={setLinkTargetId}
-                    options={[{ value: '', label: targetChoices.length ? 'Select…' : 'None available' }, ...targetChoices]}
+                    options={[{ value: '', label: targetPlaceholder }, ...targetChoices]}
                   />
                 </div>
               </div>
+              {usesSearch && (
+                <input
+                  className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+                  placeholder={`Search ${TARGET_KIND_LABELS[linkKind].toLowerCase()}s…`}
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  aria-label={`Search ${TARGET_KIND_LABELS[linkKind].toLowerCase()}s`}
+                />
+              )}
               <div className="flex items-end gap-2">
                 <div className="min-w-0 flex-1">
                   <Label className="text-xs">Relation</Label>
@@ -454,6 +671,40 @@ export default function NoteEditor() {
                   <span className="text-muted-foreground">this note</span>
                 </div>
               ))}
+            </div>
+          </StatusPanelShell>
+        )}
+
+        {panel === 'shares' && (
+          <StatusPanelShell title="Shared with" onClose={() => setPanel(null)}>
+            <div className="max-h-[40vh] space-y-2 overflow-y-auto">
+              {shares.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Only this note's own project can read it.
+                </p>
+              )}
+              {shares.map(share => (
+                <div key={share.project_id} className="flex items-center justify-between gap-2 text-sm">
+                  <div className="min-w-0">
+                    <span className="truncate">{share.project_name ?? share.project_id.slice(0, 8)}</span>
+                    <span className="block text-xs text-muted-foreground">Shared {fmt(share.created_at)}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={revokingProjectId !== null}
+                    onClick={() => void revokeShare(share.project_id, share.project_name)}
+                  >
+                    {revokingProjectId === share.project_id ? 'Removing…' : 'Stop sharing'}
+                  </Button>
+                </div>
+              ))}
+              {shares.length > 0 && (
+                <p className="border-t border-border pt-2 text-xs text-muted-foreground">
+                  These projects can read this note. Stopping a share also removes
+                  the note from that project's folders.
+                </p>
+              )}
             </div>
           </StatusPanelShell>
         )}
@@ -490,6 +741,17 @@ export default function NoteEditor() {
               label="Backlinks"
               count={backlinks.length}
             />
+            {/* Only once a note actually reaches beyond its own project. A
+                zero here would be noise on every note in the system. */}
+            {shares.length > 0 && (
+              <StatusChip
+                active={panel === 'shares'}
+                onClick={() => togglePanel('shares')}
+                icon={<Share2 className="size-3.5" />}
+                label="Shared"
+                count={shares.length}
+              />
+            )}
             <HistoryChip active={panel === 'history'} onClick={() => togglePanel('history')} />
             <div className="mx-1 h-5 w-px bg-border" />
             <SaveStatusIndicator state={saveState} onRetry={() => { void performSave() }} />

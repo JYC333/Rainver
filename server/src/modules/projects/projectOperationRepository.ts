@@ -13,6 +13,7 @@ type TargetState = "pending" | "done" | "failed";
 
 interface TargetSpec {
   table: string;
+  idColumn?: string;
   column: string;
   done: string[];
   failed: string[];
@@ -24,7 +25,7 @@ const LINK_TARGET_SPECS: Record<string, TargetSpec> = {
   proposal: { table: "proposals", column: "status", done: ["accepted", "superseded"], failed: ["rejected", "expired"] },
   project_source_binding: { table: "project_source_bindings", column: "status", done: ["active", "archived"], failed: [] },
   source_backfill_plan: { table: "source_backfill_plans", column: "status", done: ["completed", "cancelled"], failed: ["failed"] },
-  research_workflow: { table: "project_research_workflows", column: "status", done: ["completed", "archived"], failed: [] },
+  research_workflow: { table: "project_research_workflows", idColumn: "object_id", column: "status", done: ["completed", "archived"], failed: [] },
 };
 
 const LINK_TARGET_PROJECT_SCOPE: Record<string, boolean> = {
@@ -306,7 +307,7 @@ export class ProjectOperationRepository {
     }
     const spec = LINK_TARGET_SPECS[type];
     if (!spec) return "failed";
-    const row = await this.db.query<{ status: string }>(`SELECT ${spec.column} AS status FROM ${spec.table} WHERE id=$1 AND space_id=$2`, [id, spaceId]);
+    const row = await this.db.query<{ status: string }>(`SELECT ${spec.column} AS status FROM ${spec.table} WHERE ${spec.idColumn ?? "id"}=$1 AND space_id=$2`, [id, spaceId]);
     const status = row.rows[0]?.status;
     if (!status) return "failed";
     return spec.failed.includes(status) ? "failed" : spec.done.includes(status) ? "done" : "pending";
@@ -327,7 +328,8 @@ export class ProjectOperationRepository {
     if (!table) throw new HttpError(422, "Unsupported operation link target");
     const scoped = LINK_TARGET_PROJECT_SCOPE[type];
     const clause = scoped ? " AND project_id=$3" : "";
-    const row = await this.db.query(`SELECT 1 FROM ${table} WHERE id=$1 AND space_id=$2${clause}`, [id, spaceId, ...(scoped ? [projectId] : [])]);
+    const idColumn = type === "artifact" ? "id" : (spec?.idColumn ?? "id");
+    const row = await this.db.query(`SELECT 1 FROM ${table} WHERE ${idColumn}=$1 AND space_id=$2${clause}`, [id, spaceId, ...(scoped ? [projectId] : [])]);
     if (!row.rows[0]) throw new HttpError(404, "Operation link target not found");
   }
 }

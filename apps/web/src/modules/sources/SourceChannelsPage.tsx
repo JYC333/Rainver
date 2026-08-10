@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BookOpen, Globe2, Pause, Play, Plus, RefreshCw, Rss, Search, SlidersHorizontal } from 'lucide-react'
+import { BookOpen, Globe2, Pause, Play, Plus, RefreshCw, Rss, Search, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -12,7 +12,7 @@ import { Select } from '../../components/ui/select'
 import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialog } from './SourceMonitorDialog'
 import { sourceQueryText } from './sourceQueryText'
-import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup } from '../../types/api'
+import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup, SourceRecommendation } from '../../types/api'
 
 interface SourceGroup {
   id: string
@@ -84,6 +84,7 @@ export default function SourceChannelsPage() {
   const [providers, setProviders] = useState<SourceProvider[]>([])
   const [arxivCategoryGroups, setArxivCategoryGroups] = useState<readonly SourceProviderCategoryGroup[]>([])
   const [channels, setChannels] = useState<SourceChannel[]>([])
+  const [recommendations, setRecommendations] = useState<SourceRecommendation[]>([])
   const [providerFilter, setProviderFilter] = useState('')
   const [search, setSearch] = useState('')
   const [setupOpen, setSetupOpen] = useState(false)
@@ -94,12 +95,14 @@ export default function SourceChannelsPage() {
     if (!activeSpaceId) return
     setLoading(true)
     try {
-      const [providerRows, channelRows] = await Promise.all([
+      const [providerRows, channelRows, recommendationRows] = await Promise.all([
         sourcesApi.providers(),
         sourcesApi.channels(),
+        sourcesApi.recommendations(),
       ])
       setProviders(providerRows)
       setChannels(channelRows)
+      setRecommendations(recommendationRows)
       setArxivCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
       toast.error(errMsg(error))
@@ -147,6 +150,19 @@ export default function SourceChannelsPage() {
     }
   }
 
+  async function decideRecommendation(recommendation: SourceRecommendation, decision: 'subscribed' | 'dismissed' | 'muted') {
+    setBusyMonitorId(recommendation.id)
+    try {
+      await sourcesApi.decideRecommendation(recommendation.id, decision)
+      setRecommendations(current => current.filter(item => item.id !== recommendation.id))
+      toast.success(decision === 'subscribed' ? 'Source followed' : decision === 'muted' ? 'Source recommendation muted' : 'Recommendation dismissed')
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setBusyMonitorId(null)
+    }
+  }
+
   if (!activeSpaceId) return <div className="p-6"><EmptyState title="No space selected" description="Select an operational space to manage sources." /></div>
 
   return (
@@ -161,6 +177,36 @@ export default function SourceChannelsPage() {
           <Button onClick={() => setSetupOpen(true)}><Plus className="size-4 mr-2" />Add source</Button>
         </div>
       </div>
+
+      {recommendations.length > 0 && (
+        <section className="space-y-3 rounded-lg border border-accent bg-accent/20 p-4" aria-label="Source recommendations">
+          <div className="flex items-start gap-2">
+            <Sparkles className="mt-0.5 size-4 text-accent-foreground" />
+            <div>
+              <h2 className="font-medium">Sources to broaden your coverage</h2>
+              <p className="text-xs text-muted-foreground">These remain suggestions until you choose to follow them.</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {recommendations.map(recommendation => {
+              const busy = busyMonitorId === recommendation.id
+              return (
+                <div key={recommendation.id} className="flex flex-col gap-3 rounded-md border bg-card p-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-medium">{recommendation.source_name} · {recommendation.name}</p>
+                    <p className="text-xs text-muted-foreground">{recommendation.recommendation_message ?? 'Recommended from outside your current subscriptions.'}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" onClick={() => void decideRecommendation(recommendation, 'subscribed')} disabled={busy}>Follow</Button>
+                    <Button size="sm" variant="outline" onClick={() => void decideRecommendation(recommendation, 'dismissed')} disabled={busy}>Not now</Button>
+                    <Button size="sm" variant="ghost" onClick={() => void decideRecommendation(recommendation, 'muted')} disabled={busy}>Mute</Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-64 flex-1 max-w-xl">

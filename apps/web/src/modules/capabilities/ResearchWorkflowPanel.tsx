@@ -19,7 +19,6 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
-import { ContextArtifactPicker } from '../artifacts/ContextArtifactPicker'
 import { promptLibraryPath } from '../prompts/paths'
 
 interface ProjectFolderOption {
@@ -97,7 +96,6 @@ export function ResearchWorkflowPanel({
   const [selectedRuntimeProfileId, setSelectedRuntimeProfileId] = useState('')
   const [selectedFolderId, setSelectedFolderId] = useState('')
   const [selectedOutputs, setSelectedOutputs] = useState<string[]>([])
-  const [selectedContextArtifactIds, setSelectedContextArtifactIds] = useState<string[]>([])
   const [draft, setDraft] = useState<WorkflowRunDraftResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [creatingProfile, setCreatingProfile] = useState(false)
@@ -305,7 +303,6 @@ export function ResearchWorkflowPanel({
       ...runBody
     } = draft.run_create_body
     runBody.runtime_profile_id = selectedRuntimeProfileId || draft.run_create_body.runtime_profile_id || null
-    if (selectedContextArtifactIds.length > 0) runBody.context_artifact_ids = selectedContextArtifactIds
     setLaunchingRun(true)
     try {
       const run = await agentsApi.createRun(agentId, runBody)
@@ -479,15 +476,6 @@ export function ResearchWorkflowPanel({
             <Label className="text-xs">Source mode</Label>
             <Select value={sourceMode} options={SOURCE_MODE_OPTIONS} onChange={setSourceMode} />
           </div>
-
-          <ContextArtifactPicker
-            title="Run context artifacts"
-            description="Selected artifacts will be attached to this research run when launched."
-            selectedArtifactIds={selectedContextArtifactIds}
-            onChange={setSelectedContextArtifactIds}
-            projectFolderId={selectedFolderId}
-            projectId={projectId}
-          />
 
           {outputOptions.length > 0 && (
             <div className="space-y-1.5">

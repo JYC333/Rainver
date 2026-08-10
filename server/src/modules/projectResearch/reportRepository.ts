@@ -11,14 +11,14 @@ interface ReportListRow {
 
 interface ReportRow extends ReportListRow {
   content_json: unknown; reader_document_json: unknown; normalized_text: string; content_hash: string;
-  archive_artifact_id: string; literature_matrix_artifact_id: string | null; integrity_artifact_id: string | null;
+  archive_artifact_id: string; evidence_matrix_artifact_id: string | null; integrity_artifact_id: string | null;
 }
 
 const LIST_COLUMNS = `id,project_id,workflow_id,operation_id,synthesis_run_id,run_kind,research_question,
   research_question_version,status,created_at,updated_at`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS},content_json,reader_document_json,normalized_text,content_hash,
-  archive_artifact_id,literature_matrix_artifact_id,integrity_artifact_id`;
+  archive_artifact_id,evidence_matrix_artifact_id,integrity_artifact_id`;
 
 export class ProjectResearchReportRepository {
   constructor(private readonly db: Queryable) {}
@@ -48,7 +48,7 @@ export class ProjectResearchReportRepository {
     // immutable value this report was generated against (row.research_question).
     const workflow = await this.db.query<{ research_question: string | null }>(
       `SELECT state_json->>'research_question' AS research_question
-         FROM project_research_workflows WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+         FROM project_research_workflows WHERE space_id=$1 AND project_id=$2 AND object_id=$3`,
       [identity.spaceId, projectId, row.workflow_id],
     );
     const references = await resolveResearchReportReferences(this.db, identity, objectValue(row.content_json));
@@ -61,7 +61,7 @@ export class ProjectResearchReportRepository {
       provenance: { workflow_id: row.workflow_id, operation_id: row.operation_id, synthesis_run_id: row.synthesis_run_id },
       archive_descriptors: [
         { kind: "archive", artifact_id: row.archive_artifact_id },
-        ...(row.literature_matrix_artifact_id ? [{ kind: "literature_matrix", artifact_id: row.literature_matrix_artifact_id }] : []),
+        ...(row.evidence_matrix_artifact_id ? [{ kind: "evidence_matrix", artifact_id: row.evidence_matrix_artifact_id }] : []),
         ...(row.integrity_artifact_id ? [{ kind: "integrity", artifact_id: row.integrity_artifact_id }] : []),
       ],
       current_research_question: workflow.rows[0]?.research_question ?? null,

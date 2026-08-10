@@ -9,19 +9,25 @@ type ConversationProtocolAdapter = "claude_code" | "codex_cli" | "opencode";
 
 export function createCliConversationController(input: {
   adapter_type: ConversationProtocolAdapter;
-  prompt: string;
+  prompt?: string;
+  prompts?: string[];
   cwd: string;
   model: string | null;
   sandbox_mode?: "read-only" | "workspace-write";
   runtime_session_id?: string | null;
+  before_next_prompt?: (sessionId: string) => Promise<void>;
   on_text_delta?: (delta: string) => void;
   on_protocol_event?: (event: Record<string, unknown>) => void;
 }): CliStdioController | undefined {
+  const prompts = input.prompts?.filter((prompt) => prompt.trim())
+    ?? (input.prompt?.trim() ? [input.prompt] : []);
+  if (prompts.length === 0) return undefined;
+  const normalized = { ...input, prompts };
   if (input.adapter_type === "codex_cli") {
-    return new CodexAppServerController(input);
+    return new CodexAppServerController(normalized);
   }
   if (input.adapter_type === "opencode") {
-    return new OpenCodeAcpController(input);
+    return new OpenCodeAcpController(normalized);
   }
   return undefined;
 }
@@ -63,6 +69,7 @@ class CodexAppServerController implements CliStdioController {
     | "resume_usage"
     | "turn_start"
     | "running"
+    | "phase_acknowledge"
     | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
@@ -71,13 +78,15 @@ class CodexAppServerController implements CliStdioController {
   private text = "";
   private usage: CanonicalUsage | null = null;
   private resumedUsageBaseline: CanonicalUsage | null = null;
+  private promptIndex = 0;
 
   constructor(private readonly input: {
-    prompt: string;
+    prompts: string[];
     cwd: string;
     model: string | null;
     sandbox_mode?: "read-only" | "workspace-write";
     runtime_session_id?: string | null;
+    before_next_prompt?: (sessionId: string) => Promise<void>;
     on_text_delta?: (delta: string) => void;
     on_protocol_event?: (event: Record<string, unknown>) => void;
   }) {}
@@ -160,7 +169,7 @@ class CodexAppServerController implements CliStdioController {
       this.startTurn(send);
       return;
     }
-    if (message.id === 3 && this.phase === "turn_start") {
+    if (message.id === 3 + this.promptIndex && this.phase === "turn_start") {
       const turnId = stringField(record(record(message.result).turn), "id");
       if (!turnId) {
         this.fail("Codex app-server returned no turn id", closeStdin);
@@ -188,9 +197,25 @@ class CodexAppServerController implements CliStdioController {
         );
         return;
       }
-      this.completed = true;
-      this.phase = "terminal";
-      closeStdin();
+      if (this.promptIndex + 1 < this.input.prompts.length) {
+        this.phase = "phase_acknowledge";
+        const acknowledge = this.input.before_next_prompt?.(this.threadId!);
+        Promise.resolve(acknowledge).then(() => {
+          if (this.phase !== "phase_acknowledge") return;
+          this.promptIndex += 1;
+          this.turnId = null;
+          this.text = "";
+          this.phase = "turn_start";
+          this.startTurn(send);
+        }, (error) => this.fail(
+          error instanceof Error ? error.message : "CLI context acknowledgement failed",
+          closeStdin,
+        ));
+      } else {
+        this.completed = true;
+        this.phase = "terminal";
+        closeStdin();
+      }
       return;
     }
     if (message.method === "item/agentMessage/delta") {
@@ -206,9 +231,11 @@ class CodexAppServerController implements CliStdioController {
         this.fail("Codex app-server returned an invalid agent-message delta", closeStdin);
         return;
       }
-      this.text += delta;
-      this.input.on_text_delta?.(delta);
-      this.input.on_protocol_event?.(message);
+      if (this.promptIndex === this.input.prompts.length - 1) {
+        this.text += delta;
+        this.input.on_text_delta?.(delta);
+        this.input.on_protocol_event?.(message);
+      }
       return;
     }
     if (message.method === "thread/started") {
@@ -253,6 +280,17 @@ class CodexAppServerController implements CliStdioController {
       ) {
         this.fail("Codex app-server returned an out-of-scope thread status", closeStdin);
         return;
+      }
+      return;
+    }
+    if (message.method === "thread/compacted") {
+      const params = record(message.params);
+      if (stringField(params, "threadId") !== this.threadId) {
+        this.fail("Codex app-server returned an out-of-scope compaction", closeStdin);
+        return;
+      }
+      if (this.promptIndex === this.input.prompts.length - 1) {
+        this.input.on_protocol_event?.(message);
       }
       return;
     }
@@ -360,7 +398,8 @@ class CodexAppServerController implements CliStdioController {
         this.fail("Codex app-server returned an out-of-scope item event", closeStdin);
         return;
       }
-      if (message.method === "item/started" || message.method === "item/completed") {
+      if (this.promptIndex === this.input.prompts.length - 1
+        && (message.method === "item/started" || message.method === "item/completed")) {
         this.input.on_protocol_event?.(message);
       }
       return;
@@ -422,28 +461,30 @@ class CodexAppServerController implements CliStdioController {
   private startTurn(send: Send): void {
     send({
       method: "turn/start",
-      id: 3,
+      id: 3 + this.promptIndex,
       params: {
         threadId: this.threadId,
-        input: [{ type: "text", text: this.input.prompt }],
+        input: [{ type: "text", text: this.input.prompts[this.promptIndex]! }],
       },
     });
   }
 }
 
 class OpenCodeAcpController implements CliStdioController {
-  private phase: "initialize" | "session_new" | "set_model" | "prompt" | "terminal" = "initialize";
+  private phase: "initialize" | "session_new" | "set_model" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
   private sessionId: string | null = null;
   private text = "";
   private usage: CanonicalUsage | null = null;
+  private promptIndex = 0;
 
   constructor(private readonly input: {
-    prompt: string;
+    prompts: string[];
     cwd: string;
     model: string | null;
     runtime_session_id?: string | null;
+    before_next_prompt?: (sessionId: string) => Promise<void>;
     on_text_delta?: (delta: string) => void;
     on_protocol_event?: (event: Record<string, unknown>) => void;
   }) {}
@@ -547,7 +588,7 @@ class OpenCodeAcpController implements CliStdioController {
       this.prompt(send);
       return;
     }
-    if (message.id === 4 && this.phase === "prompt") {
+    if (message.id === 4 + this.promptIndex && this.phase === "prompt") {
       const result = record(message.result);
       const stopReason = stringField(result, "stopReason");
       if (stopReason !== "end_turn") {
@@ -564,10 +605,25 @@ class OpenCodeAcpController implements CliStdioController {
         this.fail("OpenCode ACP returned invalid token usage", closeStdin);
         return;
       }
-      this.usage = usage;
-      this.completed = true;
-      this.phase = "terminal";
-      closeStdin();
+      this.usage = addUsage(this.usage, usage);
+      if (this.promptIndex + 1 < this.input.prompts.length) {
+        this.phase = "phase_acknowledge";
+        const acknowledge = this.input.before_next_prompt?.(this.sessionId!);
+        Promise.resolve(acknowledge).then(() => {
+          if (this.phase !== "phase_acknowledge") return;
+          this.promptIndex += 1;
+          this.text = "";
+          this.phase = "prompt";
+          this.prompt(send);
+        }, (error) => this.fail(
+          error instanceof Error ? error.message : "CLI context acknowledgement failed",
+          closeStdin,
+        ));
+      } else {
+        this.completed = true;
+        this.phase = "terminal";
+        closeStdin();
+      }
       return;
     }
     if (message.method === "session/update") {
@@ -588,14 +644,18 @@ class OpenCodeAcpController implements CliStdioController {
           this.fail("OpenCode ACP returned an invalid agent-message chunk", closeStdin);
           return;
         }
-        this.text += delta;
-        this.input.on_text_delta?.(delta);
+        if (this.promptIndex === this.input.prompts.length - 1) {
+          this.text += delta;
+          this.input.on_text_delta?.(delta);
+        }
       }
       if (this.phase !== "set_model" && this.phase !== "prompt") {
         this.fail("OpenCode ACP returned an out-of-order session update", closeStdin);
         return;
       }
-      this.input.on_protocol_event?.(message);
+      if (this.promptIndex === this.input.prompts.length - 1) {
+        this.input.on_protocol_event?.(message);
+      }
       return;
     }
     if (hasResponseId(message)) {
@@ -625,11 +685,11 @@ class OpenCodeAcpController implements CliStdioController {
   private prompt(send: Send): void {
     send({
       jsonrpc: "2.0",
-      id: 4,
+      id: 4 + this.promptIndex,
       method: "session/prompt",
       params: {
         sessionId: this.sessionId,
-        prompt: [{ type: "text", text: this.input.prompt }],
+        prompt: [{ type: "text", text: this.input.prompts[this.promptIndex]! }],
       },
     });
   }
@@ -690,6 +750,28 @@ function subtractUsage(
     const delta = currentValue - baselineValue;
     if (delta < 0) return null;
     result[key] = delta;
+  }
+  return result;
+}
+
+function addUsage(
+  current: CanonicalUsage | null,
+  next: CanonicalUsage | null,
+): CanonicalUsage | null {
+  if (!current) return next;
+  if (!next) return current;
+  const result: CanonicalUsage = {};
+  for (const key of [
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "reasoning_tokens",
+  ] as const) {
+    const left = current[key];
+    const right = next[key];
+    if (left !== undefined || right !== undefined) result[key] = (left ?? 0) + (right ?? 0);
   }
   return result;
 }

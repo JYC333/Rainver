@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
@@ -35,6 +35,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[prompt-sync-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -110,8 +111,8 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
   it("syncs the real catalog/prompts manifests into system-scope approved built-in versions", async () => {
     if (!available) return;
     const result = await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
-    expect(result.assetKeys).toContain("session.condenser.adaptive");
-    expect(result.versionsCreated).toContain("session.condenser.adaptive");
+    expect(result.assetKeys).toContain("retrieval.query_rewrite");
+    expect(result.versionsCreated).toContain("retrieval.query_rewrite");
 
     const row = await pool!.query<{
       status: string;
@@ -122,7 +123,7 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
       `SELECT v.status, v.source, a.space_id, a.current_system_version_id
          FROM evolvable_assets a
          JOIN evolvable_asset_versions v ON v.id = a.current_system_version_id
-        WHERE a.asset_key = 'session.condenser.adaptive'`,
+        WHERE a.asset_key = 'retrieval.query_rewrite'`,
     );
     expect(row.rows[0]).toMatchObject({ status: "approved", source: "built_in", space_id: null });
     expect(row.rows[0]?.current_system_version_id).toBeTruthy();
@@ -137,7 +138,7 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     const count = await pool!.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM evolvable_asset_versions v
          JOIN evolvable_assets a ON a.id = v.asset_id
-        WHERE a.asset_key = 'session.condenser.adaptive'`,
+        WHERE a.asset_key = 'retrieval.query_rewrite'`,
     );
     expect(count.rows[0]?.count).toBe("1");
   });
@@ -147,15 +148,15 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
     await pool!.query(
       `UPDATE evolvable_assets SET metadata_json = metadata_json || '{"allow_user_override": true}'::jsonb
-        WHERE asset_key = 'session.condenser.adaptive'`,
+        WHERE asset_key = 'retrieval.query_rewrite'`,
     );
 
     await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
 
     const row = await pool!.query<{ metadata_json: Record<string, unknown> }>(
-      `SELECT metadata_json FROM evolvable_assets WHERE asset_key = 'session.condenser.adaptive'`,
+      `SELECT metadata_json FROM evolvable_assets WHERE asset_key = 'retrieval.query_rewrite'`,
     );
-    expect(row.rows[0]?.metadata_json).toEqual({ prompt_type: "condenser", allow_user_override: true });
+    expect(row.rows[0]?.metadata_json).toEqual({ prompt_type: "retrieval_query", allow_user_override: true });
   });
 
   it("does not mutate a same-key non-prompt system asset when sync hits a key collision", async () => {
@@ -326,43 +327,9 @@ describe("resolvePrompt (real Postgres)", () => {
     expect(result.content_hash).toBeTruthy();
   });
 
-  it("resolves M4 condenser and workflow prompt assets through the central resolver", async () => {
+  it("resolves structured built-in prompts through the central resolver", async () => {
     if (!available) return;
     await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
-
-    const condenser = await resolvePrompt(pool!, {
-      spaceId: SPACE,
-      userId: OWNER,
-      assetKey: "session.condenser.coding",
-      variables: {
-        prior_summary_block: "",
-        turns_heading: "Turns:",
-        transcript: "user: deploy the server",
-        output_label: "Running summary:",
-      },
-    });
-    expect(condenser.validation_errors).toEqual([]);
-    expect(condenser.rendered_messages?.find((m) => m.role === "system")?.content).toContain("coding assistant");
-    expect(condenser.rendered_messages?.find((m) => m.role === "user")?.content).toContain("user: deploy the server");
-
-    const workflow = await resolvePrompt(pool!, {
-      spaceId: SPACE,
-      userId: OWNER,
-      assetKey: "workflow.research.technical_survey.run",
-      variables: {
-        workflow_name: "Technical Survey",
-        workflow_template_id: "research.technical_survey",
-        workflow_preset_name: "Unsaved run",
-        workflow_description: "Survey technical sources.",
-        research_question_section: "\nResearch question:\nLLM eval harnesses\n\n",
-        source_mode_section: "Source mode: project_sources\n\n",
-        capabilities: "- research.source_collect",
-        expected_outputs: "- research_report.archive.v1",
-      },
-    });
-    expect(workflow.validation_errors).toEqual([]);
-    expect(workflow.rendered_text).toContain("Workflow: Technical Survey");
-    expect(workflow.rendered_text).toContain("LLM eval harnesses");
 
     const synthesis = await resolvePrompt(pool!, {
       spaceId: SPACE,
@@ -464,17 +431,14 @@ describe("M1 facade surfaces what M2 sync wrote (real Postgres)", () => {
     await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
 
     const repo = new PromptRepository(pool!);
-    const list = await repo.listAssets(identity, { promptType: "condenser" });
+    const list = await repo.listAssets(identity, { promptType: "retrieval_query" });
     expect(list.map((a) => a.asset_key)).toEqual(
       expect.arrayContaining([
-        "session.condenser.adaptive",
-        "session.condenser.general",
-        "session.condenser.coding",
-        "session.condenser.project",
+        "retrieval.query_rewrite",
       ]),
     );
 
-    const versions = await repo.listVersions(identity, "session.condenser.adaptive");
+    const versions = await repo.listVersions(identity, "retrieval.query_rewrite");
     expect(versions).toHaveLength(1);
     expect(versions[0]).toMatchObject({ status: "approved", source: "built_in", scope_type: "system" });
   });

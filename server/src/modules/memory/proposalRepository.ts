@@ -56,7 +56,6 @@ export class MemoryProposalPolicyError extends Error {
 
 interface TargetMemoryRow extends MemoryAuthFields {
   id: string;
-  project_folder_id: string | null;
   scope_type: string;
   namespace: string | null;
   memory_type: string;
@@ -65,7 +64,7 @@ interface TargetMemoryRow extends MemoryAuthFields {
   project_id: string | null;
 }
 
-const TARGET_MEMORY_COLUMNS = `id, space_id, owner_user_id, project_folder_id,
+const TARGET_MEMORY_COLUMNS = `id, space_id, owner_user_id,
   scope_type, namespace, memory_type, title, content, visibility,
   access_level, sensitivity_level, deleted_at, project_id`;
 
@@ -114,7 +113,7 @@ export class PgMemoryProposalRepository {
       );
     }
 
-    const scope = command.scope ?? "user";
+    const scope = normalizeMemoryScope(command.scope ?? "user");
     const visibility = normalizeVisibility(
       command.visibility ?? "private",
     );
@@ -122,11 +121,8 @@ export class PgMemoryProposalRepository {
     const sensitivity = normalizeSensitivity(command.sensitivity_level ?? "normal");
     validateCreateCommand(command, visibility, sensitivity);
 
-    const subjectUserId =
-      scope === "system"
-        ? null
-        : command.subject_user_id ?? (scope === "user" ? userId : null);
-    const ownerUserId = scope === "system" ? null : command.owner_user_id ?? null;
+    const subjectUserId = command.subject_user_id ?? (scope === "user" ? userId : null);
+    const ownerUserId = command.owner_user_id ?? null;
     const payload: Record<string, unknown> = {
       operation: "create",
       proposed_content: command.content,
@@ -145,12 +141,15 @@ export class PgMemoryProposalRepository {
     if (command.source_id !== null && command.source_id !== undefined) {
       payload.source_id = command.source_id;
     }
+    if (command.project_id !== null && command.project_id !== undefined) {
+      payload.project_id = command.project_id;
+    }
 
     await this.enforceProposalCreate({
       spaceId: effectiveSpaceId,
       userId,
       proposalType: "memory_create",
-      projectFolderId: command.project_folder_id ?? null,
+      projectFolderId: null,
       targetScope: scope,
       targetVisibility: visibility,
       targetMemoryId: null,
@@ -164,7 +163,8 @@ export class PgMemoryProposalRepository {
       title: command.title,
       payload,
       rationale: "Memory creation requested via public API.",
-      projectFolderId: command.project_folder_id ?? null,
+      projectFolderId: null,
+      projectId: command.project_id ?? null,
       targetMemoryId: null,
       targetScope: scope,
       targetVisibility: visibility,
@@ -176,7 +176,6 @@ export class PgMemoryProposalRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    projectFolderId: string | null,
     command: MemoryProposalUpdateCommand,
   ): Promise<ProposalOut> {
     if (
@@ -192,7 +191,6 @@ export class PgMemoryProposalRepository {
       spaceId,
       userId,
       memoryId,
-      projectFolderId,
     );
     if (!target) throw new MemoryProposalNotFoundError("Memory not found");
 
@@ -201,7 +199,6 @@ export class PgMemoryProposalRepository {
       "actor_user_id",
       "target_memory_id",
       "provenance_entries",
-      "project_folder_id",
       "memory_layer",
     ]);
     const payload: Record<string, unknown> = {
@@ -258,7 +255,7 @@ export class PgMemoryProposalRepository {
       spaceId,
       userId,
       proposalType: "memory_update",
-      projectFolderId: projectFolderId ?? target.project_folder_id,
+      projectFolderId: null,
       targetScope,
       targetVisibility,
       targetMemoryId: memoryId,
@@ -272,7 +269,8 @@ export class PgMemoryProposalRepository {
       title,
       payload,
       rationale: "Memory update requested via public API.",
-      projectFolderId: projectFolderId ?? target.project_folder_id,
+      projectFolderId: null,
+      projectId: target.project_id,
       targetMemoryId: memoryId,
       targetScope,
       targetVisibility,
@@ -284,14 +282,12 @@ export class PgMemoryProposalRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    projectFolderId: string | null,
     command: MemoryProposalArchiveCommand,
   ): Promise<ProposalOut> {
     const target = await this.getVisibleTargetMemory(
       spaceId,
       userId,
       memoryId,
-      projectFolderId,
     );
     if (!target) throw new MemoryProposalNotFoundError("Memory not found");
 
@@ -314,7 +310,7 @@ export class PgMemoryProposalRepository {
       spaceId,
       userId,
       proposalType: "memory_archive",
-      projectFolderId: projectFolderId ?? target.project_folder_id,
+      projectFolderId: null,
       targetScope: target.scope_type,
       targetVisibility: target.visibility,
       targetMemoryId: memoryId,
@@ -328,7 +324,8 @@ export class PgMemoryProposalRepository {
       title: `Archive: ${target.title || memoryId.slice(0, 8)}`,
       payload,
       rationale: "Memory archive requested via public API.",
-      projectFolderId: projectFolderId ?? target.project_folder_id,
+      projectFolderId: null,
+      projectId: target.project_id,
       targetMemoryId: memoryId,
       targetScope: target.scope_type,
       targetVisibility: target.visibility,
@@ -340,7 +337,6 @@ export class PgMemoryProposalRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
-    projectFolderId: string | null,
   ): Promise<TargetMemoryRow | null> {
     const result = await this.db.query<TargetMemoryRow>(
       `SELECT ${TARGET_MEMORY_COLUMNS},
@@ -354,8 +350,7 @@ export class PgMemoryProposalRepository {
     );
     const row = result.rows[0];
     if (!row) return null;
-    const includeSystemScope = row.scope_type === "system";
-    if (!canReadMemory(row, { userId, spaceId, projectFolderId, includeSystemScope })) return null;
+    if (!canReadMemory(row, { userId, spaceId })) return null;
     if (row.project_id && !(await canAccessProject(this.db, spaceId, row.project_id, userId))) return null;
     return row;
   }
@@ -426,6 +421,7 @@ export class PgMemoryProposalRepository {
     payload: Record<string, unknown>;
     rationale: string;
     projectFolderId: string | null;
+    projectId: string | null;
     targetMemoryId: string | null;
     targetScope: string | null;
     targetVisibility: string | null;
@@ -439,8 +435,9 @@ export class PgMemoryProposalRepository {
       payload: input.payload,
       rationale: input.rationale,
       projectFolderId: input.projectFolderId,
+      projectId: input.projectId,
       createdByUserId: input.userId,
-      visibility: "space_shared",
+      visibility: input.targetVisibility ?? "private",
       riskLevel: "low",
     });
     return proposalToOut(row, now);
@@ -492,6 +489,14 @@ function validateCreateCommand(
       "owner_user_id is required when sensitivity_level is highly_restricted",
     );
   }
+}
+
+function normalizeMemoryScope(value: string): "user" | "project" {
+  const scope = value.toLowerCase();
+  if (scope !== "user" && scope !== "project") {
+    throw new MemoryProposalValidationError("memory scope must be user or project");
+  }
+  return scope;
 }
 
 function validateUpdatePayload(payload: Record<string, unknown>): void {

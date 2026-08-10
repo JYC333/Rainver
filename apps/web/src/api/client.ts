@@ -1,6 +1,6 @@
 import type {
   Memory, Session, Message, Task,
-  ContextPackage, Feature, ProjectFolder, ProjectFolderCreateBody, ProjectFolderUpdateBody,
+  Feature, ProjectFolder, ProjectFolderCreateBody, ProjectFolderUpdateBody,
   ProjectFolderScanCandidate, ProjectFolderExecutionConfig, ProjectFolderExecutionConfigUpdate, Page,
   ReflectResult, ApiError,
   RuntimeToolDefinition, RuntimeToolInstallResult, RuntimeToolStatus, RuntimeToolLatest, SpaceRuntimeToolPolicyOut,
@@ -26,7 +26,7 @@ import type {
   ActivityRecord, ActivitySourceType,
   KnowledgeCreateProposalBody, KnowledgeItem, KnowledgeItemSummary, KnowledgeRelation, KnowledgeRelationProposalBody, KnowledgeUpdateProposalBody,
   KnowledgeSummary, KnowledgeSourceSummary,
-  Note, NoteSummary, NoteCreateBody, NoteUpdateBody, NotesTreeReorderBody, NotesTreeReorderResult, NoteRevision, NoteCollection, NoteCollectionCreateBody, NoteCollectionUpdateBody, EntityLink, NoteLinkCreateBody,
+  Note, NoteSummary, NoteCreateBody, NoteUpdateBody, NotesTreeReorderBody, NotesTreeReorderResult, NoteRevision, NoteCollection, NoteCollectionCreateBody, NoteCollectionUpdateBody, EntityLink, NoteLinkCreateBody, NoteJotBody, NotePromoteBody, NoteProjectShare,
   FileNode, FileContent, GitStatus,
   HomeSummaryOut, MeSummaryOut, MeTimelineEntry, MeTaskItem, MePendingProposalItem,
   PersonalMemoryGrantPreviewRequest, PersonalMemoryGrantPreviewResponse,
@@ -42,21 +42,20 @@ import type {
   PromptDeploymentRef, PromptEvaluationRequest, PromptEvaluationResult,
   PromptPromotionRequest, PromptRenderPreviewRequest, PromptRenderPreviewResult,
   PromptRollbackRequest, PromptVersionCreateRequest,
-  Project, ProjectCreate, ProjectUpdate, ProjectSummary, ProjectOverview, ProjectBriefVersion,
+  Project, ProjectCreate, ProjectUpdate, ProjectOverview, ProjectBriefVersion, ProjectInstructionVersion,
   ProjectOperation, ProjectResearchInitialIntakeResponse,
   CapabilityDefinition, CapabilityPackDescriptor, WorkflowTemplate, ProjectWorkflowProfile, WorkflowRunDraftRequest, WorkflowRunDraftResponse,
-  ProjectTemplateDescriptor,
   InquiryThread, InquiryThreadDetail, InquiryIteration, InquiryThreadRelation, InquiryThreadNoteLink, InquiryThreadRevision,
   InquiryCandidate, InquiryReviewPacket, InquiryEvidenceSignal, InquiryDeltaBriefContent, InquiryThreadAdvice,
   ExperimentDefinition, ExperimentVersion, ExperimentRun, ExperimentObservation, ExperimentInterpretation,
-  ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchQuestionAssessmentSession, ProjectResearchQuestionAssessmentConfirmation, ProjectResearchQuestionAssessmentConfirmationResponse, ProjectResearchQuestionRefinement, ProjectResearchQuestionRefinementResponse, ProjectResearchCheckpoint, ProjectResearchLiteratureMatrixItem,
+  ProjectResearchReport, ProjectResearchInitialIntakeInput, ProjectResearchQuestionAssessmentSession, ProjectResearchQuestionAssessmentConfirmation, ProjectResearchQuestionAssessmentConfirmationResponse, ProjectResearchQuestionRefinement, ProjectResearchQuestionRefinementResponse, ProjectResearchCheckpoint, ProjectResearchEvidenceMatrixItem,
   ProjectResearchScreeningCriteria, ProjectResearchWorkflow,
   AcademicPaper, AcademicPaperAuthor, AcademicPaperCitation, AcademicPaperCreate, AcademicPaperUpdate,
   SkillImportPreviewResponse, SkillPackage, SkillImportApprovalProposalResponse, SkillConvertToCapabilityResponse,
   SkillLibraryIndexResponse, SkillLocalOverlay, SkillLocalOverlayUpsertRequest,
-  SourceProvider, SourceQueryPreview, SourceCatalog, SourceCatalogProvider, SourceCatalogMapping, SourceConnector, SourceChannel, SourceCapturePolicy, SourceScheduleRule, SourceItem, ExtractionJob,
+  SourceProvider, SourceQueryPreview, SourceCatalog, SourceCatalogProvider, SourceCatalogMapping, SourceConnector, SourceChannel, SourceRecommendation, SourceCapturePolicy, SourceScheduleRule, SourceItem, ExtractionJob,
   ExtractedEvidence, EvidenceLink, ProjectCorpusBackfillResult, ProjectCorpusItem,
-  ProjectSourceBinding, ProjectSourceBindingBackfillResult, ProjectSourceItem, ProjectSourceSummary, SourceHealth,
+  ProjectExtractionProfile, ProjectSourceBinding, ProjectSourceBindingBackfillResult, ProjectSourceItem, ProjectSourceSummary, SourceHealth,
   SourceBackfillPlan, SourceBackfillPreview, SourceBackfillQuotaPolicy, SourceBackfillStrategy,
   CustomSourceActivationResult, CustomSourceCreateDraftRequest, CustomSourceHandlerRun,
   CustomSourceCredentialDTO,
@@ -69,6 +68,7 @@ import type {
   SourceRecipeVersion,
   SourcePostProcessingBacklog, SourcePostProcessingBriefingDaySummary,
   SourcePostProcessingBriefingDetail, SourcePostProcessingDecisionActionResult,
+  InformationDigest, InterestProfileSnapshot, SerendipityFeedbackResult,
   SourcePostProcessingDecisionReviewStatus, SourcePostProcessingDrainResult,
   SourcePostProcessingItemDecision, SourcePostProcessingItemRelevance,
   SourcePostProcessingRule, SourcePostProcessingRun,
@@ -82,28 +82,30 @@ import type {
   RetrievalCalibrationDecisionRequest, RetrievalCalibrationDecisionResponse,
   RetrievalExplainRequest, RetrievalExplainResponse,
   RetrievalMaintenanceScanRequest, RetrievalMaintenanceScanResponse,
-  RetrievalObjectType, SpaceObjectKindCreateProposalRequest, SpaceObjectKindPage,
-  SpaceObjectKindStatus, SpaceObjectKindUpdateProposalRequest,
+  RetrievalObjectType, SpaceObjectProfileCreateProposalRequest, SpaceObjectProfilePage,
+  SpaceObjectProfileStatus, SpaceObjectProfileUpdateProposalRequest,
   ObjectSchemaExportManifest, ObjectSchemaImportRequest, ObjectSchemaImportResponse,
   ObjectSchemaSuggestionScanRequest, ObjectSchemaSuggestionScanResponse,
   ContextOpsSummary, ContextOpsDrilldown, ContextOpsDrilldownSection,
   ContextReviewCycleRequest, ContextReviewCycleResponse,
   AskSpaceRequest, AskSpaceResponse,
+  CrossSpaceRetrievalRequest, CrossSpaceRetrievalResponse, CrossSpaceResolveResponse,
+  CrossSpaceEgressDisclosure, CrossSpaceFusedStoreResponse,
+  SpaceMemberNotification, SpaceEgressNotificationSetting,
   ClaimCandidatePacketCreateRequest, ClaimCandidatePacketCreateResponse,
   ClaimContradictionScanRequest, ClaimContradictionScanResponse,
   RelationDiscoveryScanRequest, RelationDiscoveryScanResponse,
-  ContextArtifactRevocation, ContextArtifactRevocationCreateRequest, ContextArtifactRevocationListResponse,
-  ContextEffectiveRoutingResponse, ContextProfile, ContextProfileListResponse, ContextProfileUpsertRequest, ContextRoutingUpdateRequest,
-  MemoryAccessLogListResponse, MemoryMaintenanceJob, MemoryMaintenanceJobRunResponse, MemoryMaintenanceReport, MemoryMaintenanceScanRequest,
+  MemoryMaintenanceJob, MemoryMaintenanceJobRunResponse, MemoryMaintenanceReport, MemoryMaintenanceScanRequest,
   ContextOpsContextObservationScanRequest, ContextOpsContextObservationScanResponse,
   ReaderDocumentPayload, ReaderAnnotation, ReaderAnnotationsResponse,
   ReaderAnnotationCreate, ReaderAnnotationUpdate,
   ReaderCommentThread, ReaderComment, ReaderCommentCreate, ReaderCommentUpdate, ReaderThreadUpdate,
   ReaderCreateEvidenceRequest, ReaderCreatedEvidence,
   ReaderCreateProposalRequest, ReaderCreatedProposal,
-  ContentAccessPolicy, ContentAccessUpdate,
+  ContentAccessPolicy, ContentAccessUpdate, ContentVisibility,
+  ContentAccessLogList, ContentDemotionDisclosure,
   ResearchProviderKey, ResearchQueryStrategy, MaterializedResearchStrategy,
-  ResearchArea, ResearchChecklistItem, ResearchPaperCard, ResearchReadingList,
+  ResearchArea, ResearchChecklistItem, ResearchEvidenceCard, ResearchReadingList,
 } from '../types/api'
 import type {
   ContentPublication,
@@ -165,7 +167,16 @@ interface RequestOptions {
 }
 
 export class ApiRequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    /**
+     * The server's machine-readable `code`, when it sent one. Present exactly
+     * where the client is expected to *do* something specific rather than
+     * surface the message — matching on prose is how error handling rots.
+     */
+    readonly code?: string,
+  ) {
     super(message)
     this.name = 'ApiRequestError'
   }
@@ -192,14 +203,16 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
+    let code: string | undefined
     try {
-      const err = await r.json() as ApiError
+      const err = await r.json() as ApiError & { code?: unknown }
       msg = formatApiErrorMessage(err, msg)
+      if (typeof err.code === 'string') code = err.code
     } catch {
       const text = await r.text().catch(() => '')
       if (text) msg = text
     }
-    throw new ApiRequestError(msg, r.status)
+    throw new ApiRequestError(msg, r.status, code)
   }
 
   if (r.status === 204) return null as T
@@ -345,6 +358,12 @@ export const contentAccessApi = {
     get<ContentAccessPolicy>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}`),
   update: (resourceType: string, resourceId: string, body: ContentAccessUpdate) =>
     put<ContentAccessPolicy>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}`, body),
+  accessLogs: (resourceType: string, resourceId: string, limit = 50, offset = 0) =>
+    get<ContentAccessLogList>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/access-logs?limit=${limit}&offset=${offset}`),
+  discloseDemotion: (resourceType: string, resourceId: string, targetVisibility: Exclude<ContentVisibility, 'space_shared'>) =>
+    post<ContentDemotionDisclosure>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/demotion-disclosures`, {
+      target_visibility: targetVisibility,
+    }),
 }
 
 export const publicationsApi = {
@@ -367,8 +386,6 @@ export const memoryApi = {
     namespace?: string
     type?: string
     status?: string
-    project_folder_id?: string
-    include_system_archives?: boolean
     project_id?: string
     limit?: number
     offset?: number
@@ -378,26 +395,19 @@ export const memoryApi = {
     if (params.namespace !== undefined) q.namespace = params.namespace
     if (params.type !== undefined) q.type = params.type
     if (params.status !== undefined) q.status = params.status
-    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
-    if (params.include_system_archives !== undefined) q.include_system_archives = String(params.include_system_archives)
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Memory>>('/memory?' + new URLSearchParams(q))
   },
-  get: (id: string, params: { project_folder_id?: string } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
-    const suffix = Object.keys(q).length ? '?' + new URLSearchParams(q) : ''
-    return get<Memory>(`/memory/${id}${suffix}`)
-  },
+  get: (id: string) => get<Memory>(`/memory/${id}`),
   create: (data: Partial<Memory>) =>
     post<Proposal>('/memory', data),
   update: (id: string, data: Partial<Memory>) =>
     patch<Proposal>(`/memory/${id}`, data),
   delete: (id: string) =>
     del<Proposal>(`/memory/${id}`),
-  search: (data: { query: string; scope?: string; namespace?: string; type?: string; project_folder_id?: string; limit?: number }) =>
+  search: (data: { query: string; scope?: string; namespace?: string; type?: string; limit?: number }) =>
     // Memory search is identity-scoped server-side; do not send space_id/user_id.
     post<Memory[]>('/memory/search', data),
   retrievalSearch: (data: RetrievalSearchRequest) =>
@@ -414,16 +424,6 @@ export const memoryApi = {
     get<MemoryMaintenanceJob>(`/memory/maintenance/jobs/${jobId}`),
   runMaintenanceJob: (jobId: string) =>
     post<MemoryMaintenanceJobRunResponse>(`/memory/maintenance/jobs/${jobId}/run`, {}),
-  accessLogs: (params: { limit?: number; offset?: number; memory_id?: string; access_type?: string; project_folder_id?: string; project_id?: string } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    if (params.memory_id !== undefined) q.memory_id = params.memory_id
-    if (params.access_type !== undefined) q.access_type = params.access_type
-    if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
-    if (params.project_id !== undefined) q.project_id = params.project_id
-    return get<MemoryAccessLogListResponse>('/memory/access-logs?' + new URLSearchParams(q))
-  },
 }
 
 // ── Knowledge ─────────────────────────────────────────────────────────────
@@ -458,12 +458,12 @@ export const knowledgeApi = {
     post<Proposal>('/knowledge/object-relations/proposals', {
       from_object_id: body.from_object_id,
       to_object_id: body.to_object_id,
-      relation_type: body.relation_type,
+      link_type: body.link_type,
       status: body.status,
       confidence: body.confidence,
       evidence_summary: body.evidence_summary,
       rationale: body.rationale,
-      metadata: { endpoint_type: 'knowledge_item', requested_relation_type: body.relation_type },
+      metadata: { endpoint_type: 'knowledge_item', requested_link_type: body.link_type },
     }),
   proposeRelationArchive: (id: string) =>
     del<Proposal>(`/knowledge/object-relations/${id}`),
@@ -542,7 +542,7 @@ export const objectSchemaApi = {
     post<ObjectSchemaSuggestionScanResponse>('/knowledge/object-schema/suggestions/scan', body),
   listKinds: (params: {
     base_object_type?: RetrievalObjectType
-    status?: SpaceObjectKindStatus
+    status?: SpaceObjectProfileStatus
     limit?: number
     offset?: number
   } = {}) => {
@@ -551,24 +551,40 @@ export const objectSchemaApi = {
     if (params.status !== undefined) q.status = params.status
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<SpaceObjectKindPage>('/knowledge/object-schema/kinds?' + new URLSearchParams(q))
+    return get<SpaceObjectProfilePage>('/knowledge/object-schema/profiles?' + new URLSearchParams(q))
   },
-  proposeCreateKind: (body: SpaceObjectKindCreateProposalRequest) =>
-    post<Proposal>('/knowledge/object-schema/kinds/proposals', body),
-  proposeUpdateKind: (id: string, body: SpaceObjectKindUpdateProposalRequest) =>
-    patch<Proposal>(`/knowledge/object-schema/kinds/${encodeURIComponent(id)}/proposals`, body),
+  proposeCreateKind: (body: SpaceObjectProfileCreateProposalRequest) =>
+    post<Proposal>('/knowledge/object-schema/profiles/proposals', body),
+  proposeUpdateKind: (id: string, body: SpaceObjectProfileUpdateProposalRequest) =>
+    patch<Proposal>(`/knowledge/object-schema/profiles/${encodeURIComponent(id)}/proposals`, body),
   proposeDeprecateKind: (id: string, body: { rationale?: string } = {}) =>
-    post<Proposal>(`/knowledge/object-schema/kinds/${encodeURIComponent(id)}/deprecate-proposals`, body),
+    post<Proposal>(`/knowledge/object-schema/profiles/${encodeURIComponent(id)}/deprecate-proposals`, body),
   proposeArchiveKind: (id: string) =>
-    del<Proposal>(`/knowledge/object-schema/kinds/${encodeURIComponent(id)}`),
+    del<Proposal>(`/knowledge/object-schema/profiles/${encodeURIComponent(id)}`),
 }
 
 // ── Notes (working knowledge; direct CRUD) ─────────────────────────────────
 export const notesCollectionsApi = {
   list: () => get<NoteCollection[]>('/notes/collections'),
+  /**
+   * The Project's notes folder, created on first use. The Project notes surface
+   * is hoisted to it, so it has to exist before the surface can show anything.
+   */
+  ensureForProject: (projectId: string) =>
+    post<NoteCollection>(`/notes/collections/project/${encodeURIComponent(projectId)}`, {}),
   create: (body: NoteCollectionCreateBody) => post<NoteCollection>('/notes/collections', body),
   update: (id: string, body: NoteCollectionUpdateBody) => patch<NoteCollection>(`/notes/collections/${id}`, body),
   delete: (id: string) => del<void>(`/notes/collections/${id}`),
+}
+
+/**
+ * Discuss and edit the Project's notes. Project-level, not research-level —
+ * it moved off `.../research/` when the notes surface did.
+ */
+export const projectNotebookChatApi = {
+  send: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) =>
+    post<{ session_id: string; run_id: string; ok: boolean; reply?: string; error?: string; notebook_edit?: { note_id: string; version: number; conflict: boolean } | null; daily_limit: number; daily_used: number }>(
+      `/projects/${encodeURIComponent(projectId)}/notebook-chat`, body),
 }
 
 export const notesTreeApi = {
@@ -577,11 +593,17 @@ export const notesTreeApi = {
 }
 
 export const notesApi = {
-  list: (params: { status?: string; project_id?: string; collection_id?: string; q?: string; limit?: number; offset?: number } = {}) => {
+  /**
+   * `collection_id` selects one folder's contents in the user's manual order;
+   * `collection_ids` restricts the result to a *set* of folders — the hoisted
+   * subtree a notes surface is focused on — ordered by recency.
+   */
+  list: (params: { status?: string; project_id?: string; collection_id?: string; collection_ids?: string[]; q?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.collection_id !== undefined) q.collection_id = params.collection_id
+    if (params.collection_ids !== undefined) q.collection_ids = params.collection_ids.join(',')
     if (params.q !== undefined) q.q = params.q
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
@@ -592,6 +614,23 @@ export const notesApi = {
   update: (id: string, body: NoteUpdateBody) => patch<Note>(`/knowledge/notes/${id}`, body),
   delete: (id: string) => del<Note>(`/knowledge/notes/${id}`),
   purgeDeleted: () => post<{ deleted: number; retention_days: number }>('/knowledge/notes/deleted/purge'),
+  /**
+   * Place a note in a further folder, keeping the ones it is already in (U5) —
+   * distinct from moving it, which the tree reorder does.
+   */
+  addPlacement: (id: string, collectionId: string, shareWithProject = false) =>
+    post<Note>(`/knowledge/notes/${id}/placements`, {
+      collection_id: collectionId,
+      ...(shareWithProject ? { share_with_project: true } : {}),
+    }),
+  /** Which other Projects this note is readable in, and who opened it (U8). */
+  shares: (id: string) => get<NoteProjectShare[]>(`/knowledge/notes/${id}/shares`),
+  /** Withdraw a share. Takes the note's placements in that Project with it. */
+  revokeShare: (id: string, projectId: string) =>
+    del<Note>(`/knowledge/notes/${id}/shares/${encodeURIComponent(projectId)}`),
+  /** Take a note out of one folder. Refused on its last one. */
+  removePlacement: (id: string, collectionId: string) =>
+    del<Note>(`/knowledge/notes/${id}/placements/${collectionId}`),
   links: (id: string) => get<EntityLink[]>(`/knowledge/notes/${id}/links`),
   backlinks: (id: string) => get<EntityLink[]>(`/knowledge/notes/${id}/backlinks`),
   createLink: (id: string, body: NoteLinkCreateBody) =>
@@ -602,6 +641,23 @@ export const notesApi = {
     get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
   rollback: (id: string, toVersion: number) =>
     post<Note>(`/knowledge/notes/${id}/rollback`, { to_version: toVersion }),
+  /**
+   * Jot a note against an object and link it in one call (N7). Two calls would
+   * strand a note whenever the link failed, and the round trip for a note id
+   * is why the connection was never made by hand.
+   */
+  jot: (body: NoteJotBody) => post<Note>('/knowledge/notes/jot', body),
+  /** Notes citing a non-note object — the reverse of a jot. */
+  linkingTo: (objectId: string) => get<EntityLink[]>(`/knowledge/objects/${objectId}/note-links`),
+  /**
+   * Promote a selected passage into a Knowledge Item (ND). Returns the
+   * proposal — the review gate is unchanged — with the note recorded as
+   * provenance.
+   */
+  promote: (id: string, body: NotePromoteBody) =>
+    post<Proposal>(`/knowledge/notes/${id}/promote`, body),
+  /** Knowledge items this note produced. */
+  promoted: (id: string) => get<KnowledgeItemSummary[]>(`/knowledge/notes/${id}/promoted`),
 }
 
 // ── Sources (provenance / evidence layer) ──────────────────────────────────
@@ -712,6 +768,29 @@ export const meApi = {
     get<Page<MeTaskItem>>('/me/tasks?' + new URLSearchParams(params), { includeSpaceContext: false }),
   pending: (params: Record<string, string> = {}) =>
     get<MePendingProposalItem[]>('/me/pending?' + new URLSearchParams(params), { includeSpaceContext: false }),
+  retrievalSearch: (data: CrossSpaceRetrievalRequest) =>
+    post<CrossSpaceRetrievalResponse>('/me/retrieval/search', data, { includeSpaceContext: false }),
+  resolveRetrievalPointers: (pointerIds: string[]) =>
+    post<CrossSpaceResolveResponse>('/me/retrieval/pointers/resolve', { pointer_ids: pointerIds }, { includeSpaceContext: false }),
+  storeSourceSummary: (pointerIds: string[], summary: string) =>
+    post<{ artifact_id: string; source_space_id: string }>('/me/retrieval/summaries', { pointer_ids: pointerIds, summary }, { includeSpaceContext: false }),
+  discloseFusedStore: (pointerIds: string[]) =>
+    post<CrossSpaceEgressDisclosure>('/me/retrieval/egress/disclose', { pointer_ids: pointerIds }, { includeSpaceContext: false }),
+  storeFusedConclusion: (disclosureId: string, pointerIds: string[], conclusion: string) =>
+    post<CrossSpaceFusedStoreResponse>('/me/retrieval/fused-conclusions', {
+      disclosure_id: disclosureId,
+      pointer_ids: pointerIds,
+      conclusion,
+    }, { includeSpaceContext: false }),
+  notifications: () =>
+    get<{ items: SpaceMemberNotification[] }>('/me/notifications', { includeSpaceContext: false }),
+}
+
+export const spaceEgressApi = {
+  updateNotifications: (spaceId: string, enabled: boolean) =>
+    patch<SpaceEgressNotificationSetting>(`/spaces/${encodeURIComponent(spaceId)}/egress-notifications`, {
+      egress_notifications_enabled: enabled,
+    }),
 }
 
 // ── Runs (canonical API) ──────────────────────────────────────────────────
@@ -1107,7 +1186,6 @@ export const evolutionApi = {
     runtime_profile_id?: string | null
     project_folder_id?: string | null
     project_id?: string | null
-    context_artifact_ids?: string[]
   }) =>
     post<EvolutionRunResult>(`/evolution/targets/${targetId}/run`, body),
   strategies: (params: { status?: string; target_type?: string; limit?: number; offset?: number } = {}) => {
@@ -1320,7 +1398,7 @@ export const agentsApi = {
     } = {},
   ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
-  getRun:         (runId: string)     => get<Run>(`/agents/runs/${runId}`),
+  getRun:         (runId: string)     => get<Run>(`/runs/${runId}`),
   listRunsForAgent:  (agentId: string)   => get<Run[]>(`/agents/${agentId}/runs`),
 }
 
@@ -1447,39 +1525,6 @@ export const projectWorkflowProfilesApi = {
     post<WorkflowRunDraftResponse>(`/projects/${encodeURIComponent(projectId)}/workflow-templates/${encodeURIComponent(workflowTemplateId)}/run-draft`, data),
   buildRunDraft: (projectId: string, profileId: string, data: WorkflowRunDraftRequest = {}) =>
     post<WorkflowRunDraftResponse>(`/projects/${encodeURIComponent(projectId)}/workflow-profiles/${encodeURIComponent(profileId)}/run-draft`, data),
-}
-
-// ── Context ───────────────────────────────────────────────────────────────
-export const contextApi = {
-  build: (data: { project_folder_id?: string | null; project_id?: string | null; session_id?: string | null; capability_id?: string | null; query?: string | null; context_artifact_ids?: string[] }) =>
-    post<ContextPackage>('/context/build', data),
-  listProfiles: (params: { scope_type?: string; scope_id?: string; status?: string } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.scope_type !== undefined) q.scope_type = params.scope_type
-    if (params.scope_id !== undefined) q.scope_id = params.scope_id
-    if (params.status !== undefined) q.status = params.status
-    const suffix = new URLSearchParams(q).toString()
-    return get<ContextProfileListResponse>(`/context/profiles${suffix ? `?${suffix}` : ''}`)
-  },
-  updateProfile: (data: ContextProfileUpsertRequest) =>
-    put<ContextProfile>('/context/profiles', data),
-  getFolderRouting: (projectFolderId: string) =>
-    get<ContextEffectiveRoutingResponse>(`/context/project-folders/${encodeURIComponent(projectFolderId)}/routing`),
-  updateFolderRouting: (projectFolderId: string, data: ContextRoutingUpdateRequest) =>
-    put<ContextEffectiveRoutingResponse>(`/context/project-folders/${encodeURIComponent(projectFolderId)}/routing`, data),
-  listArtifactRevocations: (params: { project_folder_id?: string | null; project_id?: string | null; artifact_ids?: string[] } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.project_folder_id) q.project_folder_id = params.project_folder_id
-    if (params.project_id) q.project_id = params.project_id
-    if (params.artifact_ids?.length) q.artifact_ids = params.artifact_ids.join(',')
-    return get<ContextArtifactRevocationListResponse>(`/context/artifact-revocations?${new URLSearchParams(q).toString()}`)
-  },
-  revokeArtifact: (data: ContextArtifactRevocationCreateRequest) =>
-    post<ContextArtifactRevocation>('/context/artifact-revocations', data),
-  unrevokeArtifact: (artifactId: string, params: { scope_type: 'project_folder' | 'project'; scope_id: string }) => {
-    const q = new URLSearchParams({ scope_type: params.scope_type, scope_id: params.scope_id })
-    return del<null>(`/context/artifact-revocations/${encodeURIComponent(artifactId)}?${q.toString()}`)
-  },
 }
 
 export const contextOpsApi = {
@@ -1742,6 +1787,37 @@ export const activityApi = {
 }
 
 // ── Source / Evidence ────────────────────────────────────────────────────
+export const informationDigestsApi = {
+  personal: (spaceId: string, date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return get<InformationDigest>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal${q}`)
+  },
+  project: (spaceId: string, projectId: string, date?: string) => {
+    const q = date ? `?date=${encodeURIComponent(date)}` : ''
+    return get<InformationDigest>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests${q}`)
+  },
+  profile: (spaceId: string) =>
+    get<InterestProfileSnapshot>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile`),
+  acceptCandidate: (spaceId: string, phraseKey: string, body: { label?: string; domain_key?: string }) =>
+    post(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/candidates/${encodeURIComponent(phraseKey)}/accept`, body),
+  dismissCandidate: (spaceId: string, phraseKey: string) =>
+    post(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/candidates/${encodeURIComponent(phraseKey)}/dismiss`, {}),
+  updateProfileSettings: (spaceId: string, body: Partial<InterestProfileSnapshot['settings']>) =>
+    patch<{ settings: InterestProfileSnapshot['settings'] }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/settings`, body),
+  createTopic: (spaceId: string, body: { label: string; domain_key: string; weight: number }) =>
+    post<InterestProfileSnapshot['topics'][number]>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/topics`, body),
+  updateTopic: (spaceId: string, topicKey: string, body: { label: string; domain_key: string; weight: number }) =>
+    patch<InterestProfileSnapshot['topics'][number]>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/topics/${encodeURIComponent(topicKey)}`, body),
+  archiveTopic: (spaceId: string, topicKey: string) =>
+    post<{ archived: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/topics/${encodeURIComponent(topicKey)}/archive`, {}),
+  applyStarterPack: (spaceId: string, key: string) =>
+    post<{ topics: number; source_recommendations: number }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/starter-pack`, { key }),
+  backfillProfileHistory: (spaceId: string, limit = 500) =>
+    post<{ queued: number; limit: number }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/history-backfill`, { limit }),
+  serendipityFeedback: (spaceId: string, itemId: string, feedback: 'interesting' | 'neutral' | 'never') =>
+    post<SerendipityFeedbackResult>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/items/${encodeURIComponent(itemId)}/serendipity-feedback`, { feedback }),
+}
+
 export const sourcesApi = {
   providers: () => get<SourceProvider[]>('/sources/providers'),
   sourceCatalog: () => get<SourceCatalog>('/instance/source-catalog'),
@@ -1758,6 +1834,9 @@ export const sourcesApi = {
     const suffix = q.toString() ? `?${q.toString()}` : ''
     return get<SourceChannel[]>(`/sources/channels${suffix}`)
   },
+  recommendations: () => get<SourceRecommendation[]>('/sources/recommendations'),
+  decideRecommendation: (channelId: string, decision: 'subscribed' | 'dismissed' | 'muted') =>
+    post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/recommendations/${encodeURIComponent(channelId)}/decision`, { decision }),
   customSourceCredentials: () => get<CustomSourceCredentialDTO[]>('/sources/custom-source-credentials'),
   getChannel: (id: string) => get<SourceChannel>(`/sources/channels/${id}`),
   createChannel: (body: {
@@ -1922,6 +2001,7 @@ export const sourcesApi = {
     priority?: number
     delivery_scope?: 'project_members' | 'source_subscribers'
     collection_notifications_enabled?: boolean
+    standing_comparison_enabled?: boolean
     filters?: Record<string, unknown>
     routing_policy?: Record<string, unknown>
     extraction_policy?: Record<string, unknown>
@@ -1932,6 +2012,7 @@ export const sourcesApi = {
     priority: number
     delivery_scope: 'project_members' | 'source_subscribers'
     collection_notifications_enabled: boolean
+    standing_comparison_enabled: boolean
     filters: Record<string, unknown>
     routing_policy: Record<string, unknown>
     extraction_policy: Record<string, unknown>
@@ -2101,7 +2182,6 @@ export const projectsApi = {
   get: (id: string) => get<Project>(`/projects/${id}`),
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
-  getSummary: (id: string) => get<ProjectSummary>(`/projects/${id}/summary`),
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
   transitionMode: (id: string, toMode: string, reason?: string) =>
     post(`/projects/${id}/mode-transitions`, { to_mode: toMode, reason }),
@@ -2114,6 +2194,7 @@ export const projectsApi = {
     const q = sourceChannelId ? `?source_channel_id=${encodeURIComponent(sourceChannelId)}` : ''
     return get<ProjectSourceBinding[]>(`/projects/${id}/sources/bindings${q}`)
   },
+  sourceExtractionProfiles: (id: string) => get<ProjectExtractionProfile[]>(`/projects/${id}/sources/extraction-profiles`),
   sourceHealth: (id: string) => get<SourceHealth[]>(`/projects/${id}/sources/health`),
   createSourceBinding: (id: string, body: Omit<Parameters<typeof sourcesApi.createProjectSourceBinding>[0], 'project_id'>) =>
     post<ProjectSourceBinding>(`/projects/${id}/sources/bindings`, body),
@@ -2146,6 +2227,12 @@ export const projectsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<ProjectCorpusItem>>(`/projects/${id}/corpus?` + new URLSearchParams(q))
   },
+  addCorpusItem: (projectId: string, data: {
+    source_item_id: string
+    role?: ProjectCorpusItem['role']
+    triage_status?: ProjectCorpusItem['triage_status']
+    metadata_json?: Record<string, unknown>
+  }) => post<ProjectCorpusItem>(`/projects/${projectId}/corpus`, data),
   updateCorpusItem: (projectId: string, corpusItemId: string, data: Partial<{
     role: ProjectCorpusItem['role']
     status: ProjectCorpusItem['status']
@@ -2163,16 +2250,18 @@ export const projectsApi = {
   publicSummaryBrief: (data: RetrievalBriefRequest) =>
     post<RetrievalBriefResponse>('/projects/retrieval/brief', data),
   getActiveBriefVersion: (id: string) => get<ProjectBriefVersion | null>(`/projects/${id}/brief-versions/active`),
+  listBriefVersions: (id: string) => get<ProjectBriefVersion[]>(`/projects/${id}/brief-versions`),
   createBriefVersion: (id: string, data: Partial<Pick<ProjectBriefVersion,
-    'goal' | 'scope_included' | 'scope_excluded' | 'success_definition' | 'constraints' | 'assumptions'
+    'goal' | 'scope_included' | 'scope_excluded' | 'success_definition' | 'constraints' | 'assumptions' |
+    'confirmed_decisions' | 'workspace_identity' | 'workspace_boundary' | 'source_refs'
   >>) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions`, data),
-}
-
-export const projectTemplatesApi = {
-  list: () =>
-    get<ProjectTemplateDescriptor[]>('/project-templates'),
-  getProjectTemplate: (projectId: string) =>
-    get<{ template_key: string }>(`/projects/${encodeURIComponent(projectId)}/template`),
+  submitBriefForReview: (id: string, versionId: string) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions/${versionId}/submit-review`),
+  publishBrief: (id: string, versionId: string) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions/${versionId}/publish`),
+  getActiveInstructionVersion: (id: string) => get<ProjectInstructionVersion | null>(`/projects/${id}/instruction-versions/active`),
+  listInstructionVersions: (id: string) => get<ProjectInstructionVersion[]>(`/projects/${id}/instruction-versions`),
+  createInstructionVersion: (id: string, data: Pick<ProjectInstructionVersion, 'title' | 'instruction_text'>) => post<ProjectInstructionVersion>(`/projects/${id}/instruction-versions`, data),
+  submitInstructionForReview: (id: string, versionId: string) => post<ProjectInstructionVersion>(`/projects/${id}/instruction-versions/${versionId}/submit-review`),
+  publishInstruction: (id: string, versionId: string) => post<ProjectInstructionVersion>(`/projects/${id}/instruction-versions/${versionId}/publish`),
 }
 
 export const inquiryApi = {
@@ -2182,6 +2271,12 @@ export const inquiryApi = {
     get<InquiryThreadDetail>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}`),
   createThread: (projectId: string, data: Record<string, unknown>) =>
     post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`, data),
+  /**
+   * NE: raise a note passage as a Question. Creates the Thread and the link
+   * back to the note, so the Question keeps a route to its reasoning.
+   */
+  raiseFromNote: (projectId: string, data: { note_object_id: string; statement: string; kind?: 'question' | 'hypothesis' }) =>
+    post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/from-note`, data),
   recordIteration: (projectId: string, threadId: string, data: Record<string, unknown>) =>
     post<InquiryIteration & { thread: InquiryThread }>(
       `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`, data,
@@ -2482,12 +2577,26 @@ export const learningApi = {
 }
 
 export const projectResearchApi = {
+  standing: (projectId: string) =>
+    get<import('../types/api').ProjectResearchStandingStatus>(`/projects/${encodeURIComponent(projectId)}/research/standing`),
+  actionStandingAdvice: (projectId: string, adviceId: string) =>
+    post<{ advice: import('../types/api').ProjectResearchStandingAdvice; thread: InquiryThread }>(
+      `/projects/${encodeURIComponent(projectId)}/research/standing/advice/${encodeURIComponent(adviceId)}/action`, {},
+    ),
+  dismissStandingAdvice: (projectId: string, adviceId: string) =>
+    post<import('../types/api').ProjectResearchStandingAdvice>(
+      `/projects/${encodeURIComponent(projectId)}/research/standing/advice/${encodeURIComponent(adviceId)}/dismiss`, {},
+    ),
+  retryStandingBatch: (projectId: string, batchId: string) =>
+    post<import('../types/api').ProjectResearchStandingBatch>(
+      `/projects/${encodeURIComponent(projectId)}/research/standing/batches/${encodeURIComponent(batchId)}/retry`, {},
+    ),
   area: (projectId: string) => get<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`),
   initializeArea: (projectId: string) => post<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`, {}),
   readingList: (projectId: string, params: { triage_status?: string; read_status?: string; q?: string } = {}) => get<ResearchReadingList>(`/projects/${encodeURIComponent(projectId)}/research/reading-list?${new URLSearchParams(params)}`),
   // Per-note editing/revisions/rollback go through the generic notesApi —
   // a project's notebook is just Notes filed under its auto-created folder.
-  updatePaperCard: (projectId: string, sourceItemId: string, body: { why_md: string; how_md: string; what_md: string }) => put<ResearchPaperCard>(`/projects/${encodeURIComponent(projectId)}/research/reading-list/${encodeURIComponent(sourceItemId)}/card`, body),
+  updateEvidenceCard: (projectId: string, sourceItemId: string, body: { why_md: string; how_md: string; what_md: string }) => put<ResearchEvidenceCard>(`/projects/${encodeURIComponent(projectId)}/research/reading-list/${encodeURIComponent(sourceItemId)}/card`, body),
   createChecklistItem: (projectId: string, text: string) => post<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist`, { text }),
   updateChecklistItem: (projectId: string, itemId: string, body: Partial<Pick<ResearchChecklistItem, 'text' | 'status' | 'sort_order'>>) => patch<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`, body),
   deleteChecklistItem: (projectId: string, itemId: string) => del<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`),
@@ -2495,7 +2604,6 @@ export const projectResearchApi = {
   // (see areaService.ts askAi): a known starter-note key maps to its
   // title; any other value is used as a literal note title.
   askAi: (projectId: string, body: { prompt: string; section_key: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ run_id: string; job_id: string; status: string; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/ask-ai`, body),
-  notebookChat: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ session_id: string; run_id: string; ok: boolean; reply?: string; error?: string; notebook_edit?: { note_id: string; version: number; conflict: boolean } | null; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/notebook-chat`, body),
   generateReportSnapshot: (projectId: string) => post<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/research/reports`, {}),
   refineQuestion: (projectId: string, body: {
     thread_id: string
@@ -2604,13 +2712,13 @@ export const projectResearchApi = {
     get<ProjectResearchScreeningCriteria>(`/projects/${encodeURIComponent(projectId)}/research/screening-criteria`),
   upsertScreeningCriteria: (projectId: string, body: Partial<Pick<
     ProjectResearchScreeningCriteria,
-    'include_keywords' | 'exclude_keywords' | 'methods' | 'date_range_start' | 'date_range_end' | 'venues' | 'required_evidence_fields'
+    'include_keywords' | 'exclude_keywords' | 'domain_criteria' | 'date_range_start' | 'date_range_end' | 'source_restrictions' | 'required_evidence_fields'
   >>) =>
     put<ProjectResearchScreeningCriteria>(`/projects/${encodeURIComponent(projectId)}/research/screening-criteria`, body),
-  literatureMatrix: (projectId: string) =>
-    get<ProjectResearchLiteratureMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/literature-matrix`),
-  rebuildLiteratureMatrix: (projectId: string) =>
-    post<ProjectResearchLiteratureMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/literature-matrix/rebuild`, {}),
+  evidenceMatrix: (projectId: string) =>
+    get<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix`),
+  rebuildEvidenceMatrix: (projectId: string) =>
+    post<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix/rebuild`, {}),
   reports: (projectId: string) =>
     get<ProjectResearchReport[]>(`/projects/${encodeURIComponent(projectId)}/research/reports`),
   report: (projectId: string, reportId: string) =>
@@ -2792,22 +2900,6 @@ export interface TestConnectionOut {
   model?: string
 }
 
-export interface ChatRequest {
-  provider_id?: string
-  model?: string
-  messages: { role: string; content: string }[]
-  system?: string
-  temperature?: number
-  max_tokens?: number
-}
-
-export interface ChatResponse {
-  content: string
-  provider: string
-  model: string
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number }
-}
-
 export const providersApi = {
   list: () => get<ModelProviderOut[]>('/providers'),
 
@@ -2869,7 +2961,6 @@ export const providersApi = {
 
   catalog: () => get<CatalogInfo>('/providers/catalog'),
 
-  chat: (data: ChatRequest) => post<ChatResponse>('/providers/chat', data),
 }
 
 // ── Official Optional Modules (plugins) ───────────────────────────────────

@@ -1098,6 +1098,14 @@ class FakeAutomationRepository {
     return this.automation;
   }
 
+  // Part of AutomationRepositoryPort. These tests never exercise the Autonomy
+  // upsert path, but the double has to satisfy the port rather than the port
+  // being weakened to fit the double.
+  async upsertAutonomyAutomation(input: { preflightSnapshot: Record<string, unknown> }): Promise<AutomationRow> {
+    this.createInputs.push(input);
+    return this.automation;
+  }
+
   async getMembershipRole(): Promise<string | null> {
     return this.membershipRole;
   }
@@ -1194,9 +1202,6 @@ class MaintenanceAutomationFakePool implements Queryable {
     if (sql.includes("SELECT id FROM automations") && sql.includes("FOR UPDATE")) {
       return { rowCount: 1, rows: [{ id: "auto-1" }] as Row[] };
     }
-    if (sql.includes("INSERT INTO context_snapshots")) {
-      return { rowCount: 1, rows: [] };
-    }
     if (sql.includes("INSERT INTO runs")) {
       return {
         rowCount: 1,
@@ -1212,9 +1217,6 @@ class MaintenanceAutomationFakePool implements Queryable {
       };
     }
     if (sql.includes("INSERT INTO run_attempts")) {
-      return { rowCount: 1, rows: [] };
-    }
-    if (sql.includes("UPDATE context_snapshots")) {
       return { rowCount: 1, rows: [] };
     }
     if (sql.includes("INSERT INTO automation_runs")) {
@@ -1351,12 +1353,9 @@ class AgentAutomationFireFakePool implements Queryable {
         ] as Row[],
       };
     }
-    if (sql.includes("INSERT INTO context_snapshots")) {
-      return { rowCount: 1, rows: [] };
-    }
     if (sql.includes("INSERT INTO runs")) {
-      this.runPrompts.push(params[19]);
-      this.runInstructions.push(params[20]);
+      this.runPrompts.push(params[18]);
+      this.runInstructions.push(params[19]);
       return {
         rowCount: 1,
         rows: [
@@ -1371,9 +1370,6 @@ class AgentAutomationFireFakePool implements Queryable {
       };
     }
     if (sql.includes("INSERT INTO run_attempts")) {
-      return { rowCount: 1, rows: [] };
-    }
-    if (sql.includes("UPDATE context_snapshots")) {
       return { rowCount: 1, rows: [] };
     }
     if (sql.includes("INSERT INTO jobs")) {

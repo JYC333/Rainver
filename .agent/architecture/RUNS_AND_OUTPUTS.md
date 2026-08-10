@@ -57,7 +57,7 @@ succeeded runs. It returns one space-scoped aggregate containing:
 - immutable `AgentVersion` snapshot with system-prompt presence/hash metadata, not raw prompt text
 - `RuntimeAdapter` summary
 - `ModelProvider` summary without secrets
-- `ContextSnapshot` metadata, hashes, retrieval trace, source refs, and redaction metadata without raw rendered context text
+- safe Invocation Snapshot metadata, hashes, source refs, acknowledgements, and redaction metadata without raw rendered context text
 - ordered `RunStep`
 - ordered `RunEvent`
 - linked artifact summaries without artifact content
@@ -81,7 +81,7 @@ available without exposing physical Exchange paths or hidden rendered context.
 
 Ordinary Assistant Chat uses the same queued Run pipeline. `POST
 /api/v1/agents/{id}/chat` atomically persists the session/user message, Run,
-context snapshot, and `agent_run` job in one database transaction, then returns
+and `agent_run` job in one database transaction, then returns
 HTTP 202 with `chat_turn_accepted.v1`; it never
 executes an adapter on the request path. The client then follows the canonical
 RunEvent SSE endpoint. The accepted `run_id` is also attached to the durable
@@ -99,9 +99,10 @@ Conversation backend selection is a user × session binding. The selectable
 runtime profiles come from the Agent, while CLI credentials come only from the
 signed-in user's enabled space grants. The chosen backend is frozen on the Run.
 Shared Agent runtime profiles never store a user credential. Direct CLI chat
-uses the lightweight prompt-only execution mode: an isolated cwd and credential
-broker remain mandatory, while vendor context files, Run Exchange, tool
-transport, and worktree preparation are skipped.
+uses the same accepted Runtime Context Delivery and typed Sandbox Runner
+boundary as every CLI invocation. Vendor context files are not created; the
+instructing user's scoped continuity is acquired by Runtime Context and rendered
+directly at invocation.
 There is no synchronous Chat endpoint or second Chat execution path. Run
 cancellation remains the normal Run stop operation.
 
@@ -159,6 +160,18 @@ detail to both.
 
 - A run may produce an `Artifact`.
 - A run produces a `Proposal` only for durable mutation requests.
+- Artifacts and proposals materialized from a Run may narrow visibility but never widen beyond
+  the Run: a `private` Run always produces owner-private outputs, and a `selected_users` Run
+  retains its selected-user boundary and inherited grants.
+- Accepted Runtime Context items freeze `owner_user_id` and `visibility` in the
+  safe Delivery audit projection. Runs persist their aggregate
+  `context_taint_json`. Another user's
+  input forces outputs to `selected_users` over the instructing user and all
+  contributing owners, even when the Run itself is `space_shared`.
+- Widening a tainted Artifact uses a high-risk `egress_review` proposal.
+  `ContentAccessService` rejects direct widening, and the proposal remains
+  unappliable until every non-instructing content owner has recorded an
+  `egress_granting_user` approval.
 - `output_text` alone is display output and does not create an Artifact or
   Proposal.
 - Durable mutations are review-gated; run execution does not auto-apply proposals.
@@ -293,6 +306,13 @@ records structural validation metadata and the engine verifies changed files
 and forbidden-path boundaries; the proposal payload no longer claims that
 patch validation is skipped.
 
+Command execution and git worktree inspection use the typed Sandbox Runner
+`verification` runtime. That runtime receives one managed workspace mount and
+the immutable recipe argv, runs without a shell or network in an empty-root
+namespace, exposes the Runner-owned Node toolchain path, rejects output beyond
+the fixed 64 KiB evidence ceiling, and has no application-server subprocess
+fallback.
+
 `PostRunFinalizationService` reads these results. A declared failed/error
 check makes a successful runtime evaluation `failed`; a declared but skipped
 or missing check is `unknown` with `insufficient_evidence`; a successful
@@ -406,6 +426,14 @@ and model name at creation. `RunOut.resolved_model` exposes a safe summary:
 - `used_by_adapter` — whether the selected runtime adapter consumes model config
 - `adapter_model_support` — `uses_model` | `not_applicable` | `unsupported` | `unknown`
 - `disclosure_note` — user-facing text when a model was recorded but not used (e.g. capability adapters)
+
+For managed calls, adapter evidence distinguishes intent from execution:
+`requested_model_provider_id` is the routed/requested Provider and
+`model_provider_id` plus `model` name the Provider/model that actually served
+the turn after any invocation-layer fallback. When those Provider ids differ,
+the adapter also emits a `warning` Run event with
+`event_code=model_provider_mismatch` and both ids, so event-stream consumers do
+not need to infer fallback from adapter metadata.
 
 `runs.runtime_profile_id` records which `AgentRuntimeProfile` was selected.
 `runs.runtime_profile_snapshot_json` stores the selected profile's adapter,

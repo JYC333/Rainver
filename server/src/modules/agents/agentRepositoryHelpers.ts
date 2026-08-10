@@ -21,8 +21,8 @@ export function defaultModelConfigFor(modelName: string | null | undefined): { m
   };
 }
 export const DEFAULT_MEMORY_POLICY = {
-  readable_scopes: ["system", "space", "user", "project_folder", "capability", "agent"],
-  writable_scopes: ["agent"],
+  readable_scopes: ["user", "project"],
+  writable_scopes: ["user", "project"],
   readable_types: ["preference", "semantic", "episodic", "procedural", "project"],
 };
 export const DEFAULT_RUNTIME_POLICY = {
@@ -52,6 +52,7 @@ export function agentOut(row: AgentRecord): AgentOut {
   return {
     id: row.id,
     space_id: row.space_id,
+    project_id: row.project_id,
     created_by_user_id: row.owner_user_id,
     name: row.name,
     description: row.description,

@@ -130,7 +130,7 @@ Core plugin control-plane schema (`official_plugin_enablements`, `official_plugi
 Plugin-owned domain tables do not live in the core baseline. The `diary` plugin owns `diary_entries` and `diary_reflections` through SQL files under `plugins/official/diary/migrations/`. The `finance_ledger` plugin owns its finance book, account, directive, posting, price, import/export, and metadata tables through SQL files under `plugins/official/finance_ledger/migrations/`. Plugin migrations are copied into `server/dist/official-plugins/<plugin_id>/migrations/` during build. The installer executes those migrations only when the plugin is installed and records their checksums in `plugin_migrations`.
 
 ### Editor-owned content vs raw input
-Diary entries are editor-owned user documents, similar to Notes. Direct diary editing writes the diary plugin tables and does not create an `ActivityRecord`. If diary content is later extracted into Memory, Knowledge, ContextBuilder, FlashCards, or agent-readable summaries, that extraction must go through the proposal/sources boundary and remain opt-in where the descriptor says context contribution is `opt_in`.
+Diary entries are editor-owned user documents, similar to Notes. Direct diary editing writes the diary plugin tables and does not create an `ActivityRecord`. If diary content is later extracted into Memory, Knowledge, Runtime Context acquisition, FlashCards, or agent-readable summaries, that extraction must go through the proposal/sources boundary and remain opt-in where the descriptor says context contribution is `opt_in`.
 
 Finance ledger rows are space-owned business data. Direct ledger editing writes
 the finance plugin tables and does not create an `ActivityRecord`. Beancount text

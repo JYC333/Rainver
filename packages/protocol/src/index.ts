@@ -57,6 +57,9 @@ export * from "./usage.js";
 // Targeted cross-space publication snapshots and imports
 export * from "./publications.js";
 
+// Cross-person content access audit contracts
+export * from "./contentAccess.js";
+
 // Run orchestration contracts
 export * from "./runOrchestration.js";
 
@@ -80,6 +83,7 @@ export * from "./proposals.js";
 export * from "./knowledgeRetrieval.js";
 
 // Knowledge object and proposal packet contracts
+export * from "./linkTypes.js";
 export * from "./knowledge.js";
 
 // Project public summary contracts
@@ -88,14 +92,16 @@ export * from "./projects.js";
 // Memory + sessions contracts
 export * from "./memorySessions.js";
 
-// Context Project Folder/profile contracts
-export * from "./contextProfiles.js";
+// Runtime Context Engine semantic and delivery contracts
+export * from "./runtimeContext.js";
 
 // Context Ops read-model contracts
 export * from "./contextOps.js";
 
 // Ask Space unified entry-point contracts
 export * from "./askSpace.js";
+export * from "./capturefiling.js";
+export * from "./crossSpaceRetrieval.js";
 
 // Claim trajectory + contradiction loop contracts (Slice E)
 export * from "./claimReviewLoop.js";

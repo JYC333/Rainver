@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry";
-import { HttpError, jsonBody, optionalString, params, parsePage, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
+import { HttpError, dbPool, jsonBody, optionalString, params, parsePage, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
+import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext";
 import { AcademicService } from "./service";
 
 let serviceFactoryOverride: ((context: ModuleContext) => AcademicService) | null = null;
@@ -19,7 +20,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(await service(context).createPaper(identity, jsonBody(request)));
+      const body = jsonBody(request);
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      return reply.code(201).send(await service(context).createPaper(
+        { spaceId: creation.spaceId, userId: identity.userId },
+        applyContentCreationContext(body, creation),
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

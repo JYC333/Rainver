@@ -15,7 +15,7 @@ import {
 } from "../routeUtils/common";
 import { getDbPool } from "../../db/pool";
 import { RetrievalProjectionService } from "../retrieval";
-import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject } from "./access";
+import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access";
 import { assertProjectReadable } from "./access";
 import { projectRetrievalRegistry } from "./retrievalAdapter";
 import { contentReadSql } from "../access/contentAccessSql";
@@ -23,7 +23,7 @@ import { projectFolderReadAccessSql } from "../projectFolders/access";
 import { memorySensitivityReadSql } from "../memory/memorySensitivitySql";
 import { PgRunRepository } from "../runs/repository";
 import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { getBuiltInProjectTemplate, DEFAULT_PROJECT_TEMPLATE_KEY } from "../projectTemplates/registry";
+import { requiredPrimaryMode } from "./primaryMode";
 
 export interface ProjectRow {
   id: string;
@@ -34,7 +34,6 @@ export interface ProjectRow {
   status: string;
   current_focus: string | null;
   settings_json: unknown;
-  template_key: string;
   primary_mode: string;
   active_brief_version_id: string | null;
   created_at: unknown;
@@ -72,7 +71,7 @@ export interface ProjectPublicSummaryRow {
 
 const PROJECT_COLUMNS = `
   id, space_id, owner_user_id, name, description, status, current_focus,
-  settings_json, template_key, primary_mode, active_brief_version_id,
+  settings_json, primary_mode, active_brief_version_id,
   created_at, updated_at, archived_at
 `;
 
@@ -121,38 +120,36 @@ export class PgProjectRepository {
     );
     const writable = await this.loadWritableContext(identity.spaceId, identity.userId);
     const items = rows.rows.map((row) =>
-      projectToOut(row, canSeeSettings(writable, identity.userId, row)),
+      projectToOut(
+        row,
+        canSeeSettings(writable, identity.userId, row),
+        canApproveProjectContext(writable, identity.userId, row),
+      ),
     );
     return page(items, countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
-  // Applies the requested (or default `blank`) Project Template at creation
-  // time: sets the initial Primary Mode and records an append-only Mode
-  // Transition (from=null) in the same transaction. Template selection is
-  // immutable creation-time provenance only — all installed Project Areas
-  // remain reachable regardless of which Template was applied.
+  // Creation asks one thing about shape: how the Project advances
+  // (`primary_mode`, defaulting to `research`). The initial Mode Transition
+  // (from=null) is appended in the same transaction. Sources are bound from
+  // the Project's Sources Area afterwards, never here.
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const name = requiredString(body.name, "name");
-    const requestedTemplateKey = optionalString(body.template_key);
-    const defaultTemplate = getBuiltInProjectTemplate(DEFAULT_PROJECT_TEMPLATE_KEY);
-    if (!defaultTemplate) {
-      // Only reachable if a caller overrides the registry (tests) without a
-      // `blank` entry — fail clearly rather than dereference null.
-      throw new HttpError(500, `Default project template '${DEFAULT_PROJECT_TEMPLATE_KEY}' is not registered`);
-    }
-    const resolvedTemplate = requestedTemplateKey ? getBuiltInProjectTemplate(requestedTemplateKey) : defaultTemplate;
-    if (!resolvedTemplate) {
-      throw new HttpError(422, `Unknown template_key: ${requestedTemplateKey}`);
-    }
+    // Deliberately not gated on a registered Overview adapter the way a Mode
+    // *transition* is. That gate belongs to the request path; putting it here
+    // would make creating a Project depend on module registration order, and
+    // this repository is used headlessly. Every built-in Mode registers an
+    // adapter, so the placeholder projection is unreachable in practice.
+    const primaryMode = requiredPrimaryMode(body.primary_mode);
     const now = new Date().toISOString();
     const projectId = randomUUID();
     return withQueryableTransaction(this.db, async (db) => {
       const result = await db.query<ProjectRow>(
         `INSERT INTO projects (
            id, space_id, owner_user_id, name, description, status, current_focus,
-           settings_json, template_key, template_applied_json, primary_mode,
+           settings_json, primary_mode,
            created_at, updated_at, archived_at, deleted_at
-         ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7::jsonb, $8, $9::jsonb, $10, $11, $11, NULL, NULL)
+         ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7::jsonb, $8, $9, $9, NULL, NULL)
          RETURNING ${PROJECT_COLUMNS}`,
         [
           projectId,
@@ -162,23 +159,24 @@ export class PgProjectRepository {
           optionalString(body.description),
           optionalString(body.current_focus),
           JSON.stringify(optionalObject(body.settings_json) ?? {}),
-          resolvedTemplate.key,
-          JSON.stringify({ selected_key: requestedTemplateKey, resolved_key: resolvedTemplate.key, applied_at: now }),
-          resolvedTemplate.initial_primary_mode,
+          primaryMode,
           now,
         ],
       );
       await db.query(
         `INSERT INTO project_mode_transitions (
            id, space_id, project_id, from_mode, to_mode, reason, trigger_ref, confirmed_by_user_id, created_at
-         ) VALUES ($1, $2, $3, NULL, $4, 'template_applied', $5, $6, $7)`,
-        [randomUUID(), identity.spaceId, projectId, resolvedTemplate.initial_primary_mode, resolvedTemplate.key, identity.userId, now],
+         ) VALUES ($1, $2, $3, NULL, $4, 'project_created', NULL, $5, $6)`,
+        [randomUUID(), identity.spaceId, projectId, primaryMode, identity.userId, now],
       );
       const briefId = randomUUID();
       await db.query(
         `INSERT INTO project_brief_versions
-          (id,space_id,project_id,version,goal,scope_included,scope_excluded,success_definition,constraints,assumptions,created_by_user_id,created_at)
-         VALUES ($1,$2,$3,'v1',$4,$5,$6,$7,$8,$9,$10,$11)`,
+          (id,space_id,project_id,version,goal,scope_included,scope_excluded,success_definition,constraints,assumptions,
+           project_status,current_focus,confirmed_decisions_json,primary_mode,workspace_identity_json,workspace_boundary_json,
+           source_refs_json,status,reviewed_by_user_id,reviewed_at,published_by_user_id,published_at,created_by_user_id,created_at)
+         VALUES ($1,$2,$3,'v1',$4,$5,$6,$7,$8,$9,'active',$10,'[]'::jsonb,$11,'{}'::jsonb,'{}'::jsonb,
+                 '[]'::jsonb,'published',$12,$13,$12,$13,$12,$13)`,
         [
           briefId,
           identity.spaceId,
@@ -189,6 +187,8 @@ export class PgProjectRepository {
           optionalString(body.success_definition),
           optionalString(body.constraints),
           optionalString(body.assumptions),
+          optionalString(body.current_focus),
+          primaryMode,
           identity.userId,
           now,
         ],
@@ -198,7 +198,7 @@ export class PgProjectRepository {
         [briefId, projectId, identity.spaceId],
       );
       result.rows[0]!.active_brief_version_id = briefId;
-      return projectToOut(result.rows[0]!);
+      return projectToOut(result.rows[0]!, true, true);
     });
   }
 
@@ -209,7 +209,8 @@ export class PgProjectRepository {
     // operational detail. Only project writers (owner / space admin / project
     // owner|member) see it; other space members get a null placeholder.
     const includeSettings = await canWriteProject(this.db, identity.spaceId, projectId, identity.userId);
-    return projectToOut(row, includeSettings);
+    const canApproveContext = await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId);
+    return projectToOut(row, includeSettings, canApproveContext);
   }
 
   async update(
@@ -262,7 +263,11 @@ export class PgProjectRepository {
     if (status === "archived") {
       await this.pauseArchivedProjectActivity(identity.spaceId, projectId, now);
     }
-    return projectToOut(result.rows[0]!);
+    return projectToOut(
+      result.rows[0]!,
+      true,
+      await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId),
+    );
   }
 
   async archive(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
@@ -286,7 +291,11 @@ export class PgProjectRepository {
       [identity.spaceId, projectId, now],
     );
     await this.pauseArchivedProjectActivity(identity.spaceId, projectId, now);
-    return projectToOut(result.rows[0]!);
+    return projectToOut(
+      result.rows[0]!,
+      true,
+      await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId),
+    );
   }
 
   async summary(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
@@ -689,9 +698,12 @@ export class PgProjectRepository {
       [spaceId, projectId, now],
     );
     await this.db.query(
-      `UPDATE project_research_workflows
-          SET status = 'paused', updated_at = $3
-        WHERE space_id = $1 AND project_id = $2 AND status = 'active'`,
+      `WITH changed AS (UPDATE project_research_workflows
+          SET status = 'paused'
+        WHERE space_id = $1 AND project_id = $2 AND status = 'active'
+        RETURNING object_id,space_id)
+       UPDATE space_objects object SET updated_at=$3 FROM changed
+        WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [spaceId, projectId, now],
     );
   }
@@ -714,10 +726,10 @@ export class PgProjectRepository {
     );
     const spaceRole = role.rows[0]?.role;
     if (spaceRole === "owner" || spaceRole === "admin") {
-      return { spaceAdmin: true, memberProjectIds: new Set() };
+      return { spaceAdmin: true, memberProjectIds: new Set(), ownerProjectIds: new Set() };
     }
-    const members = await this.db.query<{ project_id: string }>(
-      `SELECT project_id FROM project_members
+    const members = await this.db.query<{ project_id: string; role: string }>(
+      `SELECT project_id, role FROM project_members
         WHERE space_id = $1 AND user_id = $2 AND status = 'active'
           AND role IN ('owner', 'member')`,
       [spaceId, userId],
@@ -725,6 +737,7 @@ export class PgProjectRepository {
     return {
       spaceAdmin: false,
       memberProjectIds: new Set(members.rows.map((row) => row.project_id)),
+      ownerProjectIds: new Set(members.rows.filter((row) => row.role === "owner").map((row) => row.project_id)),
     };
   }
 
@@ -759,6 +772,7 @@ export class PgProjectRepository {
 interface WritableContext {
   spaceAdmin: boolean;
   memberProjectIds: Set<string>;
+  ownerProjectIds: Set<string>;
 }
 
 function canSeeSettings(ctx: WritableContext, userId: string, row: ProjectRow): boolean {
@@ -767,7 +781,17 @@ function canSeeSettings(ctx: WritableContext, userId: string, row: ProjectRow): 
   return ctx.memberProjectIds.has(row.id);
 }
 
-function projectToOut(row: ProjectRow, includeSettings = true): Record<string, unknown> {
+function canApproveProjectContext(ctx: WritableContext, userId: string, row: ProjectRow): boolean {
+  if (ctx.spaceAdmin) return true;
+  if (row.owner_user_id && row.owner_user_id === userId) return true;
+  return ctx.ownerProjectIds.has(row.id);
+}
+
+function projectToOut(
+  row: ProjectRow,
+  includeSettings = true,
+  currentUserCanApproveContext = false,
+): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -779,9 +803,9 @@ function projectToOut(row: ProjectRow, includeSettings = true): Record<string, u
     settings_json: includeSettings
       ? (row.settings_json === null ? null : objectValue(row.settings_json))
       : null,
-    template_key: row.template_key,
     primary_mode: row.primary_mode,
     active_brief_version_id: row.active_brief_version_id,
+    current_user_can_approve_context: currentUserCanApproveContext,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
     archived_at: dateIso(row.archived_at),

@@ -50,8 +50,6 @@ Implemented endpoints:
 
 `POST /api/v1/memory/maintenance/jobs/:jobId/run`
 
-`GET /api/v1/memory/access-logs`
-
 The route resolves the authenticated user and current space through the normal
 Memory route identity path. It requires `SERVER_DATABASE_URL`; without it the
 route returns 502. Scan initiation is gated by
@@ -98,16 +96,9 @@ error message, and timestamps. `GET` returns jobs owned by the caller, or
 updated job plus the page report, or `report = null` when the job was already
 terminal.
 
-`GET /api/v1/memory/access-logs` returns a bounded, privacy-reviewed inspector
-list for the current space/user. Query params:
-
-- `limit`: positive integer, default `50`, max `200`
-- `offset`: non-negative integer, default `0`, max `1000`
-- `memory_id`: optional exact memory filter
-- `access_type`: optional exact access-type filter
-- `project_folder_id`: optional Project Folder context required for readable
-  Project Folder-scoped `space_shared` memories owned by another user
-- `project_id`: optional exact project filter
+Memory has no domain-wide access-log inspector. Owners inspect cross-person
+reads on an individual Memory through the common Content Access control, backed
+by `GET /api/v1/content-access/memory/:resourceId/access-logs`.
 
 The route joins each log to `memory_entries`, applies `canReadMemory` with the
 optional Project Folder context, applies the project gate via `accessibleProjectIds`,
@@ -244,8 +235,6 @@ Implemented gates:
 - `accessibleProjectIds` for rows with `project_id`
 - explicit maintenance exclusion of:
   - `sensitivity_level = highly_restricted`
-  - `scope_type = system`
-  - `visibility = published snapshot`
 
 For `summary_only` rows:
 

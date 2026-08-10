@@ -42,14 +42,18 @@ collapsed technical details are diagnostic evidence only.
 
 ### 1. Create and prepare a Project
 
-Create a Project from a non-blank Template with Name, Goal, and Scope. Confirm
-the Project Shell shows Template provenance and a named setup checklist without
-creating a Workflow prematurely. Complete required Provider, Agent, Source, and
-policy choices, then explicitly start work.
+Create a Project with Name, Primary Mode, and an initial Brief containing Goal
+and Scope. Confirm creation binds no Sources, creates no Workflow, and installs
+no starter content. The Project Shell must show the selected Mode's Overview
+placeholders and every installed Area must remain reachable. In Project Sources,
+bind the real Source and select its extraction profile explicitly; configure the
+required Provider, Agent, and policy choices in their owning surfaces, then
+explicitly start work.
 
-Evidence: Project, initial Brief/Profile, Mode Transition, setup state, and the
-started Workflow/Run only after the explicit action. Visit every grouped Area;
-each route must remain reachable and have content or an actionable empty state.
+Evidence: Project, initial Brief, Primary Mode and any Mode Transition, explicit
+Source binding plus extraction profile, and the started Workflow/Run only after
+the explicit action. Visit every grouped Area; each route must remain reachable
+and have content or an actionable empty state.
 
 ### 2. Run two scoped Inquiry/Research tracks
 
@@ -110,9 +114,15 @@ Create or select a Project Automation and fire it. Inspect active, waiting,
 failed/degraded, and completed Runs in Operations. Cause one recoverable alert
 or use prepared test evidence; confirm the alert links to the exact Run or
 Automation and that pause/resume or recovery actions update the owning object.
+Then explicitly activate Always-on autonomous work for the acceptance Space,
+run one controlled discovery tick that either launches one bounded candidate or
+records why none was eligible, inspect its budget/policy/review evidence, and
+deactivate it again. It must not remain enabled merely because the acceptance
+operator navigated away.
 
 Evidence: Automation, operation/alert, Run, retry/review/failure category,
-recovery action, and Operations/Attention links.
+recovery action, Always-on activation/tick/deactivation records, and
+Operations/Attention links.
 
 ### 8. Exercise Files & Code governance
 

@@ -91,7 +91,7 @@ beforeEach(async () => {
   await pool.query(
     `TRUNCATE evolvable_asset_pins, evolvable_asset_versions, evolvable_assets,
        automation_runs, automation_credential_grants, automations, scheduler_tasks,
-       jobs, context_snapshots, runs, agent_runtime_profiles, agent_versions, agents,
+       jobs, runs, agent_runtime_profiles, agent_versions, agents,
        source_items, project_source_item_links, project_source_bindings, source_connections, source_connectors,
        project_folders, project_members, projects, space_memberships, users, spaces CASCADE`,
   );

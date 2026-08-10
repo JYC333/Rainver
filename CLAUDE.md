@@ -24,12 +24,13 @@ Do not load every `.agent/` document by default. Load only what the task needs.
 Follow this order when docs and code disagree:
 
 1. Code
-2. `server/migrations/`
-3. `server/src/`
-4. `packages/protocol/src/`
-5. `apps/web/src/modules/registry.ts`
-6. [`.agent/BOUNDARIES.md`](.agent/BOUNDARIES.md)
-7. [`.agent/decisions/`](.agent/decisions/)
+2. `server/src/db/schema/` for database schema authoring
+3. `server/migrations/` for generated/applied database SQL artifacts
+4. `server/src/`
+5. `packages/protocol/src/`
+6. `apps/web/src/modules/registry.ts`
+7. [`.agent/BOUNDARIES.md`](.agent/BOUNDARIES.md)
+8. [`.agent/decisions/`](.agent/decisions/)
 
 Docs in `.agent/architecture/` describe current state. When an architecture
 change lands, update the relevant `.agent/architecture/` document in the same
@@ -41,8 +42,9 @@ change.
   must never be stored in the source repo.
 - `ASPACE_ROOT` is the host-side parent for mode roots (`dev/`, `test/`,
   `prod/`). `AGENT_SPACE_HOME` is the running app instance root.
-- `server/` is the TypeScript backend source root and explicit schema migration
-  owner. The Compose service name remains `server`.
+- `server/` is the TypeScript backend source root. Database schema authoring
+  goes through `server/src/db/schema/` and Drizzle-generated migration
+  artifacts in `server/migrations/`. The Compose service name remains `server`.
 - Memory writes go through proposal -> approval; agents do not directly write
   active memory.
 - Credentials follow ADR 0008 channel isolation. Do not pass provider API keys

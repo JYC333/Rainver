@@ -16,6 +16,13 @@ Model Provider   — underlying LLM (Anthropic, OpenAI, Ollama, …)
 
 See `runtime-adapters.md` for the full adapter registry and license notes.
 
+User-created Agents and template instances use the access-owned creation
+resolver. A Project entry point writes `agents.project_id` and
+`visibility=space_shared` in that Project's Space; an unbound creation lands
+private in Personal Space. Direct Run and chat creation applies the same rule,
+including the Session and Run rows. System-managed Agents are derived system
+resources and keep their explicitly declared scope.
+
 ## Owns
 
 - `Agent` ORM model and CRUD
@@ -107,9 +114,10 @@ Rules (clean model — no old paths):
   `agent_run` worker. Clients follow the canonical RunEvent SSE stream until the
   worker-published `chat_completed` event, then read the durable assistant message. The
   request route never invokes a runtime adapter directly. Chat is not backed by a single
-  space-wide default Assistant identity: `/rooms` resolves a `user × session × agent`
-  conversation backend per speaker (`modules/rooms.md`), so which Agent and which
-  runtime a turn runs against is a per-conversation, per-user choice.
+  space-wide default Assistant identity: `/rooms` resolves a per-speaker,
+  per-recipient typed work-scope CLI binding (`modules/rooms.md`), so which
+  Agent and runtime a turn runs against remains a per-conversation, per-user
+  choice without making the Room session a vendor-state authority.
   A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL, named
   *Personal Assistant* in personal spaces and *Space Assistant* in shared ones, at most
   one active per space via partial-unique index `uq_agents_system_assistant_per_space`,
@@ -125,8 +133,9 @@ Rules (clean model — no old paths):
   response style, verbosity, default context toggles, default project, proposal style, and soft
   model preferences. These shape default UI/context behavior only — they are never merged into the
   immutable `AgentVersion` and can never loosen the hard tool/runtime/output/memory/safety policy
-  or edit the core system prompt. Per-run context selection stays dynamic (ContextBuilder /
-  ContextRequest / ContextSnapshot) and never mutates an `AgentVersion`.
+  or edit the core system prompt. Per-invocation selection stays dynamic through
+  Runtime Context typed acquisition, Delivery, and safe Invocation Snapshot and
+  never mutates an `AgentVersion`.
 - **Templates carry no hardcoded model** — `model_config_json` has no `model` key, meaning
   "use the system default model". On create-from-template, `_resolve_default_model` resolves the
   space's default `ModelProvider` (the enabled one with `is_default`) and stamps the concrete
@@ -303,8 +312,7 @@ There are two paths, by who is making the change:
    proposal for changes suggested by a non-owner actor (e.g. an agent learning loop or
    automation). Accepting it validates same-space agent/provider/adapter/base version,
    rejects a stale `base_version_id`, creates a new immutable `AgentVersion`, records
-   proposal/activity provenance, advances `Agent.current_version_id`, and marks the
-   affected agent digest dirty.
+   proposal/activity provenance, and advances `Agent.current_version_id`.
 
 3. **Owner config UI edit (no proposal) → `POST /api/v1/agents/{agent_id}/config`.**
    The Agent configuration frontend uses this focused endpoint (schema
@@ -393,7 +401,7 @@ user-instantiable.
 **`general_chat` is intentionally not seeded** and there is no product-level DirectChat:
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
   per-space `system_assistant`-kind Agent, which anchors Assistant preferences settings;
-  dynamic per-run context selection via ContextBuilder; `chat_message` + proposal-only
+  dynamic per-invocation selection via Runtime Context; `chat_message` + proposal-only
   task/idea/memory/knowledge. Not a reusable template; not created on demand — a space may
   have none.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
@@ -451,8 +459,8 @@ need a native, no-credential execution path.
   AgentVersion creation must not advance `Agent.current_version_id`.
 - Accepted config proposals leave provenance from the new AgentVersion to the
   accepted Proposal and ActivityRecord.
-- Execution config fields that affect context, memory, runtime, model, tools,
-  capabilities, or system prompt dirty the agent digest. Identity-only fields do not.
+- Agent configuration is loaded from the immutable AgentVersion path; it is not
+  represented by a Memory row or Runtime Context checkpoint.
 - The owner config UI (`POST /agents/{id}/config`) and create-from-template overrides
   cannot loosen hard-safety snapshots (tool/runtime policy copied verbatim) and cannot
   expand memory `writable_scopes`, disable memory `requires_proposal`, or turn off output

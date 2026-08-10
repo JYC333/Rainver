@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate, status, loadMigrations } from "../src/db/migrator";
 import { withTransaction } from "../src/db/tx";
 
@@ -20,6 +20,7 @@ beforeAll(async () => {
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 5 });
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[migrator] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)

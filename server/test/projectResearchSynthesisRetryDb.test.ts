@@ -2,13 +2,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for retrying a failed synthesis stage through the
 // immutable execution-per-pass authority. The retry command starts one
@@ -40,6 +41,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-synthesis-retry-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -52,7 +54,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    `TRUNCATE jobs, run_events, runs, context_snapshots, artifacts, project_research_reports,
+    `TRUNCATE jobs, run_events, runs, artifacts, project_research_reports,
        prompt_deployment_refs, evolvable_asset_versions, evolvable_assets,
        agent_versions, agents, project_research_checkpoints, project_research_workflows,
        project_operations, project_members, projects, space_memberships, users, spaces CASCADE`,
@@ -79,14 +81,13 @@ beforeEach(async () => {
     kind: "question",
     statement: String(thread.statement),
   }];
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','synthesis','active','agent_assisted',$4::jsonb,$5,$5)`,
-    [WORKFLOW, SPACE, PROJECT, JSON.stringify({
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "synthesis", primaryThreadId: String(thread.id), state: {
       research_question: "Does agent memory improve synthesis?",
       thread_scope: threadScope,
-    }), now],
-  );
+    }, now,
+  });
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
@@ -214,7 +215,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     const runId = operation.rows[0]!.progress_json.synthesis_run_id;
     expect(runId).toBeTruthy();
     expect(runId).not.toBe("prior-failed-run-id");
-    const run = await pool.query<{ status: string; capability_id: string; contract_snapshot_json: { workflow_input_json?: { project_research?: { operation_id?: string; stage_key?: string } } } }>(
+    const run = await pool.query<{ status: string; capability_id: string; contract_snapshot_json: { workflow_input_json?: { project_research?: { operation_id?: string; stage_key?: string; evidence_matrix_artifact_id?: string } } } }>(
       `SELECT status, capability_id, contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2`,
       [runId, SPACE],
     );
@@ -222,6 +223,7 @@ describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real
     expect(run.rows[0]!.contract_snapshot_json.workflow_input_json?.project_research).toMatchObject({
       operation_id: OPERATION,
       stage_key: "synthesis",
+      evidence_matrix_artifact_id: expect.any(String),
     });
 
     const job = await pool.query<{ status: string }>(

@@ -40,6 +40,14 @@ export const SystemActionDefinitionSchema = z.object({
   idempotency_required: z.boolean(),
   proposal_type: z.string().min(1).nullable(),
   grantable: z.boolean(),
+  /**
+   * Ontology object types this action operates on, when it operates on one.
+   * Foundry's Action Types are always object-bound; a good half of this
+   * registry is not — connection creation, backfill start,
+   * `authorization.request` — so this is optional rather than required, and
+   * its absence is meaningful rather than an omission.
+   */
+  applies_to: z.array(z.string().min(1)).optional(),
 }).strict();
 
 export interface SystemActionDefinition {
@@ -58,6 +66,8 @@ export interface SystemActionDefinition {
   readonly idempotency_required: boolean;
   readonly proposal_type: string | null;
   readonly grantable: boolean;
+  /** Ontology object types this action operates on, when it operates on one. */
+  readonly applies_to?: readonly string[];
 }
 
 const objectInput = z.record(z.string(), z.unknown());
@@ -114,6 +124,13 @@ export const SYSTEM_ACTION_REGISTRY = [
   internalAction("source.backfill.start", "Start approved Source history import", "sources", "SourceBackfillExecutionService.start", "source.backfill.start"),
   httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
   httpAction("source.backfill.resume", "Resume Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
+  // Object-bound user actions are presentation metadata as well as the typed
+  // invocation inventory. None is `agent_tool` visible, so adding an advice
+  // affordance does not widen an agent's callable surface.
+  objectAction("note.promote_to_knowledge", "Promote a passage to a Knowledge Item", "knowledge", "PgKnowledgeRepository.promoteNoteToKnowledge", "knowledge.create", "proposal", ["note"]),
+  objectAction("note.raise_as_question", "Raise a passage as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["note"]),
+  objectAction("note.link_to_evidence", "Link a passage to evidence", "knowledge", "PgKnowledgeRepository.createNoteLink", "note.link.create", "durable", ["note"]),
+  objectAction("source.raise_as_question", "Explore as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["source"]),
 ] as const satisfies readonly SystemActionDefinition[];
 
 export type SystemActionId = (typeof SYSTEM_ACTION_REGISTRY)[number]["id"];
@@ -173,6 +190,43 @@ function httpAction<const Id extends string>(
   };
 }
 
+/**
+ * An action that operates on one ontology object (ADR 0012 decision 8).
+ *
+ * User-invoked only: `applies_to` exists so a surface showing an object can
+ * ask which actions apply to it, which is a UI affordance, not an agent
+ * capability. Making these agent-callable is a separate product decision and
+ * would mean adding `agent_tool` visibility here deliberately.
+ */
+function objectAction<const Id extends string>(
+  id: Id,
+  title: string,
+  owningModule: string,
+  applicationService: string,
+  policyAction: PolicyActionId,
+  sideEffects: SystemActionSideEffects,
+  appliesTo: readonly string[],
+): SystemActionDefinition & { readonly id: Id } {
+  return {
+    id,
+    version: 1,
+    title,
+    description: title,
+    visibility: visibility("public_api"),
+    allowed_actor_types: ["user"],
+    input_schema: objectInput,
+    output_schema: objectOutput,
+    owning_module: owningModule,
+    application_service: applicationService,
+    policy_action: policyAction,
+    side_effects: sideEffects,
+    idempotency_required: sideEffects !== "none",
+    proposal_type: sideEffects === "proposal" ? "knowledge_create" : null,
+    grantable: false,
+    applies_to: appliesTo,
+  };
+}
+
 function proposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string): SystemActionDefinition & { readonly id: Id } {
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool", "public_api"),
     allowed_actor_types: ["user", "agent"], input_schema: proposalInputs[id]??objectInput, output_schema: proposalOutput,
@@ -190,3 +244,27 @@ function agentAction<const Id extends string>(id: Id, title: string, owningModul
 function internalAction<const Id extends string>(id:Id,title:string,owningModule:string,applicationService:string,policyAction:PolicyActionId):SystemActionDefinition&{readonly id:Id}{
   return{id,version:1,title,description:title,visibility:visibility("internal_only","system_job"),allowed_actor_types:["user","system"],input_schema:objectInput,output_schema:objectOutput,owning_module:owningModule,application_service:applicationService,policy_action:policyAction,side_effects:"durable",idempotency_required:true,proposal_type:null,grantable:false};
 }
+
+/**
+ * The actions that apply to an ontology object type (ADR 0012 decision 8).
+ *
+ * This is the mechanism `applies_to` was added for: a surface rendering an
+ * object — or a selection inside one — asks the registry what it can offer
+ * rather than hard-coding a menu. An action with no `applies_to` is not
+ * object-bound and never appears here.
+ */
+export function systemActionsForObjectType(objectType: string): readonly SystemActionDefinition[] {
+  return SYSTEM_ACTION_REGISTRY.filter((definition) => definition.applies_to?.includes(objectType));
+}
+
+/**
+ * The Note actions, as a type, so a surface can key a label map on them and
+ * fail to compile when the registry gains one.
+ *
+ * Derived from the id prefix because `applies_to` is a runtime array and TypeScript
+ * cannot filter on it. `server/test/noteObjectActions.test.ts` asserts the two
+ * agree, so the prefix is a shorthand for the declaration rather than a second
+ * source of truth.
+ */
+export type NoteSystemActionId = Extract<SystemActionId, `note.${string}`>;
+export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;

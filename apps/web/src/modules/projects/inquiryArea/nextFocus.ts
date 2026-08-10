@@ -67,11 +67,11 @@ export function nextFocusDestination(
     case 'search_acquisition':
       return startedWorkflow
         ? { kind: 'link', to: `/projects/${projectId}/operations`, cta: 'Watch the running search' }
-        : { kind: 'link', to: `/projects/${projectId}?research=new&thread=${threadId}`, cta: 'Start literature search' }
+        : { kind: 'link', to: `/projects/${projectId}/research?research=new&thread=${threadId}`, cta: 'Start evidence search' }
     case 'read_evidence':
       return { kind: 'tab', tab: 'evidence', cta: 'Review this Thread’s evidence' }
     case 'synthesize':
-      return { kind: 'link', to: `/projects/${projectId}/research`, cta: 'Open the research Notebook' }
+      return { kind: 'link', to: `/projects/${projectId}/notes`, cta: 'Open Project Notes' }
     case 'clarify_or_decompose':
       return { kind: 'link', to: `/projects/${projectId}/inquiry/${threadId}/assess`, cta: 'Open the assessment workspace' }
     case 'design_run_experiment':
@@ -118,7 +118,7 @@ export function suggestNextFocus(input: {
     })
   }
   if (startedWorkflow) {
-    suggestions.push({ kind: 'wait_for_monitoring', reason: 'A literature search is already running for this Thread.' })
+    suggestions.push({ kind: 'wait_for_monitoring', reason: 'An evidence search is already running for this Thread.' })
   } else if (signals.length === 0) {
     suggestions.push({ kind: 'search_acquisition', reason: 'No evidence has reached this Thread yet.' })
   }

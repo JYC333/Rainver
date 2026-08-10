@@ -11,8 +11,6 @@ vi.mock('../../../contexts/SpaceContext', () => ({
     activeSpaceId: 'personal-1',
     activeSpaceName: 'My Personal',
     preferredSpaceId: 'personal-1',
-    writeTargetSpaceId: 'personal-1',
-    setWriteTarget: vi.fn(),
   }),
 }))
 
@@ -75,6 +73,10 @@ vi.mock('../../../api/client', () => {
       purgeDeleted: vi.fn(),
       links: vi.fn().mockResolvedValue([]),
       backlinks: vi.fn().mockResolvedValue([]),
+      shares: vi.fn().mockResolvedValue([]),
+      revokeShare: vi.fn(),
+      addPlacement: vi.fn(),
+      removePlacement: vi.fn(),
     },
     knowledgeApi: {
       list: vi.fn().mockResolvedValue(emptyPage),
@@ -174,6 +176,9 @@ function makeNote(overrides: Partial<Note> = {}): Note {
     content_schema_version: 1,
     plain_text: null,
     primary_project_id: null,
+    project_role: null,
+    role_project_id: null,
+    placements: [],
     version: 1,
     content_hash: null,
     updated_by_user_id: null,
@@ -376,13 +381,13 @@ describe('Knowledge routing', () => {
   })
 
   it('creates new notes in the active note collection after route sync', async () => {
-    const beta = makeNote({ id: 'note-beta', title: 'Beta note', status: 'active', collection_id: 'col-custom' })
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note', status: 'active', placements: [{ collection_id: 'col-custom', sort_order: 0 }] })
     vi.mocked(notesApi.get).mockResolvedValue(beta)
     vi.mocked(notesApi.list).mockResolvedValue({ items: [beta], total: 1, limit: 200, offset: 0 })
     vi.mocked(notesApi.create).mockResolvedValueOnce(makeNote({
       id: 'note-new',
       status: 'active',
-      collection_id: 'col-custom',
+      placements: [{ collection_id: 'col-custom', sort_order: 0 }],
     }))
 
     try {
@@ -406,7 +411,7 @@ describe('Knowledge routing', () => {
   })
 
   it('leaves the active note route when selecting a folder from the tree', async () => {
-    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-inbox' })
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
     vi.mocked(notesApi.get).mockResolvedValue(alpha)
     vi.mocked(notesApi.list).mockResolvedValue({ items: [alpha], total: 1, limit: 200, offset: 0 })
 
@@ -462,7 +467,7 @@ describe('Knowledge routing', () => {
     const beta = makeNote({ id: 'note-beta', title: 'Beta note' })
     vi.mocked(notesApi.get)
       .mockImplementation(async id => (id === 'note-alpha' ? alpha : beta))
-    sessionStorage.setItem('agent-space:notes-tabs:personal-1', JSON.stringify(['note-alpha', 'note-beta']))
+    sessionStorage.setItem('agent-space:notes-tabs:personal-1:all', JSON.stringify(['note-alpha', 'note-beta']))
 
     try {
       renderAt('/spaces/personal-1/knowledge/notes/note-beta')
@@ -497,8 +502,8 @@ describe('Knowledge routing', () => {
   })
 
   it('deletes notes from the tree with Delete or the right-click menu', async () => {
-    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-inbox' })
-    const beta = makeNote({ id: 'note-beta', title: 'Beta note', collection_id: 'col-inbox' })
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
     const notesPage = { items: [alpha, beta], total: 2, limit: 200, offset: 0 }
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     vi.mocked(notesApi.get)
@@ -507,7 +512,7 @@ describe('Knowledge routing', () => {
     vi.mocked(notesApi.delete)
       .mockResolvedValueOnce({ ...alpha, status: 'deleted', deleted_at: '2026-06-09T00:00:00Z' })
       .mockResolvedValueOnce({ ...beta, status: 'deleted', deleted_at: '2026-06-09T00:00:00Z' })
-    sessionStorage.setItem('agent-space:notes-tabs:personal-1', JSON.stringify(['note-alpha', 'note-beta']))
+    sessionStorage.setItem('agent-space:notes-tabs:personal-1:all', JSON.stringify(['note-alpha', 'note-beta']))
 
     try {
       renderAt('/spaces/personal-1/knowledge/notes/note-beta')
@@ -542,8 +547,8 @@ describe('Knowledge routing', () => {
   })
 
   it('does not show archived notes in the note tree by default', async () => {
-    const active = makeNote({ id: 'note-active', title: 'Active note', collection_id: 'col-inbox', status: 'active' })
-    const archived = makeNote({ id: 'note-archived', title: 'Archived note', collection_id: 'col-inbox', status: 'archived' })
+    const active = makeNote({ id: 'note-active', title: 'Active note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], status: 'active' })
+    const archived = makeNote({ id: 'note-archived', title: 'Archived note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], status: 'archived' })
     vi.mocked(notesApi.list).mockResolvedValue({ items: [active, archived], total: 2, limit: 200, offset: 0 })
 
     try {
@@ -558,7 +563,7 @@ describe('Knowledge routing', () => {
   })
 
   it('archives notes from the tree context menu and closes open tabs', async () => {
-    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-inbox' })
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
     let archived = false
     vi.mocked(notesApi.get).mockResolvedValue(alpha)
     vi.mocked(notesApi.list).mockImplementation(async () => ({
@@ -571,7 +576,7 @@ describe('Knowledge routing', () => {
       archived = true
       return { ...alpha, status: 'archived', archived_at: '2026-06-09T00:00:00Z' }
     })
-    sessionStorage.setItem('agent-space:notes-tabs:personal-1', JSON.stringify(['note-alpha']))
+    sessionStorage.setItem('agent-space:notes-tabs:personal-1:all', JSON.stringify(['note-alpha']))
 
     try {
       renderAt('/spaces/personal-1/knowledge/notes/note-alpha')
@@ -597,9 +602,9 @@ describe('Knowledge routing', () => {
   })
 
   it('bulk deletes a Shift-selected note range from the tree', async () => {
-    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-inbox', updated_at: '2025-04-01T00:00:00Z' })
-    const beta = makeNote({ id: 'note-beta', title: 'Beta note', collection_id: 'col-inbox', updated_at: '2025-03-01T00:00:00Z' })
-    const gamma = makeNote({ id: 'note-gamma', title: 'Gamma note', collection_id: 'col-inbox', updated_at: '2025-02-01T00:00:00Z' })
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-04-01T00:00:00Z' })
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-03-01T00:00:00Z' })
+    const gamma = makeNote({ id: 'note-gamma', title: 'Gamma note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' })
     const notesPage = { items: [alpha, beta, gamma], total: 3, limit: 200, offset: 0 }
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     vi.mocked(notesApi.get).mockImplementation(async id => (
@@ -641,8 +646,8 @@ describe('Knowledge routing', () => {
   })
 
   it('uses a custom dialog before deleting notes with note-to-note links', async () => {
-    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', collection_id: 'col-inbox' })
-    const beta = makeNote({ id: 'note-beta', title: 'Beta note', collection_id: 'col-inbox' })
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
     const notesPage = { items: [alpha, beta], total: 2, limit: 200, offset: 0 }
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     vi.mocked(notesApi.list).mockResolvedValue(notesPage)
@@ -716,6 +721,72 @@ describe('Knowledge routing', () => {
     expect(payload).toHaveProperty('content_json')
     expect(payload).not.toHaveProperty('status')
     expect(payload).not.toHaveProperty('plain_text')
+  })
+
+  /**
+   * S2's substance (U4). Hoisting that filtered only what is drawn, while a
+   * search still spanned every Project, would be the wrong half of the feature.
+   */
+  it('narrows the tree and the note search to the hoisted subtree', async () => {
+    const user = userEvent.setup()
+    const nested = {
+      id: 'col-nested',
+      space_id: 'personal-1',
+      parent_id: 'col-custom',
+      name: 'Interviews',
+      system_role: 'normal' as const,
+      sort_order: 0,
+      is_system: false,
+      is_hidden: false,
+      created_at: '',
+      updated_at: '',
+    }
+    const listed = await vi.mocked(notesCollectionsApi.list)()
+    vi.mocked(notesCollectionsApi.list).mockResolvedValue([...listed, nested])
+
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+      const tree = await screen.findByLabelText('Notes organization')
+      await within(tree).findByText('Interviews')
+
+      await user.click(within(tree).getByRole('button', { name: 'Folder actions for Client Research' }))
+      const menu = await screen.findByRole('menu')
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Focus on this folder' }))
+
+      // The tree is the hoisted subtree and nothing else.
+      await waitFor(() => expect(within(tree).queryByText('Inbox')).not.toBeInTheDocument())
+      expect(within(tree).queryByText('Archive')).not.toBeInTheDocument()
+      expect(within(tree).getByRole('button', { name: 'Client Research' })).toBeInTheDocument()
+      expect(within(tree).getByRole('button', { name: 'Interviews' })).toBeInTheDocument()
+
+      fireEvent.change(screen.getByPlaceholderText('Search notes'), { target: { value: 'protocol' } })
+
+      await waitFor(() => expect(notesApi.list).toHaveBeenLastCalledWith(expect.objectContaining({
+        q: 'protocol',
+        collection_ids: expect.arrayContaining(['col-custom', 'col-nested']),
+      })))
+      const searchCall = vi.mocked(notesApi.list).mock.lastCall![0]!
+      expect(searchCall.collection_ids).toHaveLength(2)
+      expect(searchCall.collection_ids).not.toContain('col-inbox')
+      expect(searchCall.collection_ids).not.toContain('col-archive')
+    } finally {
+      vi.mocked(notesCollectionsApi.list).mockResolvedValue(listed)
+    }
+  })
+
+  it('leaves the hoisted subtree when focus is exited', async () => {
+    const user = userEvent.setup()
+    renderAt('/spaces/personal-1/knowledge/notes')
+    const tree = await screen.findByLabelText('Notes organization')
+
+    await user.click(within(tree).getByRole('button', { name: 'Folder actions for Client Research' }))
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Focus on this folder' }))
+    await waitFor(() => expect(within(tree).queryByText('Inbox')).not.toBeInTheDocument())
+
+    fireEvent.click(within(tree).getByRole('button', { name: 'Exit focus on Client Research' }))
+
+    await waitFor(() => expect(within(tree).getByText('Inbox')).toBeInTheDocument())
+    expect(within(tree).getByText('Archive')).toBeInTheDocument()
   })
 
   it('renders the Wiki section (KnowledgeItem-backed) at /knowledge/wiki', async () => {

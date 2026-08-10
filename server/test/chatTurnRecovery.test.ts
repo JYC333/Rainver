@@ -76,6 +76,16 @@ describe("terminal Chat Run reconciliation", () => {
           };
         },
       },
+      {
+        continuity: {
+          async finalizeChatTurn() {
+            return {
+              space_id: run.space_id,
+              work_context_scope_id: run.id,
+            } as never;
+          },
+        },
+      },
     );
 
     expect(events).toEqual([

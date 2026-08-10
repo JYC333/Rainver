@@ -15,14 +15,12 @@ export function assembleRunInputEnvelope(
   overrides: {
     prompt?: string | null;
     instruction?: string | null;
-    contextSnapshotId?: string | null;
     riskLevel?: string | null;
   } = {},
 ): RunInputEnvelope {
   const contract = contractRecord(run.contract_snapshot_json);
   const routeHints = recordValue(contract.route_hints_json);
   const modelOverride = recordValue(run.model_override_json);
-  const contextSnapshotId = overrides.contextSnapshotId ?? run.context_snapshot_id ?? null;
   const prompt = overrides.prompt ?? run.prompt ?? null;
   const instruction = overrides.instruction ?? run.instruction ?? null;
 
@@ -37,10 +35,6 @@ export function assembleRunInputEnvelope(
       direct: compactRecord({ prompt, instruction }),
       workflow: jsonValue(contract.workflow_input_json),
       upstream: jsonValue(contract.upstream_inputs_json),
-    },
-    context: {
-      context_snapshot_id: contextSnapshotId,
-      context_package_ref: contextSnapshotId ? `context_snapshot:${contextSnapshotId}` : null,
     },
     attachments: attachmentManifest(
       contract.attachment_manifest_json ?? routeHints.attachments,

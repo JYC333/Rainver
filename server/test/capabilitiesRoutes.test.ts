@@ -8,6 +8,7 @@ import {
   __setCapabilitiesRepositoryFactoryForTests,
   __setCapabilitiesSkillFetcherForTests,
   __setCapabilitiesWorkflowRunPromptResolverForTests,
+  __setWorkflowTemplateRegistryForTests,
 } from "../src/modules/capabilities";
 import type {
   CapabilityDefinition,
@@ -22,9 +23,27 @@ afterEach(async () => {
   __setCapabilitiesRepositoryFactoryForTests(null);
   __setCapabilitiesSkillFetcherForTests(null);
   __setCapabilitiesWorkflowRunPromptResolverForTests(null);
+  __setWorkflowTemplateRegistryForTests(null);
   await app?.close();
   app = undefined;
 });
+
+function useWorkflowTemplateFixture(): void {
+  __setWorkflowTemplateRegistryForTests([{
+    id: "test.research_workflow",
+    name: "Research Workflow",
+    description: "Collect, assess, and synthesize source material.",
+    category: "research",
+    capability_ids: ["research.source_collect", "research.source_summarize", "research.evidence_extract", "research.brief_synthesize", "research.idea_generate"],
+    input_schema_json: { type: "object", properties: { query: { type: "string" }, source_mode: { type: "string", enum: ["project_sources", "manual_urls"] } }, required: ["query"], additionalProperties: true },
+    default_config_json: { source_mode: "project_sources", output_artifact_types: ["research_report.archive.v1"], proposal_policy: "review_required" },
+    output_artifact_types: ["research_report.archive.v1"],
+    proposal_policy: { memory_writes: "proposal_only", capability_changes: "proposal_required" },
+    recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
+    execution_shape: "structured_generation", required_capabilities: [], required_tools: [],
+    prompt_asset_keys: ["test.research_workflow.run"],
+  }]);
+}
 
 function config() {
   return loadConfig({
@@ -33,7 +52,7 @@ function config() {
 }
 
 describe("capabilities routes", () => {
-  it("serves built-in packs and workflow templates", async () => {
+  it("serves the built-in pack and an empty workflow-template registry", async () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository());
     app = buildServer(config(), { logger: false });
@@ -44,9 +63,7 @@ describe("capabilities routes", () => {
     expect(packs.statusCode).toBe(200);
     expect(packs.json()).toEqual([expect.objectContaining({ id: "research" })]);
     expect(workflows.statusCode).toBe(200);
-    expect((workflows.json() as Array<{ id: string }>).map((item) => item.id)).toContain(
-      "research.technical_survey",
-    );
+    expect(workflows.json()).toEqual([]);
   });
 
   it("previews imports without touching persistence", async () => {
@@ -203,6 +220,7 @@ describe("capabilities routes", () => {
   });
 
   it("creates, lists, updates, and disables project workflow profiles", async () => {
+    useWorkflowTemplateFixture();
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const repo = fakeRepository();
     __setCapabilitiesRepositoryFactoryForTests(() => repo);
@@ -212,7 +230,7 @@ describe("capabilities routes", () => {
       method: "POST",
       url: "/api/v1/projects/project-1/workflow-profiles",
       payload: {
-        workflow_template_id: "research.technical_survey",
+        workflow_template_id: "test.research_workflow",
         name: "Technical survey",
         config_json: { source_mode: "project_sources" },
       },
@@ -243,6 +261,7 @@ describe("capabilities routes", () => {
   });
 
   it("builds a run draft from an enabled project workflow profile", async () => {
+    useWorkflowTemplateFixture();
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesWorkflowRunPromptResolverForTests(workflowPromptResolverForTests);
     const repo = fakeRepository();
@@ -253,7 +272,7 @@ describe("capabilities routes", () => {
       method: "POST",
       url: "/api/v1/projects/project-1/workflow-profiles",
       payload: {
-        workflow_template_id: "research.technical_survey",
+        workflow_template_id: "test.research_workflow",
         name: "Technical survey",
         config_json: { source_mode: "project_sources", query: "LLM eval harnesses" },
       },
@@ -267,7 +286,7 @@ describe("capabilities routes", () => {
 
     expect(draft.statusCode).toBe(200);
     expect(draft.json()).toMatchObject({
-      workflow_template: { id: "research.technical_survey" },
+      workflow_template: { id: "test.research_workflow" },
       workflow_profile: { id: "profile-1" },
       config_json: {
         source_mode: "project_sources",
@@ -282,7 +301,7 @@ describe("capabilities routes", () => {
         runtime_profile_id: "runtime-profile-1",
         adapter_type: null,
         capability_id: "research.source_collect",
-        prompt_asset_key: "workflow.research.technical_survey.run",
+        prompt_asset_key: "workflow.test.research_workflow.run",
         prompt_version_id: "workflow-prompt-version",
         prompt_content_hash: "workflow-prompt-hash",
         capabilities_json: [
@@ -320,6 +339,7 @@ describe("capabilities routes", () => {
   });
 
   it("builds a run draft directly from a workflow template without saving a preset", async () => {
+    useWorkflowTemplateFixture();
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesWorkflowRunPromptResolverForTests(workflowPromptResolverForTests);
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository());
@@ -327,7 +347,7 @@ describe("capabilities routes", () => {
 
     const draft = await app.inject({
       method: "POST",
-      url: "/api/v1/projects/project-1/workflow-templates/research.technical_survey/run-draft",
+      url: "/api/v1/projects/project-1/workflow-templates/test.research_workflow/run-draft",
       payload: {
         agent_id: "agent-1",
         runtime_profile_id: "runtime-profile-1",
@@ -341,7 +361,7 @@ describe("capabilities routes", () => {
 
     expect(draft.statusCode).toBe(200);
     expect(draft.json()).toMatchObject({
-      workflow_template: { id: "research.technical_survey" },
+      workflow_template: { id: "test.research_workflow" },
       workflow_profile: null,
       run_create_body: {
         project_id: "project-1",
@@ -360,11 +380,12 @@ describe("capabilities routes", () => {
     });
     expect(draft.json().run_create_body.prompt).toContain("Workflow preset: Unsaved run");
     expect(draft.json().run_create_body.prompt).toContain("LLM eval harnesses");
-    expect(draft.json().run_create_body.prompt_asset_key).toBe("workflow.research.technical_survey.run");
+    expect(draft.json().run_create_body.prompt_asset_key).toBe("workflow.test.research_workflow.run");
     expect(draft.json().warnings).not.toContain("agent_required_to_execute_run_draft");
   });
 
   it("rejects workflow draft output types outside the selected template", async () => {
+    useWorkflowTemplateFixture();
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesWorkflowRunPromptResolverForTests(workflowPromptResolverForTests);
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository());
@@ -372,7 +393,7 @@ describe("capabilities routes", () => {
 
     const draft = await app.inject({
       method: "POST",
-      url: "/api/v1/projects/project-1/workflow-templates/research.technical_survey/run-draft",
+      url: "/api/v1/projects/project-1/workflow-templates/test.research_workflow/run-draft",
       payload: {
         config_json: {
           query: "LLM eval harnesses",
@@ -386,6 +407,7 @@ describe("capabilities routes", () => {
   });
 
   it("carries a selected agent into the run draft and rejects unknown fields", async () => {
+    useWorkflowTemplateFixture();
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesWorkflowRunPromptResolverForTests(workflowPromptResolverForTests);
     const repo = fakeRepository();
@@ -396,7 +418,7 @@ describe("capabilities routes", () => {
       method: "POST",
       url: "/api/v1/projects/project-1/workflow-profiles",
       payload: {
-        workflow_template_id: "research.technical_survey",
+        workflow_template_id: "test.research_workflow",
         name: "Technical survey",
         config_json: { source_mode: "project_sources", query: "vector index recall" },
       },

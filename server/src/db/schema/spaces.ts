@@ -1,4 +1,4 @@
-import { pgTable, index, unique, check, foreignKey, varchar, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, check, foreignKey, varchar, integer, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./auth";
 
@@ -10,6 +10,7 @@ export const spaces = pgTable("spaces", {
 	snapshotRetentionDaysDefault: integer("snapshot_retention_days_default"),
 	snapshotMaxCountDefault: integer("snapshot_max_count_default"),
 	oversightMode: varchar("oversight_mode", { length: 16 }).notNull().default('none'),
+	egressNotificationsEnabled: boolean("egress_notifications_enabled").notNull().default(false),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

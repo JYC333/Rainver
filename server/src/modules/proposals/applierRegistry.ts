@@ -25,17 +25,12 @@ import { registerPlanProposalAppliers } from "../plans/proposalApplier";
 import { registerWorkflowExecutionProposalAppliers } from "../automations/workflowExecutionProposalApplier";
 import { registerEvolutionBundleProposalApplier } from "../evolution/bundleProposalApplier";
 import { registerResearchProposalAppliers } from "../research/proposalApplier";
+import { registerEgressReviewProposalApplier } from "./egressReviewApplier";
 import {
   PgMemoryApplyRepository,
   type ApplyProposal,
-  type MemoryDigestTarget,
 } from "../memory/memoryApplyRepository";
 import type { Queryable } from "./repository";
-import {
-  markPolicyBundleDirty,
-  markProjectFolderBundleDirty,
-  markAgentBundleDirty,
-} from "../context/digestService";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job";
 import type { ProposalAcceptResultType } from "@agent-space/protocol" with {
@@ -131,6 +126,7 @@ export function createDefaultProposalApplierRegistry(
   registerWorkflowExecutionProposalAppliers(registry);
   registerEvolutionBundleProposalApplier(registry);
   registerResearchProposalAppliers(registry);
+  registerEgressReviewProposalApplier(registry);
   contributor?.applyProposalAppliers(registry);
   return registry;
 }
@@ -141,18 +137,6 @@ async function applyMemoryProposal(context: ProposalApplyContext): Promise<Propo
     context.userId,
   );
 
-  const dirtyReason = {
-    triggered_by: "memory_apply",
-    proposal_id: context.proposal.id,
-    memory_id: applied.memoryId,
-    proposal_type: context.proposal.proposal_type,
-  };
-
-  await markAndEnqueueMemoryDigestRefreshes(
-    context,
-    applied.affectedDigestTargets,
-    dirtyReason,
-  );
   if (context.proposal.proposal_type !== "memory_archive") {
     await enqueueMemoryRetrievalEmbeddingBackfill(context);
   }
@@ -241,81 +225,11 @@ async function applyPolicyChangeProposal(context: ProposalApplyContext): Promise
     ],
   );
 
-  await markPolicyBundleDirty(context.db, spaceId, {
-    triggered_by: "policy_change",
-    proposal_id: context.proposal.id,
-    policy_id: policyId,
-  });
-  await new PgJobQueueRepository(context.db).enqueue({
-    job_type: "context_digest_refresh",
-    space_id: spaceId,
-    user_id: context.userId,
-    payload: { space_id: spaceId, digest_type: "policy_bundle" },
-  });
-  // Policies live only in the space-level policy_bundle digest; project_folder/agent
-  // digests are memory-only and never embed policy content. Invalidating them on
-  // a policy change would just recompute an identical memory hash (no-op refresh),
-  // so a policy change marks the policy_bundle dirty and nothing else. Scoped
-  // policies are still surfaced per-run at consumption time (loadDigestBundle
-  // assembles policy_bundle + project_folder + agent for the run).
-
   return {
     result_type: "policy_version",
     result: { policy_id: policyId, space_id: spaceId, domain, name },
     proposalPayloadPatch: { ...payload, resulting_policy_id: policyId },
   };
-}
-
-async function markAndEnqueueMemoryDigestRefreshes(
-  context: ProposalApplyContext,
-  targets: readonly MemoryDigestTarget[],
-  dirtyReason: Record<string, unknown>,
-): Promise<void> {
-  const queue = new PgJobQueueRepository(context.db);
-  const seen = new Set<string>();
-  for (const target of targets) {
-    if (target.scopeType === "project_folder" && target.projectFolderId) {
-      const key = `project_folder:${target.projectFolderId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      await markProjectFolderBundleDirty(
-        context.db,
-        context.proposal.space_id,
-        target.projectFolderId,
-        dirtyReason,
-      );
-      await queue.enqueue({
-        job_type: "context_digest_refresh",
-        space_id: context.proposal.space_id,
-        user_id: context.userId,
-        payload: {
-          space_id: context.proposal.space_id,
-          digest_type: "project_folder",
-          scope_id: target.projectFolderId,
-        },
-      });
-    } else if (target.scopeType === "agent" && target.agentId) {
-      const key = `agent:${target.agentId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      await markAgentBundleDirty(
-        context.db,
-        context.proposal.space_id,
-        target.agentId,
-        dirtyReason,
-      );
-      await queue.enqueue({
-        job_type: "context_digest_refresh",
-        space_id: context.proposal.space_id,
-        user_id: context.userId,
-        payload: {
-          space_id: context.proposal.space_id,
-          digest_type: "agent",
-          scope_id: target.agentId,
-        },
-      });
-    }
-  }
 }
 
 function strFromPayload(payload: Record<string, unknown>, key: string): string | null {

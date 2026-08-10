@@ -65,6 +65,40 @@ describe("roles", () => {
   });
 });
 
+describe("information digest automation policy", () => {
+  it("allows a member to fire their own personal digest schedule", () => {
+    const decision = engineCheck(registry, req("automation.fire", {
+      membership_role: "member",
+      target_type: "information_digest",
+      actor_is_owner: true,
+    }));
+    expect(decision).toMatchObject({
+      decision: "allow",
+      policy_rule_id: "automation_information_digest_owner_allow",
+      risk_level: "low",
+    });
+  });
+
+  it("requires Project writer proof for the Project form", () => {
+    const denied = engineCheck(registry, req("automation.fire", {
+      membership_role: "member",
+      target_type: "information_digest",
+      actor_is_owner: true,
+      project_id: "project-1",
+      project_writer: false,
+    }));
+    const allowed = engineCheck(registry, req("automation.fire", {
+      membership_role: "member",
+      target_type: "information_digest",
+      actor_is_owner: true,
+      project_id: "project-1",
+      project_writer: true,
+    }));
+    expect(denied.decision).toBe("deny");
+    expect(allowed.policy_rule_id).toBe("automation_information_digest_owner_allow");
+  });
+});
+
 describe("managed grantable system actions", () => {
   it("denies a requestable action until the exact Run grant exists", () => {
     const denied = engineCheck(registry, req("project.source.bind", {
@@ -641,12 +675,12 @@ describe("proposal.apply gate", () => {
   it("claim and object relation proposal types are supported", () => {
     expect(SUPPORTED_PROPOSAL_TYPES.has("claim_create")).toBe(true);
     expect(SUPPORTED_PROPOSAL_TYPES.has("object_relation_create")).toBe(true);
-    expect(SUPPORTED_PROPOSAL_TYPES.has("object_kind_create")).toBe(true);
-    expect(SUPPORTED_PROPOSAL_TYPES.has("object_kind_update")).toBe(true);
+    expect(SUPPORTED_PROPOSAL_TYPES.has("object_profile_create")).toBe(true);
+    expect(SUPPORTED_PROPOSAL_TYPES.has("object_profile_update")).toBe(true);
     expect(SUPPORTED_PROPOSAL_TYPES.has("memory_maintenance_packet")).toBe(true);
     expect(effectiveProposalRisk("claim_create", null)).toBe("medium");
     expect(effectiveProposalRisk("object_relation_create", "low")).toBe("medium");
-    expect(effectiveProposalRisk("object_kind_create", "low")).toBe("high");
+    expect(effectiveProposalRisk("object_profile_create", "low")).toBe("high");
     expect(effectiveProposalRisk("memory_maintenance_packet", null)).toBe("medium");
   });
   it("reviewer cannot approve high-risk code_patch", () => {

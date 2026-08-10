@@ -6,6 +6,7 @@ export type ReaderDocumentType = z.infer<typeof ReaderDocumentTypeSchema>;
 export const ReaderDocumentRefSchema = z.object({
   document_type: ReaderDocumentTypeSchema,
   document_id: z.string().min(1),
+  project_id: z.string().min(1).optional(),
 }).strict();
 
 export const ReaderAnnotationCreateSchema = z.object({
@@ -16,6 +17,5 @@ export const ReaderAnnotationCreateSchema = z.object({
   anchor_json: z.record(z.string(), z.unknown()),
   color: z.string().optional(),
   label: z.string().optional(),
-  visibility: z.enum(["private", "space_shared", "selected_users"]).optional(),
 }).strict();
 export type ReaderAnnotationCreate = z.infer<typeof ReaderAnnotationCreateSchema>;

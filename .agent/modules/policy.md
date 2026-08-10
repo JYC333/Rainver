@@ -277,7 +277,7 @@ proposal/apply validation — `visibility=private` only in personal spaces.
 
 ### Run user private scope (wired)
 Memory/context read checks in `server/src/modules/memory/`,
-`server/src/modules/context/`, and `server/src/modules/policy/decisionCore.ts`
+`server/src/modules/runtimeContext/`, and `server/src/modules/policy/decisionCore.ts`
 govern private memory access in run context.
 
 ## Active Enforcement Points
@@ -307,16 +307,16 @@ preflight.
 
 | Action | File | When |
 |---|---|---|
-| `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Before credentials, context snapshot, and adapter execution |
+| `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Before credentials, Runtime Context Delivery, and adapter execution |
 | `runtime.use_credential` | `server/src/modules/providers/providerCommandStore.ts` + run orchestration | Uses real credential/provider space from DB; before secret resolution |
-| `context.inject_memory` | `server/src/modules/context/prepareService.ts` | Before context assembly/persistence |
-| `context.render_for_runtime` | `server/src/modules/runs/orchestrationService.ts` | After context snapshot, before adapter execution |
+| `context.inject_memory` | execution-control preflight + Runtime Context acquisition | Before Memory candidates may enter an accepted Delivery |
+| `context.render_for_runtime` | execution-control preflight + Runtime Context gateway | Before accepted Delivery reaches an adapter |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` via `enforce()` | Before filesystem/row persistence; fail-closed audit |
 | `proposal.create` | `server/src/modules/proposals/` and target modules via `enforce()` | Code patch collection uses `force_record=True` |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Before accepted proposal side effects |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers via `enforce()` | Before any Project Folder file writes |
 | `policy.change` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Protected by the `proposal.apply` gate for `policy_change` proposals |
-| `runtime_skill.render` | `server/src/modules/context/prepareService.ts` via `enforce()` | Before enabled runtime-skill content is rendered into a context snapshot |
+| `runtime_skill.render` | execution-control policy resolution | Before enabled runtime-skill content may enter an accepted Delivery |
 | `retrieval.search` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge search execution |
 | `retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge Context Brief execution |
 | `memory.retrieval.search` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/runs/managedRetrievalTools.ts` via `enforce()` | Before explicitly opted-in managed-run Memory search execution; disabled-domain calls are denied/audited |

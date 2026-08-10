@@ -1,6 +1,6 @@
 # Module: Runtime Tools And Adapter Types
 
-Agent-space owns agents, runs, context snapshots, policy, credential gating,
+Agent-space owns agents, runs, Runtime Context Delivery, policy, credential gating,
 worktree governance, artifacts, proposals, audit records, and events. Vendor
 CLIs are runtime adapter types, but their binaries are installed as controlled
 runtime tools.
@@ -12,7 +12,7 @@ live in `server/src/modules/runtimeAdapters/specs.ts`. Specs define:
 
 - runtime kind and implementation status
 - runtime tool requirement, command argv template, and parser behavior
-- context target file and compiler target
+- accepted Delivery rendering behavior
 - credential mode and credential profile runtime name
 - sandbox and Project Folder requirements
 - model override support
@@ -46,9 +46,9 @@ is retired. Do not reintroduce instance-level runtime adapter configuration.
 | `capability` | native | planned | none | none | none |
 | `model_api` | managed_api | implemented | `model_provider_api_key` | none | none |
 | `ts_agent_host` | managed_api | implemented / disabled by default | `model_provider_api_key` (`server_runtime_host`) | canonical host request | none |
-| `claude_code` | local_cli | implemented | `cli_profile` | `CLAUDE.md` | worktree |
-| `codex_cli` | local_cli | implemented | `cli_profile` | `AGENTS.md` | worktree |
-| `opencode` | local_cli | implemented (low trust pending C3) | `cli_profile` | `opencode.json` + locked agent | worktree |
+| `claude_code` | local_cli | implemented | `cli_profile` | accepted Delivery | Sandbox Runner |
+| `codex_cli` | local_cli | implemented | `cli_profile` | accepted Delivery | Sandbox Runner |
+| `opencode` | local_cli | implemented (low trust pending C3) | `cli_profile` | accepted Delivery + locked agent control | Sandbox Runner |
 | `gemini_cli` | local_cli | planned | disabled | prompt/custom | worktree |
 | `custom` | custom | planned | disabled | custom | custom |
 
@@ -103,7 +103,11 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    `runtime_profile_snapshot_json.runtime_config_json`. Managed execution uses
    the routed model persisted in `Run.model_override_json.model` when the worker
    request does not carry an explicit model; it must not silently fall back to
-   the provider default.
+   the provider default. Managed Provider invocation returns the configured
+   Provider id and model that actually served the turn. Runtime/adapter evidence
+   records those as `model_provider_id` and `model`, while
+   `requested_model_provider_id` preserves the routed/requested Provider when
+   invocation-layer fallback selected a different one.
 2. `server/src/modules/runtimeAdapters` validates that the adapter exists
    and is implemented.
 3. Native adapters are planned; no native capability executor is active today.
@@ -150,8 +154,13 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    the adapter credential file. Shared sessions, transcripts, databases, and
    general CLI config are never mounted or linked into a run.
 7. server Project Folder/sandbox services validate and prepare the worktree.
-   `ContextPrepareService` renders runtime context files only inside the
-   sandbox/worktree.
+   Every managed Run, including direct Chat and Room turns, obtains one accepted
+   Runtime Context Delivery for each physical managed or CLI call. Direct Chat
+   resolves its current canonical Message; Room recipients also resolve the
+   canonical triggering Message, while the assigned segment and structured
+   sibling-routing facts are separately acquired from the recipient Run. The
+   adapter maps that Delivery without fetching, reordering, or rebudgeting
+   context. No alternate legacy preparation service exists.
 8. server command rendering produces `string[]` argv and never uses
    `shell=True`. Claude receives its prompt through the measured stream-JSON
    CLI invocation. Codex runs `codex app-server --stdio`; the executor performs
@@ -167,6 +176,18 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
     artifacts.
 11. Run events, proposals, artifacts, validation, and audit stay owned by
     agent-space contexts.
+
+Managed tool loops prepare, acknowledge, and finalize a distinct Delivery for
+every physical Runtime Host request, preserving only the tool-loop suffix when
+the next accepted Delivery replaces the base semantic context. The HTTP Runtime
+Host boundary verifies the persisted provider/model and hashed base request,
+accepts only a structurally valid tool-loop suffix, and atomically records a
+full-request dispatch fingerprint so Delivery references cannot be replayed.
+Provider-proxy Usage keeps the shared Delivery audit refs but uses a unique
+per-response idempotency suffix. Retrieval-owned
+rewrite/rerank/synthesis and embedding calls do not recursively enter Runtime
+Context; each physical provider attempt instead persists a domain-owned
+provider-task control, Delivery, safe Snapshot, and Usage audit references.
 
 ## Controlled CLI Tool Installation
 
@@ -263,14 +284,18 @@ CLI login profile.
 
 ## CLI Conversation Runtime Sessions
 
-Lightweight CLI conversation owns one runtime-state binding per
-user × session × Agent. The database stores an opaque vendor session id,
-context fingerprint, and an internal UUID state key; the id is not assumed to
-be a UUID. Turns for the same user and session are serialized before a Run is
-created so two processes never concurrently mutate one vendor session.
+Runtime Context owns one active CLI binding per Space × typed work scope × user
+× Agent. The database stores the opaque vendor session id, internal UUID state
+key, separate authority/runtime fingerprints, generation, rotation reason,
+acknowledged Context Event cursor, and acknowledged stable item ids. Direct
+sessions, Room recipients, root tasks, and Workflow executions therefore do
+not share vendor state accidentally.
 
-The first turn sends the full Agent Space replay prompt. Later turns resume the
-vendor session and send only the new message plus newly retrieved context:
+The first or rotated turn sends a canonical Semantic Checkpoint + uncovered
+event-tail reconstruction and then the current item as two physical vendor
+messages. Later turns resume the
+vendor session and send only events/stable items not acknowledged by that
+binding, followed by the current item:
 
 - Claude Code uses `--resume <session-id>` and a stable conversation cwd,
   because its transcript lookup is cwd-partitioned.
@@ -283,16 +308,20 @@ Conversation runtime state lives only under
 `cache/conversation-runtime-homes/<state-key>` and
 `sandboxes/conversation-sessions/<state-key>/workspace`. It is server-owned,
 excluded from backup, and separate from the shared credential profile. A
-backend/model/provider/runtime-config/runtime-policy/Agent-version/summary
-change or failed turn rotates the state binding and forces full replay. A
-missing or partial state directory clears its counterpart and also forces
-replay without treating the filesystem as authority. Retired state is removed
-after the binding transaction;
-Run terminal visibility and binding record/invalidation commit in one
-PostgreSQL statement. An hourly 30-day retention sweep removes only
-interrupted/session-deletion orphans after excluding keys referenced by a
-binding or nonterminal Run. Vendor state is therefore an optimization, never
+runtime/provider/model, credential, sandbox, delegated-instruction,
+tool/egress/governing-policy, or sensitivity-revocation change rotates the
+binding with a durable reason. Missing state rotates and reconstructs without
+treating the filesystem as authority. Ordinary reference additions or updates
+remain deltas; removal stops future selection and does not claim to erase a
+vendor's opaque archive. The CLI cursor advances only in the accepted Delivery
+acknowledgement transaction. Vendor state is therefore an optimization, never
 conversation authority.
+
+A durable per-binding execution lease serializes shared Workflow scope use
+through Delivery acknowledgement and vendor-session persistence. Checkpoint
+sources are reauthorized before reconstruction, and runtime, credential,
+provider/tool, AgentVersion, network, and external-egress generations are part
+of the hard-rotation fingerprint.
 
 CLI quota probe homes are unique per probe and removed in `finally`. Cached
 quota snapshots are partitioned by runtime and credential profile id so one
@@ -341,7 +370,7 @@ Agent flows and are not removed from the adapter registry.
   `project.summary.search`, and `project.summary.brief`. Each tool
   call passes a policy-gateway action before search/brief execution; preflight
   modes append explicit retrieval evidence before the model turn rather than
-  silently injecting ContextBuilder state. The provider invocation layer maps the
+  bypassing Runtime Context authority. The provider invocation layer maps the
   canonical tool schema to OpenAI-compatible function calls or Anthropic Messages
   `tool_use` / `tool_result` blocks. The runtime host reports an unsupported
   provider with the `runtime_tool_provider_unsupported` code, and the managed-run
@@ -376,11 +405,9 @@ Blocked requests fail before invocation with `permission_bypass_not_allowed`.
 ## Isolation Limits
 
 Low/medium-risk Folder-bound CLI runs use `read_only`: the real Project Folder
-is exposed through a rootless bubblewrap mount namespace with an OS-enforced
-read-only view. Generated vendor context lives under
-`SANDBOX_ROOT/read-only-context/<space>/<run>` and is overlaid only inside that
-view. The brokered HOME and Run Exchange output are the only persistent
-writable mounts. The namespace begins with an empty filesystem and exposes only
+is exposed by Sandbox Runner through a rootless bubblewrap mount namespace with
+an OS-enforced read-only view. The brokered HOME and Run Exchange output are the
+only persistent writable mounts. The namespace begins with an empty filesystem and exposes only
 system runtime trees, exact DNS/NSS/linker/CA configuration files (not the
 whole `/etc`), runtime tools, the current Folder view, the current
 brokered HOME, and Run Exchange input/output; other host paths, spaces,
@@ -393,9 +420,11 @@ subprocess.
 
 Worktree isolation protects repository state and proposal review flow for
 high-risk mutation. It does not provide OS, process, network, or resource
-isolation. Vendor context files are generated into the worktree only so real
-Project Folder files such as `CLAUDE.md`, `AGENTS.md`, or `prompt.md` are never
-mutated by runtime context rendering.
+isolation. Runtime Context Delivery is passed directly to the CLI adapter and
+is not written into vendor context files. Any vendor control file used to
+disable unsupported delegation is generated only in the private worktree, so
+real Project Folder files such as `CLAUDE.md`, `AGENTS.md`, or `prompt.md` are
+never mutated by runtime execution.
 
 `one_shot_docker` is the critical-risk execution mode for implemented local CLI
 adapters. The executor uses a deny-by-default network namespace, read-only

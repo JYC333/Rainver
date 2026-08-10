@@ -168,7 +168,7 @@ export class PgRouteDecisionRepository {
        WHERE space_id = $1 AND id = $2
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
-                 context_snapshot_id, run_type, status, mode, prompt, instruction,
+                 run_type, status, mode, prompt, instruction,
                  project_folder_id, session_id, parent_run_id, root_run_id, run_group_id,
                  delegation_id, project_id, scheduled_at, adapter_type, capability_id,
                  capabilities_json, model_provider_id, model_override_json,

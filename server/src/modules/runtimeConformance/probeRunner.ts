@@ -5,11 +5,11 @@ import type { ServerConfig } from "../../config";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker";
 import { redactSecretPatterns } from "../runs/evidenceRedaction";
 import {
-  DockerCliCommandExecutor,
   LocalCliProcessRegistry,
   type CliCommandExecutor,
   type CliExecutionResult,
 } from "../runs/localCliExecution";
+import { SandboxRunnerCliCommandExecutor } from "../sandboxRunner/client";
 import type { CliCredentialBrokerPort } from "../runs/vendorCliAdapter";
 import { buildSubprocessEnv } from "../runs/cliSubprocessEnv";
 import { renderCliCommand } from "../runs/cliCommandRendering";
@@ -98,7 +98,7 @@ export class LocalCliConformanceProbeRunner implements ConformanceProbeRunner {
       probeId,
       this.identity.spaceId,
       spec.credentials.credential_runtime_name,
-      "docker",
+      "worktree",
       null,
       { user_id: this.identity.userId },
     );
@@ -125,7 +125,10 @@ export class LocalCliConformanceProbeRunner implements ConformanceProbeRunner {
         project_folder_id: null,
         sandbox_cwd: sandbox,
       });
-      const executor = this.deps.executor ?? new DockerCliCommandExecutor();
+      const executor = this.deps.executor ?? new SandboxRunnerCliCommandExecutor(
+        this.config,
+        spec.adapter_type as "claude_code" | "codex_cli" | "opencode",
+      );
       const timer = cancel
         ? setTimeout(() => {
             terminationRequested = registry.terminate(probeId);
@@ -141,15 +144,6 @@ export class LocalCliConformanceProbeRunner implements ConformanceProbeRunner {
         run_id: probeId,
         stdin: rendered.stdin,
         process_registry: registry,
-        docker: {
-          image: this.config.cliSandboxImage,
-          sandbox_cwd: sandbox,
-          sandbox_root: this.config.sandboxRoot,
-          cli_tools_root: this.config.cliToolsRoot,
-          credential_root: `${this.config.agentSpaceHome}/secrets`,
-          credential_source_path: credential.host_source_path,
-          credential_target_path: credential.target_path,
-        },
       });
       if (timer) clearTimeout(timer);
       const entries = await listSandboxEntries(sandbox);

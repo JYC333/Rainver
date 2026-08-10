@@ -7,7 +7,7 @@ export const PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY = "project_research.synthesis
 export const PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY = "project_research.question_refine";
 export const PROJECT_RESEARCH_QUESTION_SUBQUESTION_REPAIR_PROMPT_KEY = "project_research.question_subquestion_repair";
 export const PROJECT_RESEARCH_SYNTHESIS_CRITIQUE_PROMPT_KEY = "project_research.synthesis_critique";
-export const PROJECT_RESEARCH_PAPER_CARD_PROMPT_KEY = "project_research.paper_card";
+export const PROJECT_RESEARCH_EVIDENCE_CARD_PROMPT_KEY = "project_research.evidence_card";
 export const PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY = "project_research.monitor_compare";
 
 export interface ResolvedProjectResearchSynthesisPrompt {
@@ -79,7 +79,7 @@ export async function resolveProjectResearchCritiquePrompt(
   return { instruction: resolved.rendered_text, resolveResult: resolved };
 }
 
-export async function resolveProjectResearchPaperCardPrompt(
+export async function resolveProjectResearchEvidenceCardPrompt(
   db: Queryable,
   input: { spaceId: string; userId: string; projectId: string; agentId: string },
 ): Promise<ResolvedProjectResearchSynthesisPrompt> {
@@ -88,11 +88,11 @@ export async function resolveProjectResearchPaperCardPrompt(
     userId: input.userId,
     projectId: input.projectId,
     agentId: input.agentId,
-    assetKey: PROJECT_RESEARCH_PAPER_CARD_PROMPT_KEY,
+    assetKey: PROJECT_RESEARCH_EVIDENCE_CARD_PROMPT_KEY,
     variables: { project_id: input.projectId },
   });
   if (resolved.validation_errors.length > 0 || !resolved.rendered_text) {
-    throw new Error(`Paper-card prompt is invalid: ${resolved.validation_errors.join("; ")}`);
+    throw new Error(`Evidence-card prompt is invalid: ${resolved.validation_errors.join("; ")}`);
   }
   return { instruction: resolved.rendered_text, resolveResult: resolved };
 }
@@ -106,7 +106,7 @@ export async function resolveProjectResearchMonitorComparePrompt(
     agentId: string;
     researchQuestion: string;
     currentUnderstanding: string;
-    newPapers: unknown[];
+    newMaterial: unknown[];
   },
 ): Promise<ResolvedProjectResearchSynthesisPrompt> {
   const resolved = await resolvePrompt(db, {
@@ -119,7 +119,7 @@ export async function resolveProjectResearchMonitorComparePrompt(
       project_id: input.projectId,
       research_question: input.researchQuestion,
       current_understanding: input.currentUnderstanding || "No current understanding has been recorded yet.",
-      new_papers_json: JSON.stringify(input.newPapers),
+      new_material_json: JSON.stringify(input.newMaterial),
     },
   });
   if (resolved.validation_errors.length > 0 || !resolved.rendered_text) {

@@ -7,6 +7,7 @@ import type {
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { extractRetrievalLinks } from "../retrieval/linkExtractor";
 import type { Queryable } from "../routeUtils/common";
+import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql";
 import { contentReadSql } from "../access/contentAccessSql";
 import {
   loadSourceConnectionIdsForTargets,
@@ -15,7 +16,7 @@ import {
   sourceConnectionIdsFromMetadata,
   sourcePolicyAllowsRead,
 } from "../retrieval/sourcePolicy";
-import { OBJECT_RELATION_TYPES, RELATION_TYPES } from "./knowledgeRepositoryRows";
+import { hasDeclaration } from "../ontology/linkTypes";
 
 /**
  * Slice F backend: deterministic candidate-relation discovery.
@@ -40,9 +41,9 @@ interface VisibleItemRow {
   title: string;
   slug: string | null;
   aliases_json: unknown;
-  object_kind_id: string | null;
-  object_kind: string | null;
-  object_kind_label: string | null;
+  object_profile_id: string | null;
+  object_profile: string | null;
+  object_profile_label: string | null;
   content: string | null;
   plain_text: string | null;
   visibility: string;
@@ -55,9 +56,9 @@ interface VisibleNoteRow {
   title: string;
   plain_text: string | null;
   status: string;
-  object_kind_id: string | null;
-  object_kind: string | null;
-  object_kind_label: string | null;
+  object_profile_id: string | null;
+  object_profile: string | null;
+  object_profile_label: string | null;
 }
 
 interface VisibleActivityRow {
@@ -86,28 +87,28 @@ interface SourceText {
   title: string;
   text: string;
   sourceConnectionIds: string[];
-  objectKindId: string | null;
-  objectKind: string | null;
-  objectKindLabel: string | null;
+  objectProfileId: string | null;
+  objectProfile: string | null;
+  objectProfileLabel: string | null;
 }
 
 interface RelationLink {
   target: string;
   label: string | null;
-  relationType: string;
+  linkType: string;
   origin: string;
 }
 
 export interface RelationDiscoveryRelationHint {
   id: string;
-  object_kind_id: string;
-  object_kind: string;
-  object_kind_label: string;
+  object_profile_id: string;
+  object_profile: string;
+  object_profile_label: string;
   endpoint_object_type: string;
-  endpoint_object_kind_id: string | null;
-  endpoint_object_kind: string | null;
-  endpoint_object_kind_label: string | null;
-  relation_type: string;
+  endpoint_object_profile_id: string | null;
+  endpoint_object_profile: string | null;
+  endpoint_object_profile_label: string | null;
+  link_type: string;
   direction: "from" | "to" | "either";
   confidence_default: number;
   required: boolean;
@@ -164,9 +165,9 @@ export async function runRelationDiscoveryScan(
         title: item.title,
         text: itemText(item),
         sourceConnectionIds: item.source_connection_ids,
-        objectKindId: item.object_kind_id ?? null,
-        objectKind: item.object_kind ?? null,
-        objectKindLabel: item.object_kind_label ?? null,
+        objectProfileId: item.object_profile_id ?? null,
+        objectProfile: item.object_profile ?? null,
+        objectProfileLabel: item.object_profile_label ?? null,
       });
     }
   }
@@ -179,9 +180,9 @@ export async function runRelationDiscoveryScan(
         title: note.title,
         text: note.plain_text ?? "",
         sourceConnectionIds: [],
-        objectKindId: note.object_kind_id ?? null,
-        objectKind: note.object_kind ?? null,
-        objectKindLabel: note.object_kind_label ?? null,
+        objectProfileId: note.object_profile_id ?? null,
+        objectProfile: note.object_profile ?? null,
+        objectProfileLabel: note.object_profile_label ?? null,
       });
     }
   }
@@ -194,9 +195,9 @@ export async function runRelationDiscoveryScan(
         title: activity.title ?? "Activity",
         text: activity.content ?? "",
         sourceConnectionIds: [],
-        objectKindId: null,
-        objectKind: null,
-        objectKindLabel: null,
+        objectProfileId: null,
+        objectProfile: null,
+        objectProfileLabel: null,
       });
     }
   }
@@ -210,9 +211,9 @@ export async function runRelationDiscoveryScan(
         title: artifact.title,
         text: artifact.content ?? "",
         sourceConnectionIds: artifact.source_connection_ids,
-        objectKindId: null,
-        objectKind: null,
-        objectKindLabel: null,
+        objectProfileId: null,
+        objectProfile: null,
+        objectProfileLabel: null,
       });
     }
   }
@@ -232,10 +233,10 @@ export async function runRelationDiscoveryScan(
       // consistent when the candidate cap stops the scan mid-source.
       linksExtracted += 1;
       const resolved = resolveTarget(index, link.target, link.label);
-      const relationType = link.relationType;
+      const linkType = link.linkType;
       if (resolved) {
         if (resolved.itemId === source.id) continue; // self-link
-        const pairKey = `${source.id}->${resolved.itemId}:${relationType}`;
+        const pairKey = `${source.id}->${resolved.itemId}:${linkType}`;
         if (seenRelationPairs.has(pairKey)) continue;
         seenRelationPairs.add(pairKey);
         // Relation discovery emits FK-backed `object_relation` proposals over
@@ -243,10 +244,10 @@ export async function runRelationDiscoveryScan(
         // canonical graph.
         candidates.push(
           source.objectType === "knowledge_item"
-            ? relationCandidate(source, resolved, relationType, link.target, link.label, link.origin)
+            ? relationCandidate(source, resolved, linkType, link.target, link.label, link.origin)
             : source.objectType === "note"
-              ? objectRelationCandidate(source, resolved, relationType, link.target, link.label, link.origin)
-              : reviewRelationCandidate(source, resolved, relationType, link.target, link.label, link.origin),
+              ? objectRelationCandidate(source, resolved, linkType, link.target, link.label, link.origin)
+              : reviewRelationCandidate(source, resolved, linkType, link.target, link.label, link.origin),
         );
       } else if (input.request.include_unresolved_item_candidates) {
         const name = (link.label ?? cleanTypedTarget(link.target)).trim();
@@ -319,21 +320,21 @@ async function loadVisibleItems(
 ): Promise<VisibleItemRow[]> {
   const result = await db.query<Omit<VisibleItemRow, "source_connection_ids">>(
     `SELECT ki.object_id AS id, so.title, ki.slug, ki.aliases_json,
-            kind.id AS object_kind_id, kind.key AS object_kind, kind.label AS object_kind_label,
-            ki.content, ki.plain_text, so.visibility, so.status
+            kind.id AS object_profile_id, kind.key AS object_profile, kind.label AS object_profile_label,
+            ki.content, ki.plain_text, so.visibility, ki.status
        FROM knowledge_items ki
        JOIN space_objects so
          ON so.id = ki.object_id
         AND so.space_id = ki.space_id
         AND so.object_type = 'knowledge_item'
-       LEFT JOIN space_object_kinds kind
+       LEFT JOIN space_object_profiles kind
          ON kind.space_id = ki.space_id
         AND kind.base_object_type = 'knowledge_item'
         AND kind.key = ki.knowledge_kind
         AND kind.status = 'active'
       WHERE ki.space_id = $1
         AND so.deleted_at IS NULL
-        AND so.status = 'active'
+        AND ki.status = 'active'
         AND ${readableClause("$2")}
       ORDER BY so.updated_at DESC, ki.object_id DESC
       LIMIT $3`,
@@ -359,21 +360,21 @@ async function loadVisibleNotes(
   limit: number,
 ): Promise<VisibleNoteRow[]> {
   const result = await db.query<VisibleNoteRow>(
-    `SELECT n.object_id AS id, so.title, n.plain_text, so.status,
-            kind.id AS object_kind_id, kind.key AS object_kind, kind.label AS object_kind_label
+    `SELECT n.object_id AS id, so.title, n.plain_text, n.status,
+            kind.id AS object_profile_id, kind.key AS object_profile, kind.label AS object_profile_label
        FROM notes n
        JOIN space_objects so
          ON so.id = n.object_id
         AND so.space_id = n.space_id
         AND so.object_type = 'note'
-       LEFT JOIN space_object_kinds kind
+       LEFT JOIN space_object_profiles kind
          ON kind.space_id = n.space_id
         AND kind.base_object_type = 'note'
         AND kind.key = 'note'
         AND kind.status = 'active'
       WHERE n.space_id = $1
         AND so.deleted_at IS NULL
-        AND so.status = 'active'
+        AND n.status = 'active'
         AND ${readableClause("$2")}
       ORDER BY so.updated_at DESC, n.object_id DESC
       LIMIT $3`,
@@ -499,11 +500,11 @@ function extractRelationLinks(text: string): RelationLink[] {
   const add = (link: RelationLink): void => {
     const target = link.target.trim();
     if (!target) return;
-    const relationType = normalizeRelationType(link.relationType) ?? "related_to";
-    const key = `${link.origin}:${relationType}:${target}:${link.label ?? ""}`;
+    const linkType = normalizeLinkType(link.linkType) ?? "related_to";
+    const key = `${link.origin}:${linkType}:${target}:${link.label ?? ""}`;
     if (seen.has(key)) return;
     seen.add(key);
-    links.push({ ...link, target, relationType });
+    links.push({ ...link, target, linkType });
   };
 
   for (const link of extractRetrievalLinks(text).filter((item) => item.origin === "wikilink")) {
@@ -512,19 +513,19 @@ function extractRelationLinks(text: string): RelationLink[] {
     add({
       target: parsed.target,
       label: link.label,
-      relationType: parsed.relationType,
+      linkType: parsed.linkType,
       origin: "wikilink",
     });
   }
 
   const typedDirective = /(?:^|[\s;(])([a-z][a-z0-9_-]{1,32})\s*(?:->|=>|:)\s*\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/gi;
   for (const match of text.matchAll(typedDirective)) {
-    const relationType = normalizeRelationType(match[1]);
-    if (!relationType) continue;
+    const linkType = normalizeLinkType(match[1]);
+    if (!linkType) continue;
     add({
       target: match[2]?.trim() ?? "",
       label: match[3]?.trim() || null,
-      relationType,
+      linkType,
       origin: "typed_directive",
     });
   }
@@ -539,38 +540,36 @@ function isTypedDirectiveWikilink(text: string, evidenceText: string): boolean {
     "i",
   );
   const match = directive.exec(text);
-  return Boolean(normalizeRelationType(match?.[1]));
+  return Boolean(normalizeLinkType(match?.[1]));
 }
 
-function parseRelationTarget(rawTarget: string): { target: string; relationType: string } {
+function parseRelationTarget(rawTarget: string): { target: string; linkType: string } {
   const target = rawTarget.trim();
   for (const separator of ["::", ":"]) {
     const idx = target.indexOf(separator);
     if (idx <= 0) continue;
-    const relationType = normalizeRelationType(target.slice(0, idx));
-    if (relationType) {
-      return { target: target.slice(idx + separator.length).trim(), relationType };
+    const linkType = normalizeLinkType(target.slice(0, idx));
+    if (linkType) {
+      return { target: target.slice(idx + separator.length).trim(), linkType };
     }
   }
   const hashIdx = target.lastIndexOf("#");
   if (hashIdx > 0 && hashIdx < target.length - 1) {
-    const relationType = normalizeRelationType(target.slice(hashIdx + 1));
-    if (relationType) {
-      return { target: target.slice(0, hashIdx).trim(), relationType };
+    const linkType = normalizeLinkType(target.slice(hashIdx + 1));
+    if (linkType) {
+      return { target: target.slice(0, hashIdx).trim(), linkType };
     }
   }
-  return { target, relationType: "related_to" };
+  return { target, linkType: "related_to" };
 }
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeRelationType(value: string | null | undefined): string | null {
+function normalizeLinkType(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase().replace(/[\s-]+/g, "_") ?? "";
-  return RELATION_TYPES.has(normalized) || OBJECT_RELATION_TYPES.has(normalized)
-    ? normalized
-    : null;
+  return hasDeclaration(normalized) ? normalized : null;
 }
 
 // --- candidate builders ------------------------------------------------------
@@ -578,19 +577,19 @@ function normalizeRelationType(value: string | null | undefined): string | null 
 function relationCandidate(
   source: SourceText,
   resolved: ResolutionEntry,
-  relationType: string,
+  linkType: string,
   linkTarget: string,
   linkLabel: string | null,
   linkOrigin: string,
 ): RelationDiscoveryCandidate {
   const confidence = resolved.tier === "high" ? 0.6 : 0.45;
-  const objectRelationType = OBJECT_RELATION_TYPES.has(relationType) ? relationType : "related_to";
+  const objectLinkType = hasDeclaration(linkType) ? linkType : "related_to";
   return {
     id: randomUUID(),
     kind: "object_relation_candidate",
     cluster_key: `source:${source.id}`,
     title: `Relate: ${shortTitle(source.title)} → ${shortTitle(resolved.title)}`,
-    reason: `"${source.title}" links to "${resolved.title}" via ${linkOrigin}; propose a ${objectRelationType} object relation.`,
+    reason: `"${source.title}" links to "${resolved.title}" via ${linkOrigin}; propose a ${objectLinkType} object relation.`,
     confidence_tier: resolved.tier,
     evidence_refs: [
       {
@@ -610,15 +609,15 @@ function relationCandidate(
     ],
     markers: {
       resolution_tier: resolved.tier,
-      relation_type: objectRelationType,
-      requested_relation_type: relationType,
+      link_type: objectLinkType,
+      requested_link_type: linkType,
       link_origin: linkOrigin,
     },
     proposed_action: {
       proposal_type: "object_relation_create",
       from_object_id: source.id,
       to_object_id: resolved.itemId,
-      relation_type: objectRelationType,
+      link_type: objectLinkType,
       confidence,
       evidence_summary: `Discovered from ${linkOrigin} in "${source.title}".`,
     },
@@ -628,7 +627,7 @@ function relationCandidate(
 function objectRelationCandidate(
   source: SourceText,
   resolved: ResolutionEntry,
-  relationType: string,
+  linkType: string,
   linkTarget: string,
   linkLabel: string | null,
   linkOrigin: string,
@@ -636,13 +635,13 @@ function objectRelationCandidate(
   const confidence = resolved.tier === "high" ? 0.6 : 0.45;
   // Object relations use a different valid-type set than knowledge relations;
   // fall back to related_to when the typed prefix isn't a valid object relation.
-  const objectRelationType = OBJECT_RELATION_TYPES.has(relationType) ? relationType : "related_to";
+  const objectLinkType = hasDeclaration(linkType) ? linkType : "related_to";
   return {
     id: randomUUID(),
     kind: "object_relation_candidate",
     cluster_key: `source:${source.id}`,
     title: `Relate: ${shortTitle(source.title)} → ${shortTitle(resolved.title)}`,
-    reason: `Note "${source.title}" links to "${resolved.title}" via ${linkOrigin}; propose a ${objectRelationType} object relation.`,
+    reason: `Note "${source.title}" links to "${resolved.title}" via ${linkOrigin}; propose a ${objectLinkType} object relation.`,
     confidence_tier: resolved.tier,
     evidence_refs: [
       {
@@ -660,12 +659,12 @@ function objectRelationCandidate(
         link_text: null,
       },
     ],
-    markers: { resolution_tier: resolved.tier, relation_type: objectRelationType, link_origin: linkOrigin },
+    markers: { resolution_tier: resolved.tier, link_type: objectLinkType, link_origin: linkOrigin },
     proposed_action: {
       proposal_type: "object_relation_create",
       from_object_id: source.id,
       to_object_id: resolved.itemId,
-      relation_type: objectRelationType,
+      link_type: objectLinkType,
       confidence,
       evidence_summary: `Discovered from ${linkOrigin} in note "${source.title}".`,
     },
@@ -675,7 +674,7 @@ function objectRelationCandidate(
 function reviewRelationCandidate(
   source: SourceText,
   resolved: ResolutionEntry,
-  relationType: string,
+  linkType: string,
   linkTarget: string,
   linkLabel: string | null,
   linkOrigin: string,
@@ -705,7 +704,7 @@ function reviewRelationCandidate(
     ],
     markers: {
       resolution_tier: resolved.tier,
-      relation_type: relationType,
+      link_type: linkType,
       link_origin: linkOrigin,
       review_only: true,
       review_only_reason: `${source.objectType} is not a space_objects relation endpoint`,
@@ -812,60 +811,60 @@ async function loadRelationHintsForSources(
   spaceId: string,
   sources: readonly SourceText[],
 ): Promise<RelationDiscoveryRelationHint[]> {
-  const sourceKindIds = [...new Set(sources.map((source) => source.objectKindId).filter((id): id is string => Boolean(id)))];
+  const sourceKindIds = [...new Set(sources.map((source) => source.objectProfileId).filter((id): id is string => Boolean(id)))];
   if (sourceKindIds.length === 0) return [];
   const result = await db.query<{
     id: string;
-    object_kind_id: string;
-    object_kind: string;
-    object_kind_label: string;
+    object_profile_id: string;
+    object_profile: string;
+    object_profile_label: string;
     endpoint_object_type: string;
-    endpoint_object_kind_id: string | null;
-    endpoint_object_kind: string | null;
-    endpoint_object_kind_label: string | null;
-    relation_type: string;
+    endpoint_object_profile_id: string | null;
+    endpoint_object_profile: string | null;
+    endpoint_object_profile_label: string | null;
+    link_type: string;
     direction: string;
     confidence_default: number | string;
     required: boolean;
   }>(
     `SELECT h.id,
-            h.object_kind_id,
-            source_kind.key AS object_kind,
-            source_kind.label AS object_kind_label,
+            h.object_profile_id,
+            source_kind.key AS object_profile,
+            source_kind.label AS object_profile_label,
             h.endpoint_object_type,
-            h.endpoint_object_kind_id,
-            endpoint_kind.key AS endpoint_object_kind,
-            endpoint_kind.label AS endpoint_object_kind_label,
-            h.relation_type,
+            h.endpoint_object_profile_id,
+            endpoint_kind.key AS endpoint_object_profile,
+            endpoint_kind.label AS endpoint_object_profile_label,
+            h.link_type,
             h.direction,
             h.confidence_default,
             h.required
-       FROM space_object_kind_relation_hints h
-       JOIN space_object_kinds source_kind
-         ON source_kind.id = h.object_kind_id
+       FROM space_object_profile_relation_hints h
+       JOIN space_object_profiles source_kind
+         ON source_kind.id = h.object_profile_id
         AND source_kind.space_id = h.space_id
         AND source_kind.status = 'active'
-       LEFT JOIN space_object_kinds endpoint_kind
-         ON endpoint_kind.id = h.endpoint_object_kind_id
+       LEFT JOIN space_object_profiles endpoint_kind
+         ON endpoint_kind.id = h.endpoint_object_profile_id
         AND endpoint_kind.space_id = h.space_id
       WHERE h.space_id = $1
-        AND h.object_kind_id = ANY($2::varchar[])
-        AND (h.endpoint_object_kind_id IS NULL OR endpoint_kind.status = 'active')
-      ORDER BY source_kind.key ASC, h.required DESC, h.relation_type ASC, h.id ASC`,
+        AND h.object_profile_id = ANY($2::varchar[])
+        AND (h.endpoint_object_profile_id IS NULL OR endpoint_kind.status = 'active')
+      ORDER BY source_kind.key ASC, h.required DESC, h.link_type ASC, h.id ASC`,
     [spaceId, sourceKindIds],
   );
   return result.rows
     .filter((row) => row.direction === "from" || row.direction === "to" || row.direction === "either")
     .map((row) => ({
       id: row.id,
-      object_kind_id: row.object_kind_id,
-      object_kind: row.object_kind,
-      object_kind_label: row.object_kind_label,
+      object_profile_id: row.object_profile_id,
+      object_profile: row.object_profile,
+      object_profile_label: row.object_profile_label,
       endpoint_object_type: row.endpoint_object_type,
-      endpoint_object_kind_id: row.endpoint_object_kind_id,
-      endpoint_object_kind: row.endpoint_object_kind,
-      endpoint_object_kind_label: row.endpoint_object_kind_label,
-      relation_type: row.relation_type,
+      endpoint_object_profile_id: row.endpoint_object_profile_id,
+      endpoint_object_profile: row.endpoint_object_profile,
+      endpoint_object_profile_label: row.endpoint_object_profile_label,
+      link_type: row.link_type,
       direction: row.direction as "from" | "to" | "either",
       confidence_default: relationHintConfidence(row.confidence_default),
       required: row.required === true,
@@ -882,15 +881,15 @@ async function detectRequiredRelationHintGaps(
   if (hints.length === 0) return [];
   const hintsBySourceKind = new Map<string, RelationDiscoveryRelationHint[]>();
   for (const hint of hints) {
-    const arr = hintsBySourceKind.get(hint.object_kind_id) ?? [];
+    const arr = hintsBySourceKind.get(hint.object_profile_id) ?? [];
     arr.push(hint);
-    hintsBySourceKind.set(hint.object_kind_id, arr);
+    hintsBySourceKind.set(hint.object_profile_id, arr);
   }
 
   const gaps: RelationDiscoveryCandidate[] = [];
   for (const source of sources) {
-    if (!source.objectKindId) continue;
-    const sourceHints = hintsBySourceKind.get(source.objectKindId) ?? [];
+    if (!source.objectProfileId) continue;
+    const sourceHints = hintsBySourceKind.get(source.objectProfileId) ?? [];
     for (const hint of sourceHints) {
       if (existingCandidateCoversHint(source, hint, existingCandidates)) continue;
       const hasRelation = await hasVisibleRequiredHintRelation(db, input.spaceId, input.userId, source, hint);
@@ -907,12 +906,12 @@ function existingCandidateCoversHint(
 ): boolean {
   return candidates.some((candidate) => {
     const action = candidate.proposed_action;
-    const relationType = action && "relation_type" in action && typeof action.relation_type === "string"
-      ? action.relation_type
-      : typeof candidate.markers?.relation_type === "string"
-        ? candidate.markers.relation_type
+    const linkType = action && "link_type" in action && typeof action.link_type === "string"
+      ? action.link_type
+      : typeof candidate.markers?.link_type === "string"
+        ? candidate.markers.link_type
         : null;
-    if (relationType !== hint.relation_type) return false;
+    if (linkType !== hint.link_type) return false;
     return candidate.evidence_refs.some((ref) => ref.object_id === source.id && ref.object_type === source.objectType);
   });
 }
@@ -942,6 +941,7 @@ async function hasVisibleObjectHintRelation(
        JOIN space_objects other_so
          ON other_so.id = CASE WHEN r.from_object_id = $3 THEN r.to_object_id ELSE r.from_object_id END
         AND other_so.space_id = r.space_id
+       ${objectStatusJoinSql("other_so", "os")}
        LEFT JOIN knowledge_items other_ki
          ON other_ki.object_id = other_so.id
         AND other_ki.space_id = other_so.space_id
@@ -958,7 +958,7 @@ async function hasVisibleObjectHintRelation(
          ON other_memory.id = other_so.id
         AND other_memory.space_id = other_so.space_id
         AND other_so.object_type = 'memory_entry'
-       LEFT JOIN space_object_kinds endpoint_kind
+       LEFT JOIN space_object_profiles endpoint_kind
          ON endpoint_kind.space_id = other_so.space_id
         AND endpoint_kind.base_object_type = other_so.object_type
         AND endpoint_kind.key = CASE
@@ -973,18 +973,18 @@ async function hasVisibleObjectHintRelation(
         AND endpoint_kind.status = 'active'
       WHERE r.space_id = $1
         AND r.status = 'active'
-        AND r.relation_type = $2
+        AND r.link_type = $2
         AND (($4::boolean AND r.from_object_id = $3) OR ($5::boolean AND r.to_object_id = $3))
         AND other_so.deleted_at IS NULL
         AND (
-          (other_so.object_type = 'source' AND other_so.status <> 'archived')
-          OR (other_so.object_type <> 'source' AND other_so.status = 'active')
+          (other_so.object_type = 'source' AND ${objectStatusSql("os")} <> 'archived')
+          OR (other_so.object_type <> 'source' AND ${objectStatusSql("os")} = 'active')
         )
         AND other_so.object_type = $7
         AND ${readableClause("$6", "other_so")}
         AND ($8::varchar IS NULL OR endpoint_kind.id = $8)
       LIMIT 1`,
-    [spaceId, hint.relation_type, sourceObjectId, allowFrom, allowTo, userId, hint.endpoint_object_type, hint.endpoint_object_kind_id],
+    [spaceId, hint.link_type, sourceObjectId, allowFrom, allowTo, userId, hint.endpoint_object_type, hint.endpoint_object_profile_id],
   );
   return result.rows.length > 0;
 }
@@ -998,7 +998,7 @@ function requiredRelationHintGapCandidate(
     kind: "relation_review_candidate",
     cluster_key: `schema_hint:${hint.id}`,
     title: `Review missing relation: ${shortTitle(source.title)}`,
-    reason: `${source.objectKindLabel ?? source.objectKind ?? source.objectType} "${source.title}" has a required ${hint.relation_type} relation hint with no matching visible active relation.`,
+    reason: `${source.objectProfileLabel ?? source.objectProfile ?? source.objectType} "${source.title}" has a required ${hint.link_type} relation hint with no matching visible active relation.`,
     confidence_tier: "low",
     evidence_refs: [
       {
@@ -1013,12 +1013,12 @@ function requiredRelationHintGapCandidate(
       review_only: true,
       review_only_reason: "required_relation_hint_gap",
       schema_relation_hint_id: hint.id,
-      object_kind: source.objectKind,
-      object_kind_label: source.objectKindLabel,
+      object_profile: source.objectProfile,
+      object_profile_label: source.objectProfileLabel,
       endpoint_object_type: hint.endpoint_object_type,
-      endpoint_object_kind: hint.endpoint_object_kind,
-      endpoint_object_kind_label: hint.endpoint_object_kind_label,
-      relation_type: hint.relation_type,
+      endpoint_object_profile: hint.endpoint_object_profile,
+      endpoint_object_profile_label: hint.endpoint_object_profile_label,
+      link_type: hint.link_type,
       relation_direction: hint.direction,
       required_hint_gap: true,
     },

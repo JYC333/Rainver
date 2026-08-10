@@ -4,6 +4,7 @@ export const SETTINGS_KEYS = {
   customSourceSpacePolicy: "source.custom_source.space_policy",
   dailyCaptureReport: "daily_capture_report.settings",
   retrievalSpace: "retrieval.space.settings",
+  runtimeContextCliEgressGeneration: "runtime_context.cli_egress_generation",
   runBudgetSpace: "runs.budget.space",
 } as const;
 

@@ -25,22 +25,18 @@ export async function insertKnowledgeItem(
   const updatedAt = input.updatedAt ?? new Date().toISOString();
   await pool.query(
     `WITH obj AS (
-       INSERT INTO space_objects (
-         id, space_id, object_type, title, summary, status, visibility,
-         owner_user_id, primary_project_id, project_folder_id, created_by_user_id,
-         created_at, updated_at
-       ) VALUES (
-         $1, $2, 'knowledge_item', $3, left($4, 200), $5, $6,
+       INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, primary_project_id, project_folder_id, created_by_user_id, created_at, updated_at) VALUES (
+         $1, $2, 'knowledge_item', $3, left($4, 200), $6,
          $7, $8, $9, $10,
          $14::timestamptz, $14::timestamptz
        )
      )
      INSERT INTO knowledge_items (
-       object_id, space_id, root_item_id, knowledge_kind, slug, aliases_json,
+       object_id, space_id, status, root_item_id, knowledge_kind, slug, aliases_json,
        content, content_format, content_schema_version, plain_text,
        verification_status, reflection_status, tags_json, version
      ) VALUES (
-       $1, $2, $1, $11, $12, $13::jsonb,
+       $1, $2, $5, $1, $11, $12, $13::jsonb,
        $4, 'markdown', 1, $4,
        'unverified', 'unreviewed', '[]'::jsonb, 1
      )`,

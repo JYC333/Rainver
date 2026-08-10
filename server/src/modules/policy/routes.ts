@@ -15,7 +15,8 @@ import { loadActionRegistry } from "./actionRegistry";
 import { enforce, enforceProposalApply } from "./service";
 import { ActionApprovalGrantService } from "./actionApprovalGrantService";
 import { AuthorizationRequestService } from "./authorizationRequestService";
-import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common";
+import { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository";
+import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common";
 
 function jsonBody(request: FastifyRequest): unknown {
   const text = request.body instanceof Buffer ? request.body.toString("utf8") : "";
@@ -33,6 +34,52 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     dbPool(context.config),
     context.config,
   );
+  const runtimeContextPolicies = () => new RuntimeContextPolicyRepository(dbPool(context.config));
+  app.get("/api/v1/runtime-context/policies/:scopeType/:scopeId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
+      const scopeId = requiredString(params(request).scopeId, "scope_id");
+      const active = await runtimeContextPolicies().getActive(identity, scopeType, scopeId);
+      return reply.send(active === null ? null : protocol.RuntimeContextPolicyVersionSchema.parse(active));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.get("/api/v1/runtime-context/policies/:scopeType/:scopeId/versions", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
+      const scopeId = requiredString(params(request).scopeId, "scope_id");
+      const items = await runtimeContextPolicies().listVersions(identity, scopeType, scopeId);
+      return reply.send(protocol.RuntimeContextPolicyVersionListResponseSchema.parse({ items }));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.put("/api/v1/runtime-context/policies/:scopeType/:scopeId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
+      const scopeId = requiredString(params(request).scopeId, "scope_id");
+      const parsed = protocol.RuntimeContextPolicyWriteRequestSchema.safeParse(publicJsonBody(request));
+      if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid Runtime Context Policy");
+      const version = await runtimeContextPolicies().write(identity, scopeType, scopeId, parsed.data);
+      return reply.send(protocol.RuntimeContextPolicyVersionSchema.parse(version));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+
+  app.post("/api/v1/runtime-context/policies/resolve", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      const parsed = protocol.RuntimeContextPolicyResolveRequestSchema.safeParse(publicJsonBody(request));
+      if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid policy resolution request");
+      const resolved = await runtimeContextPolicies().resolve(identity, parsed.data);
+      return reply.send(protocol.RuntimeContextResolvedPolicySchema.parse(resolved));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
   app.get("/api/v1/runs/:runId/authorization-requests", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {

@@ -120,7 +120,7 @@ export class ProjectResearchMonitoringCoordinator {
   async onSourceScanCompleted(input: SourceScanCompletedInput): Promise<void> {
     if (!input.sourceChannelId || input.newItemCount > 0) return;
     const workflows = await this.db.query<{ id: string; project_id: string }>(
-      `SELECT id, project_id
+      `SELECT object_id AS id, project_id
          FROM project_research_workflows
         WHERE space_id=$1 AND status='active'
           AND state_json @> $2::jsonb
@@ -228,7 +228,7 @@ export class ProjectResearchMonitoringCoordinator {
           total_items: 0,
           classified_items: 0,
           unclassified_items: 0,
-          message: "The monitoring scan completed with no new papers.",
+          message: "The monitoring scan completed with no new material.",
           updated_at: input.scannedAt,
         };
       },
@@ -280,8 +280,10 @@ export class ProjectResearchMonitoringCoordinator {
         await syncProjectCorpusDecisionForSourceItem(this.db, { spaceId, sourceItemId, projectId: run.project_id });
       }
       const workflows = await this.db.query<{ id: string; state_json: unknown }>(
-        `SELECT id, state_json FROM project_research_workflows
-          WHERE space_id=$1 AND project_id=$2 AND status='active' ORDER BY updated_at DESC LIMIT 1`,
+        `SELECT workflow.object_id AS id,workflow.state_json FROM project_research_workflows workflow
+          JOIN space_objects object ON object.id=workflow.object_id AND object.space_id=workflow.space_id
+          WHERE workflow.space_id=$1 AND workflow.project_id=$2 AND workflow.status='active'
+          ORDER BY object.updated_at DESC LIMIT 1`,
         [spaceId, run.project_id],
       );
       const workflow = workflows.rows[0];
@@ -401,7 +403,7 @@ export class ProjectResearchMonitoringCoordinator {
           // replacement, so put it back at the front of the pending queue
           // instead of dropping it. Leave comparison_pending_source_item_ids
           // (later batches) and comparison_results_json (already-classified
-          // papers from earlier, successful batches) untouched — wiping them
+          // material from earlier, successful batches) untouched — wiping it
           // here would silently discard real LLM output over one transient
           // bad batch and finalize the scan as "skipped" instead of retried.
           state.comparison_pending_source_item_ids = [
@@ -424,9 +426,9 @@ export class ProjectResearchMonitoringCoordinator {
         const service = new ProjectResearchMonitorComparisonService(db);
         while (true) {
           // The pending pool batches normally (BATCH_SIZE at a time, or 1 at
-          // a time once degraded); the failed pool — papers a batch already
+          // a time once degraded); the failed pool — items a batch already
           // failed to classify once — always retries one at a time, never
-          // re-batched, so a second bad response only costs that one paper.
+          // re-batched, so a second bad response only costs that one item.
           const fromFailedPool = pendingIds.length === 0 && failedIds.length > 0;
           if (fromFailedPool) degraded = true;
           const pool = fromFailedPool ? failedIds : pendingIds;
@@ -445,17 +447,28 @@ export class ProjectResearchMonitoringCoordinator {
             researchQuestion: state.research_question || "approved research corpus",
             sourceItemIds: batch,
           });
+          // A missing baseline is a property of the project, not of this
+          // batch, so retrying the next batch would report the same absence
+          // once per batch and still produce nothing. Stop the stage here and
+          // record why, leaving the pools intact so the comparison resumes
+          // once the user gives some note the `understanding` role.
+          if (queued.outcome === "no_baseline") {
+            if (fromFailedPool) failedIds = pool; else pendingIds = pool;
+            state.comparison_missing_baseline_role = queued.role;
+            break;
+          }
           if (fromFailedPool) failedIds = rest; else pendingIds = rest;
-          if (queued) {
+          if (queued.outcome === "queued") {
             state.comparison_run_id = queued.runId;
             state.comparison_source_item_ids = queued.sourceItemIds;
             state.comparison_pending_source_item_ids = pendingIds;
             state.comparison_failed_source_item_ids = failedIds;
             state.comparison_degraded = degraded;
+            delete state.comparison_missing_baseline_role;
             state.heartbeat_at = new Date().toISOString();
             return;
           }
-          // Nothing in this batch was eligible (e.g. every paper in it was
+          // Nothing in this batch was eligible (e.g. every item in it was
           // screened out) — try the next one instead of stalling here.
         }
         state.comparison_pending_source_item_ids = pendingIds;
@@ -468,6 +481,11 @@ export class ProjectResearchMonitoringCoordinator {
           run_id: state.comparison_run_id,
           remaining_batches: Math.ceil((state.comparison_pending_source_item_ids?.length ?? 0) / COMPARISON_BATCH_SIZE)
             + (state.comparison_failed_source_item_ids?.length ?? 0),
+          // Present only when the stage is waiting on a baseline. The material
+          // are still queued; what is missing is the note to compare them to.
+          ...(state.comparison_missing_baseline_role
+            ? { missing_baseline_role: state.comparison_missing_baseline_role }
+            : {}),
         } },
         { seq: 4, status: "skipped" },
       ],
@@ -484,7 +502,7 @@ export class ProjectResearchMonitoringCoordinator {
   /**
    * Writes the comparisons accumulated across every batch (once) and
    * transitions the operation out of "comparison". Reached either from
-   * queueComparison (every remaining batch had zero eligible papers) or
+   * queueComparison (every remaining batch had zero eligible material) or
    * reconcileCompletedComparison (the last batch just finished).
    */
   private async finalizeComparisonStage(
@@ -520,7 +538,7 @@ export class ProjectResearchMonitoringCoordinator {
         { seq: 0, status: "done" }, { seq: 1, status: "done" }, { seq: 2, status: "done" },
         comparisons.length > 0
           ? { seq: 3, status: "done", detail: { run_id: runId, signal_ids: signalIds, comparison_count: comparisons.length } }
-          : { seq: 3, status: "skipped", detail: { reason: "No eligible papers to compare" } },
+          : { seq: 3, status: "skipped", detail: { reason: "No eligible material to compare" } },
         { seq: 4, status: "skipped" },
       ],
     });
@@ -593,7 +611,7 @@ export class ProjectResearchMonitoringCoordinator {
         state.comparison_run_id = null;
         state.heartbeat_at = new Date().toISOString();
         if (wasBatch) {
-          // A batch response left some papers unclassified — give each one
+          // A batch response left some items unclassified — give each one
           // its own one-at-a-time retry instead of losing the rest of an
           // otherwise-good batch.
           if (unmatched.length > 0) {
@@ -601,14 +619,14 @@ export class ProjectResearchMonitoringCoordinator {
           }
           // The model matched *nothing* in this batch — a stronger signal
           // than one bad entry that batching itself isn't working right now
-          // (observed: a model fabricating comparisons for papers that were
+          // (observed: a model fabricating comparisons for items that were
           // never sent and don't exist). Drop to one-at-a-time for every
-          // paper still left, not just this batch's leftovers.
+          // item still left, not just this batch's leftovers.
           if (matched.length === 0) state.comparison_degraded = true;
         }
         // A solo (one-at-a-time) retry that still didn't match is simply
         // left without a stance — it is not requeued again, so a single
-        // persistently uncooperative paper can never loop forever.
+        // persistently uncooperative item can never loop forever.
       });
       if (!updated.applied) return;
       const nothingLeft = (updated.state?.comparison_pending_source_item_ids?.length ?? 0) === 0
@@ -692,7 +710,7 @@ export class ProjectResearchMonitoringCoordinator {
          id,space_id,project_id,workflow_id,operation_id,scan_key,scan_window_start,scan_window_end,
          scanned_at,new_item_count,relevant_count,maybe_count,excluded_count,created_at
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-       ON CONFLICT (space_id,workflow_id,scan_key) ${conflictAction}
+       ON CONFLICT (space_id,workflow_id,scan_key) WHERE workflow_id IS NOT NULL ${conflictAction}
        RETURNING id`,
       [randomUUID(), input.spaceId, input.projectId, input.workflowId, input.operationId, input.scanKey,
         input.scanWindowStart, input.scanWindowEnd, input.scannedAt, input.newItemCount,

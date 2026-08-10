@@ -28,7 +28,6 @@ interface MemRow {
   effective_access_level?: string;
   owner_user_id: string | null;
   scope_type: string | null;
-  project_folder_id: string | null;
   project_id: string | null;
   title: string | null;
   content: string | null;
@@ -45,7 +44,6 @@ function memRow(overrides: Partial<MemRow> = {}): MemRow {
     access_level: "full",
     owner_user_id: USER_A,
     scope_type: "user",
-    project_folder_id: null,
     project_id: null,
     title: "Coffee preferences",
     content: "Prefers oat milk flat white in the morning.",
@@ -104,6 +102,12 @@ class MemorySearchFakeDb implements Queryable {
 
   async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
     const norm = sql.replace(/\s+/g, " ").trim();
+    if (norm.startsWith("UPDATE memory_entries SET access_count")) {
+      return { rows: [] as Row[], rowCount: Array.isArray(params[1]) ? params[1].length : 0 };
+    }
+    if (norm.startsWith("INSERT INTO content_access_logs")) {
+      return { rows: [] as Row[], rowCount: 0 };
+    }
     if (/INSERT INTO memory_entries|UPDATE memory_entries|DELETE FROM memory_entries/.test(norm)) {
       this.forbiddenWrites.push(norm);
       throw new Error("forbidden canonical memory write");
@@ -417,9 +421,8 @@ describe("Memory retrieval projection eligibility", () => {
   });
 
   it("drops memory rows that this retrieval surface can never return", () => {
-    expect(isMemoryRetrievalProjectable({ ...base, scope_type: "system" })).toBe(false);
     expect(isMemoryRetrievalProjectable({ ...base, visibility: "unknown" })).toBe(false);
-    expect(isMemoryRetrievalProjectable({ ...base, scope_type: "system" })).toBe(false);
+    expect(isMemoryRetrievalProjectable({ ...base, access_level: "unknown" })).toBe(false);
   });
 });
 
@@ -447,7 +450,6 @@ class MemoryProjectionFakeDb implements Queryable {
           space_id: SPACE_A,
           status: "active",
           deleted_at: null,
-          project_folder_id: null,
           owner_user_id: USER_A,
           visibility: "space_shared",
           access_level: "full",
@@ -510,9 +512,9 @@ describe("Memory retrieval projection boundary", () => {
     expect(db.forbiddenWrites).toHaveLength(0);
   });
 
-  it("does not project globally unreachable memory rows", async () => {
+  it("does not project rows with invalid access metadata", async () => {
     const db = new MemoryProjectionFakeDb();
-    db.rowOverrides = { scope_type: "system" };
+    db.rowOverrides = { visibility: "unknown" };
 
     await new RetrievalProjectionService(db, memoryRetrievalRegistry).reindex(SPACE_A, "memory_entry", MEM_A);
 

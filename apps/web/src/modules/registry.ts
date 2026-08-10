@@ -451,15 +451,6 @@ export const MODULE_REGISTRY: Module[] = [
 
   // ── Context ops ───────────────────────────────────────────────────────────
   {
-    id: 'context_configuration', label: 'Context Configuration', path: '/context-configuration',
-    section: 'agents', group: 'knowledge', icon: 'route',
-    description: 'Configure Project Folder context packs, routing manifests, skill overlays, observations, and review queues.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./context_configuration/ContextConfigurationPage')),
-  },
-  {
     id: 'retrieval_settings', label: 'Retrieval Settings', path: '/retrieval-settings',
     section: 'dev', group: 'system', icon: 'search',
     description: 'Configure retrieval search mode, rewrite, rerank, cache, trace, and result defaults.',
@@ -553,15 +544,6 @@ export const MODULE_REGISTRY: Module[] = [
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./automations/AutomationsPage')),
-  },
-  {
-    id: 'context', label: 'Context Preview', path: '/context',
-    section: 'dev', group: 'system', icon: 'code',
-    description: 'Preview the assembled context package for a space.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./memory/ContextPreviewPage')),
   },
 ]
 

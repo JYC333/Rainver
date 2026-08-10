@@ -15,10 +15,14 @@ export type {
   InquiryThread,
   InquiryThreadAdvice,
   InquiryThreadKind,
+  NoteProjectRole,
 } from '@agent-space/protocol'
 import type {
   InquiryThread,
+  NoteProjectRole,
+  RetrievalObjectType as ProtocolRetrievalObjectType,
 } from '@agent-space/protocol'
+import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from '@agent-space/protocol'
 
 export type SpaceType      = 'personal' | 'household' | 'team'
 
@@ -34,7 +38,7 @@ export interface CustomSourceCredentialDTO {
 }
 
 export interface ResearchChecklistItem { id: string; text: string; status: 'open' | 'done' | 'dismissed'; sort_order: number; origin: 'user' | 'agent'; origin_run_id: string | null; created_at: string; updated_at: string }
-export interface ResearchPaperCard { id: string; source_item_id: string; object_id: string | null; why_md: string; how_md: string; what_md: string; edited_by_user: boolean; stance: 'supports' | 'contradicts' | 'new_direction' | null; comparison_detail: string | null }
+export interface ResearchEvidenceCard { id: string; source_item_id: string; object_id: string | null; why_md: string; how_md: string; what_md: string; edited_by_user: boolean; stance: 'supports' | 'contradicts' | 'new_direction' | null; comparison_detail: string | null }
 /**
  * A project's "notebook" is ordinary Notes filed under its auto-created
  * Knowledge Notes folder (see notebookNotes.ts / areaService.ts on the
@@ -49,7 +53,7 @@ export interface ResearchArea {
   checklist: ResearchChecklistItem[]
   reports: Array<{ id: string; research_question: string; research_question_version: number; status: string; run_kind: string; created_at: string }>
 }
-export interface ResearchReadingList { items: Array<ProjectCorpusItem & { paper_card: ResearchPaperCard | null }>; total: number; limit: number; offset: number }
+export interface ResearchReadingList { items: Array<ProjectCorpusItem & { evidence_card: ResearchEvidenceCard | null }>; total: number; limit: number; offset: number }
 export type MemberRole     = 'owner' | 'admin' | 'reviewer' | 'member' | 'guest' | 'viewer'
 export type InviteStatus   = 'pending' | 'accepted' | 'revoked' | 'expired'
 /** Immutable after Space creation; personal Spaces are always 'none'. */
@@ -72,6 +76,7 @@ export interface SpaceWithMembership {
   type: SpaceType
   role: MemberRole
   oversight_mode: SpaceOversightMode
+  egress_notifications_enabled: boolean
   created_at: string
   updated_at: string
 }
@@ -101,7 +106,7 @@ export interface SpaceInvitationOut {
 }
 
 export type MemoryType       = 'preference' | 'semantic' | 'episodic' | 'procedural' | 'project'
-export type MemoryScope      = 'user' | 'project_folder' | 'capability' | 'agent' | 'system' | 'space'
+export type MemoryScope      = 'user' | 'project'
 export type MemoryStatus     = 'active' | 'archived' | 'proposed' | 'rejected' | 'superseded'
 export type ContentVisibility = 'private' | 'space_shared' | 'selected_users'
 export type ContentAccessLevel = 'full' | 'summary'
@@ -125,7 +130,42 @@ export interface ContentAccessPolicy {
 export interface ContentAccessUpdate {
   visibility: ContentVisibility
   access_level: ContentAccessLevel
+  project_id: string | null
   grants: Array<{ user_id: string; access_level: ContentAccessLevel }>
+  demotion_confirmation_id?: string
+}
+export interface ContentAccessLogEntry {
+  id: string
+  space_id: string
+  resource_type: string
+  resource_id: string
+  owner_user_id: string
+  viewer_user_id: string
+  viewer_display_name: string
+  agent_id: string | null
+  run_id: string | null
+  access_type: string
+  reason: string | null
+  accessed_at: string
+}
+export interface ContentAccessLogList {
+  items: ContentAccessLogEntry[]
+  limit: number
+  offset: number
+  returned: number
+  has_more: boolean
+}
+export interface ContentDemotionDisclosure {
+  confirmation_id: string
+  expires_at: string
+  resource_type: string
+  resource_id: string
+  target_visibility: Exclude<ContentVisibility, 'space_shared'>
+  exposure: {
+    readers: Array<{ user_id: string; display_name: string; access_count: number; last_accessed_at: string; link: string }>
+    consuming_runs: Array<{ run_id: string; title: string; status: string; link: string }>
+    shared_derived_outputs: Array<{ resource_type: 'artifact' | 'proposal'; id: string; title: string; visibility: string; link: string }>
+  }
 }
 export type MemoryVisibility = ContentVisibility
 export type ObjectVisibility = ContentVisibility
@@ -143,7 +183,7 @@ export type KnowledgeItemStatus = 'draft' | 'active' | 'superseded' | 'archived'
 export type KnowledgeVisibility = ContentVisibility
 export type KnowledgeVerificationStatus = 'unverified' | 'needs_review' | 'verified'
 export type KnowledgeReflectionStatus = 'unreviewed' | 'reviewed' | 'distilled'
-export type KnowledgeRelationType =
+export type KnowledgeLinkType =
   | 'related_to'
   | 'explains'
   | 'depends_on'
@@ -157,28 +197,22 @@ export type KnowledgeRelationType =
   | 'summarizes'
   | 'updates'
 export type KnowledgeRelationStatus = 'candidate' | 'active' | 'rejected' | 'archived'
-export type RetrievalObjectType =
-  | 'knowledge_item'
-  | 'note'
-  | 'source'
-  | 'claim'
-  | 'memory_entry'
-  | 'project_public_summary'
-  | 'source_item'
-  | 'extracted_evidence'
-export const SPACE_OBJECT_KIND_KEYS_BY_BASE_OBJECT_TYPE = {
-  knowledge_item: ['concept', 'lesson', 'procedure', 'decision', 'question', 'answer', 'summary'],
-  note: ['note'],
-  source: ['activity_record', 'chat_capture', 'webpage', 'article', 'paper', 'pdf', 'file', 'email', 'manual_reference', 'external_note'],
-  claim: ['fact', 'hypothesis', 'belief', 'preference', 'commitment', 'question', 'interpretation', 'instruction', 'metric', 'relationship', 'event'],
-  memory_entry: ['preference', 'semantic', 'episodic', 'procedural', 'project'],
-  project_public_summary: ['project_public_summary'],
-  source_item: ['external_url', 'feed_entry', 'activity_record', 'artifact', 'run_event', 'file', 'document', 'log'],
-  extracted_evidence: ['document', 'excerpt', 'event', 'log', 'artifact', 'claim', 'summary'],
-} as const satisfies Record<RetrievalObjectType, readonly string[]>
-export type SpaceObjectKindStatus = 'draft' | 'active' | 'deprecated' | 'archived'
-export type SpaceObjectKindRelationHintDirection = 'from' | 'to' | 'either'
-export type SpaceObjectKindRelationHintRelationType =
+/**
+ * Re-exported from the protocol rather than restated. The local copy had
+ * drifted: it was missing `inquiry_thread`, which the shared vocabulary has
+ * carried since Inquiry Threads became retrievable, so the editor could not
+ * search for a Question even though the backend indexed them.
+ */
+export type RetrievalObjectType = ProtocolRetrievalObjectType
+/**
+ * Also re-exported rather than restated, and for the same reason: the local
+ * copy had gone stale in exactly the same place, missing `inquiry_thread`.
+ */
+export const SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE: Record<RetrievalObjectType, readonly string[]> =
+  OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE
+export type SpaceObjectProfileStatus = 'draft' | 'active' | 'deprecated' | 'archived'
+export type SpaceObjectProfileRelationHintDirection = 'from' | 'to' | 'either'
+export type SpaceObjectProfileRelationHintLinkType =
   | 'related_to'
   | 'explains'
   | 'depends_on'
@@ -218,7 +252,7 @@ export interface RetrievalEvidence {
 export interface RetrievalSearchRequest {
   query: string
   object_types?: RetrievalObjectType[]
-  object_kinds?: string[]
+  object_profiles?: string[]
   max_results?: number
   include_trace?: boolean
   mode?: RetrievalSearchMode
@@ -229,8 +263,8 @@ export interface RetrievalSearchRequest {
 export interface RetrievalSearchResult {
   object_type: RetrievalObjectType
   object_id: string
-  object_kind?: string | null
-  object_kind_label?: string | null
+  object_profile?: string | null
+  object_profile_label?: string | null
   title: string
   snippet: string | null
   score: number
@@ -250,16 +284,16 @@ export interface RetrievalSearchResponse {
 export interface RetrievalCitation {
   object_type: RetrievalObjectType
   object_id: string
-  object_kind?: string | null
-  object_kind_label?: string | null
+  object_profile?: string | null
+  object_profile_label?: string | null
   title: string
   [key: string]: unknown
 }
 export interface RetrievalGapItem {
   object_type: RetrievalObjectType
   object_id: string
-  object_kind?: string | null
-  object_kind_label?: string | null
+  object_profile?: string | null
+  object_profile_label?: string | null
   title: string
   reason: string
   [key: string]: unknown
@@ -283,7 +317,7 @@ export interface RetrievalBrief {
 export interface RetrievalBriefRequest {
   query: string
   object_types?: RetrievalObjectType[]
-  object_kinds?: string[]
+  object_profiles?: string[]
   max_results?: number
   include_trace?: boolean
   mode?: RetrievalSearchMode
@@ -291,20 +325,20 @@ export interface RetrievalBriefRequest {
   persist_artifact?: boolean
 }
 
-export interface SpaceObjectKindOut {
+export interface SpaceObjectProfileOut {
   id: string
   space_id: string
   key: string
   label: string
   description: string | null
   base_object_type: RetrievalObjectType
-  status: SpaceObjectKindStatus
+  status: SpaceObjectProfileStatus
   version: number
   field_schema: Record<string, unknown>
   extraction_policy: Record<string, unknown>
   retrieval_policy: Record<string, unknown>
   ui_config: Record<string, unknown>
-  relation_hints?: Array<SpaceObjectKindRelationHintRequest & { id: string }>
+  relation_hints?: Array<SpaceObjectProfileRelationHintRequest & { id: string }>
   created_by_user_id?: string | null
   created_from_proposal_id?: string | null
   updated_from_proposal_id?: string | null
@@ -312,20 +346,20 @@ export interface SpaceObjectKindOut {
   updated_at: string
 }
 
-export interface SpaceObjectKindRelationHintRequest {
+export interface SpaceObjectProfileRelationHintRequest {
   endpoint_object_type: RetrievalObjectType
-  endpoint_object_kind_id?: string | null
-  relation_type: SpaceObjectKindRelationHintRelationType
-  direction?: SpaceObjectKindRelationHintDirection
+  endpoint_object_profile_id?: string | null
+  link_type: SpaceObjectProfileRelationHintLinkType
+  direction?: SpaceObjectProfileRelationHintDirection
   confidence_default?: number
   required?: boolean
 }
 
 export interface ObjectSchemaManifestRelationHint {
   endpoint_object_type: RetrievalObjectType
-  endpoint_object_kind_key?: string | null
-  relation_type: SpaceObjectKindRelationHintRelationType
-  direction?: SpaceObjectKindRelationHintDirection
+  endpoint_object_profile_key?: string | null
+  link_type: SpaceObjectProfileRelationHintLinkType
+  direction?: SpaceObjectProfileRelationHintDirection
   confidence_default?: number
   required?: boolean
 }
@@ -335,7 +369,7 @@ export interface ObjectSchemaManifestKind {
   label: string
   description?: string | null
   base_object_type: RetrievalObjectType
-  status?: SpaceObjectKindStatus
+  status?: SpaceObjectProfileStatus
   version?: number
   field_schema?: Record<string, unknown>
   extraction_policy?: Record<string, unknown>
@@ -348,7 +382,7 @@ export interface ObjectSchemaExportManifest {
   format: 'agent_space.object_schema.v1'
   exported_at: string
   object_schema_version: number
-  object_kinds: ObjectSchemaManifestKind[]
+  object_profiles: ObjectSchemaManifestKind[]
   metadata?: Record<string, unknown>
 }
 
@@ -374,9 +408,9 @@ export interface ObjectSchemaSuggestionScanRequest {
 
 export interface ObjectSchemaSuggestionFinding {
   id: string
-  kind: 'missing_object_kind' | 'deprecated_kind_usage' | 'unused_active_kind'
+  kind: 'missing_object_profile' | 'deprecated_profile_usage' | 'unused_active_profile'
   base_object_type: RetrievalObjectType
-  object_kind: string
+  object_profile: string
   title: string
   reason: string
   confidence_tier: 'high' | 'medium' | 'low'
@@ -403,14 +437,14 @@ export interface ObjectSchemaSuggestionScanResponse {
   artifact_id?: string
 }
 
-export interface SpaceObjectKindPage {
-  items: SpaceObjectKindOut[]
+export interface SpaceObjectProfilePage {
+  items: SpaceObjectProfileOut[]
   total: number
   limit: number
   offset: number
 }
 
-export interface SpaceObjectKindCreateProposalRequest {
+export interface SpaceObjectProfileCreateProposalRequest {
   key: string
   label: string
   description?: string | null
@@ -420,11 +454,11 @@ export interface SpaceObjectKindCreateProposalRequest {
   extraction_policy?: Record<string, unknown>
   retrieval_policy?: Record<string, unknown>
   ui_config?: Record<string, unknown>
-  relation_hints?: SpaceObjectKindRelationHintRequest[]
+  relation_hints?: SpaceObjectProfileRelationHintRequest[]
   rationale?: string
 }
 
-export interface SpaceObjectKindUpdateProposalRequest {
+export interface SpaceObjectProfileUpdateProposalRequest {
   label?: string
   description?: string | null
   status?: 'active'
@@ -432,7 +466,7 @@ export interface SpaceObjectKindUpdateProposalRequest {
   extraction_policy?: Record<string, unknown>
   retrieval_policy?: Record<string, unknown>
   ui_config?: Record<string, unknown>
-  relation_hints?: SpaceObjectKindRelationHintRequest[]
+  relation_hints?: SpaceObjectProfileRelationHintRequest[]
   rationale?: string
 }
 export interface RetrievalBriefResponse {
@@ -516,6 +550,63 @@ export interface AskSpaceResponse {
   session_artifact_id?: string
   session_artifact_error?: string
   canonical_write_performed: false
+}
+
+export interface CrossSpacePointer {
+  pointer_id: string
+  space_id: string
+  resource_type: RetrievalObjectType
+  id: string
+}
+export interface CrossSpaceResolvedItem {
+  pointer: CrossSpacePointer
+  space_name: string
+  title: string
+  snippet: string | null
+  score: number
+}
+export interface CrossSpaceRetrievalRequest {
+  query: string
+  resource_types?: RetrievalObjectType[]
+  max_results?: number
+}
+export interface CrossSpaceRetrievalResponse {
+  session_id: string
+  items: CrossSpaceResolvedItem[]
+  source_space_ids: string[]
+  fused_conclusion: null
+  canonical_write_performed: false
+}
+export interface CrossSpaceResolveResponse {
+  items: CrossSpaceResolvedItem[]
+  unresolved_pointer_ids: string[]
+}
+export interface CrossSpaceEgressDisclosure {
+  disclosure_id: string
+  expires_at: string
+  source_spaces: Array<{
+    space_id: string
+    space_name: string
+    egress_notifications_enabled: boolean
+    pointers: Array<{ resource_type: RetrievalObjectType; id: string }>
+  }>
+}
+export interface CrossSpaceFusedStoreResponse {
+  artifact_id: string
+  egress_record_ids: string[]
+}
+export interface SpaceMemberNotification {
+  id: string
+  space_id: string
+  event_type: 'egress_notification_setting_changed' | 'content_egress'
+  pointer_metadata: Record<string, unknown>
+  created_at: string
+  read_at: string | null
+}
+export interface SpaceEgressNotificationSetting {
+  space_id: string
+  egress_notifications_enabled: boolean
+  updated_at: string
 }
 
 export interface RetrievalDiagnosticsReportRequest {
@@ -1088,6 +1179,12 @@ export interface SourceChannel {
   created_by_user_id?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface SourceRecommendation extends SourceChannel {
+  subscription_status: 'pending'
+  recommendation_message: string | null
+  last_notified_at: string | null
 }
 
 export interface ProjectResearchInitialIntakeInput {
@@ -1713,13 +1810,29 @@ export interface ProjectSourceBinding {
   priority: number
   delivery_scope: 'project_members' | 'source_subscribers'
   collection_notifications_enabled: boolean
+  standing_comparison_enabled: boolean
   filters_json: Record<string, unknown>
   routing_policy_json: Record<string, unknown>
   extraction_policy_json: Record<string, unknown>
+  extraction_profile?: {
+    key: string
+    display_name: string
+    entity_type: string
+    graph_lens_id: string | null
+  } | null
   created_by_user_id: string | null
   created_at: string
   updated_at: string
   backfill_result?: ProjectSourceBindingBackfillResult
+}
+
+export interface ProjectExtractionProfile {
+  key: string
+  display_name: string
+  entity_type: string
+  domain_criteria_keys: string[]
+  graph_lens_id: string | null
+  is_default: boolean
 }
 
 export interface ProjectSourceBindingBackfillResult {
@@ -1942,7 +2055,6 @@ export interface Memory {
   space_id: string
   subject_user_id?: string | null
   owner_user_id: string | null
-  project_folder_id: string | null
   title: string | null
   content: string | null
   type: MemoryType
@@ -2053,30 +2165,6 @@ export interface MemoryMaintenanceJobRunResponse {
   report: MemoryMaintenanceReport | null
 }
 
-export interface MemoryAccessLogEntry {
-  id: string
-  space_id: string
-  memory_id: string
-  user_id?: string | null
-  agent_id?: string | null
-  run_id?: string | null
-  access_type: string
-  reason?: string | null
-  accessed_at: string
-  memory_title: string | null
-  memory_scope: string | null
-  memory_visibility: string | null
-  project_id?: string | null
-}
-
-export interface MemoryAccessLogListResponse {
-  items: MemoryAccessLogEntry[]
-  limit: number
-  offset: number
-  returned: number
-  has_more: boolean
-}
-
 export interface KnowledgeItemSummary {
   id: string
   space_id: string
@@ -2124,7 +2212,7 @@ export interface KnowledgeRelation {
   space_id: string
   from_object_id: string
   to_object_id: string
-  relation_type: KnowledgeRelationType
+  link_type: KnowledgeLinkType
   status: KnowledgeRelationStatus
   confidence: number | null
   evidence_summary: string | null
@@ -2145,14 +2233,13 @@ export interface KnowledgeCreateProposalBody {
   content_json?: Record<string, unknown> | null
   content_format: KnowledgeContentFormat
   content_schema_version?: number
-  visibility: KnowledgeVisibility
   project_id?: string | null
   project_folder_id?: string | null
   tags: string[]
   confidence?: number | null
   source_refs?: Record<string, unknown>[]
   source_run_id?: string | null
-  object_kind_fields?: Record<string, unknown>
+  object_profile_fields?: Record<string, unknown>
   rationale?: string | null
 }
 
@@ -2166,7 +2253,7 @@ export interface KnowledgeUpdateProposalBody {
   content_schema_version?: number
   tags: string[]
   confidence?: number | null
-  object_kind_fields?: Record<string, unknown>
+  object_profile_fields?: Record<string, unknown>
   rationale?: string | null
   verification_status?: KnowledgeVerificationStatus
   reflection_status?: KnowledgeReflectionStatus
@@ -2175,7 +2262,7 @@ export interface KnowledgeUpdateProposalBody {
 export interface KnowledgeRelationProposalBody {
   from_object_id: string
   to_object_id: string
-  relation_type: KnowledgeRelationType
+  link_type: KnowledgeLinkType
   status: Extract<KnowledgeRelationStatus, 'candidate' | 'active'>
   confidence?: number | null
   evidence_summary?: string | null
@@ -2227,10 +2314,20 @@ export interface NoteSummary {
   status: NoteStatus
   content_format: NoteContentFormat
   primary_project_id: string | null
-  /** Folder this note belongs to (first membership); null/absent if uncategorized. */
-  collection_id?: string | null
-  /** Position within collection_id's folder; null if uncategorized. */
-  sort_order?: number | null
+  /**
+   * The system-reserved role this note holds in its project's notebook, or null.
+   * One note per role per project — assigning a role another note holds moves it.
+   */
+  project_role: NoteProjectRole | null
+  /** The project `project_role` is scoped to; null exactly when the role is. */
+  role_project_id: string | null
+  /**
+   * Every folder this note is placed in, in placement order. A note may sit in
+   * several at once (`note_collection_items` is unique on
+   * `(collection_id, note_id, space_id)`), so there is no single "the folder" —
+   * a scalar here was what made a second placement invisible.
+   */
+  placements: NotePlacement[]
   /** Optimistic-concurrency version; bumped by every save (user or AI). */
   version: number
   content_hash: string | null
@@ -2238,6 +2335,24 @@ export interface NoteSummary {
   updated_by_run_id: string | null
   created_at: string
   updated_at: string
+}
+
+/**
+ * A Project this note is readable in beyond the one that owns it (U8).
+ * Read-only by construction: a share widens Project scope and nothing else, so
+ * it carries no access level.
+ */
+export interface NoteProjectShare {
+  project_id: string
+  project_name: string | null
+  shared_by_user_id: string
+  created_at: string | null
+}
+
+/** One folder a note is filed in, and its position within that folder. */
+export interface NotePlacement {
+  collection_id: string
+  sort_order: number
 }
 
 export interface Note extends NoteSummary {
@@ -2270,14 +2385,54 @@ export interface NoteUpdateBody {
   content_schema_version?: number
   status?: NoteStatus
   primary_project_id?: string | null
+  /**
+   * Assigns this notebook role to the note, or clears it with null. Assigning a
+   * role another note in the same project holds moves it off that note.
+   */
+  project_role?: NoteProjectRole | null
   /** Moves the note into this folder (replaces its current folder). */
   collection_id?: string
   /** Optimistic-concurrency check for content_json writes; omit to skip the check. */
   expect_version?: number
 }
 
+export interface NoteJotBody {
+  /**
+   * The `space_objects` row the jot is about — a Source, Claim, Question, …
+   * Optional (U11): without one the text appends to the Project's `inbox` note,
+   * which is what makes capture possible when nothing is on screen to hang it
+   * on. `project_id` is then required.
+   */
+  target_id?: string
+  text: string
+  /** Appends to this note when given; otherwise a new note is created. */
+  note_id?: string
+  project_id?: string
+  collection_id?: string
+  /** Defaults to `references`. */
+  link_type?: EntityLinkType
+}
+
+export interface NotePromoteBody {
+  /** The selected passage. Not the note's whole text — a note holds several ideas. */
+  content: string
+  /** Defaults to the note's own title. */
+  title?: string
+  knowledge_kind?: string
+  content_format?: NoteContentFormat
+  /** Defaults to the note's project. */
+  project_id?: string
+  rationale?: string
+}
+
+/**
+ * One note placement's new position. `from_collection_id` is what identifies
+ * the row: a note may be placed in several folders, and addressing a move by
+ * note id alone rewrote every placement of that note to one folder.
+ */
 export interface NotesTreeNoteOrderUpdate {
-  id: string
+  note_id: string
+  from_collection_id: string
   collection_id: string
   sort_order: number
 }
@@ -2587,7 +2742,6 @@ export interface TaskRunCreateBody {
   project_folder_id?: string | null
   prompt?: string | null
   instruction?: string | null
-  context_artifact_ids?: string[]
   set_task_in_progress?: boolean
 }
 
@@ -2632,7 +2786,6 @@ export interface Run {
   selected_runtime_profile_id?: string | null
   runtime_profile_selection_source?: 'explicit' | 'default' | null
   active_route_decision_id?: string | null
-  context_snapshot_id: string | null
   project_folder_id: string | null
   session_id: string | null
   parent_run_id: string | null
@@ -3255,6 +3408,7 @@ export interface Proposal {
   access_level?: ContentAccessLevel | null
   grant_id?: string | null
   required_approver_user_id?: string | null
+  required_approver_user_ids?: string[] | null
   requires_approval_type?: string | null
   egress_approval_status?: string | null
   egress_approval_id?: string | null
@@ -3325,7 +3479,7 @@ export type ProposalAcceptOut = {
   }
 } | {
   proposal: Proposal
-  result_type: 'object_kind'
+  result_type: 'object_profile'
   result: Record<string, unknown>
 } | {
   proposal: Proposal
@@ -3577,6 +3731,7 @@ export interface EvolutionProposal {
   skipped_count?: number
   grant_id?: string | null
   required_approver_user_id?: string | null
+  required_approver_user_ids?: string[] | null
   requires_approval_type?: string | null
   egress_approval_status?: string | null
   bundle_id?: string | null
@@ -3776,7 +3931,6 @@ export type PromptType =
   | 'retrieval_query'
   | 'retrieval_rerank'
   | 'retrieval_synthesis'
-  | 'condenser'
   | 'agent_system'
 
 export type PromptAssetScopeType = 'system' | 'space' | 'project' | 'user' | 'agent'
@@ -3953,6 +4107,7 @@ export interface AgentModelSummary {
 export interface AgentOut {
   id: string
   space_id: string
+  project_id: string | null
   created_by_user_id: string
   name: string
   description: string | null
@@ -4128,8 +4283,8 @@ export interface CreateAgentFromTemplateBody {
 
 export interface AgentCreateBody {
   name: string
+  project_id?: string | null
   description?: string | null
-  visibility?: string
   role_instruction?: string | null
   system_prompt?: string | null
   default_model_provider_id?: string | null
@@ -4151,7 +4306,6 @@ export interface AgentCreateBody {
 export interface AgentUpdateBody {
   name?: string
   description?: string | null
-  visibility?: string
   role_instruction?: string | null
   status?: string
   system_prompt?: string | null
@@ -4179,7 +4333,6 @@ export interface RunCreateBody {
   prompt_asset_key?: string | null
   prompt_version_id?: string | null
   prompt_content_hash?: string | null
-  context_artifact_ids?: string[]
 }
 
 export type ProjectFolderKind = 'code' | 'data' | 'docs'
@@ -4325,25 +4478,9 @@ export interface ProjectWorkflowProfile {
   updated_at: string
 }
 
-export interface ProjectTemplateDescriptor {
-  key: string
-  name: string
-  description: string
-  sections: string[]
-  extraction_profile_key: string | null
-  graph_lens_id: string | null
-  initial_primary_mode: ProjectPrimaryMode
-  starter_workflow_template_keys: string[]
-}
-
 export interface ProjectOverview {
-  project: Pick<Project, 'id' | 'name' | 'primary_mode' | 'template_key' | 'status'>
-  brief: {
-    version: string
-    goal: string | null
-    scope_included: string | null
-    success_definition: string | null
-  } | null
+  project: Pick<Project, 'id' | 'name' | 'primary_mode' | 'status'>
+  brief: ProjectBriefVersion | null
   mode_projection: {
     mode: ProjectPrimaryMode
     current_state_summary: string
@@ -4362,13 +4499,7 @@ export interface ProjectOverview {
     reason?: string
     action_descriptors?: Array<{ label: string; href: string }>
   }>
-  template?: {
-    key: string
-    name: string
-    description: string
-    starter_workflow_template_keys: string[]
-  } | null
-  setup_checklist?: Array<{
+  setup_checklist: Array<{
     id: string
     label: string
     status: 'ready' | 'missing'
@@ -4376,7 +4507,14 @@ export interface ProjectOverview {
     href: string
     detail: string
   }>
-  area_summaries: Array<{ mode: ProjectPrimaryMode; summary: { count: number; status: string } }>
+  entity_summaries: Array<{
+    entity_type: string
+    label: string
+    detail: string
+    href: string
+    count: number
+    status: 'ok' | 'attention' | 'blocked'
+  }>
 }
 
 // ---------------------------------------------------------------------------
@@ -4534,10 +4672,8 @@ export interface ProjectResearchProfile {
 export interface ProjectResearchWorkflow {
   id: string
   project_id: string
-  workflow_type: string
   current_stage: string | null
   status: string
-  mode: string
   state_json: Record<string, unknown>
   primary_thread_id: string | null
   started_by_user_id: string | null
@@ -4546,9 +4682,46 @@ export interface ProjectResearchWorkflow {
   updated_at: string
 }
 
-/** One aggregated monitoring outcome per (workflow, UTC day); a missing day means no scan was recorded. */
+export interface ProjectResearchStandingBatch {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'blocked_baseline' | 'budget_exhausted' | 'failed'
+  source_item_ids: string[]
+  ready_at: string
+  run_id: string | null
+  missing_baseline_role: string | null
+  error: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+}
+
+export interface ProjectResearchStandingAdvice {
+  id: string
+  source_item_id: string
+  batch_id: string
+  source_title: string
+  detail: string
+  affected_sections_json: string[]
+  status: 'open' | 'actioned' | 'dismissed'
+  action_id: 'source.raise_as_question'
+  action_input_json: { kind: 'question'; statement: string; producer_idempotency_key: string }
+  idempotency_key: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectResearchStandingStatus {
+  enabled: boolean
+  enabled_binding_count: number
+  budget: { daily_limit: number; daily_used: number }
+  batches: ProjectResearchStandingBatch[]
+  advice: ProjectResearchStandingAdvice[]
+  recent_inflow: Array<{ source_item_id: string; title: string; excerpt: string | null; matched_at: string }>
+}
+
+/** One aggregated monitoring outcome per focused workflow or standing Project window; a missing day means no scan was recorded. */
 export interface ProjectResearchScanSummary {
-  workflow_id: string
+  workflow_id: string | null
   scan_date: string
   scanned_at: string
   new_item_count: number
@@ -4568,7 +4741,7 @@ export interface ProjectResearchQuestionImpact {
   previous_question: string | null
   current_question: string | null
   previous_version: number
-  screened_papers: number
+  screened_items: number
   reports: number
 }
 
@@ -4679,7 +4852,7 @@ export interface ProjectResearchReport {
   content_hash?: string
   integrity?: { artifact_id: string | null; status: 'available' | 'not_run' }
   provenance?: { workflow_id: string; operation_id: string; synthesis_run_id: string }
-  archive_descriptors?: Array<{ kind: 'archive' | 'literature_matrix' | 'integrity'; artifact_id: string }>
+  archive_descriptors?: Array<{ kind: 'archive' | 'evidence_matrix' | 'integrity'; artifact_id: string }>
   resolved_references?: Array<{ id: string; availability: 'available' | 'unavailable'; title?: string; authors?: string[]; year?: number | null; library_path?: string; academic_path?: string; external_url?: string; excerpts?: Array<{ id: string; title?: string }> }>
 }
 
@@ -4698,16 +4871,20 @@ export interface ProjectResearchScreeningCriteria {
   project_id: string
   include_keywords: string[]
   exclude_keywords: string[]
-  methods: string[]
+  /** Domain-specific axes, keyed by what the Project's bound extraction
+   * profiles declare. Empty when no bound source declares any. */
+  domain_criteria: Record<string, string[]>
+  available_domain_criteria: string[]
   date_range_start: string | null
   date_range_end: string | null
-  venues: string[]
+  /** Where material may come from — journals, outlets and sites alike. */
+  source_restrictions: string[]
   required_evidence_fields: string[]
   created_at: string | null
   updated_at: string | null
 }
 
-export interface ProjectResearchLiteratureMatrixItem {
+export interface ProjectResearchEvidenceMatrixItem {
   corpus_item_id: string
   object_id: string | null
   title: string | null
@@ -4943,107 +5120,6 @@ export interface SkillImportPreviewResponse {
 
 export type SkillImportApprovalProposalResponse = Proposal
 export type SkillConvertToCapabilityResponse = Proposal
-
-export interface ContextPackage {
-  user_memory: Memory[]
-  project_folder_memory: Memory[]
-  capability_memory: Memory[]
-  agent_memory: Memory[]
-  system_policy: Memory[]
-  relevant_episodes: Memory[]
-  recent_session_summary: Record<string, unknown>[]
-  attachments: Record<string, unknown>[]
-}
-
-export type ContextProfileScope = 'space' | 'project' | 'project_folder' | 'agent' | 'user'
-export type ContextProfileStatus = 'active' | 'archived'
-
-export interface ContextRoutingRule {
-  id?: string
-  path_glob: string
-  module_id?: string
-  agent_doc_paths?: string[]
-  context_bundle_id?: string
-  priority?: number
-}
-
-export interface ContextRoutingManifest {
-  version?: number
-  rules?: ContextRoutingRule[]
-  default_agent_doc_paths?: string[]
-}
-
-export interface ContextPackConfig {
-  title?: string
-  startup_protocol?: string
-  skill_index_enabled?: boolean
-  observation_policy?: 'disabled' | 'manual' | 'scheduled'
-  notes?: string
-  [key: string]: unknown
-}
-
-export interface ContextProfile {
-  id: string
-  space_id: string
-  scope_type: ContextProfileScope
-  scope_id: string | null
-  status: ContextProfileStatus
-  version: number
-  context_pack_json: ContextPackConfig
-  routing_manifest_json: ContextRoutingManifest
-  created_by_user_id: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface ContextProfileListResponse {
-  items: ContextProfile[]
-}
-
-export interface ContextProfileUpsertRequest {
-  scope_type: ContextProfileScope
-  scope_id?: string | null
-  status?: ContextProfileStatus
-  version?: number
-  context_pack_json?: ContextPackConfig
-  routing_manifest_json?: ContextRoutingManifest
-}
-
-export interface ContextRoutingUpdateRequest {
-  context_pack_json?: ContextPackConfig
-  routing_manifest_json: ContextRoutingManifest
-}
-
-export interface ContextEffectiveRoutingResponse {
-  project_folder_id: string
-  profiles: ContextProfile[]
-  effective_manifest: ContextRoutingManifest
-  selected_agent_doc_paths: string[]
-}
-
-export type ContextArtifactRevocationScope = 'project_folder' | 'project'
-
-export interface ContextArtifactRevocation {
-  id: string
-  space_id: string
-  artifact_id: string
-  scope_type: ContextArtifactRevocationScope
-  scope_id: string
-  reason: string | null
-  created_by_user_id: string | null
-  created_at: string
-}
-
-export interface ContextArtifactRevocationCreateRequest {
-  artifact_id: string
-  scope_type: ContextArtifactRevocationScope
-  scope_id: string
-  reason?: string | null
-}
-
-export interface ContextArtifactRevocationListResponse {
-  items: ContextArtifactRevocation[]
-}
 
 export type ContextOpsCountMap = Record<string, number>
 
@@ -5696,6 +5772,93 @@ export interface SourcePostProcessingBriefingDetail {
   item_decisions: SourcePostProcessingItemDecision[]
 }
 
+export interface InformationDigestItem {
+  id: string
+  source_item_id: string
+  section: 'interest' | 'serendipity'
+  position: number
+  quota_slot: string
+  matched_topic_id: string | null
+  serendipity_pool_item_id: string | null
+  target_domain_key: string | null
+  discovery_origin: string | null
+  score: number
+  component_scores: Record<string, number>
+  rationale: string | null
+  title: string
+  source_uri: string | null
+  source_domain: string | null
+  author: string | null
+  excerpt: string | null
+  occurred_at: string | null
+  domain_key: string
+  depth: string
+  genre: string
+  summary: string | null
+  stance_target: string | null
+  stance_target_key: string | null
+  stance_polarity: 'supports' | 'opposes' | 'mixed' | 'neutral'
+  stance_confidence: number
+  read_status: string
+  serendipity_feedback: 'interesting' | 'neutral' | 'never' | null
+  anonymous_read_count: number | null
+}
+
+export interface SerendipityFeedbackResult {
+  digest_item_id: string
+  domain_key: string
+  feedback: 'interesting' | 'neutral' | 'never'
+  cooldown_until: string | null
+  blocked: boolean
+  created_at: string
+}
+
+export interface InformationDigest {
+  id: string
+  digest_type: 'personal' | 'project'
+  owner_user_id: string | null
+  project_id: string | null
+  digest_date: string
+  profile_maturity: 'cold' | 'warming' | 'warm' | null
+  status: 'ready' | 'empty' | 'failed'
+  settings: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  items: InformationDigestItem[]
+  team_aggregates_available: boolean
+  team_blind_spot_domains: string[]
+}
+
+export interface InterestProfileSnapshot {
+  profile_id: string
+  maturity: 'cold' | 'warming' | 'warm'
+  read_item_count: number
+  covered_domain_count: number
+  skeleton_size: number
+  exploration_share: number
+  gaps_are_meaningful: boolean
+  coverage: Array<{ domain_key: string; item_count: number; weighted_count: number }>
+  topics: Array<{ id: string; topic_key: string; label: string; domain_key: string; weight: number }>
+  ready_candidates: Array<{ id: string; phrase_key: string; display_phrase: string; domain_key: string | null; occurrence_count: number; read_count: number }>
+  domains: Array<{ key: string; label: string; group: string }>
+  settings: InterestProfileSettings
+  starter_packs: Array<{ key: string; label: string; topics: Array<{ label: string; domainKey: string }> }>
+}
+
+export interface InterestProfileSettings {
+  coverage_half_life_days: number
+  new_topic_occurrence_threshold: number
+  new_topic_read_threshold: number
+  warming_min_read_items: number
+  warm_min_read_items: number
+  warm_min_covered_domains: number
+  interest_slots: number
+  serendipity_slots: number
+  interesting_cooldown_days: number
+  neutral_cooldown_days: number
+  probe_domain_budget: number
+}
+
 export interface SourcePostProcessingDrainResult {
   runs: SourcePostProcessingRun[]
   stopped_reason: string
@@ -5741,6 +5904,7 @@ export interface ReaderDocumentPayload {
   document_type: string
   document_id: string
   space_id: string
+  project_id: string | null
   title: string
   plain_text: string
   /** Canonical normalized form used for content_hash, text_range offsets, and context slicing. */
@@ -5763,6 +5927,7 @@ export interface ReaderDocumentPayload {
 export interface ReaderAnnotation {
   id: string
   space_id: string
+  project_id: string | null
   document_type: 'source_item' | 'source_snapshot' | 'research_report'
   document_id: string
   annotation_type: 'highlight' | 'comment' | 'excerpt' | 'bookmark'
@@ -5804,13 +5969,11 @@ export interface ReaderAnnotationCreate {
   anchor_json: ReaderAnchorJson
   color?: string
   label?: string
-  visibility?: 'private' | 'space_shared'
 }
 
 export interface ReaderAnnotationUpdate {
   color?: string | null
   label?: string | null
-  visibility?: 'private' | 'space_shared'
   status?: 'active' | 'archived'
 }
 
@@ -5960,7 +6123,7 @@ export interface MePendingProposalItem {
 
 export type ProjectStatus = 'active' | 'archived'
 
-export type ProjectPrimaryMode = 'inquiry' | 'decision' | 'delivery' | 'operations' | 'learning'
+export type ProjectPrimaryMode = 'research' | 'delivery' | 'operations' | 'learning'
 
 export interface Project {
   id: string
@@ -5971,9 +6134,9 @@ export interface Project {
   status: ProjectStatus
   current_focus: string | null
   settings_json: Record<string, unknown> | null
-  template_key: string
   primary_mode: ProjectPrimaryMode
   active_brief_version_id: string | null
+  current_user_can_approve_context?: boolean
   created_at: string
   updated_at: string
   archived_at: string | null
@@ -5984,7 +6147,8 @@ export interface ProjectCreate {
   description?: string | null
   current_focus?: string | null
   settings_json?: Record<string, unknown> | null
-  template_key?: string
+  /** How the Project advances. Defaults to `research` when omitted. */
+  primary_mode?: ProjectPrimaryMode
   goal?: string | null
   scope_included?: string | null
   success_definition?: string | null
@@ -6009,18 +6173,28 @@ export interface ProjectBriefVersion {
   success_definition: string | null
   constraints: string | null
   assumptions: string | null
+  project_status: string
+  current_focus: string | null
+  confirmed_decisions: string[]
+  primary_mode: ProjectPrimaryMode
+  workspace_identity: Record<string, unknown>
+  workspace_boundary: Record<string, unknown>
+  source_refs: Array<Record<string, unknown>>
+  status: 'draft' | 'in_review' | 'published' | 'archived'
+  reviewed_by_user_id: string | null
+  reviewed_at: string | null
+  published_by_user_id: string | null
+  published_at: string | null
   created_by_user_id: string | null
   created_at: string
 }
 
-export interface ProjectSummary {
-  project_id: string
-  activity_count: number
-  artifact_count: number
-  pending_proposal_count: number
-  project_folder_count: number
-  active_run_count: number
-  memory_entry_count: number
+export interface ProjectInstructionVersion {
+  id: string; space_id: string; project_id: string; version: string; title: string
+  instruction_text: string; status: 'draft' | 'in_review' | 'published' | 'archived'
+  reviewed_by_user_id: string | null; reviewed_at: string | null
+  published_by_user_id: string | null; published_at: string | null
+  created_by_user_id: string; created_at: string
 }
 
 // ── Automations ─────────────────────────────────────────────────────────────

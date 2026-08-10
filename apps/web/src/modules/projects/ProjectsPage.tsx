@@ -2,11 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
 import { FolderKanban, Plus, Target } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectTemplatesApi, projectsApi } from '../../api/client'
+import { projectsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { Project, ProjectTemplateDescriptor } from '../../types/api'
-import { ACADEMIC_TEMPLATE_KEY, templateKeyFromProject } from './templateUtils'
+import type { Project, ProjectPrimaryMode } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -34,20 +33,20 @@ const FILTER_OPTIONS = [
   { value: 'archived', label: 'Archived' },
 ]
 
-function blankTemplateFirst(templates: ProjectTemplateDescriptor[]) {
-  return [...templates].sort((left, right) => {
-    if (left.key === 'blank') return -1
-    if (right.key === 'blank') return 1
-    return 0
-  })
-}
+/** How a Project advances — the one classification and preset the creator
+ * picks. Sources and workflows are configured later in their owning Areas. */
+const PRIMARY_MODE_CHOICES: Array<{ value: ProjectPrimaryMode; label: string; detail: string }> = [
+  { value: 'research', label: 'Research', detail: 'Ask a question, gather and screen material, reach a conclusion' },
+  { value: 'delivery', label: 'Delivery', detail: 'Break a goal into tasks and ship them' },
+  { value: 'operations', label: 'Operations', detail: 'Keep something running, watch it, respond' },
+  { value: 'learning', label: 'Learning', detail: 'Take material in and retain it' },
+]
 
 export default function ProjectsPage() {
   const navigate = useNavigate()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
-  const [projectTemplates, setProjectTemplates] = useState<ProjectTemplateDescriptor[]>([])
   const [statusFilter, setStatusFilter] = useState('active')
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -57,8 +56,7 @@ export default function ProjectsPage() {
   const [newGoal, setNewGoal] = useState('')
   const [newScope, setNewScope] = useState('')
   const [newSuccessDefinition, setNewSuccessDefinition] = useState('')
-  const [newTemplateKey, setNewTemplateKey] = useState<string | null>(null)
-  const [templatesLoaded, setTemplatesLoaded] = useState(false)
+  const [newPrimaryMode, setNewPrimaryMode] = useState<ProjectPrimaryMode>('research')
 
   const loadProjects = useCallback(async () => {
     if (!activeSpaceId) {
@@ -80,35 +78,9 @@ export default function ProjectsPage() {
 
   useEffect(() => { loadProjects() }, [loadProjects])
 
-  useEffect(() => {
-    if (!activeSpaceId) {
-      setProjectTemplates([])
-      setTemplatesLoaded(false)
-      return
-    }
-    setTemplatesLoaded(false)
-    projectTemplatesApi.list()
-      .then(templates => {
-        setProjectTemplates(templates)
-        setNewTemplateKey(current => current && templates.some(template => template.key === current)
-          ? current
-          : templates.find(template => template.key === 'blank')?.key ?? templates[0]?.key ?? null)
-      })
-      .catch(e => {
-        setProjectTemplates([])
-        setNewTemplateKey(null)
-        toast.error(`Could not load Project Templates: ${errMsg(e)}`)
-      })
-      .finally(() => setTemplatesLoaded(true))
-  }, [activeSpaceId])
-
   async function createProject() {
     if (!newName.trim()) {
       toast.error('Name is required')
-      return
-    }
-    if (!newTemplateKey) {
-      toast.error('Select a Project Template before creating the Project')
       return
     }
     setCreating(true)
@@ -118,7 +90,7 @@ export default function ProjectsPage() {
         description: newDescription.trim() || null,
         current_focus: newFocus.trim() || null,
         settings_json: null,
-        template_key: newTemplateKey,
+        primary_mode: newPrimaryMode,
         goal: newGoal.trim() || null,
         scope_included: newScope.trim() || null,
         success_definition: newSuccessDefinition.trim() || null,
@@ -128,7 +100,7 @@ export default function ProjectsPage() {
       setNewName('')
       setNewDescription('')
       setNewFocus('')
-      setNewTemplateKey(projectTemplates.find(template => template.key === 'blank')?.key ?? projectTemplates[0]?.key ?? null)
+      setNewPrimaryMode('research')
       setNewGoal('')
       setNewScope('')
       setNewSuccessDefinition('')
@@ -144,7 +116,7 @@ export default function ProjectsPage() {
     setNewName('')
     setNewDescription('')
     setNewFocus('')
-    setNewTemplateKey(projectTemplates.find(template => template.key === 'blank')?.key ?? projectTemplates[0]?.key ?? null)
+    setNewPrimaryMode('research')
     setNewGoal('')
     setNewScope('')
     setNewSuccessDefinition('')
@@ -235,7 +207,10 @@ export default function ProjectsPage() {
               )}
               <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
                 <Badge variant="outline">{project.status}</Badge>
-                {templateKeyFromProject(project) === ACADEMIC_TEMPLATE_KEY && <Badge variant="secondary">Academic Research</Badge>}
+                {/* How the Project advances is what distinguishes one from
+                    another. The badge here used to name one hardcoded source
+                    pack, which said nothing about the work. */}
+                <Badge variant="secondary">{project.primary_mode}</Badge>
                 <span>Updated {fmt(project.updated_at)}</span>
               </div>
             </Card>
@@ -258,7 +233,7 @@ export default function ProjectsPage() {
               <Input
                 value={newName}
                 onChange={e => setNewName(e.target.value)}
-                placeholder="e.g. Research paper on memory systems"
+                placeholder="e.g. Research memory systems"
                 onKeyDown={e => e.key === 'Enter' && createProject()}
               />
             </div>
@@ -307,34 +282,37 @@ export default function ProjectsPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Project Template</Label>
+              <Label>How does this Project advance?</Label>
               <div className="grid gap-2 sm:grid-cols-2">
-                {blankTemplateFirst(projectTemplates)
-                  .map(template => (
-                    <button
-                      key={template.key}
-                      type="button"
-                      className={[
-                        'rounded-md border p-3 text-left transition-colors',
-                        newTemplateKey === template.key
-                          ? 'border-primary bg-primary/5'
-                          : 'border-border bg-background hover:bg-muted/40',
-                      ].join(' ')}
-                      onClick={() => setNewTemplateKey(template.key)}
-                    >
-                      <div className="flex items-center gap-2">
-                        <FolderKanban className="size-4 text-accent-foreground" />
-                        <span className="text-sm font-medium">{template.name}</span>
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{template.description}</p>
-                    </button>
-                  ))}
+                {PRIMARY_MODE_CHOICES.map(choice => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    aria-pressed={newPrimaryMode === choice.value}
+                    className={[
+                      'rounded-md border p-3 text-left transition-colors',
+                      newPrimaryMode === choice.value
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border bg-background hover:bg-muted/40',
+                    ].join(' ')}
+                    onClick={() => setNewPrimaryMode(choice.value)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <FolderKanban className="size-4 text-accent-foreground" />
+                      <span className="text-sm font-medium">{choice.label}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{choice.detail}</p>
+                  </button>
+                ))}
               </div>
+              <p className="text-xs text-muted-foreground">
+                Every Area stays available whichever you pick; this decides what the Project shows first, and you can change it later.
+              </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => { setCreateOpen(false); resetForm() }}>Cancel</Button>
-            <Button onClick={createProject} disabled={creating || !newName.trim() || !templatesLoaded || !newTemplateKey}>
+            <Button onClick={createProject} disabled={creating || !newName.trim()}>
               {creating ? 'Creating…' : 'Create project'}
             </Button>
           </DialogFooter>

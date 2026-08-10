@@ -17,12 +17,12 @@ import { setResearchOperationState } from "./pipeline/operationProjectionWriter"
 import { researchQueryText } from "./pipeline/synthesisCoordinator";
 import { upsertPendingResearchCheckpoint } from "./checkpointWriter";
 
-const RESEARCH_AUTOMATION_PURPOSE = "academic_research_workflow_execution";
+const RESEARCH_AUTOMATION_PURPOSE = "project_research_workflow_execution";
 const MATERIALIZE_REPORT_ACTION_KEY = "project_research.materialize_report";
-const SYNTHESIS_ONLY_WORKFLOW_ID = "academic_literature_review.synthesis_only";
+const SYNTHESIS_ONLY_WORKFLOW_ID = "project_research.synthesis_only";
 
 /**
- * Dedicated synthesis-only execution-per-pass Workflow. The general Academic
+ * Dedicated synthesis-only execution-per-pass Workflow. The general Project
  * Research pipeline uses the same WorkflowExecution authority through
  * researchPassExecution.ts; this specialized pass exists because generating
  * an on-demand immutable snapshot has a smaller two-node graph.
@@ -45,7 +45,7 @@ export async function startSynthesisOnlyExecution(
       progress: state as unknown as Record<string, unknown>,
       steps: operationSteps().map((title, seq) => ({ title, status: derivedSteps.find((step) => step.seq === seq)?.status ?? "pending" })),
     });
-    const matrixArtifactId = await new ProjectResearchArtifactService(tx).ensureLiteratureMatrix({
+    const matrixArtifactId = await new ProjectResearchArtifactService(tx).ensureEvidenceMatrix({
       spaceId: identity.spaceId, projectId, workflowId: workflow.id, operationId: operation.id, ownerUserId: identity.userId,
     });
     const resolvedPrompt = await resolveProjectResearchSynthesisPrompt(tx, {
@@ -115,7 +115,7 @@ export async function findOrCreateResearchAutomation(
   return new PgAutomationRepository(db).create({
     spaceId: identity.spaceId,
     ownerUserId: identity.userId,
-    name: "Academic Research: Workflow Execution",
+    name: "Project Research: Workflow Execution",
     description: "System-managed Automation bridging Project Research operations to Workflow Executions. Never fired on a schedule; each pass is started directly by the Project Research pipeline.",
     agentId,
     projectId,
@@ -125,12 +125,11 @@ export async function findOrCreateResearchAutomation(
   });
 }
 
-const SYNTHESIS_ONLY_TEMPLATE_ASSET_KEY = "academic_literature_review.synthesis_only";
+const SYNTHESIS_ONLY_TEMPLATE_ASSET_KEY = "project_research.synthesis_only";
 
 /**
  * One approved `workflow_definition.v1` Workflow Version per Space, found or
- * created once (plan section 18: "the current pipeline becomes the Academic
- * Literature Review Workflow Template"). Its `content_json` is a generic,
+ * created once. Its `content_json` is a generic,
  * unresolved shape for audit/discoverability; the actual per-pass definition
  * (with the resolved synthesis instruction) lives on `workflow_executions.
  * definition_json`, materialized fresh by `synthesisOnlyDefinition` above —
@@ -152,7 +151,7 @@ async function findOrCreateSynthesisOnlyTemplateVersion(db: Queryable, identity:
     `INSERT INTO evolvable_assets (
        id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
        status, metadata_json, created_at, updated_at
-     ) VALUES ($1, $2, 'workflow_template', $3, 'Academic Literature Review — synthesis only', $4, 'space', $2, 'active', '{}'::jsonb, $5, $5)
+     ) VALUES ($1, $2, 'workflow_template', $3, 'Project Research — synthesis only', $4, 'space', $2, 'active', '{}'::jsonb, $5, $5)
      ON CONFLICT DO NOTHING`,
     [assetId, identity.spaceId, SYNTHESIS_ONLY_TEMPLATE_ASSET_KEY,
       "Synthesizes the current reviewed corpus into an immutable research report snapshot. See synthesisOnlyExecution.ts.", now],
@@ -200,7 +199,7 @@ function synthesisOnlyDefinition(input: {
   return {
     schema_version: "workflow_definition.v1",
     workflow_id: SYNTHESIS_ONLY_WORKFLOW_ID,
-    name: "Academic Literature Review — synthesis only",
+    name: "Project Research — synthesis only",
     description: "Synthesizes the current reviewed corpus into an immutable research report snapshot.",
     input_schema_json: {},
     output_artifact_types: ["research_report.archive.v1"],
@@ -298,7 +297,7 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     researchQuestionVersion: Number(metadata.research_question_version) || 1,
     report: validation.report,
     archiveArtifactId: validation.archive.id,
-    literatureMatrixArtifactId: optionalString(metadata.matrix_artifact_id),
+    evidenceMatrixArtifactId: optionalString(metadata.matrix_artifact_id),
   });
   const checkpointId = await upsertPendingResearchCheckpoint(context.db, {
     spaceId: context.identity.spaceId,

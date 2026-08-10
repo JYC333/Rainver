@@ -12,9 +12,14 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 
 **B3** — One deployment instance can host many spaces. Do not create one instance per user or one instance per space.
 
-**B4** — Space is the product-level isolation boundary. Data in space A must never be accessible to code running in the context of space B.
+**B4** — Space is the product-level isolation boundary. Data in space A must
+never be accessible to code running in the context of space B. The sole
+content-bearing exception is ADR 0013's enumerated, user-centred `/me/retrieval*`
+path: it has no request-Space authority, applies each source Space's read gate
+independently, persists retrieved content only as re-authorized pointers, and
+grants no write authority to another Space.
 
-**B5** — `space_id` is required on every core data entity. The ContextBuilder enforces this boundary; it refuses to build context without an explicit `space_id`.
+**B5** — `space_id` is required on every core data entity. Runtime Context acquisition and Delivery persistence require an explicit Space and reject cross-Space authority drift.
 
 ---
 
@@ -45,9 +50,35 @@ and remain subject to the Project ACL on every read.
 
 **B10** — Agents do not directly write active memory. All memory updates must go through the proposal → user approval → activation flow.
 
-**B11** — Every memory read must be logged in `MemoryReadTrace` (table `memory_access_logs`). These traces can feed evolution signals and memory-health experiences, but they do not bypass Memory read/write governance.
+**B11** — Successful reads of registered content are written to
+`content_access_logs` only when the viewer differs from the resource owner.
+The resource owner is the only default reader of that log. Audit records can
+feed health experiences, but never bypass domain read/write governance.
 
 **B12** — External chat capture (e.g. conversation imports) must create activity records first, not active memory.
+
+## Digest / Interest Boundaries
+
+**B54** — Serendipity feedback must never write back to the interest profile.
+The material the serendipity section surfaces is low-interest by construction,
+so any feedback path from it into interest weights or coverage shrinks the
+quota monotonically until the reader is back inside the bubble — and nothing
+looks broken while it happens. Serendipity feedback may drive only rotation
+cooldown on the surfaced domain and the reader's manual blocklist. The interest
+profile and the serendipity quota are two states that never write to each
+other. `server/src/modules/interestProfile/` must not read serendipity signals.
+
+**B55** — Serendipity gaps are computed against the code-owned domain skeleton,
+never against the reader's own coverage distribution. With their own history as
+the reference frame, "not yet encountered" can only be drawn from material their
+own sources already surfaced, and the source pool is itself a product of their
+interests — so the ceiling is the bubble the mechanism exists to break. The
+skeleton's independence from the reader is the property that makes it work, and
+is also why cold start needs no special case.
+
+**B56** — Per-user reading state leaves the individual only as an anonymous
+aggregate. Raw per-user reading records must not enter any shared read model,
+digest, or team report.
 
 ## Relationship / Provenance Boundaries
 
@@ -55,7 +86,7 @@ and remain subject to the Project ACL on every read.
 
 | Link meaning | Canonical writer/table |
 |---|---|
-| Both endpoints are `space_objects` and the edge is part of the durable graph | Proposal-gated `object_relations` |
+| Both endpoints are `space_objects` and the edge is part of the durable graph | `object_relations`, owned by the `ontology` module. Governance is declared per link type **and endpoint pair**, not per table: `supports` between two Threads is direct-write working structure, while `supports` between two Claims is a reviewed assertion ([ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) decision 3, amended) |
 | Curated KnowledgeItem/Claim citation or supporting evidence | `knowledge_item_sources` / `claim_sources`; citation lineage is not a canonical semantic graph edge |
 | Accepted asymmetric lineage with a non-object endpoint | `provenance_links`, or the owning domain's dedicated `*_sources` table |
 | MemoryEntry-to-MemoryEntry semantic relationship | `memory_relations`; its relation vocabulary is frozen and must not expand into general provenance |
@@ -66,30 +97,136 @@ and remain subject to the Project ACL on every read.
 Do not dual-write the same semantic edge to multiple tables. Do not add another
 generic relationship/provenance link table; extend the canonical table or add
 a narrowly owned domain join table only when its lifecycle is genuinely
-different.
+different. A join table whose columns and vocabulary duplicate
+`object_relations` does not qualify — differing endpoint tables is not a
+lifecycle difference.
 
 **B12B** — Polymorphic link rows are not proof that an endpoint still exists.
 Every writer validates endpoint space/access through the owning module, and
 every reader must tolerate deleted or inaccessible endpoints without treating
 the link as canonical object existence.
 
-**B12C** — New Project-domain aggregates (Inquiry Thread, Experiment,
-Decision Case, and their state/relation tables) are never `space_objects`
-rows and never write `object_relations`. They use their own explicit,
-narrowly-owned FK link tables (e.g. `inquiry_thread_relations`,
-`inquiry_thread_note_links`, `experiment_thread_links`,
-`decision_thread_links`). Cross-domain navigation/discovery association that
-is not a business relationship is served by `retrieval_edges` (rebuildable,
-non-authoritative), not by a new generic association table. See
-[ADR 0011](decisions/0011-domain-owned-inquiry-model.md).
+---
+
+## Ontology Boundaries
+
+These invariants are accepted in
+[ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) and
+[ADR 0011](decisions/0011-inquiry-domain-model.md), and are enforced in code as
+of 2026-08-05 — the pre-migration shape is gone. `test/ontologyRegistry.test.ts`
+and the `space_objects` writer guard are what keep them enforced; a new domain
+joining the ontology registers into the same registries rather than
+re-implementing the rules.
+
+**B12C** — A domain table becomes a `space_objects` row if and only if it is an
+**aggregate root**: it has independent identity, is referenced by other
+domains, or needs its own visibility. Revision histories, event streams, typed
+state rows, per-user working state, and internal configuration are not objects
+— they are internal structure of an aggregate and stay domain-private. Project
+domain aggregate roots (Inquiry Thread, Experiment, Decision Case) are
+`space_objects` rows; their internal tables are not.
+
+**B12D** — A field belongs on `space_objects` only if a **cross-domain
+mechanism reads it**. "Every domain has this field" is not a reason. The root
+carries identity, visibility/access level, ownership, project scope,
+created-by provenance, and archive/delete timestamps, because the read gate,
+retrieval, graph projection, and provenance queries read them. Domain
+lifecycle state (`status` and its state machine) belongs to the owning
+extension table.
+
+**B12E** — The root is ignorant of its subtypes. `space_objects` must not carry
+constraints, defaults, or predicates that branch on `object_type`. A change
+that requires editing a root-table constraint to add a domain is the signal
+that the field is misplaced under B12D.
+
+**B12F** — Behaviour-determining ontology definitions live in **code**:
+`object_type`, `link_type`, per-link-type governance level, endpoint
+constraints, and interface declarations. Each requires an implementation to
+honour it, so it is declared in a registry that modules — including plugins —
+register into, not in per-space data. Presentation- and
+organisation-determining definitions live in **data**: `object_profile`, field
+schema, UI config, retrieval policy, and relation hints. Their absence
+degrades presentation; it must never produce incorrect behaviour. Closed-set
+validation is the registry's job; the database keeps only format constraints.
+
+**B12G** — Participation in a cross-cutting mechanism is declared as an
+**interface** in one registry (`ContentAccessible`, `Retrievable`,
+`Graphable`, `Evidenceable`, `ContextIncludable`, `CardSourceable`,
+`ProvenanceSourceable`, `Governed`). Its subject is
+an **Entity** — `space_objects` subtypes and independent roots such as `run`,
+`proposal`, `artifact`, `activity_record`, and `task` alike; unification never
+requires a domain to become a `space_objects` row. Each interface states its
+own declaration granularity: `ContentAccessible` is declared once for
+`space_object` and covers every subtype, `Retrievable` is declared per
+`object_type`. **Do not add a parallel per-mechanism type list.** Every
+declared interface must have an implementation, asserted by test.
+
+A client-facing copy in `packages/protocol` is the one sanctioned duplicate:
+the registry is server-side and holds SQL (table names, status columns, access
+predicates), and the protocol package is ESM against a CJS server, so a value
+import on a write path would mean a dynamic import per call. The copy is
+allowed **only with a server-side test pinning it to the registry** —
+`NOTE_LINK_TARGET_TYPE_VALUES` and `NOTE_PROJECT_ROLE_VALUES` are the pattern.
+A copy without that test is a violation, not a shortcut: a hand-maintained list
+drifting from its backend is the defect this section exists to prevent, and the
+test is the entire difference between a projection and a fork. Prefer no copy
+at all where protocol already owns the declaration — the Note selection bar
+reads `systemActionsForObjectType` directly and keeps only its own wording.
+
+**B12I** — The `ontology` module owns the ontology's own definitions and
+storage: the Object Type / Link Type / entity registries and their interface
+declarations, registry-backed validation, polymorphic status resolution, and
+the `space_objects` / `object_relations` / `space_object_profiles` reads and
+proposal writes. It does **not** own the tables of the domains that register
+into it — those modules register their own entities and supply their own
+implementations, as with `ProposalApplierRegistry`. `ontology` must never take
+ownership of a domain table merely because that domain is registered.
+
+Where a shared concern genuinely spans both — proposal creation, Claim lookup —
+it is passed in as an explicit seam rather than duplicated or absorbed, so the
+dependency direction stays visible.
+
+**B12H** — Ontology objects owned by a Project carry a non-null
+`primary_project_id`, enforced by constraint. The content read gate's scope
+predicate treats a null project as "no Project restriction", so a null value
+silently bypasses Project membership. Any projection over `object_relations`
+must not expose pre-filter counts or near-miss signals for edges whose
+endpoints the viewer cannot read.
+
+`space_objects` rows are written **only** through `db/spaceObjectWriter.ts`,
+which is where these creation-time rules live: `requiresProjectScope` per
+entity, validated `visibility` / `access_level` (defaulting to `space_shared`),
+title truncation at the column width, at least one of user / agent / run
+provenance, and a registered ontology `object_type`. A rule enforced at eleven
+call sites is a rule that will be missed at the twelfth, and the miss is silent
+— it produces an object readable by the wrong people or traceable to nobody. A
+guard test fails if any other code writes the table. Reads follow the same
+shape: a visibility rule applied to a list route and not to the shared
+single-object lookup behind the mutations is not a rule, because a caller can
+then mutate what it cannot see.
 
 ---
 
 ## Execution Boundaries
 
-**B13** — `_SANDBOXED_ADAPTERS` (claude_code, codex_cli, and future coding runtimes) are always sandboxed. Low/medium-risk Project Folder reads use the rootless bubblewrap `read_only` mount boundary; high-risk file-access CLI runs use a git worktree + local executor; critical local-CLI runs use the one-shot Docker executor. Namespace/Docker failures are fail-closed rather than silently downgraded. An agent can escalate `risk_level` but cannot remove an adapter from `_SANDBOXED_ADAPTERS`.
+**B13** — Every file-capable runtime-adapter invocation (including credential
+PTY and quota probe paths) crosses the typed Sandbox Runner boundary. Runtime
+adapter callers may send runtime/tool/scope identifiers and managed mount ids,
+but never an executable command, shell string, image, host path, or ambient
+environment map. Deterministic Verification Engine checks use a separate typed
+`verification` launch: it carries the immutable recipe argv and one managed
+workspace id, with no shell, ambient environment, runtime-tool mount, provider
+channel, or network. The Runner constructs an empty-root namespace and fails
+closed on request, mount, connection, or namespace failure; there is no
+application-server subprocess fallback.
 
-**B14** — Vendor context files (CLAUDE.md, AGENTS.md, Cursor rules) are generated artefacts written by ContextCompiler to a server-owned sandbox/staging directory. They are not the source of truth and are never written directly to the real Project Folder.
+**B14** — Runtime Context Delivery is the only model-visible context input for
+managed Runs and CLI invocations. Adapters may render an accepted Delivery at
+their invocation boundary but must not fetch, reorder, rebudget, cache, or copy
+it into vendor context files. Vendor control files used solely to disable an
+unsupported runtime feature may exist only in the private execution sandbox;
+real Project Folder files such as `CLAUDE.md` and `AGENTS.md` are never runtime
+context outputs or sources of truth.
 
 **B15** — Formal agent runs (automated, tracked, sandbox-enforced) must go through agent-space managed mode. IDE plugin usage is assist/manual mode — it is not tracked the same way.
 
@@ -131,7 +268,7 @@ profile records remain the source of truth.
 
 **B23** — The frontend is not an admin-only console. It is the primary user-facing product surface including personal use (capture, review, knowledge reading, assistant chat). Design for non-technical users.
 
-**B24** — Raw capture inputs (quick thoughts, inbox drops, file imports, chat captures) must enter via `ActivityRecord` first. Editor-owned user documents such as Notes and diary entries are durable product documents, not raw input records, and may write their owning domain tables directly. Any extraction from those documents into Memory, KnowledgeItem, ContextBuilder, or FlashCard must still go through the proposal/sources flow. KnowledgeItem rows must not automatically enter Memory or ContextBuilder.
+**B24** — Raw capture inputs (quick thoughts, inbox drops, file imports, chat captures) must enter via `ActivityRecord` first. Editor-owned user documents such as Notes and diary entries are durable product documents, not raw input records, and may write their owning domain tables directly. Any extraction from those documents into Memory, KnowledgeItem, Runtime Context acquisition, or FlashCard must still go through the proposal/sources flow. KnowledgeItem rows must not automatically enter Memory or an accepted Runtime Context Delivery.
 
 **B24A** — The Activity Inbox holds pointers, never content. Any module that wants user attention delivers a clearable notification row into `ActivityRecord`; the content itself lives in that module's own reading surface (e.g. Sources-derived digests read in Library, not in Inbox). Inbox rows disappear when handled; the underlying content stays where it lives and remains revisitable from its owning surface.
 

@@ -161,8 +161,8 @@ function childDraft(candidate: Record<string, unknown>, context: ProposalApplyCo
   if (proposalType === "object_relation_create") {
     const fromObjectId = stringValue(action.from_object_id);
     const toObjectId = stringValue(action.to_object_id);
-    const relationType = stringValue(action.relation_type);
-    if (!fromObjectId || !toObjectId || fromObjectId === toObjectId || !relationType) return null;
+    const linkType = stringValue(action.link_type);
+    if (!fromObjectId || !toObjectId || fromObjectId === toObjectId || !linkType) return null;
     return {
       ...common,
       proposalType: "object_relation_create",
@@ -171,7 +171,7 @@ function childDraft(candidate: Record<string, unknown>, context: ProposalApplyCo
         operation: "object_relation_create",
         from_object_id: fromObjectId,
         to_object_id: toObjectId,
-        relation_type: relationType,
+        link_type: linkType,
         status: "active",
         confidence: numericOrNull(action.confidence),
         evidence_summary: stringValue(action.evidence_summary) ?? "Discovered candidate relation.",

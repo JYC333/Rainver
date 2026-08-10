@@ -96,7 +96,7 @@ export class ProjectResearchScreeningCoordinator {
       kind: "no_source_items",
       source_item_count: 0,
       detected_at: now,
-      message: "Search completed, but no papers matched the selected source and history window.",
+      message: "Search completed, but no material matched the selected source and history window.",
     };
     state.current_stage = "complete";
     state.stage_state = "skipped";
@@ -133,14 +133,14 @@ export class ProjectResearchScreeningCoordinator {
         );
         const workflow = await db.query<{ state_json: unknown }>(
           `SELECT state_json FROM project_research_workflows
-            WHERE space_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE`,
+            WHERE space_id=$1 AND project_id=$2 AND object_id=$3 FOR UPDATE`,
           [operation.space_id, operation.project_id, state.workflow_id],
         );
         const ranges = historyCoverage(workflow.rows[0]?.state_json).map((range) =>
           range.operation_id === operation.id ? { ...range, status: "completed" as const } : range,
         );
         await db.query(
-          `UPDATE project_research_workflows
+          `WITH changed AS (UPDATE project_research_workflows
               SET status='paused', current_stage='initial_intake_setup',
                   state_json=jsonb_set(
                     jsonb_set(
@@ -150,9 +150,10 @@ export class ProjectResearchScreeningCoordinator {
                       '{last_empty_result}',$4::jsonb,true
                     ),
                     '{coverage_ranges}',$5::jsonb,true
-                  ),
-                  updated_at=$6
-            WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+                  )
+            WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+           UPDATE space_objects object SET updated_at=$6 FROM changed
+            WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
           [operation.space_id, operation.project_id, state.workflow_id,
             JSON.stringify(state.empty_result), JSON.stringify(ranges), now],
         );
@@ -301,10 +302,10 @@ export class ProjectResearchScreeningCoordinator {
     const message = phase === "failed"
       ? "A screening batch failed; retry is available from the research operation."
       : phase === "ready_for_review"
-        ? `All ${classifiedItems.toLocaleString()} papers are classified. The screening review is ready.`
+        ? `All ${classifiedItems.toLocaleString()} items are classified. The screening review is ready.`
         : phase === "screening_batches"
-          ? `${runningBatches > 0 ? "Screening" : queuedBatches > 0 ? "Queued for screening" : "Waiting for"} batch ${Math.min(completedBatches + 1, totalBatches)} of ${totalBatches} · ${classifiedItems}/${totalItems} papers classified.`
-          : `Preparing ${totalItems.toLocaleString()} papers for screening in batches of ${SOURCE_POST_PROCESSING_LIMITS.researchStructuredOutputBatchSize}.`;
+          ? `${runningBatches > 0 ? "Screening" : queuedBatches > 0 ? "Queued for screening" : "Waiting for"} batch ${Math.min(completedBatches + 1, totalBatches)} of ${totalBatches} · ${classifiedItems}/${totalItems} items classified.`
+          : `Preparing ${totalItems.toLocaleString()} items for screening in batches of ${SOURCE_POST_PROCESSING_LIMITS.researchStructuredOutputBatchSize}.`;
     return {
       phase,
       total_items: totalItems,

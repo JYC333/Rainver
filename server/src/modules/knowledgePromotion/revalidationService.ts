@@ -143,7 +143,8 @@ async function processEvent(db: Queryable, event: OutboxEventRow): Promise<Recor
     if (already.rows[0]) continue; // already processed for this item — idempotent
 
     const status = await db.query<{ status: string }>(
-      `SELECT status FROM space_objects WHERE id=$1 AND space_id=$2`,
+      // Knowledge status moved to `knowledge_items` (B12D).
+      `SELECT status FROM knowledge_items WHERE object_id=$1 AND space_id=$2`,
       [item.object_id, event.space_id],
     );
     let outcome: "no_impact" | "candidate_created" | "already_superseded";

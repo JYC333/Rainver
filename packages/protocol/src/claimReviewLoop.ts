@@ -139,7 +139,7 @@ export const ClaimContradictionProposedActionSchema = z
     proposal_type: z.literal("object_relation_create"),
     from_object_id: IdSchema,
     to_object_id: IdSchema,
-    relation_type: z.literal("contradicts"),
+    link_type: z.literal("contradicts"),
     confidence: z.number().min(0).max(1),
   })
   .strict();

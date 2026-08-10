@@ -37,7 +37,7 @@ export interface RetrievalChunk {
 export interface RetrievalEdge {
   from: RetrievalObjectRef;
   to: RetrievalObjectRef;
-  relationType: string;
+  linkType: string;
   edgeOrigin: string;
   edgeStatus: "derived" | "suggested";
   confidence: number;
@@ -46,7 +46,7 @@ export interface RetrievalEdge {
 
 export interface RetrievalTrace {
   // Counts over the final visible result set only. These numbers are recomputed
-  // after live read/source-policy revalidation so object_kind filters cannot be
+  // after live read/source-policy revalidation so object_profile filters cannot be
   // used to infer hidden or source-policy-denied candidate distributions.
   arms: Record<string, number>;
   // Aggregate counts only for visible-set post-processing drops. We intentionally
@@ -90,12 +90,12 @@ export interface SearchCandidate {
   objectType: RetrievalObjectType;
   objectId: string;
   /**
-   * Active governed object_kind from space_object_kinds when the projected row
+   * Active governed object_profile from space_object_profiles when the projected row
    * matches an active registry definition. Null means either the canonical row
    * has no kind or the projected kind is not active in the space registry.
    */
-  objectKind?: string | null;
-  objectKindLabel?: string | null;
+  objectProfile?: string | null;
+  objectProfileLabel?: string | null;
   title: string;
   snippet: string | null;
   matchedFields: string[];
@@ -157,7 +157,7 @@ export interface CanonicalObject {
   ownerUserId: string | null;
   visibility: string | null;
   status: string;
-  objectKind: string | null;
+  objectProfile: string | null;
   aliases: string[];
   text: string;
   /** Source connection ids resolved by the domain adapter at projection time. */

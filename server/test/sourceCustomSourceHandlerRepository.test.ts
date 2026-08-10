@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { loadConfig } from "../src/config";
 import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository";
 import { HttpError } from "../src/modules/routeUtils/common";
@@ -40,6 +40,7 @@ beforeAll(async () => {
     repo = new PgCustomSourceHandlerRepository(pool, loadConfig({}));
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[source-custom-source-handler-repository] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)

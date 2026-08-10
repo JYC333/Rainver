@@ -280,7 +280,7 @@ function contradictionReportCandidates(
         ?? "Contradiction scan flagged two visible active claims about the same subject as conflicting.",
       fromClaimId,
       toClaimId,
-      relationType: "contradicts",
+      linkType: "contradicts",
       confidence: numericValue(action.confidence, 0.4),
       markers: {
         contradiction: true,
@@ -457,7 +457,7 @@ function maintenanceCandidates(
         reason: stringValue(finding.reason) ?? "Maintenance found likely duplicate objects.",
         fromObjectId: fromId,
         toObjectId: toId,
-        relationType: "same_as",
+        linkType: "same_as",
         confidence: 0.55,
         markers: { duplicate: true },
         sourcePolicySnapshots,
@@ -477,7 +477,7 @@ function maintenanceCandidates(
         reason: stringValue(finding.reason) ?? "Maintenance found a relation candidate.",
         fromObjectId: fromId,
         toObjectId: toId,
-        relationType: "related_to",
+        linkType: "related_to",
         confidence: 0.5,
         markers: { relation_suggestion: true },
         sourcePolicySnapshots,
@@ -551,7 +551,7 @@ function contradictionRelation(
     reason: firstString(item, ["reason", "summary", "text"]) ?? "Context Brief identified two claims that may contradict each other.",
     fromClaimId,
     toClaimId,
-    relationType: "contradicts",
+    linkType: "contradicts",
     confidence: numericValue(item.confidence, 0.4),
     markers: { contradiction: true },
     sourcePolicySnapshots,
@@ -565,7 +565,7 @@ function claimRelationAction(input: {
   reason: string;
   fromClaimId: string;
   toClaimId: string;
-  relationType: string;
+  linkType: string;
   confidence: number;
   markers: Record<string, unknown>;
   sourcePolicySnapshots: Record<string, unknown>;
@@ -575,7 +575,7 @@ function claimRelationAction(input: {
     operation: "object_relation_create",
     from_object_id: input.fromClaimId,
     to_object_id: input.toClaimId,
-    relation_type: input.relationType,
+    link_type: input.linkType,
     status: "candidate",
     confidence: input.confidence,
     evidence_summary: input.reason,
@@ -719,7 +719,7 @@ function objectRelationAction(input: {
   reason: string;
   fromObjectId: string;
   toObjectId: string;
-  relationType: string;
+  linkType: string;
   confidence: number;
   markers: Record<string, unknown>;
   sourcePolicySnapshots: Record<string, unknown>;
@@ -729,7 +729,7 @@ function objectRelationAction(input: {
     operation: "object_relation_create",
     from_object_id: input.fromObjectId,
     to_object_id: input.toObjectId,
-    relation_type: input.relationType,
+    link_type: input.linkType,
     status: "candidate",
     confidence: input.confidence,
     evidence_summary: input.reason,

@@ -112,25 +112,31 @@ export interface ResearchOperationState {
   synthesis_run_id: string | null;
   comparison_run_id?: string | null;
   comparison_source_item_ids?: string[];
-  // Papers not yet submitted in a comparison batch. Comparing many papers in
+  // Material not yet submitted in a comparison batch. Comparing many items in
   // one structured-output call is unreliable (models drop, duplicate, or
   // invent source_item_ids), so each batch covers only
-  // comparison_source_item_ids (BATCH_SIZE papers, or 1 once degraded); this
+  // comparison_source_item_ids (BATCH_SIZE items, or 1 once degraded); this
   // holds the rest until their own batch runs.
   comparison_pending_source_item_ids?: string[];
-  // Papers a batch response didn't produce a valid, matching entry for.
+  // Material a batch response didn't produce a valid, matching entry for.
   // Retried one at a time (never re-batched) once the pending pool is
-  // empty, so one bad paper in an otherwise-good batch doesn't cost the
+  // empty, so one bad item in an otherwise-good batch doesn't cost the
   // whole batch a retry. An id that still has no valid entry after its
   // solo retry is simply left without a stance — it is not requeued again.
   comparison_failed_source_item_ids?: string[];
-  // Set once a single batch response matches none of the papers sent to it
+  // Set once a single batch response matches none of the items sent to it
   // (see MonitorComparison — a stronger signal than one bad entry that
   // batching itself isn't working right now, e.g. a model returning
-  // fabricated content unrelated to any paper actually sent). From then on,
-  // every remaining paper for this operation — pending or failed — is sent
+  // fabricated content unrelated to any item actually sent). From then on,
+  // every remaining item for this operation — pending or failed — is sent
   // one at a time instead of batched.
   comparison_degraded?: boolean;
+  // The notebook role the comparison needs a note in and this project has
+  // none for (N2 — normally `understanding`). Set when the stage stops for
+  // want of a baseline rather than for want of material, and cleared as soon as
+  // a batch queues, so "no comparison happened" always carries its reason
+  // instead of looking like an empty scan.
+  comparison_missing_baseline_role?: string;
   // Batches already validated, accumulated here until the pending and
   // failed pools are both empty and they are persisted together in one write.
   comparison_results_json?: Array<{
@@ -440,9 +446,13 @@ async function syncWorkflowStage(tx: Queryable, row: ResearchOperationRow, state
       ? state.current_stage
       : null;
   if (!stage) return;
+  const now = new Date().toISOString();
   await tx.query(
-    `UPDATE project_research_workflows SET current_stage=$4, updated_at=$5 WHERE space_id=$1 AND project_id=$2 AND id=$3`,
-    [row.space_id, row.project_id, state.workflow_id, stage, new Date().toISOString()],
+    `WITH changed AS (UPDATE project_research_workflows SET current_stage=$4
+      WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
+     UPDATE space_objects object SET updated_at=$5 FROM changed
+      WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
+    [row.space_id, row.project_id, state.workflow_id, stage, now],
   );
 }
 
@@ -558,7 +568,7 @@ export function researchStage(value: unknown): ResearchStage {
 }
 
 export function operationSteps(): string[] {
-  return ["Resolve literature monitors", "Import history or scan delta", "Review screening", "Compare or synthesize evidence", "Review idea candidates"];
+  return ["Resolve source monitors", "Import history or scan delta", "Review screening", "Compare or synthesize evidence", "Review idea candidates"];
 }
 
 export function researchStageIndex(value: unknown): number {

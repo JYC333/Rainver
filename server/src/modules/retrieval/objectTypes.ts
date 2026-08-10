@@ -1,7 +1,7 @@
 import type { RetrievalObjectType } from "./types";
 
 // Server-side copy of the fixed retrieval boundary. Keep this closed; per-space
-// object schema may define object_kind values under these base object types only.
+// object schema may define object_profile values under these base object types only.
 export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "knowledge_item",
   "note",

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config";
 import { migrate } from "../src/db/migrator";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { ProjectResearchExecutionProfileService } from "../src/modules/projectResearch/executionProfileService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
@@ -51,6 +51,7 @@ beforeAll(async () => {
     );
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-execution-profile-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);

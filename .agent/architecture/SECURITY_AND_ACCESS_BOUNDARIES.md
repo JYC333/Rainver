@@ -62,6 +62,45 @@ second; owner, visibility, and explicit grants are evaluated last. Visibility
 has exactly three values: `private`, `space_shared`, and `selected_users`.
 Unknown values fail closed.
 
+Invocation Delivery and safe Invocation Snapshot records contain references,
+budget decisions, semantic roles, and content hashes, not rendered prompt or
+context bodies. Optional raw replay is stored only as a separately encrypted
+Sealed Payload under a positive immutable retention control. It has no normal
+product read path: a dedicated authorizer must revalidate and lock permission in
+the payload-read transaction, successful plaintext access is audited before the
+read returns, and deleted, expired, unauthorized, metadata-tampered, or
+cross-Space reads fail closed.
+
+### Creation context
+
+User-initiated content creation has one access-owned authority:
+`resolveContentCreationContext`. It resolves Space, Project scope, and initial
+visibility as one decision. A creation inside an active Project requires a
+Project writer and produces `(project.space_id, project.id, space_shared)`.
+A creation with no Project context ignores the browsed Space and produces
+`(the user's unique Personal Space, null, private)`. Request-supplied
+`space_id` and `visibility` never override this result.
+
+This rule applies across root resource types, including Agent/template
+creation, Runs and conversations, Activity, Tasks/Boards, Memory,
+Knowledge/Notes, Sources, and relation/academic objects. System materialization
+and child-resource writes, including Reader annotations, do not invent a new
+context: they inherit the source row's Space, Project, owner, visibility,
+access level, and grants.
+
+Reader annotations are the one deliberate exception (ADR 0013 decision 3a).
+They inherit their document's Project scope but default to `private` even on a
+`space_shared` document, because a margin note is personal marginalia and full
+inheritance would publish it the moment it is typed. The author may opt in to a
+wider visibility, bounded by the document's own — an annotation can never be
+more widely visible than the thing it annotates — and grants are inherited only
+when the annotation itself is `selected_users`.
+
+The user-facing access ladder is **only me → in this project → whole Space**;
+`selected_users` is a separate explicit share. Moving an existing row into
+another Project remains an explicit filing operation, and filing a personal
+capture into a Project is `POST /me/filings` (section 8e).
+
 The canonical in-memory decision, SQL predicate, resource registry, and grant
 query live under `server/src/modules/access/contentAccess*.ts`. Explicit grants
 are normalized in `content_access_grants`; module-local owner/visibility SQL is
@@ -84,6 +123,74 @@ and project scope are independent from visibility. Space owner/admin roles may
 manage access policy but do not bypass read policy **by default**; the single
 exception is the creation-time, immutable Space oversight mode (below), scoped
 to reads within that Space.
+
+Every persisted context-snapshot item records the source content's owner and
+visibility. The Run aggregates those rows into `context_taint_json`: the
+narrowest input visibility and the distinct owners other than the instructing
+user. Durable Run outputs consume that summary. An output influenced by another
+user defaults to `selected_users` for the instructing user and contributing
+owners; a direct visibility widening is rejected. Publication to the whole
+Space uses an `egress_review` proposal and requires an unrevoked
+`egress_granting_user` approval from every contributing owner before the
+proposal applier may widen the target.
+
+Successful reads through the registered content boundary are privacy-audited
+in `content_access_logs` only when `viewer_user_id <> owner_user_id`; a database
+CHECK makes owner-read rows impossible. Retrieval audits only final,
+live-revalidated results, never filtered candidates. Ordinary detail reads audit
+through `recordDetailRead` (`access_type = 'detail_read'`) on Task, Activity,
+Artifact, and note/`space_object` fetches, so a demotion disclosure does not
+report an empty reader list for content that is read through a detail endpoint
+rather than through retrieval. The resource owner is the
+only default reader of these logs (`GET
+/api/v1/content-access/{resource_type}/{resource_id}/access-logs`). The existing
+retention scheduler prunes this shared table.
+
+Visibility demotion is forward-only. Narrowing a resource first requires an
+owner-only disclosure request that lists recorded readers, Runs whose immutable
+Invocation Snapshot source refs consumed the resource, and artifacts/proposals from those Runs
+that remain non-private, with UI links. The subsequent policy update must carry
+the short-lived confirmation id. Confirmation locks the disclosure, recomputes
+the exposure inside the policy transaction, rejects any changed snapshot, and
+consumes the id atomically with the update. Admin policy-management authority
+does not authorize confirming another owner's demotion.
+
+### Additional project scope (cross-Project sharing)
+
+Project scope is the one gate a per-user grant cannot reach past: it is a hard
+AND evaluated before visibility and grants, so an object owned by Project A is
+unreadable to a non-member of A however many grants exist. Widening it therefore
+needs its own term, declared rather than hand-written (B12G).
+
+`ContentAccessibleDeclaration.projectShare` names a table, a resource column, a
+project column and a revoked column; the registry composes an `OR EXISTS (…)`
+inside the project-scope conjunct from those identifiers, and callers never pass
+SQL. Exactly one resource declares it — `space_object`, backed by
+`space_object_project_shares`. **Where it is not declared the term is not
+emitted at all**, so every other resource's predicate is unchanged rather than
+equivalent (`server/test/contentProjectShareDeclaration.test.ts`).
+
+What a share is and is not:
+
+- It widens **scope only**. `visibility`, `access_level` and
+  `content_access_grants` are separate conjuncts evaluated afterwards, so
+  sharing a `private` object into a Project does not make that Project's members
+  able to read it. A share removes the Project barrier; it is not a grant, and
+  it carries no access level.
+- **Governance ownership does not move.** `primary_project_id` stays with the
+  Project that first held the object.
+- Both directions are writes: opening an object to a Project requires write
+  access to that Project *and* to the one that owns the object, so a member of B
+  cannot pull A's note into B.
+- It is never a side effect. The note placement path refuses a cross-Project
+  placement with `409 note_cross_project_share_required` until the caller
+  re-issues with the share confirmed, and the drag/reorder path refuses
+  outright — a permission change must not be disguised as a drag.
+- Revoking withdraws the share **and** the object's placements inside that
+  Project's folder subtree, so that Project's tree is never left with rows its
+  members cannot read.
+
+Boundary coverage: `server/test/noteCrossProjectShareDb.test.ts`.
 
 On `space_shared` resources, `content_access_grants` rows are per-user
 disclosure *upgrades*, not narrowing: the effective level is the widest of the
@@ -324,16 +431,12 @@ assistant can surface cross-project inspiration. Only the sanitized,
 space-public summary is read; concrete project memory remains behind the
 `project_members` ACL.
 
-**Runtime:** project-scoped memory is cut before runtime/chat prompt assembly.
-The per-run `ContextBuilder` retriever enforces the project cut (a run bound to
-project P injects P's memory only if `instructed_by_user_id` can access P, plus
-project-free memory; a no-project run injects project-free memory only). Chat /
-assistant context candidates apply the same project-membership ACL after
-`canReadMemory`, so concrete project memory is only available for projects the
-viewer can access. Shared `ContextDigest` generation and consumption exclude
-`project_id IS NOT NULL` memory; project memory only flows through gateable
-per-run/chat retrieval. Memory retrieval search is current-space only;
-cross-space memory retrieval is not implemented.
+**Runtime:** Runtime Context acquisition applies the Project cut before planning
+or rendering. A Run bound to Project P may acquire P's Memory only when the
+`instructed_by_user_id` can access P, plus Project-free Memory; a Run without a
+Project acquires Project-free Memory only. The Gateway reauthorizes those rows
+again when persisting the Delivery. Memory retrieval remains current-Space only;
+cross-Space Memory retrieval is not implemented.
 
 ---
 
@@ -390,6 +493,60 @@ user-centered objects that span two spaces by design: the personal space (where 
 memory lives) and the target space (where the run executes). Authority is `granting_user_id`
 throughout.
 
+### 8e. Personal aggregated retrieval
+
+The content-bearing cross-Space exception is restricted to this explicit route
+set; no ordinary detail, list, search, context-build, or mutation route inherits
+it:
+
+- `POST /me/retrieval/search`
+- `POST /me/retrieval/pointers/resolve`
+- `POST /me/retrieval/summaries`
+- `POST /me/retrieval/egress/disclose`
+- `POST /me/retrieval/fused-conclusions`
+- `POST /me/filings`
+
+`POST /me/filings` is the personal-capture filing path, and it carries content
+in the opposite direction. It reads nothing across the boundary: it loads a
+capture the caller owns in their own personal Space, re-checks writer authority
+on the target Project through `resolveContentCreationContext`, and creates a new
+object there. The capture is neither copied nor moved — it stays put, is marked
+`processed`, and records where it went in `payload_json.filed_into`.
+
+The retrieval route enumerates the protocol retrieval vocabulary and executes a
+separate `RetrievalSearchService` pass for every active member Space. Each
+domain adapter revalidates against the resource in that source Space; its
+`contentAccessSql` membership, scope, visibility, grant, access-level, and
+oversight rules are never replaced by a union predicate. Single-resource routes
+remain same-Space and return 404 across the boundary.
+
+Only `(resource_space_id, resource_type, resource_id)` rows persist in
+`cross_space_retrieval_pointers`; titles, snippets, excerpts, and synthesized
+text are absent. Pointer resolution calls the owning adapter's live
+`revalidate`, so membership or grant revocation takes effect without cleanup.
+The user's query may persist in the pointer session because it is their own
+message, not retrieved source content.
+
+A summary whose pointers all resolve to one source Space is stored as an
+owner-private artifact in that Space. A multi-Space conclusion is never written
+by retrieval. Explicit storage requires a prior, unconsumed, short-lived
+disclosure covering the exact pointer set; the private artifact lands in the
+user's Personal Space with lineage. The same transaction writes one
+`content_egress_records` row per source Space. Egress rows and member
+notifications contain only actor/time/source-pointer metadata, never conclusion
+text.
+
+`spaces.egress_notifications_enabled` is mutable; Team Space creation sets it
+on, while Personal/Household creation leaves it off. A real setting change
+through `PATCH /spaces/{spaceId}/egress-notifications` creates a notification
+for every active member and affects only later actions. An idempotent update
+does not emit a duplicate notification. A
+fused-store disclosure returns each source Space's captured setting before the
+explicit store action; a setting change invalidates that disclosure and requires
+redisclosure. Enabled source Spaces broadcast the resulting pointer-only egress
+notification. `/me/notifications` returns only notifications for Spaces where
+the recipient remains an active member.
+
 ---
 
 ## 9. Credential, Provider, and Runtime Secrecy
@@ -423,6 +580,11 @@ throughout.
 ## 10. Project Folder and Artifact Path Safety
 
 **Project Folder file access** (`server/src/modules/projectFolders/repository.ts`):
+- A registered Project Folder is one shared workspace with no personal area.
+  Its whole root is available to Project-authorized readers and mounted
+  read-only into CLI sandboxes; personal material belongs in database-backed
+  personal content. File-level ACLs are intentionally not a second source of
+  truth for an externally mutable filesystem.
 - `PathPolicy` (`server/src/modules/projectFolders/pathPolicy.ts`) is enforced before any disk access.
 - `project_folder.read` policy is enforced before tree/file/status/diff reads.
 - Protected-Folder, external-root, protected/restricted, full-diff, and secret-like

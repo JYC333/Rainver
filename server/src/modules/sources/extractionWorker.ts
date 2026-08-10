@@ -19,6 +19,7 @@ import {
   emitSourcePostProcessingDeepAnalysisEvent,
   emitSourcePostProcessingEvent,
 } from "./postProcessing/eventEmitter";
+import { enqueueItemsForAnnotation } from "../sourceAnnotation";
 import {
   reindexExtractedEvidenceAndParentForRetrieval,
   reindexSourceItemAndEvidenceForRetrieval,
@@ -60,6 +61,7 @@ interface ExtractionJobRow {
 interface SourceItemRow {
   id: string;
   space_id: string;
+  project_id: string | null;
   connection_id: string | null;
   source_uri: string | null;
   canonical_uri: string | null;
@@ -375,6 +377,12 @@ export class SourceExtractionWorker {
       sourceChannelId: connection.channel_id,
       newItemCount: result.created,
     });
+    await enqueueItemsForAnnotation(this.db, {
+      spaceId: job.space_id,
+      sourceChannelId: connection.channel_id,
+      sourceConnectionId: connection.id,
+      newItemCount: result.created,
+    });
     if (!isBackfillJob(job)) {
       await this.notifyResearchScanCompleted(
         job,
@@ -565,6 +573,7 @@ export class SourceExtractionWorker {
          FROM source_items
         WHERE space_id = $1
           AND deleted_at IS NULL
+          AND project_id IS NOT DISTINCT FROM $12
           AND (
             ($2::text IS NOT NULL AND canonical_uri = $3::text)
             OR ($4::text IS NOT NULL AND metadata_json->>'arxiv_id' = $4::text)
@@ -585,6 +594,7 @@ export class SourceExtractionWorker {
         input.contentHash,
         input.connection.id,
         input.contentHash,
+        input.connection.project_id,
       ],
     );
     const policy = capturePolicyScanState(input.connection.capture_policy);
@@ -614,13 +624,13 @@ export class SourceExtractionWorker {
       itemId = randomUUID();
       await this.db.query(
         `INSERT INTO source_items (
-           id, space_id, connection_id, item_type, title, source_uri, canonical_uri,
+           id, space_id, project_id, connection_id, item_type, title, source_uri, canonical_uri,
            source_domain, source_external_id, author, occurred_at, first_seen_at,
            last_seen_at, content_hash, excerpt, content_state,
            retention_policy, metadata_json, created_at, updated_at,
            owner_user_id, visibility, access_level
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7,
+           $1, $2, (SELECT project_id FROM source_connections WHERE space_id=$2 AND id=$3), $3, $4, $5, $6, $7,
            $8, $9, $10, $11::timestamptz, $12,
            $12, $13, $14, $15,
            $16, $17::jsonb, $12, $12,
@@ -853,6 +863,7 @@ export class SourceExtractionWorker {
     if (!access.rows[0]) throw new Error("Evidence source item disappeared");
     const evidenceId = await upsertCanonicalEvidence(this.db, {
       spaceId: job.space_id,
+      projectId: item.project_id ?? null,
       ownerUserId: access.rows[0].owner_user_id,
       visibility: item.visibility,
       accessLevel: access.rows[0].access_level,
@@ -991,11 +1002,11 @@ export class SourceExtractionWorker {
     const itemId = randomUUID();
     await this.db.query(
       `INSERT INTO source_items (
-         id, space_id, item_type, source_object_type, source_object_id,
+         id, space_id, project_id, item_type, source_object_type, source_object_id,
          title, excerpt, content_state, retention_policy,
          metadata_json, created_at, updated_at, owner_user_id, visibility, access_level
        ) VALUES (
-         $1, $2, $3, $3, $4,
+         $1, $2, $12, $3, $3, $4,
          $5, $6, 'excerpt_saved', 'summary_only',
          $7::jsonb, $8, $8, $9, $10, $11
        )
@@ -1012,6 +1023,7 @@ export class SourceExtractionWorker {
         payload.ownerUserId,
         payload.visibility,
         payload.accessLevel,
+        payload.projectId,
       ],
     );
     if (payload.visibility === "selected_users") await inheritContentAccessGrants(this.db, {
@@ -1024,6 +1036,7 @@ export class SourceExtractionWorker {
     });
     const evidenceId = await upsertCanonicalEvidence(this.db, {
       spaceId: job.space_id,
+      projectId: payload.projectId,
       ownerUserId: payload.ownerUserId,
       visibility: payload.visibility,
       accessLevel: payload.accessLevel,
@@ -1072,12 +1085,13 @@ export class SourceExtractionWorker {
     ownerUserId: string | null;
     visibility: string;
     accessLevel: string;
+    projectId: string | null;
     sourceResourceType: "activity" | "artifact" | "run";
     sourceResourceId: string;
   }> {
     if (sourceType === "activity_record") {
-      const row = await this.db.query<{ title: string | null; content: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
-        `SELECT title, content, owner_user_id, visibility, access_level FROM activity_records
+      const row = await this.db.query<{ title: string | null; content: string | null; project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
+        `SELECT title, content, project_id, owner_user_id, visibility, access_level FROM activity_records
           WHERE space_id = $1 AND id = $2 AND status NOT IN ('archived', 'failed')`,
         [spaceId, sourceId],
       );
@@ -1090,13 +1104,14 @@ export class SourceExtractionWorker {
         ownerUserId: activity.owner_user_id,
         visibility: activity.visibility,
         accessLevel: activity.access_level,
+        projectId: activity.project_id,
         sourceResourceType: "activity",
         sourceResourceId: sourceId,
       };
     }
     if (sourceType === "artifact") {
-      const row = await this.db.query<{ title: string | null; content: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
-        `SELECT title, content, owner_user_id, visibility, access_level FROM artifacts WHERE space_id = $1 AND id = $2`,
+      const row = await this.db.query<{ title: string | null; content: string | null; project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
+        `SELECT title, content, project_id, owner_user_id, visibility, access_level FROM artifacts WHERE space_id = $1 AND id = $2`,
         [spaceId, sourceId],
       );
       const artifact = row.rows[0];
@@ -1108,13 +1123,14 @@ export class SourceExtractionWorker {
         ownerUserId: artifact.owner_user_id,
         visibility: artifact.visibility,
         accessLevel: artifact.access_level,
+        projectId: artifact.project_id,
         sourceResourceType: "artifact",
         sourceResourceId: sourceId,
       };
     }
     if (sourceType === "run_event") {
-      const row = await this.db.query<{ event_type: string | null; payload_json: unknown; run_id: string; owner_user_id: string | null; visibility: string; access_level: string }>(
-        `SELECT re.event_type, re.payload_json, re.run_id, r.owner_user_id, r.visibility, r.access_level
+      const row = await this.db.query<{ event_type: string | null; payload_json: unknown; run_id: string; project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
+        `SELECT re.event_type, re.payload_json, re.run_id, r.project_id, r.owner_user_id, r.visibility, r.access_level
            FROM run_events re
            JOIN runs r ON r.space_id = re.space_id AND r.id = re.run_id
           WHERE re.space_id = $1 AND re.id = $2`,
@@ -1129,6 +1145,7 @@ export class SourceExtractionWorker {
         ownerUserId: event.owner_user_id,
         visibility: event.visibility,
         accessLevel: event.access_level,
+        projectId: event.project_id,
         sourceResourceType: "run",
         sourceResourceId: event.run_id,
       };
@@ -1363,11 +1380,14 @@ export class SourceExtractionWorker {
     const id = randomUUID();
     await this.db.query(
       `INSERT INTO source_snapshots (
-         id, space_id, source_item_id, connection_id, snapshot_type, artifact_id,
+         id, space_id, project_id, source_item_id, connection_id, snapshot_type, artifact_id,
          content_hash, source_uri, capture_method, trust_level, metadata_json,
          captured_at, created_at, updated_at, owner_user_id, visibility, access_level
        ) VALUES (
-         $1, $2, $3, $4, $5, $6,
+         $1, $2, COALESCE(
+           (SELECT project_id FROM source_items WHERE space_id=$2 AND id=$3),
+           (SELECT project_id FROM source_connections WHERE space_id=$2 AND id=$4)
+         ), $3, $4, $5, $6,
          $7, $8, $9, $10, $11::jsonb,
          $12, $13, $14,
          COALESCE(

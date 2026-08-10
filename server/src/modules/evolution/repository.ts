@@ -33,7 +33,6 @@ import { TARGET_COLUMNS } from "./types";
 import {
   assertTargetRunnable,
   boundedRunMode,
-  optionalStringArray,
   requiredBodyString,
 } from "./validation";
 
@@ -44,7 +43,6 @@ interface PersistSelectedRunRequestInput {
   runtimeProfileId: string | null;
   projectFolderId: string | null;
   projectId: string | null;
-  contextArtifactIds: string[];
   target: EvolutionTargetRow;
   agentId: string;
   recentSignals: EvolutionSignalRow[];
@@ -506,7 +504,6 @@ export class EvolutionRepository {
       runtimeProfileId: optionalString(body.runtime_profile_id),
       projectFolderId: optionalString(body.project_folder_id),
       projectId: optionalString(body.project_id),
-      contextArtifactIds: optionalStringArray(body.context_artifact_ids),
       target,
       agentId,
       recentSignals,
@@ -550,7 +547,6 @@ export class EvolutionRepository {
       project_id: input.projectId,
       prompt: initialPrompt.user,
       instruction: initialPrompt.system,
-      context_artifact_ids: input.contextArtifactIds,
     });
     const signal = await this.createSignal(identity, targetId, {
       signal_type: "review_requested",

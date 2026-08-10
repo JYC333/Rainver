@@ -83,7 +83,7 @@ export function defaultResearchSetupGuideSteps(input: ResearchSetupGuideState & 
     {
       id: 'research-question',
       title: 'Set the research question',
-      description: 'Define the question that shapes literature intake, screening, and synthesis.',
+      description: 'Define the question that shapes material intake, screening, and synthesis.',
       actionLabel: input.hasResearchQuestion ? 'Edit question' : 'Set question',
       complete: input.hasResearchQuestion,
       icon: <Target className="size-4" />,
@@ -91,8 +91,8 @@ export function defaultResearchSetupGuideSteps(input: ResearchSetupGuideState & 
     },
     {
       id: 'initial-intake',
-      title: 'Set up initial literature intake',
-      description: 'Choose or create literature monitors, set the initial history range, and choose the managed model provider.',
+      title: 'Set up initial material intake',
+      description: 'Choose or create source monitors, set the initial history range, and choose the managed model provider.',
       actionLabel: input.hasInitialIntake ? 'Edit intake setup' : 'Set up intake',
       complete: input.hasInitialIntake,
       icon: <Search className="size-4" />,

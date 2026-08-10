@@ -11,10 +11,14 @@ export interface NoteContentRow {
   content_format: string;
   plain_text: string | null;
   content_hash: string | null;
-  refs_json: unknown;
   version: number;
   updated_by_user_id: string | null;
   updated_by_run_id: string | null;
+}
+
+/** `refs_json` is jsonb, so a caller can only trust it after narrowing it. */
+function refStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
 export type NoteWriteResult =
@@ -38,7 +42,7 @@ export async function writeNote(db: Queryable, input: {
   diff?: unknown;
 }): Promise<NoteWriteResult> {
   const locked = await db.query<NoteContentRow>(
-    `SELECT object_id, content_json, content_format, plain_text, content_hash, refs_json, version, updated_by_user_id, updated_by_run_id
+    `SELECT object_id, content_json, content_format, plain_text, content_hash, version, updated_by_user_id, updated_by_run_id
        FROM notes WHERE object_id=$1 AND space_id=$2 FOR UPDATE`,
     [input.noteId, input.spaceId],
   );
@@ -54,22 +58,32 @@ export async function writeNote(db: Queryable, input: {
   const normalized = input.content.kind === "doc" && input.content.plainText !== undefined
     ? (input.content.plainText ?? "")
     : normalizePmText(doc);
+  // Refs accumulate across a note's whole life, so a write has to start from
+  // what the note already cited. `notes.refs_json` used to be that carrier — a
+  // second copy of a list `note_revisions` already keeps per version, kept in
+  // step by hand and read by nothing else (N8). The latest revision is the
+  // same accumulator with one owner, and it is the row rollback restores from,
+  // so the two can no longer disagree.
+  const previous = await db.query<{ refs_json: unknown }>(
+    `SELECT refs_json FROM note_revisions WHERE note_id=$1 AND space_id=$2 ORDER BY version DESC LIMIT 1`,
+    [input.noteId, input.spaceId],
+  );
   const mergedRefs = [...new Set([
-    ...(Array.isArray(current.refs_json) ? current.refs_json.filter((v): v is string => typeof v === "string") : []),
+    ...refStrings(previous.rows[0]?.refs_json),
     ...(input.refs ?? []),
   ])];
   const now = new Date().toISOString();
   const hash = sha256(normalized);
   const updated = await db.query<NoteContentRow>(
     `WITH obj AS (
-       UPDATE space_objects SET updated_at=$8 WHERE id=$1 AND space_id=$9
+       UPDATE space_objects SET updated_at=$7 WHERE id=$1 AND space_id=$8
      )
      UPDATE notes
-        SET content_json=$2::jsonb, plain_text=$3, content_hash=$4, refs_json=$5::jsonb, version=version+1,
-            updated_by_user_id=$6, updated_by_run_id=$7
-      WHERE object_id=$1 AND space_id=$9
-      RETURNING object_id, content_json, content_format, plain_text, content_hash, refs_json, version, updated_by_user_id, updated_by_run_id`,
-    [input.noteId, JSON.stringify(doc), normalized, hash, JSON.stringify(mergedRefs), input.userId ?? null, input.runId ?? null, now, input.spaceId],
+        SET content_json=$2::jsonb, plain_text=$3, content_hash=$4, version=version+1,
+            updated_by_user_id=$5, updated_by_run_id=$6
+      WHERE object_id=$1 AND space_id=$8
+      RETURNING object_id, content_json, content_format, plain_text, content_hash, version, updated_by_user_id, updated_by_run_id`,
+    [input.noteId, JSON.stringify(doc), normalized, hash, input.userId ?? null, input.runId ?? null, now, input.spaceId],
   );
   const note = updated.rows[0]!;
   await insertRevision(db, {
@@ -143,7 +157,7 @@ export async function rollbackNote(db: Queryable, input: {
     content: { kind: "doc", doc: revision.rows[0].content_json },
     source: "rollback",
     userId: input.userId,
-    refs: Array.isArray(revision.rows[0].refs_json) ? revision.rows[0].refs_json.filter((v): v is string => typeof v === "string") : [],
+    refs: refStrings(revision.rows[0].refs_json),
     diff: { rolled_back_to_version: input.toVersion },
   });
   if (result.outcome !== "written") throw new HttpError(409, "Note changed while rolling back; retry");

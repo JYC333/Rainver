@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
@@ -11,6 +11,7 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for reconcileOperation's synthesis stage. The
 // synthesis run's terminal state is normally projected by a one-shot hook in
@@ -45,6 +46,7 @@ beforeAll(async () => {
     await syncBuiltinPrompts(pool, CATALOG_ROOT);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-synthesis-reconcile-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -82,11 +84,11 @@ beforeEach(async () => {
     kind: "question",
     statement: String(thread.statement),
   }];
-  await pool.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','synthesis','active','agent_assisted',$4::jsonb,$5,$5)`,
-    [WORKFLOW, SPACE, PROJECT, JSON.stringify({ research_question: "Does X improve Y?", thread_scope: threadScope }), now],
-  );
+  await insertResearchWorkflowFixture(pool, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "synthesis", primaryThreadId: String(thread.id),
+    state: { research_question: "Does X improve Y?", thread_scope: threadScope }, now,
+  });
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
@@ -177,20 +179,37 @@ async function seedUnderstandingNote(now: string, opts?: { contentJson?: Record<
   const folder = await pool!.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
   const objectId = randomUUID();
   await pool!.query(
-    `INSERT INTO space_objects (id,space_id,object_type,title,status,visibility,owner_user_id,primary_project_id,created_by_user_id,created_at,updated_at)
-     VALUES ($1,$2,'note','Current understanding','active','space_shared',$3,$4,$3,$5,$5)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
+     VALUES ($1,$2,'note','Current understanding','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, PROJECT, now],
   );
+  // The `understanding` role is what makes this note the comparison baseline
+  // (NA). The title is only a default now, so a fixture that sets the title
+  // alone would produce a project the monitoring comparison correctly refuses
+  // to run against.
   await pool!.query(
-    `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash,refs_json)
-     VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,$5,'hash','[]'::jsonb)`,
-    [objectId, SPACE, JSON.stringify(opts?.contentJson ?? { type: "doc", content: [] }), opts?.plainText ?? "Current claim", opts?.version ?? 1],
+    `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash,role_project_id,project_role)
+     VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,$5,'hash',$6,'understanding')`,
+    [objectId, SPACE, JSON.stringify(opts?.contentJson ?? { type: "doc", content: [] }), opts?.plainText ?? "Current claim", opts?.version ?? 1, PROJECT],
   );
   await pool!.query(
     `INSERT INTO note_collection_items (id,space_id,collection_id,note_id,sort_order,created_at) VALUES ($1,$2,$3,$4,0,$5)`,
     [randomUUID(), SPACE, folder.rows[0]!.id, objectId, now],
   );
   return objectId;
+}
+
+/**
+ * A note's current refs. They live on the note's latest revision since N8
+ * removed `notes.refs_json` — a second copy of the same list that nothing read
+ * back and that had to be kept in step by hand.
+ */
+async function latestRefs(noteId: string): Promise<string[]> {
+  const result = await pool!.query<{ refs_json: string[] }>(
+    `SELECT refs_json FROM note_revisions WHERE note_id=$1 AND space_id=$2 ORDER BY version DESC LIMIT 1`,
+    [noteId, SPACE],
+  );
+  return result.rows[0]?.refs_json ?? [];
 }
 
 async function seedSynthesisOperation(runId: string | null): Promise<void> {
@@ -356,7 +375,7 @@ async function seedQueryStrategy(): Promise<string> {
     [planId, attemptId, SPACE, now],
   );
   await pool!.query(
-    `UPDATE project_research_workflows SET state_json = state_json || $2::jsonb WHERE id=$1`,
+    `UPDATE project_research_workflows SET state_json = state_json || $2::jsonb WHERE object_id=$1`,
     [WORKFLOW, JSON.stringify({ query_strategy_id: strategyId })],
   );
   return strategyId;
@@ -615,7 +634,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
   it("completes an incremental comparison and raises a contradiction Signal without editing the notebook", async () => {
     if (!available || !pool) return;
     const now = new Date().toISOString(); const runId = randomUUID(); const sourceItem = randomUUID();
-    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE id=$1`, [WORKFLOW]);
+    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     const understandingId = await seedUnderstandingNote(now);
     await pool.query(
       `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,excerpt,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
@@ -670,16 +689,98 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
     const operation = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(operation).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
-    expect((await pool.query(`SELECT stance,comparison_detail FROM research_paper_cards WHERE source_item_id=$1`, [sourceItem])).rows[0]).toEqual({ stance: "contradicts", comparison_detail: "No effect under stronger controls." });
+    expect((await pool.query(`SELECT stance,comparison_detail FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItem])).rows[0]).toEqual({ stance: "contradicts", comparison_detail: "No effect under stronger controls." });
     // The notebook is untouched — monitoring no longer co-edits it directly;
     // disruptive comparisons instead raise an Evidence Signal (plan section 18.2).
-    const section = (await pool.query(`SELECT version,refs_json FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
-    expect(section).toMatchObject({ version: 1, refs_json: [] });
+    const section = (await pool.query(`SELECT version FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
+    expect(section).toMatchObject({ version: 1 });
+    expect(await latestRefs(understandingId)).toEqual([]);
     const signal = (await pool.query<{ classification: string; corpus_item_id: string; status: string }>(
       `SELECT classification,corpus_item_id,status FROM inquiry_evidence_signals WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     )).rows[0];
     expect(signal).toEqual({ classification: "contradicts", corpus_item_id: corpusItemId, status: "consolidated" });
+  });
+
+  it("stops the comparison stage and names the missing role when the project has no baseline", async () => {
+    if (!available || !pool) return;
+    // NA: the baseline used to be resolved by note title, so a project with no
+    // "Current understanding" compared every paper against an empty string and
+    // reported nothing. The stage must now stop and say what is missing, with
+    // the papers still queued for when a note is given the role.
+    const now = new Date().toISOString();
+    const items = Array.from({ length: 2 }, () => randomUUID());
+    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
+    const understandingId = await seedUnderstandingNote(now);
+    // The note exists and still has its title — only the role is absent, which
+    // is exactly the state a rename used to produce silently.
+    await pool.query(`UPDATE notes SET project_role=NULL, role_project_id=NULL WHERE object_id=$1`, [understandingId]);
+    for (const item of items) {
+      await pool.query(
+        `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,excerpt,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+         VALUES ($1,$2,$3,'space_shared','feed_entry','Paper','Detail.',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
+        [item, SPACE, OWNER, now],
+      );
+      const corpusItemId = randomUUID();
+      await pool.query(
+        `INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,read_status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'candidate','active','relevant',true,'unread',$5,$5)`,
+        [corpusItemId, SPACE, PROJECT, item, now],
+      );
+      await pool.query(
+        `INSERT INTO project_corpus_item_sources (id,corpus_item_id,space_id,project_id,source_item_id,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [randomUUID(), corpusItemId, SPACE, PROJECT, item, now],
+      );
+    }
+    await pool.query(
+      `INSERT INTO project_operations (
+         id, space_id, project_id, kind, title, status, created_by_user_id,
+         progress_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, 'research', 'Monitor comparison', 'active', $4,
+                 '{}'::jsonb, $5, $5)`,
+      [OPERATION, SPACE, PROJECT, OWNER, now],
+    );
+    await pool.query(
+      `INSERT INTO research_scan_summaries (id,space_id,project_id,workflow_id,operation_id,scan_key,scanned_at,new_item_count,relevant_count,maybe_count,excluded_count,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,2,2,0,0,$7)`,
+      [randomUUID(), SPACE, PROJECT, WORKFLOW, OPERATION, `operation:${OPERATION}`, now],
+    );
+    await pool.query(
+      `UPDATE project_operations SET progress_json = $4::jsonb, updated_at = $5 WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+      [OPERATION, SPACE, PROJECT, JSON.stringify({
+        schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: WORKFLOW,
+        research_question: "Does X improve Y?", thread_scope: threadScope,
+        agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE,
+        current_stage: "comparison", stage_state: "running", comparison_run_id: null,
+        comparison_source_item_ids: [], comparison_pending_source_item_ids: items, comparison_results_json: [],
+        source_item_ids: items, channel_ids: [], checkpoint_ids: [], artifact_ids: [],
+        source_backfill_plan_ids: [], source_backfill_plan_id: null, partial: false, monitoring_active: false,
+        watermark: { before: null, after: now, overlap_hours: 48 },
+      }), now],
+    );
+
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
+
+    const state = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
+    expect(state.progress_json.comparison_missing_baseline_role).toBe("understanding");
+    // No run was queued, and the papers were not consumed — the stage is
+    // waiting, not finished. Finalizing here is what would have looked like a
+    // successful scan that found nothing.
+    expect(state.progress_json.comparison_run_id).toBeNull();
+    expect(state.progress_json.comparison_pending_source_item_ids).toEqual(items);
+    expect(state).toMatchObject({ status: "active", progress_json: { current_stage: "comparison" } });
+    expect((await pool.query(`SELECT count(*)::int AS n FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(0);
+
+    // Giving a note the role releases the stage: the same reconcile now queues.
+    await pool.query(
+      `UPDATE notes SET project_role='understanding', role_project_id=$2 WHERE object_id=$1`,
+      [understandingId, PROJECT],
+    );
+    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
+    const resumed = (await pool.query(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
+    expect(resumed.progress_json.comparison_run_id).toBeTruthy();
+    expect(resumed.progress_json.comparison_missing_baseline_role).toBeUndefined();
   });
 
   it("compares a large paper set in multiple batches, accumulating results until the last batch completes", async () => {
@@ -690,7 +791,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // call (models drop/invent ids as the list grows).
     const items = Array.from({ length: 7 }, () => randomUUID());
     const [batch1, batch2] = [items.slice(0, 6), items.slice(6)];
-    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE id=$1`, [WORKFLOW]);
+    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     const understandingId = await seedUnderstandingNote(now);
     for (const item of items) {
       await pool.query(
@@ -755,7 +856,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(afterFirstBatch.progress_json.comparison_pending_source_item_ids).toEqual(batch2);
     expect(afterFirstBatch.progress_json.comparison_results_json).toHaveLength(6);
     expect((await pool.query(`SELECT comparisons_json FROM research_scan_summaries WHERE operation_id=$1`, [OPERATION])).rows[0].comparisons_json).toEqual([]);
-    expect((await pool.query(`SELECT count(*)::int AS n FROM research_paper_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(0);
+    expect((await pool.query(`SELECT count(*)::int AS n FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(0);
 
     // Second (final) batch completes: everything accumulated across both
     // batches is persisted together, exactly once.
@@ -777,13 +878,14 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
     const final = (await pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(final).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
-    expect((await pool.query(`SELECT count(*)::int AS n FROM research_paper_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(7);
+    expect((await pool.query(`SELECT count(*)::int AS n FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(7);
     const scan = (await pool.query(`SELECT supports_count,contradicts_count,comparisons_json FROM research_scan_summaries WHERE operation_id=$1`, [OPERATION])).rows[0];
     expect(scan).toMatchObject({ supports_count: 6, contradicts_count: 1 });
     expect(scan.comparisons_json).toHaveLength(7);
     // The notebook is untouched — the batch-2 contradiction instead raises an Evidence Signal.
-    const section = (await pool.query(`SELECT version,refs_json FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
-    expect(section).toMatchObject({ version: 1, refs_json: [] });
+    const section = (await pool.query(`SELECT version FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
+    expect(section).toMatchObject({ version: 1 });
+    expect(await latestRefs(understandingId)).toEqual([]);
     const signal = (await pool.query<{ classification: string }>(
       `SELECT classification FROM inquiry_evidence_signals
         WHERE space_id=$1 AND project_id=$2 AND classification='contradicts'`,
@@ -801,7 +903,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // see monitorComparisonService.ts) — while batch 1 already succeeded.
     const items = Array.from({ length: 7 }, () => randomUUID());
     const [batch1, batch2] = [items.slice(0, 6), items.slice(6)];
-    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE id=$1`, [WORKFLOW]);
+    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     await seedUnderstandingNote(now);
     for (const item of items) {
       await pool.query(
@@ -881,7 +983,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     if (!available || !pool) return;
     const now = new Date().toISOString();
     const items = Array.from({ length: 6 }, () => randomUUID());
-    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE id=$1`, [WORKFLOW]);
+    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     await seedUnderstandingNote(now);
     for (const item of items) {
       await pool.query(
@@ -993,7 +1095,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(final.progress_json.comparison_failed_source_item_ids).toEqual([]);
     const scan = (await pool.query(`SELECT comparisons_json FROM research_scan_summaries WHERE operation_id=$1`, [OPERATION])).rows[0];
     expect(scan.comparisons_json).toHaveLength(5);
-    const cards = await pool.query(`SELECT source_item_id FROM research_paper_cards WHERE source_item_id=ANY($1::text[])`, [items]);
+    const cards = await pool.query(`SELECT source_item_id FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items]);
     expect(cards.rows.map((row) => row.source_item_id).sort()).toEqual(items.slice(0, 5).sort());
   });
 
@@ -1002,7 +1104,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const now = new Date().toISOString();
     const items = Array.from({ length: 12 }, () => randomUUID());
     const [batch1, rest] = [items.slice(0, 6), items.slice(6)];
-    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE id=$1`, [WORKFLOW]);
+    await pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     await seedUnderstandingNote(now);
     for (const item of items) {
       await pool.query(
@@ -1093,8 +1195,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, JSON.stringify(output)]);
     await new ProjectResearchOrchestrator(pool, CONFIG).reconcileRun(SPACE, runId);
     await new ProjectResearchOrchestrator(pool, CONFIG).reconcileRun(SPACE, runId);
-    const applied = (await pool.query(`SELECT version,plain_text,refs_json FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
-    expect(applied).toMatchObject({ version: 4, plain_text: "Revised claim\n\nKept block", refs_json: ["source-9"] });
+    const applied = (await pool.query(`SELECT version,plain_text FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
+    expect(applied).toMatchObject({ version: 4, plain_text: "Revised claim\n\nKept block" });
+    expect(await latestRefs(understandingId)).toEqual(["source-9"]);
     expect(Number((await pool.query(`SELECT count(*) AS count FROM note_revisions WHERE note_id=$1`, [understandingId])).rows[0]?.count)).toBe(1);
     const staleRun = randomUUID();
     await seedSynthesisRun(staleRun, "succeeded", adhocContract(3));

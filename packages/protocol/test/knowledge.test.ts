@@ -101,7 +101,7 @@ describe("knowledge claim/object relation contracts", () => {
         space_id: "space-1",
         from_claim_id: "claim-1",
         to_claim_id: "claim-2",
-        relation_type: "supports",
+        link_type: "supports",
         status: "active",
         confidence: 0.8,
         evidence_summary: null,
@@ -110,7 +110,7 @@ describe("knowledge claim/object relation contracts", () => {
         created_by_agent_id: null,
         created_at: "2026-06-24T10:00:00.000Z",
         updated_at: "2026-06-24T10:00:00.000Z",
-      }).relation_type,
+      }).link_type,
     ).toBe("supports");
 
     expect(
@@ -119,7 +119,7 @@ describe("knowledge claim/object relation contracts", () => {
         space_id: "space-1",
         from_object_id: "claim-1",
         to_object_id: "source-1",
-        relation_type: "source_for",
+        link_type: "source_for",
         status: "active",
         confidence: 0.8,
         evidence_summary: null,
@@ -132,7 +132,7 @@ describe("knowledge claim/object relation contracts", () => {
         created_by_agent_id: null,
         created_at: "2026-06-24T10:00:00.000Z",
         updated_at: "2026-06-24T10:00:00.000Z",
-      }).relation_type,
+      }).link_type,
     ).toBe("source_for");
   });
 
@@ -206,7 +206,7 @@ describe("knowledge claim/object relation contracts", () => {
         operation: "object_relation_create",
         from_object_id: "claim-1",
         to_object_id: "source-1",
-        relation_type: "source_for",
+        link_type: "source_for",
         status: "archived",
       }),
     ).toThrow();

@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { checkInternalToken } from "../../gateway/internalAuth";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
 import { introspectIdentity } from "../auth/identity";
 import { loadProtocol } from "../providers/protocolRuntime";
 import { PgSessionRepository } from "./repository";
+import { dbPool, sendRouteError } from "../routeUtils/common";
+import { resolveContentCreationContext } from "../access/creationContext";
 
 interface SessionServices {
   repository: Pick<
@@ -16,7 +17,6 @@ interface SessionServices {
     | "createSession"
     | "addMessage"
     | "reflectSession"
-    | "getLatestSummaryForContext"
   >;
 }
 
@@ -47,24 +47,6 @@ function sessionServices(context: ModuleContext): SessionServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  app.post("/internal/sessions/session-summary/get-latest", async (request, reply) => {
-    if (!checkInternalToken(context.config, request)) {
-      return reply.code(401).send({ detail: "Unauthorized" });
-    }
-    try {
-      const protocol = await loadProtocol();
-      const body = protocol.SessionSummaryGetLatestRequestSchema.parse(jsonBody(request));
-      const services = sessionServices(context);
-      const summary = await services.repository.getLatestSummaryForContext(
-        body.space_id,
-        body.session_id,
-      );
-      return reply.send(protocol.SessionSummaryGetLatestResultSchema.parse({ summary }));
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
   app.get("/api/v1/sessions", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -116,17 +98,27 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const body = jsonBody(request);
-    const services = sessionServices(context);
-    const session = await services.repository.createSession(
-      identity.spaceId,
-      identity.userId,
-      {
-        projectFolderId: optionalString(body.project_folder_id),
-        title: optionalString(body.title),
-        metadata: optionalRecord(body.metadata),
-      },
-    );
-    return reply.code(201).send(session);
+    try {
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: optionalString(body.project_id),
+      });
+      const services = sessionServices(context);
+      const session = await services.repository.createSession(
+        creation.spaceId,
+        identity.userId,
+        {
+          projectFolderId: creation.projectId ? optionalString(body.project_folder_id) : null,
+          projectId: creation.projectId,
+          title: optionalString(body.title),
+          metadata: optionalRecord(body.metadata),
+        },
+      );
+      return reply.code(201).send(session);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
   });
 
   app.post("/api/v1/sessions/:sessionId/messages", async (request, reply) => {
@@ -197,11 +189,6 @@ async function resolveIdentity(
     ),
   );
   return null;
-}
-
-function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
-  const message = error instanceof Error ? error.message : "Request failed";
-  return reply.code(400).send({ detail: message });
 }
 
 function parsePage(

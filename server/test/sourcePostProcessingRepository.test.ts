@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import {
   PgSourcePostProcessingRepository,
@@ -37,6 +37,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[source-post-processing-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -161,6 +162,7 @@ function sourceConnection(overrides: Partial<SourceConnectionRow> = {}): SourceC
   return {
     id: CONNECTION,
     space_id: SPACE,
+    project_id: null,
     owner_user_id: OWNER,
     credential_id: null,
     visibility: "space_shared",

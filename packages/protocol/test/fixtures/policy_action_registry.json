@@ -52,6 +52,32 @@
     "record_failure_mode": "fail_closed"
   },
   {
+    "action": "runtime_context_policy.change",
+    "resource_type": "runtime_context_policy",
+    "default_risk_level": "high",
+    "default_decision": "deny",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "server/src/modules/policy/runtimeContextPolicyRepository.ts",
+    "description": "Create and activate an immutable Runtime Context Policy version after scope-authority checks.",
+    "lifecycle_status": "wired_direct",
+    "record_failure_mode": "fail_closed"
+  },
+  {
+    "action": "work_context_setup.change",
+    "resource_type": "work_context_setup",
+    "default_risk_level": "medium",
+    "default_decision": "deny",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "server/src/modules/runtimeContext/workContextService.ts",
+    "description": "Create an immutable Work Context Setup version after scope-authority and governing-policy checks.",
+    "lifecycle_status": "wired_direct",
+    "record_failure_mode": "fail_closed"
+  },
+  {
     "action": "context.inject_memory",
     "resource_type": "memory",
     "default_risk_level": "low",
@@ -59,8 +85,8 @@
     "audit_required": false,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/context/prepareService.ts",
-    "description": "Inject memory entries into a runtime context package.",
+    "current_enforcement_point": "server/src/modules/runtimeContext/productionAcquisition.ts",
+    "description": "Authorize memory acquisition for Runtime Context planning.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "best_effort"
   },
@@ -72,8 +98,8 @@
     "audit_required": false,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/context/prepareService.ts",
-    "description": "Render a context package for delivery to a runtime adapter.",
+    "current_enforcement_point": "server/src/modules/runtimeContext/invocationSnapshotService.ts",
+    "description": "Authorize Runtime Context Delivery persistence for a runtime adapter.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "best_effort"
   },
@@ -299,7 +325,7 @@
     "record_failure_mode": "best_effort"
   },
   {
-    "action": "object_kind.create",
+    "action": "object_profile.create",
     "resource_type": "object_schema",
     "default_risk_level": "high",
     "default_decision": "require_approval",
@@ -307,12 +333,12 @@
     "approval_capability": "approve_knowledge_change",
     "default_required_approver_role": "admin",
     "current_enforcement_point": "server/src/modules/proposals/applyService.ts via proposal.apply",
-    "description": "Create a governed per-space object_kind definition after an accepted object_kind_create proposal. Does not create canonical domain rows or retrieval object types.",
+    "description": "Create a governed per-space object_profile definition after an accepted object_profile_create proposal. Does not create canonical domain rows or retrieval object types.",
     "lifecycle_status": "wired_via_proposal",
     "record_failure_mode": "best_effort"
   },
   {
-    "action": "object_kind.update",
+    "action": "object_profile.update",
     "resource_type": "object_schema",
     "default_risk_level": "high",
     "default_decision": "require_approval",
@@ -320,12 +346,12 @@
     "approval_capability": "approve_knowledge_change",
     "default_required_approver_role": "admin",
     "current_enforcement_point": "server/src/modules/proposals/applyService.ts via proposal.apply",
-    "description": "Update label/config fields or activate a draft governed object_kind definition after an accepted object_kind_update proposal. Key and base object type remain fixed.",
+    "description": "Update label/config fields or activate a draft governed object_profile definition after an accepted object_profile_update proposal. Key and base object type remain fixed.",
     "lifecycle_status": "wired_via_proposal",
     "record_failure_mode": "best_effort"
   },
   {
-    "action": "object_kind.deprecate",
+    "action": "object_profile.deprecate",
     "resource_type": "object_schema",
     "default_risk_level": "high",
     "default_decision": "require_approval",
@@ -333,12 +359,12 @@
     "approval_capability": "approve_knowledge_change",
     "default_required_approver_role": "admin",
     "current_enforcement_point": "server/src/modules/proposals/applyService.ts via proposal.apply",
-    "description": "Deprecate a governed object_kind definition after an accepted object_kind_deprecate proposal. Existing object rows remain valid.",
+    "description": "Deprecate a governed object_profile definition after an accepted object_profile_deprecate proposal. Existing object rows remain valid.",
     "lifecycle_status": "wired_via_proposal",
     "record_failure_mode": "best_effort"
   },
   {
-    "action": "object_kind.archive",
+    "action": "object_profile.archive",
     "resource_type": "object_schema",
     "default_risk_level": "high",
     "default_decision": "require_approval",
@@ -346,7 +372,7 @@
     "approval_capability": "approve_knowledge_change",
     "default_required_approver_role": "admin",
     "current_enforcement_point": "server/src/modules/proposals/applyService.ts via proposal.apply",
-    "description": "Archive a governed object_kind definition after an accepted object_kind_archive proposal. Existing object rows remain valid because object_kind remains optional.",
+    "description": "Archive a governed object_profile definition after an accepted object_profile_archive proposal. Existing object rows remain valid because object_profile remains optional.",
     "lifecycle_status": "wired_via_proposal",
     "record_failure_mode": "best_effort"
   },
@@ -592,7 +618,7 @@
     "audit_required": true,
     "approval_capability": "approve_capability_change",
     "default_required_approver_role": "owner",
-    "current_enforcement_point": "server/src/modules/context/prepareService.ts",
+    "current_enforcement_point": "server/src/modules/runtimeContext/productionAcquisition.ts",
     "description": "Render a runtime-bound Open Skill for an adapter execution context.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "best_effort"
@@ -910,6 +936,32 @@
     "record_failure_mode": "best_effort"
   },
   {
+    "action": "inquiry.thread.create",
+    "resource_type": "inquiry_thread",
+    "default_risk_level": "low",
+    "default_decision": "deny",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "not_implemented",
+    "description": "Create an Inquiry Thread in a Project the actor can write to. Reserved: the Project ACL on the Thread create route is what enforces this today.",
+    "lifecycle_status": "reserved",
+    "record_failure_mode": "best_effort"
+  },
+  {
+    "action": "note.link.create",
+    "resource_type": "note",
+    "default_risk_level": "low",
+    "default_decision": "deny",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "not_implemented",
+    "description": "Create a navigational link from a Note to another ontology object. Not a semantic graph edge (B12A/N4). Reserved: the note read gate on both endpoints is what enforces this today.",
+    "lifecycle_status": "reserved",
+    "record_failure_mode": "best_effort"
+  },
+  {
     "action": "project.operation.manage",
     "resource_type": "project_operation",
     "default_risk_level": "low",
@@ -919,19 +971,6 @@
     "default_required_approver_role": null,
     "current_enforcement_point": "server/src/modules/projects/routes.ts",
     "description": "Create or cancel a Project operation progress record. Project operations are a grouping/read model over runs, jobs, proposals, and plans; they carry no execution authority of their own.",
-    "lifecycle_status": "wired_direct",
-    "record_failure_mode": "best_effort"
-  },
-  {
-    "action": "context.select_evidence",
-    "resource_type": "evidence",
-    "default_risk_level": "low",
-    "default_decision": "allow",
-    "audit_required": false,
-    "approval_capability": null,
-    "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/context/prepareService.ts",
-    "description": "Authorize selecting explicitly linked active evidence for inclusion in a run context snapshot.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "best_effort"
   },

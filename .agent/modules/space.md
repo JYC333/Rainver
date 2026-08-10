@@ -27,7 +27,7 @@ SpaceMembership: id, space_id, user_id, role, status
 ## Main Flows
 - On first run, bootstrap seeds the default owner's personal space (a generated UUID, located by owner membership — no fixed/magic space id)
 - All API calls include `space_id` (from session / header / default)
-- ContextBuilder requires `space_id` and raises if missing
+- Runtime Context requires explicit Space identity and raises on missing or drifting authority
 
 ## Invariants
 - Every core data record must carry `space_id`
@@ -41,7 +41,7 @@ SpaceMembership: id, space_id, user_id, role, status
 - `packages/protocol/src/` — shared Project Folder/space DTOs when exported
 - `server/src/config.ts` — bootstrap/default config
 - `server/src/modules/spaces/` — default space and membership routes
-- `server/src/modules/context/` — context assembly with space boundary enforcement
+- `server/src/modules/runtimeContext/` — typed acquisition, Delivery authorization, and continuity with Space boundary enforcement
 
 ## Related Decisions
 - [0001-space-model.md](../decisions/0001-space-model.md)

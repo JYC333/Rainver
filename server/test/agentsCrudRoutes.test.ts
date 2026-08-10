@@ -5,6 +5,7 @@ import { getDbPool } from "../src/db/pool";
 import { buildServer } from "../src/server";
 import { __setAgentChatIdentityForTests } from "../src/modules/agents";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
 
 vi.mock("../src/db/pool", () => ({
   getDbPool: vi.fn(),
@@ -16,11 +17,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
   __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+  __setContentCreationContextResolverForTests(async (_db, input) => ({
+    spaceId: input.requestSpaceId,
+    projectId: input.projectId ?? null,
+    visibility: input.projectId ? "space_shared" : "private",
+  }));
 });
 
 afterEach(async () => {
   __setAgentChatIdentityForTests(null);
   __setAuthIdentityForTests(null);
+  __setContentCreationContextResolverForTests(null);
   await app?.close();
   app = undefined;
 });
@@ -305,7 +312,6 @@ describe("agents CRUD routes", () => {
         context_policy_json: {
           allowed_input_contexts: ["selected_workspace"],
           default_input_contexts: ["selected_workspace"],
-          condenser: { profile: "coding" },
         },
         schedule_config_json: { enabled: false, cron: null },
       },
@@ -318,7 +324,7 @@ describe("agents CRUD routes", () => {
       adapter_type: "capability",
     });
     expect(insertedRuntimeConfig).toMatchObject({ adapter_type: "capability" });
-    expect(insertedContextPolicy).toMatchObject({ condenser: { profile: "coding" } });
+    expect(insertedContextPolicy).toMatchObject({ default_input_contexts: ["selected_workspace"] });
     expect(insertedScheduleConfig).toEqual({ enabled: false, cron: null });
     expect(insertedSystemPrompt).toBe("Registry reviewer prompt.");
     expect(insertedPromptProvenance).toMatchObject({
@@ -407,9 +413,8 @@ describe("agents CRUD routes", () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it("does not touch the agent digest when config changes (digests stay peer-level)", async () => {
+  it("does not touch the Space policy digest when Agent config changes", async () => {
     let newVersionId = "";
-    const dirtyUpdates: Array<{ sql: string; params: readonly unknown[] }> = [];
     const jobs: Array<{ agent_id: unknown; payload: Record<string, unknown> }> = [];
     const currentVersion = {
       id: "agent-version-1",
@@ -480,10 +485,6 @@ describe("agents CRUD routes", () => {
         if (norm.startsWith("UPDATE agents SET current_version_id")) {
           return { rows: [], rowCount: 1 };
         }
-        if (norm.startsWith("UPDATE context_digests")) {
-          dirtyUpdates.push({ sql, params });
-          return { rows: [], rowCount: 1 };
-        }
         if (norm.startsWith("INSERT INTO jobs")) {
           jobs.push({
             agent_id: params[4],
@@ -548,11 +549,9 @@ describe("agents CRUD routes", () => {
       current_version_id: newVersionId,
       system_prompt: "New prompt",
     });
-    // The agent digest is memory-only; system_prompt and other config are not in
-    // it (they reach a run directly at consumption time). An agent config change
-    // must NOT dirty or enqueue a refresh for the agent digest — doing so would be
-    // a pure no-op refresh. Only agent-scoped memory changes invalidate it.
-    expect(dirtyUpdates).toEqual([]);
+    // Agent config reaches a Run through its immutable AgentVersion. The only
+    // Agent config reaches a Run through its immutable AgentVersion, so no
+    // retired derived-context refresh side effect is expected.
     expect(jobs).toEqual([]);
   });
 });

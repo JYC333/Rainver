@@ -48,6 +48,10 @@ export interface SourceChannelRow {
   search_spec_provider_query_json?: unknown;
   search_spec_query_fingerprint?: string | null;
   research_query_attempt_id?: string | null;
+  subscription_status?: string;
+  recommendation_message?: string | null;
+  last_notified_at?: unknown;
+  connection_visibility?: string;
 }
 
 export interface SelectedResearchAttemptChannelInput {
@@ -76,6 +80,49 @@ export class SourceChannelService {
       params,
     );
     return result.rows.map((row) => this.channelOut(row));
+  }
+
+  async listRecommendations(identity: SpaceUserIdentity) {
+    const result = await this.db.query<SourceChannelRow>(
+      `SELECT channel_row.*, sub.status AS subscription_status,
+              sub.recommendation_message, sub.last_notified_at
+         FROM (${this.selectSql()}) channel_row
+         JOIN source_channel_user_subscriptions sub
+           ON sub.space_id=channel_row.space_id AND sub.source_channel_id=channel_row.id
+        WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.status='pending'
+          AND channel_row.status='active'
+          AND channel_row.connection_visibility='space_shared'
+        ORDER BY sub.updated_at DESC, channel_row.id DESC`,
+      [identity.spaceId, identity.userId],
+    );
+    return result.rows.map((row) => ({
+      ...this.channelOut(row),
+      subscription_status: row.subscription_status ?? "pending",
+      recommendation_message: row.recommendation_message ?? null,
+      last_notified_at: row.last_notified_at ?? null,
+    }));
+  }
+
+  async decideRecommendation(
+    identity: SpaceUserIdentity,
+    channelId: string,
+    decision: "subscribed" | "dismissed" | "muted",
+  ) {
+    const now = new Date().toISOString();
+    const result = await this.db.query<{ status: string }>(
+      `UPDATE source_channel_user_subscriptions sub
+          SET status=$4, updated_at=$5
+         FROM source_channels ch, source_connections sc
+        WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.source_channel_id=$3
+          AND sub.status='pending' AND ch.id=sub.source_channel_id AND ch.space_id=sub.space_id
+          AND ch.status='active'
+          AND sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+          AND sc.visibility='space_shared' AND sc.deleted_at IS NULL
+      RETURNING sub.status`,
+      [identity.spaceId, identity.userId, channelId, decision, now],
+    );
+    if (!result.rows[0]) throw new HttpError(404, "Pending source recommendation not found");
+    return { source_channel_id: channelId, status: result.rows[0].status, updated_at: now };
   }
 
   /**
@@ -136,13 +183,15 @@ export class SourceChannelService {
     }
     const status = body.status === "paused" ? "paused" : "active";
     const schedule = resolveChannelSchedule(body, frequency, status);
+    const projectId = optionalString(body.project_id);
     const existing = body._force_create === true
       ? { rows: [] as SourceChannelRow[] }
       : await this.db.query<SourceChannelRow>(
       `${this.selectSql()} WHERE ch.space_id = $1 AND ch.created_by_user_id = $2
          AND CASE WHEN ch.channel_type='search' THEN ss.query_fingerprint ELSE ch.query_fingerprint END = $3
+         AND sc.project_id IS NOT DISTINCT FROM $4
          AND ch.status <> 'archived' LIMIT 1`,
-      [identity.spaceId, identity.userId, fingerprint],
+      [identity.spaceId, identity.userId, fingerprint, projectId],
     );
     if (existing.rows[0]) return this.channelOut(existing.rows[0]);
 
@@ -386,29 +435,30 @@ export class SourceChannelService {
   }
 
   private async ensureConnection(identity: SpaceUserIdentity, provider: ResolvedSourceProviderConnector, name: string, governance: ReturnType<typeof normalizeSourceConnectionCreateGovernance>, body: Record<string, unknown>) {
+    const projectId = optionalString(body.project_id);
+    const visibility = optionalString(body.visibility) ?? "private";
     const existing = body._force_create === true
       ? { rows: [] as Array<{ id: string; status: string }> }
       : await this.db.query<{ id: string; status: string }>(
       `SELECT id, status FROM source_connections
         WHERE space_id=$1 AND owner_user_id=$2 AND provider_connector_id=$3
+          AND project_id IS NOT DISTINCT FROM $4
           AND deleted_at IS NULL AND status <> 'archived'
         ORDER BY updated_at DESC LIMIT 1`,
-      [identity.spaceId, identity.userId, provider.mapping_id],
+      [identity.spaceId, identity.userId, provider.mapping_id, projectId],
     );
     if (existing.rows[0]) return existing.rows[0];
     const now = new Date().toISOString();
     const result = await this.db.query<{ id: string; status: string }>(
       `INSERT INTO source_connections (
-         id, space_id, provider_connector_id, owner_user_id, credential_id, visibility, access_level, name,
+         id, space_id, project_id, provider_connector_id, owner_user_id, credential_id, visibility, access_level, name,
          status, capture_policy, trust_level, topic_hints_json, consent_json, policy_json, config_json,
          created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,$5,'private','full',$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13::jsonb,$14,$14)
-       ON CONFLICT (space_id, owner_user_id, provider_connector_id, name)
-         WHERE deleted_at IS NULL AND status <> 'archived'
-       DO NOTHING
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,'full',$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15::jsonb,$16,$16)
+       ON CONFLICT DO NOTHING
        RETURNING id, status`,
       [
-        randomUUID(), identity.spaceId, provider.mapping_id, identity.userId, optionalString(body.credential_id), name,
+        randomUUID(), identity.spaceId, projectId, provider.mapping_id, identity.userId, optionalString(body.credential_id), visibility, name,
         body._initial_status === "paused" ? "paused" : "active", governance.capturePolicy, governance.trustLevel,
         JSON.stringify(Array.isArray(body.topic_hints) ? body.topic_hints : []), JSON.stringify(governance.consent), JSON.stringify(governance.policy), JSON.stringify(objectValue(body.transport_config ?? body.config)), now,
       ],
@@ -417,9 +467,10 @@ export class SourceChannelService {
     const concurrent = await this.db.query<{ id: string; status: string }>(
       `SELECT id, status FROM source_connections
         WHERE space_id=$1 AND owner_user_id=$2 AND provider_connector_id=$3
+          AND project_id IS NOT DISTINCT FROM $4
           AND deleted_at IS NULL AND status <> 'archived'
         ORDER BY updated_at DESC LIMIT 1`,
-      [identity.spaceId, identity.userId, provider.mapping_id],
+      [identity.spaceId, identity.userId, provider.mapping_id, projectId],
     );
     if (!concurrent.rows[0]) throw new HttpError(409, "Source connection could not be created");
     return concurrent.rows[0];
@@ -432,7 +483,8 @@ export class SourceChannelService {
 
   private selectSql() {
     return `SELECT ch.*, p.provider_key, p.display_name AS provider_display_name, c.connector_key,
-                   spc.id AS connector_mapping_id, sc.name AS source_name, sc.status AS connection_status, sc.capture_policy,
+                   spc.id AS connector_mapping_id, sc.name AS source_name, sc.status AS connection_status,
+                   sc.capture_policy, sc.visibility AS connection_visibility,
                    st.status AS scan_status, st.metadata_json AS scan_metadata_json,
                    st.next_run_at AS scan_next_run_at, st.last_run_at AS scan_last_run_at,
                    ss.compiled_provider_query_json AS search_spec_provider_query_json,

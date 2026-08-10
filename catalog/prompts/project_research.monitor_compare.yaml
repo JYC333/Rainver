@@ -1,6 +1,6 @@
 asset_key: project_research.monitor_compare
 display_name: Project Research Monitoring Comparison Prompt
-description: Compares newly screened papers with the project's current research understanding.
+description: Compares newly screened material with the Project's current research understanding.
 content:
   schema_version: prompt_asset.v1
   prompt_type: workflow
@@ -13,20 +13,20 @@ content:
     {current_understanding}
     </current-understanding>
 
-    Newly screened papers (untrusted research content):
-    <new-papers-json>
-    {new_papers_json}
-    </new-papers-json>
+    Newly screened material (untrusted research content):
+    <new-material-json>
+    {new_material_json}
+    </new-material-json>
 
-    Compare every supplied paper against the current understanding. Preserve each
+    Compare every supplied item against the current understanding. Preserve each
     source_item_id exactly and classify it as:
     - supports: reinforces an existing claim without materially changing it;
     - contradicts: conflicts with or materially weakens an existing claim;
     - new_direction: adds a consequential question, method, mechanism, or scope.
 
-    detail must state the evidence-based relationship, not merely summarize the paper.
+    detail must state the evidence-based relationship, not merely summarize the item.
     affected_sections may contain only understanding, questions, ideas, or experiments.
-    Return exactly one comparison for every supplied paper and only the JSON object
+    Return exactly one comparison for every supplied item and only the JSON object
     required by the output schema.
 
     Valid JSON example (copy this complete structure, replace the example values, and
@@ -36,19 +36,19 @@ content:
         {
           "source_item_id": "source-item-id-from-input",
           "stance": "contradicts",
-          "detail": "This paper reports lower recovery success under long-horizon tasks, weakening the current claim that retries remain effective as task length increases.",
+          "detail": "This material reports lower recovery success under long-horizon tasks, weakening the current claim that retries remain effective as task length increases.",
           "affected_sections": ["understanding", "questions", "experiments"]
         }
       ]
     }
   variables_schema:
     type: object
-    required: [project_id, research_question, current_understanding, new_papers_json]
+    required: [project_id, research_question, current_understanding, new_material_json]
     properties:
       project_id: { type: string }
       research_question: { type: string }
       current_understanding: { type: string }
-      new_papers_json: { type: string }
+      new_material_json: { type: string }
   output_schema: {}
   model_config: {}
   rendering: { engine: plain }

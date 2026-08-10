@@ -1,5 +1,5 @@
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import { HttpError, type Queryable } from "../routeUtils/common";
@@ -79,9 +79,14 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
       const contextCwd = this.readOnlyContextPath(run.space_id, run.id);
       await rm(contextCwd, { recursive: true, force: true });
       await mkdir(contextCwd, { recursive: true, mode: 0o700 });
+      let executionRoot = folderRoot;
+      if (!isInside(folderRoot, this.config.workspaceRoot)) {
+        executionRoot = resolve(contextCwd, "external-project");
+        await cp(folderRoot, executionRoot, { recursive: true, verbatimSymlinks: true });
+      }
       await this.setRunSandboxPath(run.space_id, run.id, contextCwd);
       return {
-        sandbox_cwd: folderRoot,
+        sandbox_cwd: executionRoot,
         context_cwd: contextCwd,
         cleanup_kind: "plain_workdir",
         sandbox_kind: "read_only_project",
@@ -99,12 +104,17 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     const sandboxCwd = this.runSandboxPath(run.space_id, run.id);
     await this.removeExistingSandbox(sandboxCwd, folderRoot, "git_worktree");
     await mkdir(resolve(this.config.sandboxRoot, WORKTREE_ROOT_DIR, run.space_id), { recursive: true });
-    await gitOutput(["worktree", "add", "--detach", sandboxCwd, "HEAD"], folderRoot, 60_000);
+    // A detached standalone clone keeps the isolated workspace's Git object
+    // database inside the selected sandbox. Mounting the source repository's
+    // absolute `.git/worktrees/*` backing path into a runtime namespace would
+    // otherwise widen the Runner authority boundary.
+    await gitOutput(["clone", "--no-local", "--no-checkout", folderRoot, sandboxCwd], dirname(sandboxCwd), 60_000);
+    await gitOutput(["checkout", "--detach", baseCommitSha], sandboxCwd, 60_000);
     await this.setRunSandboxPath(run.space_id, run.id, sandboxCwd);
     return {
       sandbox_cwd: sandboxCwd,
       context_cwd: sandboxCwd,
-      cleanup_kind: "git_worktree",
+      cleanup_kind: "plain_workdir",
       sandbox_kind: "worktree",
       project_folder_root: folderRoot,
       base_commit_sha: baseCommitSha,

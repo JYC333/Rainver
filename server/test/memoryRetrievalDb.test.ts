@@ -2,14 +2,13 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import {
   RetrievalProjectionService,
   RetrievalSearchService,
 } from "../src/modules/retrieval";
 import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter";
-import { PgMemoryReadRepository } from "../src/modules/memory/repository";
 
 // Real-PostgreSQL round-trip for the Memory create-safety retrieval slice. The
 // focused memoryRetrieval.test.ts uses an in-memory fake, which cannot catch SQL
@@ -37,6 +36,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[memory-retrieval-db] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -54,7 +54,7 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
     `TRUNCATE retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              memory_access_logs, memory_entries, project_members, projects, space_memberships, users, spaces CASCADE`,
+              content_access_logs, memory_entries, project_members, projects, space_memberships, users, spaces CASCADE`,
   );
   // A multi-member (household) space so project gating is meaningful; a personal
   // space would grant its sole member access to every project.
@@ -148,7 +148,12 @@ describe("Memory project gating (real Postgres)", () => {
   it("hides project memory from a non-member, reveals it to a member and to the owner", async () => {
     if (!available || !pool) return;
     await insertProject(OWNER);
-    await insertMemory({ project_id: PROJECT, owner_user_id: OWNER, visibility: "space_shared" });
+    await insertMemory({
+      scope_type: "project",
+      project_id: PROJECT,
+      owner_user_id: OWNER,
+      visibility: "space_shared",
+    });
     await reindex();
 
     // Non-member, non-owner: gated out.
@@ -163,7 +168,12 @@ describe("Memory project gating (real Postgres)", () => {
   it("applies the same project gate to create-safety", async () => {
     if (!available || !pool) return;
     await insertProject(OWNER);
-    await insertMemory({ project_id: PROJECT, owner_user_id: OWNER, visibility: "space_shared" });
+    await insertMemory({
+      scope_type: "project",
+      project_id: PROJECT,
+      owner_user_id: OWNER,
+      visibility: "space_shared",
+    });
     await reindex();
 
     const out = await searchService().assessCreateSafety({
@@ -280,17 +290,22 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
     await insertMemory({ visibility: "space_shared", owner_user_id: OWNER });
     await reindex();
 
-    await new PgMemoryReadRepository(pool).recordCreateSafetyReads([MEM_A], SPACE, OWNER);
+    await searchService().assessCreateSafety({
+      spaceId: SPACE,
+      viewerUserId: OTHER,
+      objectType: "memory_entry",
+      title: "Coffee preferences",
+    });
 
     const logs = await pool.query(
-      "SELECT access_type, user_id, reason FROM memory_access_logs WHERE memory_id = $1",
+      "SELECT access_type, viewer_user_id, reason FROM content_access_logs WHERE resource_type = 'memory' AND resource_id = $1",
       [MEM_A],
     );
     expect(logs.rows).toHaveLength(1);
     expect(logs.rows[0]).toMatchObject({
       access_type: "create_safety_hit",
-      user_id: OWNER,
-      reason: "memory create-safety",
+      viewer_user_id: OTHER,
+      reason: "retrieval create-safety",
     });
     const counter = await pool.query("SELECT access_count FROM memory_entries WHERE id = $1", [MEM_A]);
     expect(counter.rows[0].access_count).toBe(1);

@@ -188,6 +188,7 @@ export async function executeRuntimeHost(
         cache_strategy: input.cache_strategy,
         on_text_delta: hooks.onTextDelta,
         abort_signal: hooks.signal,
+        allow_provider_fallback: !input.invocation_audit_refs,
         task: "runtime_host",
         tools: toolMode === "authorized_bindings" ? tools : undefined,
         metering: {
@@ -199,6 +200,9 @@ export async function executeRuntimeHost(
           source_resource_type: "run",
           source_resource_id: input.run_id,
           space_system_task: true,
+          metadata: input.invocation_audit_refs
+            ? { runtime_context_audit_refs: input.invocation_audit_refs }
+            : {},
           root_run_id: input.root_run_id ?? null,
           parent_run_id: input.parent_run_id ?? null,
           run_group_id: input.run_group_id ?? null,
@@ -212,6 +216,14 @@ export async function executeRuntimeHost(
           dimensions: {
             mode: input.mode,
             tool_mode: toolMode,
+            ...(input.invocation_audit_refs
+              ? {
+                  delivery_id: input.invocation_audit_refs.delivery_id,
+                  invocation_snapshot_id: input.invocation_audit_refs.invocation_snapshot_id,
+                  execution_control_snapshot_id: input.invocation_audit_refs.execution_control_snapshot_id,
+                  usage_source_id: input.invocation_audit_refs.usage_source_id,
+                }
+              : {}),
           },
         },
       },
@@ -248,7 +260,9 @@ export async function executeRuntimeHost(
       adapter_metadata: {
         adapter_type: "ts_agent_host",
         run_id: input.run_id,
-        model_provider_id: input.model_provider_id,
+        model_provider_id: result.provider_id,
+        requested_model_provider_id: input.model_provider_id,
+        model: result.model,
         tool_mode: toolMode,
         tool_count: tools.length,
       },

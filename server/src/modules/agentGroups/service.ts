@@ -1176,7 +1176,7 @@ async function prepareRoomConversationBackends(input: {
   );
   const replayPrompt = renderRoomPromptMessages(
     replayContext.messages,
-    replayContext.summary_text,
+    null,
   );
   const runtimeSessions = new PgConversationRuntimeSessionRepository(input.db);
   const resolved = new Map<string, PreparedRoomConversationBackend>();
@@ -1205,7 +1205,6 @@ async function prepareRoomConversationBackends(input: {
           agentId,
           input.projectId,
           revision,
-          replayContext.summary_id,
         )
       : null;
     const runtimeSession = contextFingerprint
@@ -1346,65 +1345,30 @@ async function listRoomReplayContext(
   currentMessageId: string,
 ): Promise<{
   messages: RoomPromptMessage[];
-  summary_text: string | null;
-  summary_id: string | null;
 }> {
-  const summary = await db.query<{
-    id: string;
-    summary_text: string;
-    source_last_message_id: string | null;
-  }>(
-    `SELECT id, summary_text, source_last_message_id
-       FROM session_summaries
-      WHERE space_id = $1
-        AND session_id = $2
-        AND status = 'active'
-      ORDER BY version DESC
-      LIMIT 1`,
-    [spaceId, sessionId],
-  );
-  const summaryRow = summary.rows[0] ?? null;
   const messages = await db.query<RoomPromptMessage>(
     `WITH current_message AS (
        SELECT created_at, id
          FROM messages
         WHERE space_id = $1 AND session_id = $2 AND id = $3
-     ), summary_watermark AS (
-       SELECT message.created_at, message.id
-         FROM messages message
-        WHERE message.space_id = $1
-          AND message.session_id = $2
-          AND message.id = $4
      )
      SELECT message.id, message.user_id, message.sender_agent_id,
             message.role, message.content, message.created_at,
             producer.instructed_by_user_id
        FROM messages message
        CROSS JOIN current_message current
-       LEFT JOIN summary_watermark watermark ON true
        LEFT JOIN runs producer
          ON producer.space_id = message.space_id
         AND producer.id = message.metadata_json->>'run_id'
       WHERE message.space_id = $1
         AND message.session_id = $2
         AND (message.created_at, message.id) <= (current.created_at, current.id)
-        AND (
-          watermark.id IS NULL
-          OR (message.created_at, message.id) > (watermark.created_at, watermark.id)
-        )
       ORDER BY message.created_at DESC, message.id DESC
-      LIMIT (
-        CASE
-          WHEN $4::varchar IS NOT NULL THEN NULL
-          ELSE 80
-        END
-      )`,
-    [spaceId, sessionId, currentMessageId, summaryRow?.source_last_message_id ?? null],
+      LIMIT 80`,
+    [spaceId, sessionId, currentMessageId],
   );
   return {
     messages: messages.rows.reverse(),
-    summary_text: summaryRow?.summary_text ?? null,
-    summary_id: summaryRow?.id ?? null,
   };
 }
 
@@ -1495,7 +1459,6 @@ function roomRuntimeContextFingerprint(
   agentId: string,
   projectId: string | null,
   revision: RoomContextRevision | null,
-  summaryId: string | null,
 ): string {
   return createHash("sha256").update(JSON.stringify({
     schema_version: "room_runtime_context.v1",
@@ -1505,7 +1468,6 @@ function roomRuntimeContextFingerprint(
     agent_updated_at: revision?.agent_updated_at ?? null,
     project_updated_at: revision?.project_updated_at ?? null,
     active_brief_version_id: revision?.active_brief_version_id ?? null,
-    session_summary_id: summaryId,
     runtime_profile_id: backend.runtime_profile_id,
     adapter_type: backend.adapter_type,
     credential_profile_id: backend.credential_profile_id,
@@ -1517,15 +1479,10 @@ function roomRuntimeContextFingerprint(
 }
 
 function roomRunPrompt(
-  backend: PreparedRoomConversationBackend | undefined,
+  _backend: PreparedRoomConversationBackend | undefined,
   assignedTask: string,
 ): string {
-  if (!backend) return assignedTask;
-  return [
-    backend.increment_prompt,
-    "[Assigned task for this Room turn]",
-    assignedTask,
-  ].filter(Boolean).join("\n\n");
+  return assignedTask;
 }
 
 function roomReplayPrompt(replayPrompt: string, assignedTask: string): string {
@@ -1590,44 +1547,19 @@ function roomTurnModelOverride(input: {
 }): Record<string, unknown> | null {
   if (input.plannedRecipientRunCount <= 1) return null;
   return {
-    chat_context_preamble: roomTurnContextPreamble(input),
+    room_turn_routing: {
+      schema_version: "room_turn_routing.v1",
+      routing_mode: input.routingMode ?? "direct",
+      current_recipient_agent_id: input.currentRecipientAgentId,
+      current_segment_index: input.currentSegmentIndex,
+      recipient_segments: input.routingSegments.map((segment) => ({
+        recipient_agent_ids: [...segment.recipient_agent_ids],
+        recipient_labels: segment.recipient_agent_ids
+          .map((agentId) => agentLabel(agentId, input.recipientSnapshots)),
+        task: segment.content,
+      })),
+    },
   };
-}
-
-function roomTurnContextPreamble(input: {
-  content: string;
-  routingMode: "direct" | "agent_coordination" | null;
-  routingSegments: readonly AgentGroupMessageRecipientSegment[];
-  currentSegmentIndex: number;
-  currentRecipientAgentId: string;
-  plannedRecipientRunCount: number;
-  recipientSnapshots: ReadonlyMap<string, AgentCapabilitySnapshotRecord>;
-}): string {
-  const segmentLines = input.routingSegments.map((segment, index) => {
-    const labels = segment.recipient_agent_ids
-      .map((agentId) => agentLabel(agentId, input.recipientSnapshots))
-      .join(", ");
-    const marker = index === input.currentSegmentIndex &&
-      segment.recipient_agent_ids.includes(input.currentRecipientAgentId)
-      ? " (this run)"
-      : "";
-    return `${index + 1}. ${labels}${marker}\n   Task: ${segment.content}`;
-  });
-  const currentSegment = input.routingSegments[input.currentSegmentIndex];
-  const currentTask = currentSegment?.content ?? "";
-  return [
-    "Room turn routing context:",
-    "The user's message was split into multiple auditable recipient runs in the same room turn.",
-    "Your run prompt may contain only your own segment; use this context to understand whether your answer depends on sibling room runs.",
-    `Routing mode: ${input.routingMode ?? "direct"}`,
-    `Original user message:\n${input.content}`,
-    `Current recipient: ${agentLabel(input.currentRecipientAgentId, input.recipientSnapshots)}`,
-    currentTask ? `Current segment task:\n${currentTask}` : null,
-    `Recipient segments:\n${segmentLines.join("\n")}`,
-    "If your task requires outputs, conclusions, comparisons, validation, or a combined response from other recipient segments in this same user turn, call agent.wait_for_results with scope=current_turn before answering.",
-    "If you can answer from your own segment alone, answer normally.",
-    "When a waited run resumes, use the completed agent results provided to the continuation prompt. Do not say sibling results are unavailable before using the wait tool.",
-  ].filter((part): part is string => typeof part === "string" && part.length > 0).join("\n\n");
 }
 
 function agentLabel(

@@ -503,7 +503,6 @@ export default function RunDetailPage() {
             <p><span className="text-muted-foreground">Execution space</span><br /><span>{executionSpace?.name ?? 'Unavailable space'}</span></p>
             <p><span className="text-muted-foreground">Project context</span><br /><span>{r.project_folder_id ? 'Project Folder attached' : 'No Project Folder'}</span></p>
             <p><span className="text-muted-foreground">Instructed by</span><br /><span>{instructedBy}</span></p>
-            <p><span className="text-muted-foreground">Context snapshot</span><br /><span>{r.context_snapshot_id ? 'Captured' : 'Not captured'}</span></p>
           </div>
           <details className="rounded-md border border-border bg-muted/20 p-3 text-xs">
             <summary className="cursor-pointer font-medium">Technical identifiers</summary>
@@ -512,7 +511,6 @@ export default function RunDetailPage() {
               <p className="break-all"><span className="text-muted-foreground">agent_id</span><br /><span className="font-mono select-all">{r.agent_id}</span></p>
               <p className="break-all"><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono select-all">{r.agent_version_id}</span></p>
               <p className="break-all"><span className="text-muted-foreground">project_folder_id</span><br /><span className="font-mono select-all">{r.project_folder_id ?? '—'}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">context_snapshot_id</span><br /><span className="font-mono select-all">{r.context_snapshot_id ?? '—'}</span></p>
               <p className="break-all"><span className="text-muted-foreground">space_id</span><br /><span className="font-mono select-all">{r.space_id}</span></p>
             </div>
           </details>

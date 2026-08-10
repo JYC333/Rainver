@@ -16,6 +16,7 @@ export const projectSourceBindings = pgTable("project_source_bindings", {
 	priority: integer().notNull(),
 	deliveryScope: varchar("delivery_scope", { length: 32 }).default('project_members').notNull(),
 	collectionNotificationsEnabled: boolean("collection_notifications_enabled").default(true).notNull(),
+	standingComparisonEnabled: boolean("standing_comparison_enabled").default(false).notNull(),
 	filtersJson: jsonb("filters_json").notNull(),
 	routingPolicyJson: jsonb("routing_policy_json").notNull(),
 	extractionPolicyJson: jsonb("extraction_policy_json").notNull(),
@@ -52,6 +53,8 @@ export const projectSourceBindings = pgTable("project_source_bindings", {
 	unique("uq_project_source_bindings_project_channel").on(table.bindingKey, table.projectId, table.sourceChannelId, table.spaceId),
 	check("ck_project_source_bindings_delivery_scope", sql`(delivery_scope)::text = ANY (ARRAY[('project_members'::character varying)::text, ('source_subscribers'::character varying)::text])`),
 	check("ck_project_source_bindings_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('paused'::character varying)::text, ('archived'::character varying)::text])`),
+	check("ck_project_source_bindings_extraction_policy_object", sql`jsonb_typeof(extraction_policy_json) = 'object'::text`),
+	check("ck_project_source_bindings_profile_key_format", sql`NOT (extraction_policy_json ? 'profile_key') OR (jsonb_typeof(extraction_policy_json->'profile_key') = 'string'::text AND char_length(extraction_policy_json->>'profile_key') BETWEEN 1 AND 128 AND (extraction_policy_json->>'profile_key') ~ '^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$')`),
 ]);
 
 export const projectSourceItemLinks = pgTable("project_source_item_links", {

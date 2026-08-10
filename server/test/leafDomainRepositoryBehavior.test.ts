@@ -25,6 +25,9 @@ function sourcesConfig(): ServerConfig {
     workspaceRoot: "/tmp/aspace/workspaces",
     cliToolsRoot: "/tmp/aspace/runtime-tools",
     cliSandboxImage: "agent-space-sandbox",
+    sandboxRunnerHost: "sandbox-runner",
+    sandboxRunnerPort: 8020,
+    sandboxRunnerServerHost: "server",
     sandboxRoot: "/tmp/aspace/sandboxes",
     deployerSocketPath: "/tmp/aspace/run/deployer.sock",
     artifactStorageRoot: "/tmp/aspace/storage/artifacts",
@@ -40,9 +43,9 @@ function sourcesConfig(): ServerConfig {
     dailyReportSchedulerIntervalSeconds: 60,
     automationSchedulerEnabled: true,
     automationSchedulerIntervalSeconds: 60,
-    memoryAccessLogRetentionEnabled: true,
-    memoryAccessLogRetentionDays: 90,
-    memoryAccessLogPruneIntervalSeconds: 3600,
+    contentAccessLogRetentionEnabled: true,
+    contentAccessLogRetentionDays: 90,
+    contentAccessLogPruneIntervalSeconds: 3600,
     memoryMaintenanceSchedulerEnabled: true,
     memoryMaintenanceSchedulerIntervalSeconds: 900,
     memoryMaintenanceSchedulerBatchLimit: 5,
@@ -227,7 +230,7 @@ function objectRelationRow(overrides: Record<string, unknown> = {}) {
     from_object_type: "claim",
     to_object_id: "claim-2",
     to_object_type: "claim",
-    relation_type: "supports",
+    link_type: "supports",
     status: "active",
     confidence: 0.8,
     evidence_summary: null,
@@ -331,12 +334,13 @@ function projectSourceBindingRow(params: readonly unknown[]) {
     priority: Number(params[5] ?? 0),
     delivery_scope: String(params[6] ?? "project_members"),
     collection_notifications_enabled: typeof params[7] === "boolean" ? params[7] : true,
-    filters_json: JSON.parse(String(params[8] ?? "{}")) as Record<string, unknown>,
-    routing_policy_json: JSON.parse(String(params[9] ?? "{}")) as Record<string, unknown>,
-    extraction_policy_json: JSON.parse(String(params[10] ?? "{}")) as Record<string, unknown>,
-    created_by_user_id: typeof params[11] === "string" ? params[11] : null,
-    created_at: String(params[12] ?? "2026-06-16T00:00:00.000Z"),
-    updated_at: String(params[12] ?? "2026-06-16T00:00:00.000Z"),
+    standing_comparison_enabled: typeof params[8] === "boolean" ? params[8] : false,
+    filters_json: JSON.parse(String(params[9] ?? "{}")) as Record<string, unknown>,
+    routing_policy_json: JSON.parse(String(params[10] ?? "{}")) as Record<string, unknown>,
+    extraction_policy_json: JSON.parse(String(params[11] ?? "{}")) as Record<string, unknown>,
+    created_by_user_id: typeof params[12] === "string" ? params[12] : null,
+    created_at: String(params[13] ?? "2026-06-16T00:00:00.000Z"),
+    updated_at: String(params[13] ?? "2026-06-16T00:00:00.000Z"),
   };
 }
 
@@ -446,9 +450,9 @@ describe("Leaf domain repository behavior", () => {
     expect(out).toMatchObject({ id: "activity-1", status: "raw" });
   });
 
-  it("consolidates activity into a pending memory proposal with activity provenance", async () => {
+  it("consolidates activity into a pending memory proposal with inherited visibility and provenance", async () => {
     const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM activity_records")) return [activityRow()];
+      if (sql.includes("FROM activity_records")) return [activityRow({ visibility: "private" })];
       if (sql.includes("FROM retrieval_aliases")) return [];
       if (sql.includes("FROM retrieval_chunks")) return [];
       if (sql.includes("INSERT INTO proposals")) return [proposalRow(params)];
@@ -459,7 +463,11 @@ describe("Leaf domain repository behavior", () => {
     const proposals = await new PgActivityRepository(db).consolidate(identity, "activity-1");
 
     expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({ proposal_type: "memory_create", status: "pending" });
+    expect(proposals[0]).toMatchObject({
+      proposal_type: "memory_create",
+      status: "pending",
+      visibility: "private",
+    });
     expect(proposals[0].provenance_entries).toEqual([
       expect.objectContaining({
         source_type: "activity",
@@ -513,8 +521,8 @@ describe("Leaf domain repository behavior", () => {
         return [{
           object_type: "memory_entry",
           object_id: "memory-1",
-          object_kind: "experience",
-          object_kind_label: null,
+          object_profile: "experience",
+          object_profile_label: null,
           title: "Existing memory",
           source_connection_ids_json: [],
           snippet: "Remember the sourced activity.",
@@ -541,7 +549,7 @@ describe("Leaf domain repository behavior", () => {
         }];
       }
       if (sql.includes("FROM retrieval_edges")) return [];
-      if (sql.includes("INSERT INTO memory_access_logs")) return [];
+      if (sql.includes("INSERT INTO content_access_logs")) return [];
       if (sql.startsWith("UPDATE memory_entries")) return [];
       if (sql.includes("INSERT INTO proposals")) {
         proposalInsertCount += 1;
@@ -637,9 +645,28 @@ describe("Leaf domain repository behavior", () => {
       project_id: "project-1",
       source_channel_id: "channel-1",
       delivery_scope: "project_members",
+      extraction_policy_json: { profile_key: "generic_document_v1" },
+      extraction_profile: { key: "generic_document_v1", entity_type: "document" },
     });
     expect(insertParams?.[2]).toBe("project-1");
     expect(insertParams?.[3]).toBe("channel-1");
+  });
+
+  it("rejects an unregistered extraction profile before writing a binding", () => {
+    const db = new FakeDb(() => {
+      throw new Error("no DB call expected");
+    });
+
+    expect(() => new ProjectSourceBindingService(db).createBinding(identity, {
+      project_id: "project-1",
+      source_channel_id: "channel-1",
+      extraction_policy: { profile_key: "missing_profile_v1" },
+    })).toThrow(expect.objectContaining({ statusCode: 422, message: "unknown extraction profile: missing_profile_v1" }));
+    expect(() => new ProjectSourceBindingService(db).createBinding(identity, {
+      project_id: "project-1",
+      source_channel_id: "channel-1",
+      extraction_policy: { profile_key: 42 },
+    })).toThrow(expect.objectContaining({ statusCode: 422, message: "extraction_policy.profile_key must be a non-empty string" }));
   });
 
   it("restores an archived project source binding instead of creating a duplicate", async () => {
@@ -652,7 +679,7 @@ describe("Leaf domain repository behavior", () => {
       if (sql.includes("FROM projects")) return [{ id: "project-1", owner_user_id: "user-1", status: "active" }];
       if (sql.includes("FROM project_source_bindings") && sql.includes("binding_key")) return [archived];
       if (sql.includes("UPDATE project_source_bindings") && sql.includes("SET status = 'active'")) {
-        return [{ ...archived, status: "active", updated_at: String(params[8]) }];
+        return [{ ...archived, status: "active", updated_at: String(params[9]) }];
       }
       throw new Error(`unexpected SQL: ${sql}`);
     });
@@ -961,7 +988,7 @@ describe("Leaf domain repository behavior", () => {
 
   it("creates Knowledge proposals with knowledge-specific provenance", async () => {
     const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM space_object_kinds")) return [];
+      if (sql.includes("FROM space_object_profiles")) return [];
       if (sql.includes("INSERT INTO proposals")) return [proposalRow(params)];
       throw new Error(`unexpected SQL: ${sql}`);
     });
@@ -980,7 +1007,7 @@ describe("Leaf domain repository behavior", () => {
   it("creates Claim proposals with normalized sources", async () => {
     const payloads: Record<string, unknown>[] = [];
     const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM space_object_kinds")) return [];
+      if (sql.includes("FROM space_object_profiles")) return [];
       if (sql.includes("FROM source_connections")) {
         return [sourceConnectionRow()];
       }
@@ -1021,7 +1048,7 @@ describe("Leaf domain repository behavior", () => {
 
   it("rejects claim source refs without a source connection", async () => {
     const db = new FakeDb((sql) => {
-      if (sql.includes("FROM space_object_kinds")) return [];
+      if (sql.includes("FROM space_object_profiles")) return [];
       throw new Error("unexpected DB call");
     });
 
@@ -1066,7 +1093,7 @@ describe("Leaf domain repository behavior", () => {
     const proposal = await new PgKnowledgeRepository(db).proposeObjectRelation(identity, {
       from_object_id: "claim-a",
       to_object_id: "claim-b",
-      relation_type: "supports",
+      link_type: "supports",
     });
 
     expect(seenObjectLookups).toEqual([
@@ -1078,22 +1105,38 @@ describe("Leaf domain repository behavior", () => {
       operation: "object_relation_create",
       from_object_id: "claim-a",
       to_object_id: "claim-b",
-      relation_type: "supports",
+      link_type: "supports",
     });
   });
 
-  it("counts only visible active claims in the knowledge summary", async () => {
+  it("counts only what the viewer can read, in every part of the knowledge summary", async () => {
+    // Three of these four used to be gated by Space membership alone while the
+    // fourth applied the content gate. A count is a weaker leak than a list, but
+    // it is still an answer about content the viewer cannot open — and one
+    // gated count beside three ungated ones is how the gap stayed invisible.
+    const gated = (sql: string, params: readonly unknown[]) => {
+      expect(sql).toContain("so.visibility = 'space_shared'");
+      expect(sql).toContain("content_access_grants");
+      expect(sql).toContain("space_memberships");
+      expect(sql).toContain("so.owner_user_id = $2");
+      expect(params).toEqual(["space-1", "user-1"]);
+    };
     const db = new FakeDb((sql, params) => {
       const norm = sql.replace(/\s+/g, " ");
-      if (norm.includes("FROM notes n")) return [{ status: "active", total: "2" }];
-      if (norm.includes("FROM knowledge_items ki")) return [{ total: "3" }];
-      if (norm.includes("FROM sources s")) return [{ total: "4" }];
+      if (norm.includes("FROM notes n")) {
+        gated(sql, params);
+        return [{ status: "active", total: "2" }];
+      }
+      if (norm.includes("FROM knowledge_items ki")) {
+        gated(sql, params);
+        return [{ total: "3" }];
+      }
+      if (norm.includes("FROM sources s")) {
+        gated(sql, params);
+        return [{ total: "4" }];
+      }
       if (norm.includes("FROM claims c")) {
-        expect(sql).toContain("so.visibility = 'space_shared'");
-        expect(sql).toContain("content_access_grants");
-        expect(sql).toContain("space_memberships");
-        expect(sql).toContain("so.owner_user_id = $2");
-        expect(params).toEqual(["space-1", "user-1"]);
+        gated(sql, params);
         return [{ total: "1" }];
       }
       throw new Error(`unexpected SQL: ${sql}`);
@@ -1193,14 +1236,17 @@ describe("Leaf domain repository behavior", () => {
       if (norm.includes("count(DISTINCT n.object_id)")) {
         expect(sql).toContain("LEFT JOIN note_collection_items nci_filter");
         expect(sql).toContain("nci_filter.space_id = n.space_id");
-        expect(sql).toContain("nci_filter.collection_id = $2");
-        expect(params).toEqual(["space-1", "collection-1"]);
+        expect(sql).toMatch(/nci_filter\.collection_id = \$\d+/);
+        // The viewer id is a parameter of the list too: the content read gate
+        // runs on the list, not only on the per-note read.
+        expect(sql).toContain("space_object_project_shares");
+        expect(params).toEqual(["space-1", "user-1", "collection-1"]);
         return [{ total: "1" }];
       }
       if (norm.includes("FROM notes n")) {
         expect(sql).toContain("LEFT JOIN note_collection_items nci_filter");
         expect(sql).toContain("nci_filter.space_id = n.space_id");
-        expect(sql).toContain("nci_filter.collection_id = $2");
+        expect(sql).toMatch(/nci_filter\.collection_id = \$\d+/);
         return [noteRow()];
       }
       throw new Error(`unexpected SQL: ${sql}`);
@@ -1210,6 +1256,7 @@ describe("Leaf domain repository behavior", () => {
       status: null,
       projectId: null,
       collectionId: "collection-1",
+      collectionIds: null,
       q: null,
       limit: 50,
       offset: 0,
@@ -1249,6 +1296,14 @@ describe("Leaf domain repository behavior", () => {
         expect(params).toEqual(["collection-1", "space-1"]);
         return [{ id: "collection-1" }];
       }
+      if (norm.includes("SELECT collection_id FROM note_collection_items")) {
+        expect(params).toEqual(["note-1", "space-1"]);
+        return [];
+      }
+      if (norm.includes("WITH RECURSIVE ancestry AS")) {
+        expect(params).toEqual(["space-1", "collection-1"]);
+        return [];
+      }
       if (sql.includes("DELETE FROM note_collection_items")) {
         expect(sql).toContain("space_id = $2");
         expect(params).toEqual(["note-1", "space-1"]);
@@ -1263,6 +1318,8 @@ describe("Leaf domain repository behavior", () => {
         expect(params.slice(1, 4)).toEqual(["space-1", "collection-1", "note-1"]);
         return [];
       }
+      // Reading the note back audits cross-person reads (ADR 0013 decision 18).
+      if (sql.includes("INSERT INTO content_access_logs")) return [];
       throw new Error(`unexpected SQL: ${sql}`);
     });
 

@@ -8,9 +8,9 @@
  * while keeping the credential access inside the Codex CLI profile channel.
  */
 
-import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import type { ProbeToolResolver, QuotaResult } from "./usageProbe";
+import type { CliCommandExecutor, CliStdioController } from "../../runs/localCliExecution";
 
 export interface CodexRpcHandle {
   write(data: string): void;
@@ -66,36 +66,6 @@ function emptyQuota(): QuotaResult {
     week_resets: null,
     checked_at: null,
     error: null,
-  };
-}
-
-function defaultCodexRpcFactory(): CodexRpcFactory {
-  return {
-    spawn(command, args, options) {
-      const child = spawn(command, args, {
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: options.env,
-      });
-      return {
-        write: (data) => {
-          child.stdin.write(data);
-        },
-        onStdout: (listener) => {
-          child.stdout.on("data", (chunk: Buffer) => listener(chunk.toString("utf8")));
-        },
-        onStderr: (listener) => {
-          child.stderr.on("data", (chunk: Buffer) => listener(chunk.toString("utf8")));
-        },
-        onExit: (listener) => {
-          child.on("close", (code, signal) => listener(code, signal));
-          child.on("error", () => listener(null, null));
-        },
-        kill: () => {
-          child.kill();
-        },
-      };
-    },
   };
 }
 
@@ -386,6 +356,7 @@ export async function probeCodexQuota(
   loginHome: string,
   toolResolver: ProbeToolResolver,
   timings: CodexRpcTimings = DEFAULT_TIMINGS,
+  runner?: { executor: CliCommandExecutor; run_id: string; workspace_cwd: string; proxy_url?: string },
 ): Promise<QuotaResult> {
   let executable: string;
   try {
@@ -399,7 +370,15 @@ export async function probeCodexQuota(
   await mkdir(codexHome, { recursive: true, mode: 0o700 });
   await mkdir(loginHome, { recursive: true, mode: 0o700 });
 
-  const factory = codexRpcFactoryOverride ?? defaultCodexRpcFactory();
+  if (!codexRpcFactoryOverride) {
+    if (!runner) {
+      const result = emptyQuota();
+      result.error = "Codex quota probing requires the scoped Sandbox Runner.";
+      return result;
+    }
+    return await probeCodexQuotaWithRunner(executable, codexHome, loginHome, timings, runner);
+  }
+  const factory = codexRpcFactoryOverride;
   let session: CodexRpcSession | null = null;
   try {
     const handle = factory.spawn(executable, CODEX_APP_SERVER_ARGS, {
@@ -423,5 +402,72 @@ export async function probeCodexQuota(
     return result;
   } finally {
     session?.kill();
+  }
+}
+
+async function probeCodexQuotaWithRunner(
+  executable: string,
+  codexHome: string,
+  loginHome: string,
+  timings: CodexRpcTimings,
+  runner: { executor: CliCommandExecutor; run_id: string; workspace_cwd: string; proxy_url?: string },
+): Promise<QuotaResult> {
+  const controller = new CodexQuotaController();
+  const timeoutMs = timings.initializeTimeoutMs + timings.requestTimeoutMs + 2_000;
+  const execution = await runner.executor.runCommand({
+    command: [executable, ...CODEX_APP_SERVER_ARGS],
+    cwd: runner.workspace_cwd,
+    timeout_seconds: Math.max(1, Math.ceil(timeoutMs / 1_000)),
+    env: {
+      HOME: loginHome,
+      CODEX_HOME: codexHome,
+      TERM: "dumb",
+      ...(runner.proxy_url ? { HTTP_PROXY: runner.proxy_url, HTTPS_PROXY: runner.proxy_url } : {}),
+    },
+    run_id: runner.run_id,
+    scope_id: runner.run_id,
+    stdin: null,
+    stdio_controller: controller,
+    egress_profile: "provider",
+  });
+  if (controller.rateLimits) return quotaFromRateLimits(parseRateLimits(controller.rateLimits));
+  const recovered = quotaFromRateLimits(parseRateLimitsFromError(controller.error ?? execution.stderr));
+  if (recovered.available) return recovered;
+  const result = emptyQuota();
+  result.error = controller.error ?? (execution.stderr || "Codex usage probe failed.");
+  return result;
+}
+
+class CodexQuotaController implements CliStdioController {
+  rateLimits: unknown = null;
+  error: string | null = null;
+  private completed = false;
+
+  start(send: (message: Record<string, unknown>) => void): void {
+    send({ id: 1, method: "initialize", params: { clientInfo: { name: "agent-space", version: "0.0.0" } } });
+  }
+
+  receive(message: Record<string, unknown>, send: (message: Record<string, unknown>) => void, closeStdin: () => void): void {
+    const error = asRecord(message.error);
+    if (error) {
+      this.error = typeof error.message === "string" ? error.message : "Codex quota RPC failed.";
+      closeStdin();
+      return;
+    }
+    if (message.id === 1) {
+      send({ method: "initialized", params: {} });
+      send({ id: 2, method: "account/rateLimits/read", params: {} });
+      return;
+    }
+    if (message.id === 2) {
+      this.rateLimits = message.result;
+      this.completed = true;
+      closeStdin();
+    }
+  }
+
+  reject(message: string): void { this.error = message; }
+  result(): { completed: boolean; error: string | null; text: string } {
+    return { completed: this.completed, error: this.error, text: "" };
   }
 }

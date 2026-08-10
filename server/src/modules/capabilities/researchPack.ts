@@ -2,20 +2,11 @@ import type {
   CapabilityDefinition,
   CapabilityPackDescriptor,
   CapabilityRuntimeBinding,
-  WorkflowTemplate,
 } from "./types";
 
 const RESEARCH_ARTIFACT_TYPES = [
   "research_report.archive.v1",
 ];
-const RESEARCH_WORKFLOW_CAPABILITY_IDS = [
-  "research.source_collect",
-  "research.source_summarize",
-  "research.evidence_extract",
-  "research.brief_synthesize",
-  "research.idea_generate",
-];
-
 function binding(
   capabilityId: string,
   runtime: string,
@@ -98,13 +89,13 @@ export const RESEARCH_CAPABILITIES: CapabilityDefinition[] = [
   researchCapability(
     "research.adhoc_analyze",
     "Ad-hoc Research Analysis",
-    "Analyze a bounded notebook and paper selection and propose a reviewed Research Area update.",
+    "Analyze a bounded note and evidence selection and propose a reviewed Research Area update.",
     [],
   ),
   researchCapability(
     "research.ask",
     "Ask AI",
-    "Hold a multi-turn conversation grounded in the notebook and selected papers, optionally proposing a reviewable notebook edit.",
+    "Hold a multi-turn conversation grounded in Project Notes and selected evidence, optionally proposing a reviewable note edit.",
     [],
   ),
   researchCapability(
@@ -115,82 +106,15 @@ export const RESEARCH_CAPABILITIES: CapabilityDefinition[] = [
   ),
 ];
 
-function workflow(
-  id: string,
-  name: string,
-  description: string,
-  outputArtifactTypes: string[],
-): WorkflowTemplate {
-  return {
-    id,
-    name,
-    description,
-    category: "research",
-    capability_ids: RESEARCH_WORKFLOW_CAPABILITY_IDS,
-    input_schema_json: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        source_mode: {
-          type: "string",
-          enum: ["runtime_native", "project_sources", "manual_urls"],
-        },
-      },
-      required: ["query"],
-      additionalProperties: true,
-    },
-    default_config_json: {
-      source_mode: "project_sources",
-      output_artifact_types: outputArtifactTypes,
-      proposal_policy: "review_required",
-    },
-    output_artifact_types: outputArtifactTypes,
-    proposal_policy: {
-      memory_writes: "proposal_only",
-      capability_changes: "proposal_required",
-    },
-    recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
-    execution_shape: "structured_generation",
-    required_capabilities: [],
-    required_tools: [],
-    prompt_asset_keys: [`workflow.${id}.run`],
-  };
-}
-
-export const RESEARCH_WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
-  workflow(
-    "research.academic_literature_review",
-    "Academic Literature Review",
-    "Review academic sources and synthesize cited findings into a research brief.",
-    ["research_report.archive.v1"],
-  ),
-  workflow(
-    "research.news_scan",
-    "News Scan",
-    "Scan time-sensitive sources and produce a cited summary of developments.",
-    ["research_report.archive.v1"],
-  ),
-  workflow(
-    "research.market_research",
-    "Market Research",
-    "Compare market sources, extract evidence, and produce brief findings and candidate ideas.",
-    ["research_report.archive.v1"],
-  ),
-  workflow(
-    "research.technical_survey",
-    "Technical Survey",
-    "Survey technical sources and synthesize implementation-relevant findings.",
-    ["research_report.archive.v1"],
-  ),
-];
-
 export const RESEARCH_PACK: CapabilityPackDescriptor = {
   id: "research",
   name: "Research Skills",
-  description: "Built-in research capabilities and reusable research modes.",
+  description: "Built-in reusable research capabilities.",
   version: "0.1.0",
   capability_ids: RESEARCH_CAPABILITIES.map((capability) => capability.id),
-  workflow_template_ids: RESEARCH_WORKFLOW_TEMPLATES.map((template) => template.id),
+  // D2: a preset is admitted only when it changes concrete behavior or configuration;
+  // labels over identical execution settings are not presets.
+  workflow_template_ids: [],
   artifact_types: RESEARCH_ARTIFACT_TYPES,
   source_kind: "builtin",
   status: "available",

@@ -55,6 +55,10 @@ export interface InquiryThreadAdvice {
   model_version: string | null;
   /** True once the Thread has moved past the revision this advice reasoned about. */
   stale: boolean;
+  /**
+   * Where the recommended step is performed, or `null` when it is human work
+   * with no system operation behind it (ADR 0012 decision 8, amended).
+   */
   created_at: string;
   updated_at: string;
 }
@@ -144,7 +148,7 @@ export class InquiryAdviceService {
     const row = await this.db.query<AdviceRow>(
       `SELECT a.*, t.version AS current_thread_version
          FROM inquiry_thread_advice a
-         JOIN inquiry_threads t ON t.id = a.thread_id AND t.space_id = a.space_id
+         JOIN inquiry_threads t ON t.object_id = a.thread_id AND t.space_id = a.space_id
         WHERE a.space_id = $1 AND a.project_id = $2 AND a.thread_id = $3`,
       [identity.spaceId, projectId, threadId],
     );
@@ -157,7 +161,7 @@ export class InquiryAdviceService {
       `UPDATE inquiry_thread_advice a
           SET status = 'dismissed', updated_at = $4
          FROM inquiry_threads t
-        WHERE a.thread_id = t.id AND t.space_id = a.space_id
+        WHERE a.thread_id = t.object_id AND t.space_id = a.space_id
           AND a.space_id = $1 AND a.project_id = $2 AND a.thread_id = $3
       RETURNING a.*, t.version AS current_thread_version`,
       [identity.spaceId, projectId, threadId, new Date().toISOString()],
@@ -233,7 +237,7 @@ export class InquiryAdviceService {
          updated_at = EXCLUDED.updated_at
        RETURNING *, (
          SELECT t.version FROM inquiry_threads t
-          WHERE t.id = inquiry_thread_advice.thread_id AND t.space_id = inquiry_thread_advice.space_id
+          WHERE t.object_id = inquiry_thread_advice.thread_id AND t.space_id = inquiry_thread_advice.space_id
        ) AS current_thread_version`,
       [
         randomUUID(), identity.spaceId, projectId, threadId,
@@ -275,13 +279,13 @@ export class InquiryAdviceService {
     threadId: string,
   ): Promise<ThreadContextRow> {
     const row = await this.db.query<ThreadContextRow>(
-      `SELECT t.id, t.kind, t.statement, t.version, t.lifecycle_status, t.next_focus_kind,
+      `SELECT t.object_id AS id, t.kind, t.statement, t.version, t.lifecycle_status, t.next_focus_kind,
               q.answer_state, q.current_answer_summary,
               h.evaluation_state, h.confidence
          FROM inquiry_threads t
-         LEFT JOIN inquiry_question_states q ON q.thread_id = t.id
-         LEFT JOIN inquiry_hypothesis_states h ON h.thread_id = t.id
-        WHERE t.id = $1 AND t.space_id = $2 AND t.project_id = $3`,
+         LEFT JOIN inquiry_question_states q ON q.thread_id = t.object_id
+         LEFT JOIN inquiry_hypothesis_states h ON h.thread_id = t.object_id
+        WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3`,
       [threadId, identity.spaceId, projectId],
     );
     if (!row.rows[0]) throw new HttpError(404, "Thread not found");
@@ -312,9 +316,14 @@ export class InquiryAdviceService {
         [thread.id, identity.spaceId],
       ),
       this.db.query<{ total: string }>(
-        `SELECT COUNT(*)::text AS total FROM project_research_workflows
-          WHERE primary_thread_id = $1 AND space_id = $2
-            AND status NOT IN ('not_started', 'completed', 'archived')`,
+        `SELECT COUNT(*)::text AS total
+           FROM project_research_workflows workflow
+           JOIN object_relations relation
+             ON relation.space_id=workflow.space_id AND relation.from_object_id=workflow.object_id
+            AND relation.link_type='about' AND relation.status='active'
+            AND relation.metadata_json->>'relation_role'='primary_inquiry_thread'
+          WHERE relation.to_object_id=$1 AND workflow.space_id=$2
+            AND workflow.status NOT IN ('not_started','completed','archived')`,
         [thread.id, identity.spaceId],
       ),
     ]);

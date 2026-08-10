@@ -1,9 +1,8 @@
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
 import {
-  projectModeProjectionRegistry,
-  type ModeOverviewProjection,
-  type ProjectModeAreaAdapter,
-  type ProjectAreaSummary,
+  projectEntitySummaryRegistry,
+  type ProjectEntitySummary,
+  type ProjectEntitySummaryAdapter,
 } from "../projects/overviewRegistry";
 import {
   projectAttentionRegistry,
@@ -47,56 +46,21 @@ async function readableCandidateIds(
 // 5): `modules/projects` aggregates through these contracts and never
 // queries `inquiry_threads`/`inquiry_signal_candidates` directly.
 
-const inquiryModeAdapter: ProjectModeAreaAdapter = {
-  mode: "inquiry",
+/**
+ * Inquiry is an entity every Project can hold, not a way of advancing work.
+ *
+ * It used to register a Primary Mode projection. Asking is how research
+ * starts, so `research` absorbed that Mode; a Thread is still a first-class
+ * object with its own Area, and pending Candidates still reach the shell
+ * through the attention adapter below.
+ */
+const inquiryEntitySummaryAdapter: ProjectEntitySummaryAdapter = {
+  entityType: "inquiry_thread",
+  label: "Inquiry Threads",
+  detail: "Open questions and hypotheses",
+  href: (projectId) => `/projects/${projectId}/inquiry`,
 
-  async getOverviewProjection(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ModeOverviewProjection> {
-    const counts = await db.query<{
-      active_threads: number; focused_threads: number; open_questions: number; active_hypotheses: number;
-    }>(
-      `SELECT
-         count(*) FILTER (WHERE lifecycle_status = 'active')::int AS active_threads,
-         count(*) FILTER (WHERE attention_state = 'focused')::int AS focused_threads,
-         count(*) FILTER (WHERE kind = 'question' AND lifecycle_status = 'active')::int AS open_questions,
-         count(*) FILTER (WHERE kind = 'hypothesis' AND lifecycle_status = 'active')::int AS active_hypotheses
-       FROM inquiry_threads WHERE space_id = $1 AND project_id = $2`,
-      [identity.spaceId, projectId],
-    );
-    const row = counts.rows[0] ?? { active_threads: 0, focused_threads: 0, open_questions: 0, active_hypotheses: 0 };
-
-    const pendingCandidates = await db.query<{ id: string }>(
-      `SELECT id FROM inquiry_signal_candidates WHERE space_id = $1 AND project_id = $2 AND status = 'pending'`,
-      [identity.spaceId, projectId],
-    );
-    const pendingTotal = (await readableCandidateIds(
-      db,
-      identity,
-      projectId,
-      pendingCandidates.rows.map((candidate) => candidate.id),
-    )).size;
-
-    const focusSet = await db.query<{ id: string; statement: string }>(
-      `SELECT id, statement FROM inquiry_threads
-        WHERE space_id = $1 AND project_id = $2 AND attention_state = 'focused'
-        ORDER BY updated_at DESC LIMIT 10`,
-      [identity.spaceId, projectId],
-    );
-
-    return {
-      mode: "inquiry",
-      current_state_summary: `${row.active_threads} active Thread${row.active_threads === 1 ? "" : "s"} (${row.open_questions} question${row.open_questions === 1 ? "" : "s"}, ${row.active_hypotheses} hypothes${row.active_hypotheses === 1 ? "is" : "es"})`,
-      progress_indicators: [
-        { metric: "focused_threads", value: row.focused_threads },
-        { metric: "pending_candidates", value: pendingTotal },
-      ],
-      focus_set: focusSet.rows.map((t) => ({ id: t.id, label: t.statement, href: `/projects/${projectId}/inquiry` })),
-      next_actions: pendingTotal > 0
-        ? [{ id: "review-candidates", label: `Review ${pendingTotal} pending Candidate${pendingTotal === 1 ? "" : "s"}`, href: `/projects/${projectId}/inquiry`, kind: "review" }]
-        : [],
-    };
-  },
-
-  async getAreaSummary(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ProjectAreaSummary> {
+  async getSummary(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ProjectEntitySummary> {
     const active = await db.query<{ total: number }>(
       `SELECT count(*)::int AS total FROM inquiry_threads WHERE space_id = $1 AND project_id = $2 AND lifecycle_status = 'active'`,
       [identity.spaceId, projectId],
@@ -115,7 +79,7 @@ const inquiryModeAdapter: ProjectModeAreaAdapter = {
       projectId,
       pendingCandidates.rows.map((candidate) => candidate.id),
     )).size;
-    const status: ProjectAreaSummary["status"] = (blocked.rows[0]?.total ?? 0) > 0
+    const status: ProjectEntitySummary["status"] = (blocked.rows[0]?.total ?? 0) > 0
       ? "blocked"
       : pendingTotal > 0
         ? "attention"
@@ -157,6 +121,6 @@ const inquiryAttentionAdapter: ProjectAttentionAdapter = {
 // See `registerBuiltInAttentionAdapters` for why a "registered
 // once" guard flag is the wrong pattern here.
 export function registerInquiryProjectIntegration(): void {
-  projectModeProjectionRegistry.register(inquiryModeAdapter);
+  projectEntitySummaryRegistry.register(inquiryEntitySummaryAdapter);
   projectAttentionRegistry.register(inquiryAttentionAdapter);
 }

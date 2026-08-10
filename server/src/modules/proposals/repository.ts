@@ -3,6 +3,7 @@ import { getDbPool } from "../../db/pool";
 import { assertProjectInSpace } from "../projects/access";
 import type { ProposalOut, ProposalPage } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { contentReadSql } from "../access/contentAccessSql";
+import { isProvenanceSourceType } from "../ontology/entities";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -89,16 +90,7 @@ export class PgProposalRepository {
          LEFT JOIN runs run_for_instructed
            ON run_for_instructed.id = p.created_by_run_id
           AND run_for_instructed.space_id = $1
-         LEFT JOIN LATERAL (
-           SELECT pa.id, pa.status
-             FROM proposal_approvals pa
-            WHERE pa.proposal_id = p.id
-              AND pa.approval_type = 'egress_granting_user'
-              AND pa.status = 'approved'
-              AND pa.revoked_at IS NULL
-            ORDER BY pa.created_at DESC
-            LIMIT 1
-         ) active_egress_approval ON true
+         ${activeEgressApprovalJoinSql()}
         ${built.whereSql}
         ${proposalOrderSql()}
         LIMIT $${limitParam} OFFSET $${offsetParam}`,
@@ -124,16 +116,7 @@ export class PgProposalRepository {
          LEFT JOIN runs run_for_instructed
            ON run_for_instructed.id = p.created_by_run_id
           AND run_for_instructed.space_id = $1
-         LEFT JOIN LATERAL (
-           SELECT pa.id, pa.status
-             FROM proposal_approvals pa
-            WHERE pa.proposal_id = p.id
-              AND pa.approval_type = 'egress_granting_user'
-              AND pa.status = 'approved'
-              AND pa.revoked_at IS NULL
-            ORDER BY pa.created_at DESC
-            LIMIT 1
-         ) active_egress_approval ON true
+         ${activeEgressApprovalJoinSql()}
         WHERE p.space_id = $1
           AND p.id = $2
           AND ${contentReadSql("proposal", "p", "$3")}`,
@@ -204,6 +187,40 @@ function proposalSelectSql(): string {
             FROM proposals p`;
 }
 
+function activeEgressApprovalJoinSql(): string {
+  return `LEFT JOIN LATERAL (
+           SELECT pa.id, pa.status
+             FROM proposal_approvals pa
+            WHERE pa.proposal_id = p.id
+              AND pa.approval_type = 'egress_granting_user'
+              AND pa.status = 'approved'
+              AND pa.revoked_at IS NULL
+              AND (
+                p.payload_json->>'requires_approval_type' IS DISTINCT FROM 'egress_content_owner'
+                OR CASE
+                  WHEN jsonb_typeof(p.payload_json->'required_egress_approver_user_ids') = 'array'
+                    AND jsonb_array_length(p.payload_json->'required_egress_approver_user_ids') > 0
+                  THEN NOT EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements_text(p.payload_json->'required_egress_approver_user_ids') required(user_id)
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM proposal_approvals owner_approval
+                        WHERE owner_approval.proposal_id = p.id
+                          AND owner_approval.approval_type = 'egress_granting_user'
+                          AND owner_approval.approver_user_id = required.user_id
+                          AND owner_approval.grant_id IS NULL
+                          AND owner_approval.status = 'approved'
+                          AND owner_approval.revoked_at IS NULL
+                     )
+                  )
+                  ELSE false
+                END
+              )
+            ORDER BY pa.created_at DESC
+            LIMIT 1
+         ) active_egress_approval ON true`;
+}
+
 function proposalOrderSql(): string {
   return `ORDER BY CASE
              WHEN p.urgency = 'critical' THEN 4
@@ -262,6 +279,7 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     source_activity_id: sourceActivityId(payload, provenanceEntries),
     grant_id: stringValue(payload.grant_id),
     required_approver_user_id: requiredApprover,
+    required_approver_user_ids: stringArray(payload.required_egress_approver_user_ids),
     requires_approval_type: stringValue(payload.requires_approval_type),
     egress_approval_status: row.egress_approval_status,
     egress_approval_id: row.egress_approval_id,
@@ -312,7 +330,7 @@ function provenanceEntriesFromPayload(payload: Record<string, unknown>): Array<R
   const runId = stringValue(payload.source_run_id);
   if (runId) {
     add(normalizeProvenance({
-      source_type: "run_step",
+      source_type: "run",
       source_id: runId,
       source_trust: "internal_system",
       evidence_json: { from_payload: "source_run_id" },
@@ -333,16 +351,6 @@ function provenanceEntriesFromPayload(payload: Record<string, unknown>): Array<R
   return merged;
 }
 
-const PROVENANCE_SOURCE_TYPES = new Set([
-  "activity",
-  "proposal",
-  "memory",
-  "artifact",
-  "run_step",
-  "external_source",
-  "user_confirmation",
-]);
-
 const SOURCE_TRUST_VALUES = new Set([
   "user_confirmed",
   "internal_system",
@@ -354,7 +362,7 @@ const SOURCE_TRUST_VALUES = new Set([
 function normalizeProvenance(raw: Record<string, unknown>): Record<string, unknown> | null {
   const sourceType = stringValue(raw.source_type);
   const sourceId = stringValue(raw.source_id);
-  if (!sourceType || !sourceId || !PROVENANCE_SOURCE_TYPES.has(sourceType)) return null;
+  if (!sourceType || !sourceId || !isProvenanceSourceType(sourceType)) return null;
   const out: Record<string, unknown> = { source_type: sourceType, source_id: sourceId };
   const trust = stringValue(raw.source_trust);
   if (trust && SOURCE_TRUST_VALUES.has(trust)) out.source_trust = trust;
@@ -368,7 +376,7 @@ function sourceRunId(payload: Record<string, unknown>): string | null {
   const direct = stringValue(payload.source_run_id);
   if (direct) return direct;
   for (const entry of provenanceEntriesFromPayload(payload)) {
-    if (entry.source_type === "run_step") return stringValue(entry.source_id);
+    if (entry.source_type === "run") return stringValue(entry.source_id);
   }
   return null;
 }
@@ -416,6 +424,11 @@ function recordValue(value: unknown): Record<string, unknown> {
 function stringValue(value: unknown): string | null {
   if (typeof value === "string" && value.length > 0) return value;
   return null;
+}
+
+function stringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))].sort();
 }
 
 function numberValue(value: unknown): number | null {

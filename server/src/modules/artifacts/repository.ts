@@ -6,6 +6,7 @@ import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import type { Queryable } from "../proposals/repository";
 import { contentReadSql } from "../access/contentAccessSql";
+import { recordDetailRead } from "../contentAccess/audit";
 
 export interface ArtifactOut {
   id: string;
@@ -150,7 +151,14 @@ export class PgArtifactRepository {
       params,
     );
     const row = result.rows[0];
-    return row ? artifactToOut(row, includeContent) : null;
+    if (!row) return null;
+    await recordDetailRead(this.db, {
+      spaceId,
+      viewerUserId: userId,
+      resourceType: "artifact",
+      resourceId: artifactId,
+    });
+    return artifactToOut(row, includeContent);
   }
 
   async exportVisible(

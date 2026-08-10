@@ -69,10 +69,12 @@ conversation backend spends (`modules/agents.md`, ADR 0008).
 
 ## Conversation backend
 
-Each Room conversation resolves a `user × session × agent` backend binding
-from the speaker's own CLI credential grants — never a space-shared profile.
-See `modules/agents.md` for the conversation backend and runtime-session
-resume model, which Room conversations share with direct chat.
+Each Room recipient resolves a `Space × room_recipient work scope × user ×
+Agent` CLI binding from the speaker's own credential grants — never a
+space-shared profile. Runtime Context owns its vendor-cache session and
+acknowledged Event cursor; the Room session remains canonical conversation
+storage, not the CLI binding identity. See `modules/agents.md` for the shared
+direct-chat/Room execution model.
 
 ## API Surface
 

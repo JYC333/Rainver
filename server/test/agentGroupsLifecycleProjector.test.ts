@@ -335,9 +335,6 @@ class FakeClient {
         rowCount: 1,
       };
     }
-    if (sql.includes("INSERT INTO context_snapshots") || sql.includes("UPDATE context_snapshots")) {
-      return { rows: [], rowCount: 1 };
-    }
     if (sql.includes("INSERT INTO runs")) {
       const row = {
         ...childRun({
@@ -345,7 +342,6 @@ class FakeClient {
           agent_id: String(params[2]),
           agent_version_id: String(params[3]),
           runtime_profile_id: params[4] ? String(params[4]) : null,
-          context_snapshot_id: String(params[5]),
           project_folder_id: params[6] ? String(params[6]) : null,
           session_id: params[7] ? String(params[7]) : null,
           parent_run_id: params[8] ? String(params[8]) : null,

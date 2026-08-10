@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope";
 import { AuthorizationRequestService } from "../src/modules/policy/authorizationRequestService";
@@ -33,6 +33,7 @@ beforeAll(async () => {
     pool = new Pool({ connectionString: container.getConnectionUri() });
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[run-tool-grant-provisioning] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
     );

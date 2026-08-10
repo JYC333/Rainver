@@ -444,7 +444,6 @@ function memoryObject(row: MemoryRow): { object_type: "memory_entry"; object_id:
 
 function isExcludedMaintenanceRow(row: MemoryRow): boolean {
   if ((row.sensitivity_level ?? "normal").toLowerCase() === "highly_restricted") return true;
-  if ((row.scope_type ?? "").toLowerCase() === "system") return true;
   return false;
 }
 

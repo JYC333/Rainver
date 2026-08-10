@@ -597,7 +597,7 @@ describe("Claim Candidate Packets", () => {
                   operation: "object_relation_create",
                   from_object_id: "33333333-3333-4333-8333-333333333333",
                   to_object_id: "44444444-4444-4444-8444-444444444444",
-                  relation_type: "related_to",
+                  link_type: "related_to",
                 },
               },
             },

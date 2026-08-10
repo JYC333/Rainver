@@ -38,6 +38,8 @@ proposal generation becomes `proposals_generated`, and worker errors become
 - Activity-derived proposals carry Activity provenance in `provenance_entries`
   and may include `source_activity_id` as a pending-proposal compatibility
   shortcut; accepted Memory provenance is written to `provenance_links`
+- Activity-derived proposals inherit the source Activity's visibility because
+  the proposed content is the Activity's own text.
 - The Inbox holds pointers, never content (BOUNDARIES B24A) — see
   `modules/activity-inbox.md` for the full rule
 - Pointer/aggregate Activity rows set `aggregate_key` and are not eligible for

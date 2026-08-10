@@ -58,27 +58,18 @@ the archive to finish.
 | `cache/` — ephemeral cache | **Never** |
 | `logs/` — application logs | Only if `BACKUP_INCLUDE_LOGS=true` |
 
-CLI conversation resume state is deliberately outside durable backup:
-`cache/conversation-runtime-homes/<state-key>` contains the private vendor
-HOME, while `sandboxes/conversation-sessions/<state-key>/workspace` provides
-the stable cwd required by cwd-partitioned runtimes. The state key is
-server-generated and never derived from user input. If either directory is
-missing, execution clears any partial counterpart and reconstructs the vendor
-session by replaying Agent Space's authoritative conversation context.
-Runtime-state path construction rejects symlinks at every component below the
-configured roots. Binding rotation removes the retired state after commit;
-the hourly retention task prunes unreferenced orphan state older than 30 days
-after excluding every binding and nonterminal Run state key.
+CLI continuity stores only opaque vendor-session bindings and acknowledged
+Runtime Context cursors. Each physical invocation runs through the typed
+Sandbox Runner with a private HOME and managed workspace mount. Missing or
+invalid state rotates fail closed and reconstructs from authoritative Context
+Events/checkpoints plus canonical refs; no shared vendor HOME is replay
+authority.
 
-Read-only Project Folder runs create only
-`sandboxes/read-only-context/<space>/<run>` for generated vendor context; the
-physical Folder is neither copied nor modified. The staging directory is
-removed with Run sandbox cleanup. Official Compose installs bubblewrap and
-uses `seccomp=unconfined` for the unprivileged server container because
-Docker's built-in seccomp profile blocks rootless namespace creation. No
-capability or privileged mode is granted. Non-Compose deployments must permit
-unprivileged user namespaces; otherwise `read_only` execution fails closed
-with `read_only_sandbox_unavailable`.
+Project Folder mounts are resolved by Sandbox Runner from managed ids. The
+application server cannot send host paths, commands, images, or environment
+maps, and it has no local subprocess fallback. Namespace or Runner failure is
+terminal. Runtime Context Delivery is sent directly to the adapter and no
+read-only-context staging directory or generated vendor context file exists.
 
 **PostgreSQL backup:** `BackupService` uses `pg_dump -Fc --no-owner --no-acl` (custom format) for a consistent snapshot. It fails closed if `BACKUP_DATABASE_URL` is unset or `pg_dump` fails — no partial archive is produced. `db_snapshot_method` in the manifest is `"pg_dump_custom"`. The dump is restored with `pg_restore`. The live `db/postgres` data directory is **never** copied into an archive — the database is only captured logically.
 

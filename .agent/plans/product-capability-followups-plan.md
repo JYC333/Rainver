@@ -2,6 +2,9 @@
 
 Date: 2026-07-26
 Status: active small backlog, organized by domain
+Audited 2026-08-08 against the current implementation; completed multi-Project
+Note work removed and Save Run as Workflow narrowed to its actual draft-to-use
+gap.
 
 ## Purpose
 
@@ -44,10 +47,17 @@ completion evidence. It must be completed before such a Workflow is enabled.
 
 ### B4.1 — Complete Save Run as Workflow lifecycle
 
-- [ ] Complete the proposal-gated path beyond draft extraction so an accepted
-  save can be used through the normal approved Workflow lifecycle.
-- [ ] Add end-to-end coverage from source Run to draft, approval, approved
-  version, and subsequent launch.
+Current code already provides the Run-detail UI, sanitized preview/extraction,
+low-risk draft creation, and a high-risk `workflow_save` Proposal whose
+acceptance creates a draft `workflow_template` asset version. Real-PostgreSQL
+coverage stops at that draft boundary.
+
+- [ ] Connect the created draft visibly into the existing proposal/promotion
+  lifecycle so the user can review and promote it without reconstructing which
+  asset came from the source Run.
+- [ ] Add end-to-end coverage from source Run through save Proposal (when
+  required), draft, promotion/approval, approved version, and subsequent
+  Workflow launch.
 
 Constraints: extraction stays sanitized; credentials, host paths, transient
 Run IDs, and unreviewed mutable runtime state must not become Workflow

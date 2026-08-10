@@ -38,9 +38,10 @@ SERVER_DATABASE_URL=postgresql://... npm run migrate:status
 SERVER_DATABASE_URL=postgresql://... npm run migrate
 
 # Schema changes: edit server/src/db/schema/, then generate SQL artifacts.
-# Generation starts from an empty Drizzle snapshot and replaces the single
-# Drizzle baseline. The same generated SQL becomes migrations/0001_baseline.sql;
-# do not leave incremental Drizzle artifacts or new 0002_* files.
+# Generation writes a fresh baseline directly to server/drizzle, replacing the
+# previous directory with rollback protection. The same generated SQL is then
+# written to server/migrations/0001_baseline.sql; do not leave incremental
+# Drizzle artifacts or new 0002_* files.
 # start.sh also runs schema:generate automatically before migrations, but run it
 # explicitly when you want to inspect or commit the generated files before start.
 # Do not hand-edit server/migrations/*.sql for schema changes. No database is

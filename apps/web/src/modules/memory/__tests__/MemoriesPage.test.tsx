@@ -88,16 +88,6 @@ const baseSettings = {
   updated_at: '2026-06-26T00:00:00.000Z',
 } as const
 
-function emptyAccessLogPage(offset = 0) {
-  return {
-    items: [],
-    limit: 50,
-    offset,
-    returned: 0,
-    has_more: false,
-  }
-}
-
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={['/memory?project_id=project-1']}>
@@ -106,11 +96,11 @@ function renderPage() {
   )
 }
 
-describe('MemoriesPage maintenance and access-log UI', () => {
+describe('MemoriesPage maintenance UI', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(memoryApi.list).mockResolvedValue({ items: [], limit: 50, offset: 0, total: 0 })
-    vi.mocked(memoryApi.accessLogs).mockResolvedValue(emptyAccessLogPage())
+    vi.mocked(memoryApi.create).mockResolvedValue({ id: 'proposal-1' } as never)
     vi.mocked(memoryApi.maintenanceScan).mockResolvedValue({
       findings: [],
       counts: { duplicate: 0, stale: 0, thin: 0, lifecycle_drift: 0 },
@@ -146,6 +136,25 @@ describe('MemoriesPage maintenance and access-log UI', () => {
     expect(screen.queryByRole('button', { name: 'space_ops' })).not.toBeInTheDocument()
   })
 
+  it('derives Memory scope from the project context instead of exposing a scope picker', async () => {
+    renderPage()
+
+    expect(screen.queryByText('Scope')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Short title…'), { target: { value: 'Project convention' } })
+    fireEvent.change(screen.getByPlaceholderText('Memory content…'), { target: { value: 'Use the shared review checklist.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit proposal' }))
+
+    await waitFor(() => {
+      expect(memoryApi.create).toHaveBeenCalledWith({
+        title: 'Project convention',
+        content: 'Use the shared review checklist.',
+        type: 'semantic',
+        namespace: 'user.default',
+        project_id: 'project-1',
+      })
+    })
+  })
+
   it('runs a project-filtered maintenance scan and creates a claim candidate packet from the report', async () => {
     renderPage()
 
@@ -168,43 +177,4 @@ describe('MemoriesPage maintenance and access-log UI', () => {
     expect(await screen.findByText('Open claim packet proposal')).toBeInTheDocument()
   })
 
-  it('offset-paginates the access log inspector', async () => {
-    vi.mocked(memoryApi.accessLogs).mockImplementation(async (params = {}) => ({
-      items: [
-        {
-          id: params.offset ? 'log-2' : 'log-1',
-          space_id: 'space-1',
-          memory_id: params.offset ? 'memory-2' : 'memory-1',
-          user_id: 'user-1',
-          agent_id: null,
-          run_id: null,
-          access_type: 'maintenance_scan',
-          reason: params.offset ? 'second page' : 'first page',
-          accessed_at: '2026-06-26T10:00:00.000Z',
-          memory_title: params.offset ? 'Second visible memory' : 'First visible memory',
-          memory_scope: 'user',
-          memory_visibility: 'private',
-          project_id: null,
-        },
-      ],
-      limit: 50,
-      offset: params.offset ?? 0,
-      returned: 1,
-      has_more: !params.offset,
-    }))
-
-    renderPage()
-
-    expect(await screen.findByText('First visible memory')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /next/i }))
-
-    await waitFor(() => {
-      expect(memoryApi.accessLogs).toHaveBeenCalledWith(expect.objectContaining({
-        offset: 50,
-        project_id: 'project-1',
-      }))
-    })
-    expect(await screen.findByText('Second visible memory')).toBeInTheDocument()
-    expect(screen.getByText('Showing 51-51')).toBeInTheDocument()
-  })
 })

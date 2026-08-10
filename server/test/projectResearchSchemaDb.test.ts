@@ -2,8 +2,9 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for the Academic Research schema foundation:
 // workflows, checkpoints, scan outcomes, and report FK isolation.
@@ -24,6 +25,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-research-schema-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);
@@ -57,12 +59,9 @@ beforeEach(async () => {
 async function insertWorkflow(): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
-    `INSERT INTO project_research_workflows (
-       id, space_id, project_id, workflow_type, status, mode, created_at, updated_at
-     ) VALUES ($1,$2,$3,'literature_review','active','manual',$4,$4)`,
-    [id, SPACE, PROJECT, now],
-  );
+  await insertResearchWorkflowFixture(pool!, {
+    id, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER, now,
+  });
   return id;
 }
 
@@ -96,12 +95,10 @@ describe("project_research_* schema (real Postgres)", () => {
     if (!available) return;
     const now = new Date().toISOString();
     await expect(
-      pool!.query(
-        `INSERT INTO project_research_workflows (
-           id, space_id, project_id, workflow_type, status, mode, created_at, updated_at
-         ) VALUES ($1,$2,$3,'literature_review','not_a_status','manual',$4,$4)`,
-        [randomUUID(), SPACE, PROJECT, now],
-      ),
+      insertResearchWorkflowFixture(pool!, {
+        id: randomUUID(), spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+        status: "not_a_status", now,
+      }),
     ).rejects.toThrow();
   });
 
@@ -117,7 +114,7 @@ describe("project_research_* schema (real Postgres)", () => {
       [checkpointId, SPACE, PROJECT, workflowId, now],
     );
 
-    await pool!.query(`DELETE FROM project_research_workflows WHERE id = $1`, [workflowId]);
+    await pool!.query(`DELETE FROM space_objects WHERE id = $1 AND space_id=$2`, [workflowId, SPACE]);
     const remaining = await pool!.query(`SELECT id FROM project_research_checkpoints WHERE id = $1`, [checkpointId]);
     expect(remaining.rows).toHaveLength(0);
   });
@@ -137,7 +134,7 @@ describe("project_research_* schema (real Postgres)", () => {
         [constraint],
       );
       expect(columns.rows.map(row => row.column_name)).toEqual([
-        constraint.includes("archive") ? "archive_artifact_id" : constraint.includes("matrix") ? "literature_matrix_artifact_id" : "integrity_artifact_id",
+        constraint.includes("archive") ? "archive_artifact_id" : constraint.includes("matrix") ? "evidence_matrix_artifact_id" : "integrity_artifact_id",
         "space_id",
       ]);
     }

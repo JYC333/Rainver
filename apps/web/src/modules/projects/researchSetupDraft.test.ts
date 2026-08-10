@@ -6,10 +6,8 @@ describe('research setup draft', () => {
     const draft = researchSetupDraftFromWorkflow({
       id: 'workflow-1',
       project_id: 'project-1',
-      workflow_type: 'literature_review',
       current_stage: 'initial_intake_setup',
       status: 'not_started',
-      mode: 'autonomous',
       state_json: {
         research_question: 'How should agents remember?',
         query_strategy_id: '22222222-2222-4222-8222-222222222222',
@@ -62,8 +60,8 @@ describe('research setup draft', () => {
       suggested_questions: ['q'], sub_questions: [], scope: { in: [], out: [] }, clarifying_questions: [],
     }
     const draft = researchSetupDraftFromWorkflow({
-      id: 'workflow-1', project_id: 'project-1', workflow_type: 'literature_review',
-      current_stage: 'initial_intake_setup', status: 'not_started', mode: 'autonomous',
+      id: 'workflow-1', project_id: 'project-1',
+      current_stage: 'initial_intake_setup', status: 'not_started',
       state_json: { research_question: 'Q', question_refinement: refinement, execution: {} },
       started_by_user_id: null, started_run_id: null,
       created_at: '2026-07-15T00:00:00.000Z', updated_at: '2026-07-15T00:00:00.000Z',

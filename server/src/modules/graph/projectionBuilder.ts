@@ -1,3 +1,4 @@
+import { graphableEntityTypes } from "../ontology/entities";
 import type {
   GraphProjection,
   GraphProjectionEdge,
@@ -32,6 +33,14 @@ export interface BuildProjectionOptions {
 
 const EDGE_CAP_MULTIPLIER = 3;
 const NO_LENS_MATCH = "__graph_lens_no_match__";
+/**
+ * The graph renders what the ontology says is graphable (B12G). A lens narrows
+ * that set; it cannot widen it into a type the registry never declared.
+ */
+function isGraphableKind(kind: string): boolean {
+  return graphableEntityTypes().includes(kind);
+}
+
 const GRAPH_LENSES: Record<GraphLensId, { nodeKinds: readonly string[]; edgeKinds: readonly string[] }> = {
   academic_citation_v1: {
     nodeKinds: ["source", "person", "organization"],
@@ -50,7 +59,7 @@ export function resolveGraphProjectionOptions(options: BuildProjectionOptions): 
   const lens = GRAPH_LENSES[options.lensId];
   return {
     ...options,
-    nodeKinds: applyLensFilter(lens.nodeKinds, options.nodeKinds),
+    nodeKinds: applyLensFilter(lens.nodeKinds, options.nodeKinds).filter(isGraphableKind),
     edgeKinds: applyLensFilter(lens.edgeKinds, options.edgeKinds),
   };
 }
@@ -336,7 +345,7 @@ function objectEdge(row: GraphEdgeRow): GraphProjectionEdge {
     id: row.id,
     source: row.from_object_id,
     target: row.to_object_id,
-    kind: row.relation_type,
+    kind: row.link_type,
     weight: row.confidence ?? undefined,
     metadata: {
       evidenceSummary: row.evidence_summary ?? undefined,
@@ -363,10 +372,10 @@ function clusterNodeFromCount(row: KindCountRow): GraphProjectionNode {
 
 function clusterSummaryEdge(row: ClusterEdgeSummaryRow): GraphProjectionEdge {
   return {
-    id: `cluster-edge:${row.source_kind}:${row.target_kind}:${row.relation_type}`,
+    id: `cluster-edge:${row.source_kind}:${row.target_kind}:${row.link_type}`,
     source: clusterIdForKind(row.source_kind),
     target: clusterIdForKind(row.target_kind),
-    kind: row.relation_type,
+    kind: row.link_type,
     weight: row.weight,
     metadata: {
       aggregated: true,

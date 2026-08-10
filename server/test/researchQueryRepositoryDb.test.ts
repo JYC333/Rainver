@@ -6,7 +6,7 @@ import { ResearchContextRepository } from "../src/modules/projectResearch/questi
 import { ResearchQueryRepository } from "../src/modules/research/queryPlanning/repository";
 import { MAX_RESEARCH_QUERY_ATTEMPTS } from "../src/modules/research/queryPlanning/queryPolicy";
 import { loadProtocol } from "../src/modules/providers/protocolRuntime";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -38,6 +38,7 @@ beforeAll(async () => {
     }
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[research-query-repository-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);

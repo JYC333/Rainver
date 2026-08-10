@@ -4,55 +4,10 @@ import { getDbPool } from "../../db/pool";
 import { insertProposalRow } from "../proposals/reviewPackets";
 import type {
   MessageOut,
-  SessionSummaryForContext,
   SessionOut,
   SessionPage,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import {
-  buildLlmSummary,
-  buildPatternSummary,
-  DEFAULT_CONDENSE_BATCH,
-  DEFAULT_CONDENSE_KEEP_RECENT,
-  type CondenserMessage,
-  type CondenserPromptConfig,
-  type SessionSummaryBody,
-} from "./condenser";
-import { withPromptProvenance } from "../prompts/provenance";
-import { resolveCondenserPrompt, type ResolvedCondenserPrompt } from "./promptRegistry";
 import { projectReadAccessSql } from "../access/contentAccessSql";
-
-/**
- * LLM summarizer callback. Given a built prompt, returns the summary text (or
- * null/throws to fall back to `pattern.v1`). The repository builds the prompt
- * and owns the fallback; the caller only supplies the model call.
- */
-export type SessionSummarizer = (
-  prompt: { system: string; user: string },
-) => Promise<string | null>;
-
-export interface CondenseSessionOptions {
-  /** Recent messages kept raw (not summarized). */
-  keepRecent?: number;
-  /** Minimum new aged-out messages before a fresh summary version is written. */
-  condenseBatch?: number;
-  /** Scenario profile for the LLM prompt (default `adaptive`). */
-  profile?: string | null;
-  /** Per-agent condenser prompt config from AgentVersion.context_policy_json. */
-  condenser?: CondenserPromptConfig | null;
-  /**
-   * LLM summarizer. When provided and it returns non-empty text, the summary is
-   * written as `llm.v1`; otherwise the deterministic `pattern.v1` is used.
-   */
-  summarize?: SessionSummarizer;
-  /** Test seam for injecting an already resolved registry prompt. */
-  condenserPromptResolver?: (input: {
-    spaceId: string;
-    userId: string;
-    profile?: string | null;
-    priorSummary?: string | null;
-    messages: readonly CondenserMessage[];
-  }) => Promise<ResolvedCondenserPrompt | null>;
-}
 
 export interface CreateSessionInput {
   projectFolderId?: string | null;
@@ -104,16 +59,6 @@ interface MessageRow {
   created_at: unknown;
 }
 
-interface SessionSummaryRow {
-  id: string;
-  session_id: string;
-  version: number;
-  summary_text: string;
-  source_message_count: number;
-  source_first_message_id: string | null;
-  source_last_message_id: string | null;
-  condenser_version: string;
-}
 
 /**
  * Server repository for the public `sessions` command surface. A session/message is
@@ -122,8 +67,7 @@ interface SessionSummaryRow {
  * their own explicit methods so public Session commands cannot bypass Room
  * dispatch or authorization.
  *
- * Owns list/get/create sessions plus list/add messages, and serves the
- * context-safe latest session-summary read used by context assembly.
+ * Owns list/get/create sessions plus list/add messages.
  * Session `reflect` creates proposal-first memory candidates in the server.
  */
 export class PgSessionRepository {
@@ -310,9 +254,7 @@ export class PgSessionRepository {
     if (!session) return null;
     const result = await this.db.query<MessageRow>(
       // The `id` tiebreak makes the newest-N selection and chronological return
-      // deterministic on equal timestamps, and matches the condenser's
-      // `created_at ASC, id ASC` ordering so the summary watermark
-      // (`source_last_message_id`) lands in a consistent position in this list.
+      // deterministic on equal timestamps and across concurrent readers.
       `SELECT *
          FROM (
            SELECT m.id,
@@ -675,291 +617,6 @@ export class PgSessionRepository {
     return { session_id: sessionId, proposals_created: 1 };
   }
 
-  async getLatestSummaryForContext(
-    spaceId: string,
-    sessionId: string,
-  ): Promise<SessionSummaryForContext | null> {
-    const result = await this.db.query<SessionSummaryRow>(
-      `SELECT ss.id,
-              ss.session_id,
-              ss.version,
-              ss.summary_text,
-              ss.source_message_count,
-              ss.source_first_message_id,
-              ss.source_last_message_id,
-              ss.condenser_version
-         FROM session_summaries ss
-        WHERE ss.space_id = $1
-          AND ss.session_id = $2
-          AND ss.status = 'active'
-        ORDER BY ss.version DESC
-        LIMIT 1`,
-      [spaceId, sessionId],
-    );
-    const row = result.rows[0];
-    return row ? summaryRowToContext(row) : null;
-  }
-
-  /**
-   * Deterministically (re)condense a session into a new active `SessionSummary`.
-   *
-   * Summarizes every non-empty message older than the recent raw tail
-   * (`keepRecent`) and writes it as a new version, superseding the previous
-   * active summary. This is derived context: never a `MemoryEntry`, never a
-   * `Proposal`, and freely regenerable.
-   *
-   * It is a no-op (returns the current active summary, or `null`) when there is
-   * nothing aged-out yet, or when fewer than `condenseBatch` new messages have
-   * aged past the last summary's cover-range — that gate bounds version churn so
-   * a long chat does not mint a summary on every single turn. Concurrency for
-   * the same session is out of scope (P2); the partial unique active index and
-   * the per-session version unique constraint make a racing writer fail closed
-   * rather than create a second active summary or a duplicate version.
-   */
-  async condenseSession(
-    spaceId: string,
-    userId: string,
-    sessionId: string,
-    options: CondenseSessionOptions = {},
-  ): Promise<SessionSummaryForContext | null> {
-    const keepRecent = clampPositive(options.keepRecent, DEFAULT_CONDENSE_KEEP_RECENT);
-    const condenseBatch = clampPositive(options.condenseBatch, DEFAULT_CONDENSE_BATCH);
-
-    const session = await this.getSessionForInternalDerivation(
-      spaceId,
-      userId,
-      sessionId,
-    );
-    if (!session) return null;
-
-    // Cheap count first: most turns are a no-op (the batch gate below), so do not
-    // load message bodies until a new summary version is actually warranted.
-    const total = await this.countCondensableMessages(spaceId, sessionId);
-    const summarizableCount = Math.max(0, total - keepRecent);
-    if (summarizableCount === 0) return null;
-
-    const active = await this.getLatestSummaryForContext(spaceId, sessionId);
-    const coveredCount = active?.source_message_count ?? 0;
-    if (summarizableCount - coveredCount < condenseBatch) {
-      // Not enough newly aged-out messages to justify a new version.
-      return active;
-    }
-
-    const slice = await this.loadOldestCondensableMessages(
-      spaceId,
-      sessionId,
-      summarizableCount,
-    );
-    const body = await this.buildSummaryBody(spaceId, userId, slice, coveredCount, active, options);
-    if (!body) return active;
-
-    // Version must exceed every existing version (active or superseded) to
-    // satisfy uq_session_summaries_session_version, including an orphaned
-    // superseded row left by an earlier interrupted condense. This is the
-    // documented MAX()+1 pattern backed by a unique constraint; a racing writer
-    // fails closed (concurrency is out of scope, P2).
-    const nextVersion = (await this.getMaxSummaryVersion(spaceId, sessionId)) + 1;
-    const id = randomUUID();
-    const now = new Date().toISOString();
-
-    // Supersede then insert as two sequential statements (NOT a single CTE: a
-    // data-modifying CTE shares one snapshot, so the INSERT would not see the
-    // sibling UPDATE's supersede and both rows would look active, tripping the
-    // partial unique active index). Each statement autocommits, so the UPDATE is
-    // visible to the INSERT; at no moment do two active rows exist. SessionSummary
-    // is best-effort regenerable derived context: a hard failure between the two
-    // leaves zero active rows, which the next turn re-creates, and a concurrent
-    // writer fails closed on the unique constraints rather than corrupting state.
-    await this.db.query(
-      `UPDATE session_summaries
-          SET status = 'superseded'
-        WHERE session_id = $1
-          AND space_id = $2
-          AND status = 'active'`,
-      [sessionId, spaceId],
-    );
-    await this.db.query(
-      `INSERT INTO session_summaries (
-         id, space_id, session_id, user_id, version, status, summary_text,
-         source_message_count, source_first_message_id, source_last_message_id,
-         summary_json, token_estimate_before, token_estimate_after,
-         condenser_version, created_at
-       ) VALUES (
-         $1, $2, $3, $4, $5, 'active', $6,
-         $7, $8, $9,
-         $10::jsonb, $11, $12,
-         $13, $14
-       )`,
-      [
-        id,
-        spaceId,
-        sessionId,
-        session.user_id,
-        nextVersion,
-        body.summary_text,
-        body.source_message_count,
-        body.source_first_message_id,
-        body.source_last_message_id,
-        JSON.stringify(body.summary_json),
-        body.token_estimate_before,
-        body.token_estimate_after,
-        body.condenser_version,
-        now,
-      ],
-    );
-
-    return {
-      id,
-      session_id: sessionId,
-      version: nextVersion,
-      summary_text: body.summary_text,
-      condenser_version: body.condenser_version,
-      source_message_count: body.source_message_count,
-      source_first_message_id: body.source_first_message_id,
-      source_last_message_id: body.source_last_message_id,
-    };
-  }
-
-  private async getSessionForInternalDerivation(
-    spaceId: string,
-    userId: string,
-    sessionId: string,
-  ): Promise<SessionOut | null> {
-    return await this.getSession(spaceId, userId, sessionId)
-      ?? this.getRoomConversation(spaceId, userId, sessionId);
-  }
-
-  /**
-   * Build the summary body for the covered `slice`. When an LLM summarizer is
-   * supplied it produces `llm.v1` (feeding the prior summary plus only the newly
-   * aged-out turns, to bound token cost); any failure or empty result falls back
-   * to the deterministic `pattern.v1`.
-   */
-  private async buildSummaryBody(
-    spaceId: string,
-    userId: string,
-    slice: CondenserMessage[],
-    coveredCount: number,
-    active: SessionSummaryForContext | null,
-    options: CondenseSessionOptions,
-  ): Promise<SessionSummaryBody | null> {
-    if (options.summarize) {
-      try {
-        const priorSummary = active?.summary_text ?? null;
-        const delta = priorSummary ? slice.slice(coveredCount) : slice;
-        const resolvePromptForCondense = options.condenserPromptResolver ??
-          ((input: {
-            spaceId: string;
-            userId: string;
-            profile?: string | null;
-            priorSummary?: string | null;
-            messages: readonly CondenserMessage[];
-          }) => resolveCondenserPrompt(this.db, input));
-        const resolvedPrompt = await resolvePromptForCondense({
-          spaceId,
-          userId,
-          profile: options.condenser?.profile ?? options.profile ?? null,
-          priorSummary,
-          messages: delta,
-        });
-        if (!resolvedPrompt) return buildPatternSummary(slice);
-        const text = await options.summarize({
-          system: resolvedPrompt.system,
-          user: resolvedPrompt.user,
-        });
-        if (text) {
-          const llmBody = buildLlmSummary(slice, text);
-          if (llmBody) {
-            return {
-              ...llmBody,
-              summary_json: withPromptProvenance(
-                llmBody.summary_json,
-                "condenser",
-                resolvedPrompt.resolveResult,
-              ),
-            };
-          }
-        }
-      } catch {
-        // Fall through to the deterministic fallback below.
-      }
-    }
-    return buildPatternSummary(slice);
-  }
-
-  // `content ~ '\S'` (has a non-whitespace char) matches the JS `.trim()` filter
-  // in `buildPatternSummary`, so the counted total and the summarized slice agree
-  // — otherwise `source_message_count` could drift from `summarizableCount` and
-  // skew the batch gate.
-  private async countCondensableMessages(
-    spaceId: string,
-    sessionId: string,
-  ): Promise<number> {
-    const result = await this.db.query<{ n: string | number }>(
-      `SELECT count(*)::text AS n
-         FROM messages m
-        WHERE m.session_id = $1
-          AND m.space_id = $2
-          AND m.content ~ '\\S'`,
-      [sessionId, spaceId],
-    );
-    return numberValue(result.rows[0]?.n) ?? 0;
-  }
-
-  private async loadOldestCondensableMessages(
-    spaceId: string,
-    sessionId: string,
-    limit: number,
-  ): Promise<CondenserMessage[]> {
-    const result = await this.db.query<{ id: string; role: string; content: string }>(
-      `SELECT m.id, m.role, m.content
-         FROM messages m
-        WHERE m.session_id = $1
-          AND m.space_id = $2
-          AND m.content ~ '\\S'
-        ORDER BY m.created_at ASC, m.id ASC
-        LIMIT $3`,
-      [sessionId, spaceId, limit],
-    );
-    return result.rows.map((row) => ({
-      id: row.id,
-      role: row.role,
-      content: row.content,
-    }));
-  }
-
-  private async getMaxSummaryVersion(
-    spaceId: string,
-    sessionId: string,
-  ): Promise<number> {
-    const result = await this.db.query<{ max_version: number | null }>(
-      `SELECT MAX(version) AS max_version
-         FROM session_summaries
-        WHERE session_id = $1
-          AND space_id = $2`,
-      [sessionId, spaceId],
-    );
-    return numberValue(result.rows[0]?.max_version) ?? 0;
-  }
-}
-
-function summaryRowToContext(row: SessionSummaryRow): SessionSummaryForContext {
-  return {
-    id: row.id,
-    session_id: row.session_id,
-    version: row.version,
-    summary_text: row.summary_text,
-    source_message_count: row.source_message_count,
-    source_first_message_id: row.source_first_message_id,
-    source_last_message_id: row.source_last_message_id,
-    condenser_version: row.condenser_version,
-  };
-}
-
-function clampPositive(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0
-    ? value
-    : fallback;
 }
 
 function jsonParam(value: Record<string, unknown> | null | undefined): string | null {

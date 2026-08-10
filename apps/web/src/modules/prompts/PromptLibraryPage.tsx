@@ -24,7 +24,6 @@ const PROMPT_TYPE_OPTIONS: Array<{ value: PromptType | ''; label: string }> = [
   { value: '', label: 'All prompt types' },
   { value: 'agent_system', label: 'Agent system' },
   { value: 'chat', label: 'Chat' },
-  { value: 'condenser', label: 'Condenser' },
   { value: 'retrieval_query', label: 'Retrieval query' },
   { value: 'retrieval_rerank', label: 'Retrieval rerank' },
   { value: 'retrieval_synthesis', label: 'Retrieval synthesis' },
@@ -62,7 +61,6 @@ function promptTypeLabel(type: PromptType | null | undefined): string {
 function usageArea(assetKey: string, type: PromptType | null): string {
   if (isAutoResearchAsset(assetKey)) return 'research'
   if (assetKey.startsWith('retrieval.')) return 'retrieval'
-  if (assetKey.startsWith('session.condenser.')) return 'condenser'
   if (assetKey.startsWith('agent_template.') || assetKey.startsWith('agent.')) return 'agents'
   if (type === 'workflow') return 'workflow'
   return 'prompt'

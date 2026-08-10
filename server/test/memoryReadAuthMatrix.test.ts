@@ -15,7 +15,6 @@ function memory(overrides: Partial<MemoryAuthFields> = {}): MemoryAuthFields {
     access_level: "full",
     owner_user_id: "owner-1",
     scope_type: "user",
-    project_folder_id: null,
     ...overrides,
   };
 }
@@ -32,10 +31,10 @@ describe("memory content access adapter", () => {
     }), ctx)).toBe("full");
   });
 
-  it("keeps memory-specific system and sensitivity restrictions as deny gates", () => {
+  it("rejects invalid scopes and applies sensitivity restrictions", () => {
     const ctx = { userId: "viewer-1", spaceId: "space-1" };
-    expect(memoryAccessDecision(memory({ visibility: "space_shared", scope_type: "system" }), ctx)).toBe("deny");
-    expect(memoryAccessDecision(memory({ visibility: "space_shared", scope_type: "system" }), { ...ctx, includeSystemScope: true })).toBe("full");
+    expect(memoryAccessDecision(memory({ visibility: "space_shared", scope_type: "agent" }), ctx)).toBe("deny");
+    expect(memoryAccessDecision(memory({ visibility: "space_shared", scope_type: "project_folder" }), ctx)).toBe("deny");
     expect(memoryAccessDecision(memory({ visibility: "space_shared", sensitivity_level: "highly_restricted" }), ctx)).toBe("deny");
     expect(memoryAccessDecision(memory({ owner_user_id: "viewer-1", sensitivity_level: "highly_restricted" }), ctx)).toBe("full");
     expect(memoryAccessDecision(memory({ visibility: "space_shared", deleted_at: "2026-01-01T00:00:00Z" }), ctx)).toBe("deny");

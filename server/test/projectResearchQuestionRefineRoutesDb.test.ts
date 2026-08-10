@@ -9,7 +9,8 @@ import { buildServer } from "../src/server";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
@@ -17,7 +18,7 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 const PROVIDER = "99999999-9999-4999-8999-999999999999";
-const THREAD = "77777777-7777-4777-8777-777777777777";
+let THREAD = "";
 const refinementOutput = {
   reply: "The topic is too broad; choose a runtime and measurable outcome.",
   recommended_question: "How do tool-using coding agents recover from failed API calls?",
@@ -35,7 +36,16 @@ const refinementOutput = {
   scope: { in: ["tool-using coding agents"], out: ["general intelligence"] },
   clarifying_questions: [{ question: "Which runtime should be studied?", options: ["Sandboxed CLI", "Managed API"], allow_multiple: false }],
 };
-const invoke = vi.fn(async () => refinementOutput);
+// Typed to the shape the runtime actually invokes it with, so assertions on the
+// recorded call arguments type-check instead of indexing an empty tuple. The
+// return type is widened with the optional repair fields the failure-path tests
+// mock, rather than left inferred from one happy-path literal.
+type RefinementInvocation = { system?: string; messages: { role: string; content: string }[] };
+type RefinementResult = Partial<typeof refinementOutput> & {
+  reply: string;
+  repairs?: { source_index: number; replacements: string[] }[];
+};
+const invoke = vi.fn(async (_request: RefinementInvocation): Promise<RefinementResult> => refinementOutput);
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -58,12 +68,10 @@ beforeAll(async () => {
       `INSERT INTO projects (id,space_id,owner_user_id,name,description,status,created_at,updated_at) VALUES ($1,$2,$3,'Research','A project about reliable tool use.','active',$4,$4)`,
       [PROJECT, SPACE, OWNER, now],
     );
-    await pool.query(
-      `INSERT INTO inquiry_threads
-         (id,space_id,project_id,kind,statement,lifecycle_status,attention_state,priority,version,created_from,created_by_user_id,created_at,updated_at)
-       VALUES ($1,$2,$3,'question','agent','active','backlog',0,1,'user',$4,$5,$5)`,
-      [THREAD, SPACE, PROJECT, OWNER, now],
+    const thread = await new InquiryThreadService(pool).createThread(
+      { spaceId: SPACE, userId: OWNER }, PROJECT, { kind: "question", statement: "agent" },
     );
+    THREAD = String(thread.id);
     await pool.query(
       `INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at)
        VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`,
@@ -84,6 +92,7 @@ beforeAll(async () => {
     }), { logger: false });
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[project-research-question-refine-routes-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);

@@ -1,10 +1,10 @@
 import { useEffect, useId, useState } from 'react'
-import { Settings, Users, Mail, Send, Globe2, ShieldAlert, Puzzle, History, Search, ScrollText, Eye } from 'lucide-react'
+import { Settings, Users, Mail, Send, Globe2, ShieldAlert, Puzzle, History, Search, ScrollText, Eye, BellRing } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useAuth } from '../../contexts/AuthContext'
 import { useSpace } from '../../contexts/SpaceContext'
-import { spacesApi } from '../../api/client'
+import { spaceEgressApi, spacesApi } from '../../api/client'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -33,7 +33,7 @@ function canManageSpace(role: MemberRole | undefined): boolean {
 export default function SpaceSettingsPage() {
   const headingId = useId()
   const { currentUser } = useAuth()
-  const { activeSpaceId, activeSpaceName, spaces } = useSpace()
+  const { activeSpaceId, activeSpaceName, spaces, reloadSpaces } = useSpace()
   const activeSpace = spaces.find(s => s.id === activeSpaceId)
   const manageable = canManageSpace(activeSpace?.role)
   const waitingForSpace = Boolean(activeSpaceId && !activeSpace && spaces.length === 0)
@@ -46,6 +46,7 @@ export default function SpaceSettingsPage() {
   const [snapshotDefaultDays, setSnapshotDefaultDays] = useState('')
   const [snapshotDefaultCount, setSnapshotDefaultCount] = useState('')
   const [savingSnapshotDefaults, setSavingSnapshotDefaults] = useState(false)
+  const [savingEgressNotifications, setSavingEgressNotifications] = useState(false)
 
   useEffect(() => {
     if (!currentUser || !activeSpaceId || !manageable) {
@@ -107,6 +108,21 @@ export default function SpaceSettingsPage() {
     }
   }
 
+  async function handleToggleEgressNotifications() {
+    if (!activeSpaceId || !activeSpace) return
+    setSavingEgressNotifications(true)
+    try {
+      const enabled = !activeSpace.egress_notifications_enabled
+      await spaceEgressApi.updateNotifications(activeSpaceId, enabled)
+      await reloadSpaces()
+      toast.success(`Cross-Space egress notifications ${enabled ? 'enabled' : 'disabled'}`)
+    } catch (err) {
+      toast.error(errMsg(err))
+    } finally {
+      setSavingEgressNotifications(false)
+    }
+  }
+
   const title = activeSpaceName ?? activeSpace?.name ?? 'Space'
 
   return (
@@ -161,6 +177,35 @@ export default function SpaceSettingsPage() {
               {' '}Set once at Space creation and cannot be changed afterwards.
             </p>
             <Badge variant="outline">{OVERSIGHT_MODE_LABELS[activeSpace?.oversight_mode ?? 'none'].label}</Badge>
+          </Card>
+
+          <Card>
+            <CardTitle className="flex items-center gap-2">
+              <BellRing className="size-3.5" /> Cross-Space egress notifications
+            </CardTitle>
+            <p className="text-sm text-muted-foreground mb-3">
+              When a member explicitly stores a conclusion that combines this Space with another,
+              notify current members using source pointers only. The conclusion text is never included.
+              Changes apply to future storage actions and are broadcast to every current member.
+            </p>
+            <div className="flex items-center gap-3">
+              <Badge variant={activeSpace?.egress_notifications_enabled ? 'success' : 'outline'}>
+                {activeSpace?.egress_notifications_enabled ? 'Enabled' : 'Disabled'}
+              </Badge>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={savingEgressNotifications}
+                onClick={handleToggleEgressNotifications}
+              >
+                {savingEgressNotifications
+                  ? 'Saving…'
+                  : activeSpace?.egress_notifications_enabled
+                    ? 'Disable notifications'
+                    : 'Enable notifications'}
+              </Button>
+            </div>
           </Card>
 
           <SpaceRuntimePolicyPanel />

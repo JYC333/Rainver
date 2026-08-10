@@ -5,6 +5,7 @@ import { PgRunRepository } from "../runs/repository";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
 import { resolveNotebookNote } from "./notebookNotes";
+import type { NoteProjectRole } from "../knowledge/noteProjectRoles";
 import type { ResearchOperationState } from "./operationProjection";
 import { InquirySignalService } from "../inquiry/signalService";
 import {
@@ -51,11 +52,24 @@ export type MonitorComparison = {
   affected_sections: Array<"understanding" | "questions" | "ideas" | "experiments">;
 };
 
-// Asking a model to classify every paper in one structured-output call gets
-// less reliable as the paper count grows (dropped or invented
+// Asking a model to classify every material item in one structured-output call
+// gets less reliable as the item count grows (dropped or invented
 // source_item_ids); comparing in small batches keeps each call's output
 // small enough to validate exactly.
 export const COMPARISON_BATCH_SIZE = 6;
+
+/**
+ * Why `queue` reports three outcomes rather than returning `null` twice: "no
+ * eligible material in this batch" is routine and the coordinator moves on, while
+ * "this project has no note in the `understanding` role" means the comparison
+ * has no baseline to compare against. Collapsing them is what let the old
+ * title-string binding fail in silence — the comparison ran with an empty
+ * current understanding and every item looked like a new direction.
+ */
+export type MonitorComparisonQueueResult =
+  | { readonly outcome: "queued"; readonly runId: string; readonly jobId: string; readonly sourceItemIds: string[] }
+  | { readonly outcome: "no_eligible_material" }
+  | { readonly outcome: "no_baseline"; readonly role: NoteProjectRole };
 
 export class ProjectResearchMonitorComparisonService {
   constructor(private readonly db: Queryable) {}
@@ -64,24 +78,28 @@ export class ProjectResearchMonitorComparisonService {
     spaceId: string;
     userId: string;
     projectId: string;
-    workflowId: string;
-    operationId: string;
     agentId: string;
     runtimeProfileId: string | null;
     researchQuestion: string;
     sourceItemIds: string[];
-  }): Promise<{ runId: string; jobId: string; sourceItemIds: string[] } | null> {
-    const papers = await this.eligiblePapers(input.spaceId, input.projectId, input.sourceItemIds);
-    if (papers.length === 0) return null;
+  } & (
+    | { workflowId: string; operationId: string; standingBatchId?: never }
+    | { standingBatchId: string; workflowId?: never; operationId?: never }
+  )): Promise<MonitorComparisonQueueResult> {
+    const material = await this.eligibleMaterial(input.spaceId, input.projectId, input.sourceItemIds);
+    if (material.length === 0) return { outcome: "no_eligible_material" };
     const understanding = await resolveNotebookNote(this.db, input.spaceId, input.projectId, "understanding");
+    // A comparison against an absent baseline is not a cheaper comparison, it
+    // is a different question. Report it and let the caller surface it.
+    if (!understanding.present) return { outcome: "no_baseline", role: understanding.role };
     const resolved = await resolveProjectResearchMonitorComparePrompt(this.db, {
       spaceId: input.spaceId,
       userId: input.userId,
       projectId: input.projectId,
       agentId: input.agentId,
       researchQuestion: input.researchQuestion,
-      currentUnderstanding: understanding?.plain_text ?? "",
-      newPapers: papers,
+      currentUnderstanding: understanding.note.plain_text ?? "",
+      newMaterial: material,
     });
     const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
       agent_id: input.agentId,
@@ -92,26 +110,38 @@ export class ProjectResearchMonitorComparisonService {
       run_type: "agent",
       trigger_origin: "system",
       runtime_profile_id: input.runtimeProfileId,
-      prompt: `Compare ${papers.length} newly screened paper${papers.length === 1 ? "" : "s"} with the current research understanding`,
+      prompt: `Compare ${material.length} newly screened material item${material.length === 1 ? "" : "s"} with the current project understanding`,
       instruction: resolved.instruction,
       capability_id: "research.monitor_compare",
       capabilities_json: ["research.monitor_compare"],
       contract_snapshot: {
-        source: { kind: "workflow", id: input.workflowId },
+        source: "standingBatchId" in input
+          ? { kind: "direct", id: input.projectId }
+          : { kind: "workflow", id: input.workflowId },
         project_id: input.projectId,
-        required_outputs_json: { materializations: ["research_scan_summary", "research_paper_card"] },
+        required_outputs_json: { materializations: ["research_scan_summary", "research_evidence_card"] },
         structured_output_json: MONITOR_COMPARISON_OUTPUT_CONTRACT,
-        workflow_input_json: {
-          project_research: {
-            workflow_id: input.workflowId,
-            operation_id: input.operationId,
-            stage_key: "monitor_compare",
-            source_item_ids: papers.map((paper) => paper.source_item_id),
-            prompt_asset_key: PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
-            prompt_version_id: resolved.resolveResult.version_id,
-            prompt_content_hash: resolved.resolveResult.content_hash,
-          },
-        },
+        workflow_input_json: "standingBatchId" in input
+          ? {
+              project_research_standing: {
+                batch_id: input.standingBatchId,
+                source_item_ids: material.map((item) => item.source_item_id),
+                prompt_asset_key: PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
+                prompt_version_id: resolved.resolveResult.version_id,
+                prompt_content_hash: resolved.resolveResult.content_hash,
+              },
+            }
+          : {
+              project_research: {
+                workflow_id: input.workflowId,
+                operation_id: input.operationId,
+                stage_key: "monitor_compare",
+                source_item_ids: material.map((item) => item.source_item_id),
+                prompt_asset_key: PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
+                prompt_version_id: resolved.resolveResult.version_id,
+                prompt_content_hash: resolved.resolveResult.content_hash,
+              },
+            },
         policy_context_json: createManagedExecutionPolicy("project_research", true),
         risk_level: "low",
       },
@@ -123,7 +153,7 @@ export class ProjectResearchMonitorComparisonService {
       agent_id: input.agentId,
       payload: { run_id: run.id },
     });
-    return { runId: run.id, jobId: job.id, sourceItemIds: papers.map((paper) => paper.source_item_id) };
+    return { outcome: "queued", runId: run.id, jobId: job.id, sourceItemIds: material.map((item) => item.source_item_id) };
   }
 
   /**
@@ -159,7 +189,7 @@ export class ProjectResearchMonitorComparisonService {
       if (!scan.rows[0]) throw new Error("Monitoring comparison has no scan summary to update");
       for (const comparison of comparisons) {
         await db.query(
-          `INSERT INTO research_paper_cards (
+          `INSERT INTO research_evidence_cards (
              id,space_id,project_id,source_item_id,object_id,why_md,how_md,what_md,
              provenance_json,edited_by_user,stance,comparison_detail,created_at,updated_at
            ) SELECT $1::varchar,$2::varchar,$3::varchar,$4::varchar,pci.object_id,'','','',$5::jsonb,false,$6::varchar,$7::text,$8::timestamptz,$8::timestamptz
@@ -170,7 +200,7 @@ export class ProjectResearchMonitorComparisonService {
               LIMIT 1
            ON CONFLICT (space_id,project_id,source_item_id) DO UPDATE SET
              stance=EXCLUDED.stance,comparison_detail=EXCLUDED.comparison_detail,
-             provenance_json=research_paper_cards.provenance_json || EXCLUDED.provenance_json,
+             provenance_json=research_evidence_cards.provenance_json || EXCLUDED.provenance_json,
              updated_at=EXCLUDED.updated_at`,
           [randomUUID(), input.spaceId, input.projectId, comparison.source_item_id,
             JSON.stringify({ comparison_run_id: input.runId }), comparison.stance, comparison.detail, now],
@@ -219,7 +249,7 @@ export class ProjectResearchMonitorComparisonService {
     });
   }
 
-  private async eligiblePapers(spaceId: string, projectId: string, sourceItemIds: string[]) {
+  private async eligibleMaterial(spaceId: string, projectId: string, sourceItemIds: string[]) {
     if (sourceItemIds.length === 0) return [];
     const rows = await this.db.query<{
       source_item_id: string; title: string | null; excerpt: string | null;
@@ -230,7 +260,7 @@ export class ProjectResearchMonitorComparisonService {
          FROM project_corpus_items pci
          JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
-         LEFT JOIN research_paper_cards pc ON pc.space_id=pci.space_id AND pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
+         LEFT JOIN research_evidence_cards pc ON pc.space_id=pci.space_id AND pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
           AND pci.status='active' AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
         ORDER BY pcis.source_item_id,pci.updated_at DESC`,
@@ -244,7 +274,7 @@ export class ProjectResearchMonitorComparisonService {
  * Extracts whatever valid, matching comparisons the model actually produced
  * — it never throws for content problems. A model occasionally drops,
  * duplicates, or invents a source_item_id (observed: a run fabricating 8
- * comparisons for papers that were never sent and don't exist); discarding
+ * comparisons for material that was never sent and does not exist); discarding
  * an entire batch's worth of otherwise-good analysis over one bad entry, or
  * failing the whole monitoring operation over it, is worse than the
  * problem. The caller (see ProjectResearchMonitoringCoordinator) is
@@ -272,7 +302,7 @@ export function parseMonitorComparisons(output: unknown, expectedSourceItemIds: 
   // With exactly one candidate there's nothing to disambiguate — matching
   // source_item_id only ever cost a solo retry over the model relabeling or
   // omitting an id it didn't need to get right in the first place. Accept
-  // the first structurally valid entry and attach it to the one paper
+  // the first structurally valid entry and attach it to the one item
   // actually asked about, regardless of what id (if any) it echoed back.
   if (expectedSourceItemIds.length === 1) {
     for (const raw of values) {
@@ -306,7 +336,7 @@ function stanceCounts(values: MonitorComparison[]) {
 
 async function startedByUserId(db: Queryable, spaceId: string, workflowId: string): Promise<string | null> {
   const row = await db.query<{ started_by_user_id: string | null }>(
-    `SELECT started_by_user_id FROM project_research_workflows WHERE id=$1 AND space_id=$2`,
+    `SELECT started_by_user_id FROM project_research_workflows WHERE object_id=$1 AND space_id=$2`,
     [workflowId, spaceId],
   );
   return row.rows[0]?.started_by_user_id ?? null;

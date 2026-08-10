@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -28,6 +28,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[inquiry-signal-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -47,8 +48,8 @@ async function createCorpusItem(visibility: "private" | "space_shared" = "privat
   const corpusItemId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, created_at, updated_at)
-     VALUES ($1, $2, 'source', 'A source', 'processed', $3, $4, $5, $5)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
+     VALUES ($1, $2, 'source', 'A source', $3, $4, $5, $5)`,
     [objectId, SPACE, visibility, OWNER, now],
   );
   await pool!.query(
@@ -62,7 +63,7 @@ async function createCorpusItem(visibility: "private" | "space_shared" = "privat
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    "TRUNCATE inquiry_delta_briefs, inquiry_signal_candidates, inquiry_evidence_signals, inquiry_review_packets, inquiry_thread_work_events, inquiry_iterations, inquiry_thread_statement_revisions, inquiry_thread_note_links, inquiry_thread_personal_focus, inquiry_thread_relations, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, inquiry_project_settings, project_corpus_items, space_objects, projects, space_memberships, users, spaces CASCADE",
+    "TRUNCATE inquiry_delta_briefs, inquiry_signal_candidates, inquiry_evidence_signals, inquiry_review_packets, inquiry_thread_work_events, inquiry_iterations, inquiry_thread_statement_revisions, inquiry_thread_personal_focus, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, inquiry_project_settings, project_corpus_items, space_objects, projects, space_memberships, users, spaces CASCADE",
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);

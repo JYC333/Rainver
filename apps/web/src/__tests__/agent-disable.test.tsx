@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
-import type { AgentOut, AgentVersionOut } from '../types/api'
+import type { AgentOut } from '../types/api'
 
 const {
   getMock,
@@ -59,28 +58,12 @@ import AgentDetailPage from '../modules/agents/AgentDetailPage'
 
 function agent(overrides: Partial<AgentOut> = {}): AgentOut {
   return {
-    id: 'a1', space_id: 's1', created_by_user_id: 'u1', name: 'My Agent',
+    id: 'a1', space_id: 's1', project_id: null, created_by_user_id: 'u1', name: 'My Agent',
     description: 'desc', visibility: 'private', access_level: 'full', role_instruction: null,
     status: 'active', agent_kind: 'standard', current_version_id: 'v1',
     source_template_id: null, source_template_version_id: null, model: null,
     adapter_type: 'model_api', requires_model_provider: true,
     system_prompt: null, created_at: '', updated_at: '', ...overrides,
-  }
-}
-
-function version(overrides: Partial<AgentVersionOut> = {}): AgentVersionOut {
-  return {
-    id: 'v1', agent_id: 'a1', space_id: 's1', version_label: 'v1',
-    model_provider_id: null, model_name: null, system_prompt: null,
-    prompt_provenance_json: null,
-    model_config_json: {}, runtime_config_json: {},
-    context_policy_json: { allowed_input_contexts: ['memory'], default_input_contexts: ['memory'] },
-    memory_policy_json: {}, capabilities_json: [],
-    tool_permissions_json: {}, runtime_policy_json: {}, tool_policy_json: {},
-    output_policy_json: {}, schedule_config_json: {}, output_schema_json: {},
-    source_proposal_id: null, source_activity_id: null,
-    created_at: '', published_at: null, archived_at: null,
-    ...overrides,
   }
 }
 
@@ -125,40 +108,4 @@ describe('AgentDetailPage — disable/enable toggle', () => {
     expect(await screen.findByRole('link', { name: /open chat/i })).toBeInTheDocument()
   })
 
-  it('saves session summary profile without carrying legacy prompt overrides', async () => {
-    const user = userEvent.setup()
-    getMock.mockResolvedValue(agent())
-    listVersionsMock.mockResolvedValue([
-      version({
-        context_policy_json: {
-          allowed_input_contexts: ['memory'],
-          default_input_contexts: ['memory'],
-          condenser: {
-            profile: 'general',
-            keep_tail_ratio: 0.35,
-            custom_system: 'Summarize for this agent.',
-            custom_instructions: 'Keep decisions and next actions.',
-          },
-        },
-      }),
-    ])
-    render(<AgentDetailPage />)
-
-    await user.click(await screen.findByRole('tab', { name: /inputs/i }))
-    expect(await screen.findByText(/session\.condenser\.general/i)).toBeInTheDocument()
-    await user.selectOptions(await screen.findByLabelText(/profile/i), 'coding')
-    expect(await screen.findByText(/session\.condenser\.coding/i)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /save summary settings/i }))
-
-    await waitFor(() => expect(updateConfigMock).toHaveBeenCalledWith('a1', {
-      context_policy_json: {
-        allowed_input_contexts: ['memory'],
-        default_input_contexts: ['memory'],
-        condenser: {
-          profile: 'coding',
-          keep_tail_ratio: 0.35,
-        },
-      },
-    }))
-  })
 })

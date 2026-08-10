@@ -6,12 +6,17 @@ import { cn } from '../../lib/utils'
 import { Badge } from '../../components/ui/badge'
 import { spacePath } from '../../core/navigation'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from '../../core/reviewAttention'
+import { ProjectQuickCapture } from './notes/ProjectQuickCapture'
+import { ProjectCaptureTargetProvider } from './notes/projectCaptureTarget'
 
 const groups = [
   {
     label: 'Project',
     items: [
       { label: 'Overview', path: '' },
+      // Notes sit under Project, not under an Area: a Project has a dozen
+      // Areas and writing something down should not mean going to one of them.
+      { label: 'Notes', path: 'notes' },
       { label: 'Rooms', path: 'rooms' },
     ],
   },
@@ -21,6 +26,7 @@ const groups = [
       { label: 'Inquiry', path: 'inquiry' },
       { label: 'Research', path: 'research' },
       { label: 'Sources', path: 'sources' },
+      { label: 'Digest', path: 'digest' },
       { label: 'Files & Code', path: 'files' },
       { label: 'Experiments', path: 'experiments' },
     ],
@@ -84,12 +90,16 @@ export default function ProjectAreaLayout() {
   }, [projectId])
 
   return (
+    // Capture is provided by the shell, not by each Area: a thought that
+    // arrives while doing an experiment must not require navigating to notes
+    // first (U2). Areas that know what they are currently about declare it
+    // through the provider so the capture can hang on that object instead.
+    <ProjectCaptureTargetProvider>
     <div className="min-h-full lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r">
         <div className="mb-5 px-2">
           <p className="truncate font-semibold">{project?.name ?? 'Project'}</p>
           <p className="text-xs capitalize text-muted-foreground">{project?.primary_mode ?? 'project'} mode</p>
-          {overview?.template && <Badge className="mt-2" variant="outline">{overview.template.name} template</Badge>}
         </div>
         <nav className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-1">
           {groups.map(group => (
@@ -148,6 +158,8 @@ export default function ProjectAreaLayout() {
         )}
       </aside>
       <main className="min-w-0"><Outlet /></main>
+      {projectId && <ProjectQuickCapture projectId={projectId} />}
     </div>
+    </ProjectCaptureTargetProvider>
   )
 }

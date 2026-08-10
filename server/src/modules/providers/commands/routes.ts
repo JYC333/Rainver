@@ -21,9 +21,7 @@ import {
   completeProviderRerank,
   completeProviderText,
   listProviderModels,
-  ProviderInvocationError,
 } from "../invocation/invocation";
-import type { ProviderChatRequestBody } from "../invocation/invocation";
 import { CliCredentialBroker } from "../cli/credentialBroker";
 import {
   enqueueRetrievalEmbeddingBackfill,
@@ -471,28 +469,6 @@ export function registerProviderCommandRoutes(
       }
       return reply.code(204).send();
     } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/providers/chat", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<ProviderChatRequestBody>(
-        "ProviderChatRequestSchema",
-        jsonBody(request),
-      );
-      return reply.send(
-        await completeProviderChat(resolveProviderCommandStore(config), identity.spaceId, {
-          ...body,
-          metering: { subject_user_id: identity.userId },
-        }),
-      );
-    } catch (error) {
-      if (error instanceof ProviderInvocationError) {
-        return reply.code(error.statusCode).send({ detail: error.message });
-      }
       return sendDomainError(reply, error);
     }
   });

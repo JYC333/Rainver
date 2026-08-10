@@ -5,7 +5,7 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import {
   researchOperationDetail, researchOperationNextStep, researchOperationPercent, researchOperationSteps,
-} from './AcademicResearchWorkbench'
+} from './FocusResearchWorkbench'
 import { researchFailurePresentation } from './researchResultState'
 import { isResearchHumanReviewCheckpoint } from './researchReviewAttention'
 import { ResearchCheckpointReview } from './ResearchCheckpointReview'
@@ -24,7 +24,7 @@ interface ResearchOperationRowProps {
 
 /**
  * One compact row per research workflow's operation — this is where multiple
- * concurrently running/pending literature searches live now that a Project
+ * concurrently running/pending research searches live now that a Project
  * can have more than one (previously Overview only ever showed a single
  * selected workflow's progress, which doesn't scale once every Question or
  * Hypothesis Thread can start its own).

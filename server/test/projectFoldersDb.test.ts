@@ -8,7 +8,7 @@ import { loadConfig } from "../src/config";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository";
 import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox";
 import type { RunRecord } from "../src/modules/runs/repository";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -29,6 +29,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[project-folders-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);

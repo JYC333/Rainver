@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
@@ -40,6 +40,7 @@ beforeAll(async () => {
     available = true;
     app = buildServer(loadConfig({ SERVER_DATABASE_URL: database.getConnectionUri() }), { logger: false });
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[automations-autonomy-enable-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }, 180_000);

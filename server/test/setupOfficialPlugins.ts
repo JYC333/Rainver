@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { getContainerRuntimeClient } from "testcontainers";
 import { Pool } from "pg";
 import { migrate } from "../src/db/migrator";
 import type { SharedPostgresContext } from "./support/sharedPostgres";
@@ -54,18 +55,30 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
   const templateDatabase = `aspace_test_${runId}_template`;
 
   try {
-    let configured = new PostgreSqlContainer("pgvector/pgvector:pg18")
-      // PostgreSQL 18 stores clusters below a versioned directory here. Mounting
-      // the old /var/lib/postgresql/data path makes the pg18 image fail fast.
-      .withTmpFs({ "/var/lib/postgresql": "rw" })
-      .withCommand([
-        "postgres",
-        "-c", "fsync=off",
-        "-c", "synchronous_commit=off",
-        "-c", "full_page_writes=off",
-        "-c", "max_connections=300",
-      ]);
-    if (reuse) configured = configured.withReuse();
+    await getContainerRuntimeClient();
+  } catch (error) {
+    if (process.env.REQUIRE_TEST_POSTGRES === "true") throw error;
+    project.provide("sharedPostgres", {
+      available: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return async () => undefined;
+  }
+
+  let configured = new PostgreSqlContainer("pgvector/pgvector:pg18")
+    // PostgreSQL 18 stores clusters below a versioned directory here. Mounting
+    // the old /var/lib/postgresql/data path makes the pg18 image fail fast.
+    .withTmpFs({ "/var/lib/postgresql": "rw" })
+    .withCommand([
+      "postgres",
+      "-c", "fsync=off",
+      "-c", "synchronous_commit=off",
+      "-c", "full_page_writes=off",
+      "-c", "max_connections=300",
+    ]);
+  if (reuse) configured = configured.withReuse();
+
+  try {
     container = await configured.start();
 
     const adminUri = container.getConnectionUri();
@@ -96,16 +109,7 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
   } catch (error) {
     if (container && !reuse) await container.stop();
     container = undefined;
-
-    if (process.env.REQUIRE_TEST_POSTGRES === "true") {
-      throw error;
-    }
-
-    const context: SharedPostgresContext = {
-      available: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
-    project.provide("sharedPostgres", context);
+    throw error;
   }
 
   return async () => {

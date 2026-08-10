@@ -13,9 +13,9 @@ import { RunOrchestrationService } from "./orchestrationService";
 import { enqueueAgentRunJob } from "./agentRunHandler";
 import { RunMaterializationService } from "./materializationService";
 import { sharedCliProcessRegistry } from "./processRegistry";
-import { ContextPrepareService } from "../context";
 import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
 import { PgVerificationEngine } from "./verification";
+import { InvocationSnapshotService } from "../runtimeContext";
 import {
   canonicalRunOutput,
   isHardTerminalRunStatus,
@@ -31,7 +31,6 @@ import {
 } from "./finalizationService";
 import {
   artifactSummaryToOut,
-  contextSnapshotToOut,
   proposalSummaryToOut,
   runEvaluationToOut,
   runEventToOut,
@@ -138,12 +137,10 @@ function commandServices(context: ModuleContext): RunsCommandServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
   const repository = PgRunRepository.fromConfig(context.config);
   const materializer = RunMaterializationService.fromConfig(context.config);
-  const contextPreparer = new ContextPrepareService(context.config);
   return {
     repository,
     orchestration: new RunOrchestrationService(context.config, repository, {
       materializer,
-      contextPreparer,
       workspaceManager: PgRunSandboxManager.fromConfig(context.config),
       codePatchCollector: PgCodePatchCollector.fromConfig(context.config),
       verificationEngine: PgVerificationEngine.fromConfig(context.config),
@@ -443,13 +440,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
     const { repository, run } = result;
-    const [steps, events, artifacts, proposals, children, contextSnapshot, finalization] = await Promise.all([
+    const [steps, events, artifacts, proposals, children, invocationSnapshots, finalization] = await Promise.all([
       repository.listRunSteps(run.space_id, run.id),
       repository.listRunEvents(run.space_id, run.id),
       repository.listArtifactSummaries(run.space_id, run.id),
       repository.listProposalSummaries(run.space_id, run.id),
       repository.listChildRuns(run.space_id, run.id),
-      repository.getContextSnapshot(run.space_id, run.context_snapshot_id),
+      new InvocationSnapshotService(dbPool(context.config))
+        .listSafeForInvocation(run.space_id, run.id),
       repository.getLatestRunFinalization(run.space_id, run.id),
     ]);
     return reply.send({
@@ -457,7 +455,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       agent: null,
       agent_version: null,
       model_provider: null,
-      context_snapshot: contextSnapshotToOut(contextSnapshot),
+      invocation_snapshots: invocationSnapshots,
       steps: steps.map(runStepToOut),
       events: events.map(runEventToOut),
       artifacts: artifacts.map(artifactSummaryToOut),
@@ -598,7 +596,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runs/:runId", async (request, reply) => {
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
-    return reply.send(await runToOutWithProvider(result.repository, result.run));
+    const [runOut, invocationSnapshots] = await Promise.all([
+      runToOutWithProvider(result.repository, result.run),
+      new InvocationSnapshotService(dbPool(context.config))
+        .listSafeForInvocation(result.run.space_id, result.run.id),
+    ]);
+    return reply.send({
+      ...runOut,
+      invocation_snapshots: invocationSnapshots,
+    });
   });
 
   app.post("/api/v1/runs/:runId/resume", async (request, reply) => {

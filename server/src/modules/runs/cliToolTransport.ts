@@ -167,7 +167,6 @@ function transportRequest(run: RunRecord): RuntimeHostExecuteRequest {
     project_folder_id: run.project_folder_id,
     trigger_origin: run.trigger_origin as RunTriggerOrigin,
     capability_id: run.capability_id ?? null,
-    context_snapshot_id: run.context_snapshot_id ?? null,
     output_format: null,
     tool_mode: "disabled",
     tool_bindings: [],

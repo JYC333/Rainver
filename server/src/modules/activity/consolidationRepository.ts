@@ -21,11 +21,12 @@ interface ActivityRow {
   source_url: string | null;
   status: string;
   aggregate_key: string | null;
+  visibility: string;
 }
 
 const ACTIVITY_COLUMNS = `
   id, space_id, user_id, owner_user_id, subject_user_id, project_folder_id, project_id,
-  activity_type, title, content, source_trust, source_url, status, aggregate_key
+  activity_type, title, content, source_trust, source_url, status, aggregate_key, visibility
 `;
 
 interface DedupedActivity {
@@ -129,8 +130,8 @@ export class PgActivityConsolidationRepository {
     const now = new Date().toISOString();
     await this.db.query(
       `UPDATE activity_records
-          SET status = $3,
-              processed_at = CASE WHEN $3 IN ('processed', 'proposals_generated') THEN $4::timestamptz ELSE processed_at END,
+          SET status = $3::varchar,
+              processed_at = CASE WHEN $3::varchar IN ('processed', 'proposals_generated') THEN $4::timestamptz ELSE processed_at END,
               updated_at = $4
         WHERE id = $1 AND space_id = $2`,
       [activityId, spaceId, status, now],
@@ -173,7 +174,7 @@ export class PgActivityConsolidationRepository {
       createdByUserId: identity.userId,
       projectFolderId: activity.project_folder_id,
       projectId: activity.project_id,
-      visibility: "space_shared",
+      visibility: activity.visibility,
       riskLevel: "low",
     });
     return row.id;

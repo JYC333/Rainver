@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { contentDecisionFromDb } from "../src/modules/access/contentAccessQuery";
 import { decideContentAccess } from "../src/modules/access/contentAccessPolicy";
@@ -54,6 +54,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
+    if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(
       `[content-access-equivalence] skipped — Docker/Postgres unavailable: ${
         err instanceof Error ? err.message : String(err)
@@ -271,7 +272,6 @@ describe("content access SQL/in-memory equivalence", () => {
           access_level: "full",
           owner_user_id: OWNER,
           scope_type: "user",
-          project_folder_id: null,
         },
         {
           spaceId: SPACE,

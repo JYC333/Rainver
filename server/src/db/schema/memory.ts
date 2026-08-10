@@ -2,9 +2,7 @@ import { pgTable, index, check, foreignKey, varchar, text, integer, doublePrecis
 import { sql } from "drizzle-orm";
 import { agents } from "./agents";
 import { users } from "./auth";
-import { runs } from "./runs";
 import { spaces } from "./spaces";
-import { projectFolders } from "./projectFolders";
 import { artifacts } from "./artifacts";
 import { proposals } from "./proposals";
 import { projects } from "./projects";
@@ -24,7 +22,8 @@ export const memoryEntries = pgTable("memory_entries", {
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	sensitivityLevel: varchar("sensitivity_level", { length: 32 }).default('normal').notNull(),
 	lastConfirmedAt: timestamp("last_confirmed_at", { withTimezone: true, mode: 'string' }),
-	projectFolderId: varchar("project_folder_id", { length: 36 }),
+	// Producing-Agent provenance only. Memory authorization and retrieval must
+	// never use this column as an attribution scope.
 	agentId: varchar("agent_id", { length: 36 }),
 	namespace: varchar({ length: 255 }),
 	title: varchar({ length: 512 }),
@@ -65,12 +64,11 @@ export const memoryEntries = pgTable("memory_entries", {
 	index("ix_memory_entries_subject_user_id").using("btree", table.subjectUserId.asc().nullsLast()),
 	index("ix_memory_entries_supersedes_memory_id").using("btree", table.supersedesMemoryId.asc().nullsLast()),
 	index("ix_memory_entries_visibility").using("btree", table.visibility.asc().nullsLast()),
-	index("ix_memory_entries_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.projectId],
 			foreignColumns: [projects.id],
 			name: "memory_entries_project_id_delete_fkey"
-		}).onDelete("set null"),
+		}),
 	foreignKey({
 			columns: [table.projectId, table.spaceId],
 			foreignColumns: [projects.id, projects.spaceId],
@@ -111,62 +109,15 @@ export const memoryEntries = pgTable("memory_entries", {
 			foreignColumns: [users.id],
 			name: "memory_entries_subject_user_id_fkey"
 		}),
-	foreignKey({
-			columns: [table.projectFolderId, table.spaceId],
-			foreignColumns: [projectFolders.id, projectFolders.spaceId],
-			name: "memory_entries_project_folder_id_fkey"
-		}),
 	check("ck_memory_entries_memory_layer", sql`(memory_layer IS NULL) OR ((memory_layer)::text = ANY (ARRAY[('episodic'::character varying)::text, ('semantic'::character varying)::text]))`),
+	check("ck_memory_entries_scope_type", sql`scope_type IN ('user', 'project')`),
+	check("ck_memory_entries_scope_placement", sql`(scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL)`),
 	check("ck_memory_entries_sensitivity_level", sql`(sensitivity_level)::text = ANY (ARRAY[('normal'::character varying)::text, ('sensitive'::character varying)::text, ('restricted'::character varying)::text, ('highly_restricted'::character varying)::text])`),
 	check("ck_memory_entries_source_trust", sql`(source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))`),
 	check("ck_memory_entries_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_memory_entries_access_level", sql`access_level IN ('full', 'summary')`),
 	check("ck_memory_entries_private_owner", sql`visibility = 'space_shared' OR owner_user_id IS NOT NULL`),
 	check("ck_memory_entries_highly_restricted_private", sql`sensitivity_level <> 'highly_restricted' OR visibility = 'private'`),
-]);
-
-export const memoryAccessLogs = pgTable("memory_access_logs", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	memoryId: varchar("memory_id", { length: 36 }).notNull(),
-	userId: varchar("user_id", { length: 36 }),
-	agentId: varchar("agent_id", { length: 36 }),
-	runId: varchar("run_id", { length: 36 }),
-	accessType: varchar("access_type", { length: 64 }).notNull(),
-	reason: text(),
-	accessedAt: timestamp("accessed_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_memory_access_logs_accessed_at").using("btree", table.accessedAt.asc().nullsLast()),
-	index("ix_memory_access_logs_agent_id").using("btree", table.agentId.asc().nullsLast()),
-	index("ix_memory_access_logs_memory_id").using("btree", table.memoryId.asc().nullsLast()),
-	index("ix_memory_access_logs_run_id").using("btree", table.runId.asc().nullsLast()),
-	index("ix_memory_access_logs_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_memory_access_logs_user_id").using("btree", table.userId.asc().nullsLast()),
-	foreignKey({
-			columns: [table.agentId],
-			foreignColumns: [agents.id],
-			name: "memory_access_logs_agent_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.memoryId],
-			foreignColumns: [memoryEntries.id],
-			name: "memory_access_logs_memory_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.runId],
-			foreignColumns: [runs.id],
-			name: "memory_access_logs_run_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "memory_access_logs_space_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.userId],
-			foreignColumns: [users.id],
-			name: "memory_access_logs_user_id_fkey"
-		}),
 ]);
 
 export const memoryMaintenanceJobs = pgTable("memory_maintenance_jobs", {
@@ -222,6 +173,8 @@ export const memoryRelations = pgTable("memory_relations", {
 	sourceId: varchar("source_id", { length: 36 }).notNull(),
 	targetType: varchar("target_type", { length: 64 }).notNull(),
 	targetId: varchar("target_id", { length: 36 }).notNull(),
+	// Deliberately NOT `link_type`: B12A freezes this vocabulary and forbids it
+	// expanding into general provenance. It is not an ontology edge.
 	relationType: varchar("relation_type", { length: 64 }).notNull(),
 	confidence: doublePrecision(),
 	evidenceJson: jsonb("evidence_json"),
@@ -267,5 +220,10 @@ export const provenanceLinks = pgTable("provenance_links", {
 			name: "provenance_links_space_id_fkey"
 		}),
 	check("ck_provenance_links_source_trust", sql`(source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))`),
-	check("ck_provenance_links_source_type", sql`(source_type)::text = ANY (ARRAY[('activity'::character varying)::text, ('proposal'::character varying)::text, ('memory'::character varying)::text, ('artifact'::character varying)::text, ('run_step'::character varying)::text, ('external_source'::character varying)::text, ('user_confirmation'::character varying)::text, ('source_item'::character varying)::text, ('source_snapshot'::character varying)::text, ('extracted_evidence'::character varying)::text, ('run_event'::character varying)::text])`),
+	// B12F: membership is a `provenanceSourceable` declaration on the entity
+	// registry, resolved through `isProvenanceSourceType`. The closed set that
+	// used to live here was one of four copies — this CHECK plus three Sets, two
+	// of which silently *dropped* unrecognized entries, so a divergence lost
+	// provenance without an error. `target_type` still carries no constraint.
+	check("ck_provenance_links_source_type_format", sql`(source_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 ]);

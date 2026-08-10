@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+
+const { createActivity } = vi.hoisted(() => ({ createActivity: vi.fn().mockResolvedValue({}) }))
+
+vi.mock('../api/client', () => ({
+  activityApi: { create: createActivity },
+}))
 
 vi.mock('../contexts/SpaceContext', () => ({
   useSpace: () => ({
@@ -11,8 +17,6 @@ vi.mock('../contexts/SpaceContext', () => ({
     personalSpaceId: 'personal-1',
     activeSpaceId: 'team-1',
     activeSpaceName: 'Acme Team',
-    writeTargetSpaceId: 'personal-1',
-    setWriteTarget: vi.fn(),
   }),
 }))
 
@@ -20,20 +24,22 @@ import { FloatingQuickCapture } from '../components/FloatingQuickCapture'
 
 const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true } as const
 
-describe('FloatingQuickCapture on Home', () => {
-  it('shows an explicit write target defaulting to Personal Space', () => {
-    render(<MemoryRouter future={routerFuture}><FloatingQuickCapture scope="home" /></MemoryRouter>)
+describe('FloatingQuickCapture', () => {
+  it('posts to the Personal Space independently of the active browsing Space', async () => {
+    render(<MemoryRouter future={routerFuture}><FloatingQuickCapture /></MemoryRouter>)
     // Opens from the floating button.
     fireEvent.click(screen.getByLabelText('Quick capture'))
     expect(screen.getByText('Save to:')).toBeInTheDocument()
-    // Personal Space is the default Home write target (personal type → "Personal Space" label).
     expect(screen.getByText('Personal Space')).toBeInTheDocument()
-  })
-
-  it('shows the active space as target on space-scoped routes', () => {
-    render(<MemoryRouter future={routerFuture}><FloatingQuickCapture scope="space" /></MemoryRouter>)
-    fireEvent.click(screen.getByLabelText('Quick capture'))
-    expect(screen.getByText('Save to:')).toBeInTheDocument()
-    expect(screen.getByText('Acme Team')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Capture a thought or paste a link…'), {
+      target: { value: 'A private thought' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }))
+    await waitFor(() => {
+      expect(createActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'A private thought' }),
+        { spaceId: 'personal-1' },
+      )
+    })
   })
 })

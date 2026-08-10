@@ -2,10 +2,11 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { advanceOperation, type ResearchOperationState } from "../src/modules/projectResearch/operationProjection";
 import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -25,6 +26,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[project-research-operation-projection-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -75,11 +77,10 @@ async function seed(): Promise<void> {
   await pool!.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
   await pool!.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);
   await pool!.query(`INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`, [PROJECT, SPACE, OWNER, now]);
-  await pool!.query(
-    `INSERT INTO project_research_workflows (id, space_id, project_id, workflow_type, current_stage, status, mode, state_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'literature_review','initial_intake_setup','active','autonomous','{}'::jsonb,$4,$4)`,
-    [WORKFLOW, SPACE, PROJECT, now],
-  );
+  await insertResearchWorkflowFixture(pool!, {
+    id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+    currentStage: "initial_intake_setup", now,
+  });
   await pool!.query(
     `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
      VALUES ($1,$2,$3,'research','Research','active',$4,$5::jsonb,$6,$6)`,

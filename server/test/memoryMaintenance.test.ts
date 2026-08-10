@@ -60,7 +60,6 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     space_id: "space-1",
     subject_user_id: null,
     owner_user_id: "user-1",
-    project_folder_id: null,
     scope_type: "user",
     namespace: "user.default",
     memory_type: "fact",
@@ -156,8 +155,8 @@ describe("Memory maintenance scan", () => {
     const db = fakeDb([
       row({ id: "visible", title: "Same" }),
       row({ id: "restricted", title: "Same", sensitivity_level: "highly_restricted" }),
-      row({ id: "system", title: "Same", scope_type: "system" }),
-      row({ id: "template", title: "Same", scope_type: "system" }),
+      row({ id: "agent-scope", title: "Same", scope_type: "agent" }),
+      row({ id: "folder-scope", title: "Same", scope_type: "project_folder" }),
       row({
         id: "project-hidden",
         title: "Same",

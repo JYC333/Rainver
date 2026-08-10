@@ -121,6 +121,16 @@ export interface SourcePostProcessingRelevanceDecisionPolicy {
   not_relevant?: string;
 }
 
+export interface SourcePostProcessingProjectCriteria {
+  include_keywords: string[];
+  exclude_keywords: string[];
+  domain_criteria: Record<string, string[]>;
+  date_range_start: string | null;
+  date_range_end: string | null;
+  source_restrictions: string[];
+  required_evidence_fields: string[];
+}
+
 export interface SourcePostProcessingRelevanceProfile {
   enabled: boolean;
   objective?: string;
@@ -129,6 +139,7 @@ export interface SourcePostProcessingRelevanceProfile {
   must_have: string[];
   nice_to_have: string[];
   decision_policy?: SourcePostProcessingRelevanceDecisionPolicy;
+  project_criteria?: SourcePostProcessingProjectCriteria;
 }
 
 export interface SourcePostProcessingTriggerConfig {
@@ -1600,6 +1611,7 @@ export class PgSourcePostProcessingRepository {
     const now = new Date().toISOString();
     const evidenceId = await upsertCanonicalEvidence(this.db, {
       spaceId: input.spaceId,
+      projectId: input.item.project_id,
       ownerUserId: input.item.owner_user_id,
       visibility: input.item.visibility,
       accessLevel: input.item.access_level,
@@ -2318,6 +2330,7 @@ function normalizeRelevanceProfile(value: unknown): SourcePostProcessingRelevanc
   const mustHave = boundedStringArray(record.must_have, "input_config_json.relevance_profile.must_have");
   const niceToHave = boundedStringArray(record.nice_to_have, "input_config_json.relevance_profile.nice_to_have");
   const decisionPolicy = normalizeDecisionPolicy(record.decision_policy);
+  const projectCriteria = normalizeProjectCriteria(record.project_criteria);
   if (enabled && !objective && includeCriteria.length === 0) {
     throw new HttpError(
       422,
@@ -2333,7 +2346,51 @@ function normalizeRelevanceProfile(value: unknown): SourcePostProcessingRelevanc
   };
   if (objective) profile.objective = objective;
   if (decisionPolicy) profile.decision_policy = decisionPolicy;
+  if (projectCriteria) profile.project_criteria = projectCriteria;
   return profile;
+}
+
+function normalizeProjectCriteria(value: unknown): SourcePostProcessingProjectCriteria | undefined {
+  const record = recordValue(value);
+  if (!record) return undefined;
+  const rawDomain = recordValue(record.domain_criteria) ?? {};
+  const domainCriteria: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(rawDomain)) {
+    if (!/^[a-z][a-z0-9_]*$/.test(key)) {
+      throw new HttpError(422, `input_config_json.relevance_profile.project_criteria.domain_criteria contains invalid key ${key}`);
+    }
+    domainCriteria[key] = boundedStringArray(
+      raw,
+      `input_config_json.relevance_profile.project_criteria.domain_criteria.${key}`,
+    );
+  }
+  const dateRangeStart = boundedString(record.date_range_start, "input_config_json.relevance_profile.project_criteria.date_range_start", 10);
+  const dateRangeEnd = boundedString(record.date_range_end, "input_config_json.relevance_profile.project_criteria.date_range_end", 10);
+  for (const [field, date] of [["date_range_start", dateRangeStart], ["date_range_end", dateRangeEnd]] as const) {
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new HttpError(422, `input_config_json.relevance_profile.project_criteria.${field} must be YYYY-MM-DD`);
+    }
+  }
+  if (dateRangeStart && dateRangeEnd && dateRangeStart > dateRangeEnd) {
+    throw new HttpError(
+      422,
+      "input_config_json.relevance_profile.project_criteria.date_range_start must be before date_range_end",
+    );
+  }
+  const criteria: SourcePostProcessingProjectCriteria = {
+    include_keywords: boundedStringArray(record.include_keywords, "input_config_json.relevance_profile.project_criteria.include_keywords"),
+    exclude_keywords: boundedStringArray(record.exclude_keywords, "input_config_json.relevance_profile.project_criteria.exclude_keywords"),
+    domain_criteria: domainCriteria,
+    date_range_start: dateRangeStart ?? null,
+    date_range_end: dateRangeEnd ?? null,
+    source_restrictions: boundedStringArray(record.source_restrictions, "input_config_json.relevance_profile.project_criteria.source_restrictions"),
+    required_evidence_fields: boundedStringArray(record.required_evidence_fields, "input_config_json.relevance_profile.project_criteria.required_evidence_fields"),
+  };
+  const populated = criteria.include_keywords.length > 0 || criteria.exclude_keywords.length > 0
+    || Object.values(criteria.domain_criteria).some((items) => items.length > 0)
+    || criteria.date_range_start !== null || criteria.date_range_end !== null
+    || criteria.source_restrictions.length > 0 || criteria.required_evidence_fields.length > 0;
+  return populated ? criteria : undefined;
 }
 
 function normalizeDecisionPolicy(value: unknown): SourcePostProcessingRelevanceDecisionPolicy | undefined {

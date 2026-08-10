@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isProvenanceSourceType } from "../ontology/entities";
 import type { ProvenanceEntry } from "./sourceMonitoring";
 
 export const TARGET_MEMORY = "memory";
@@ -127,6 +128,17 @@ export async function writeProvenanceLinks(
     entries: readonly ProvenanceEntry[];
   },
 ): Promise<number> {
+  // Validation lives here rather than at the call sites. It used to be the
+  // caller's job and three of them each kept their own copy of the vocabulary,
+  // two of which silently dropped what they did not recognize — so a
+  // divergence lost provenance with no error anywhere. A bad value is now a
+  // rejected write, which is what B12F means by the registry owning the closed
+  // set while the column keeps only a format constraint.
+  for (const e of input.entries) {
+    if (typeof e.source_id !== "string" || !isProvenanceSourceType(e.source_type)) {
+      throw new Error(`Unknown provenance source type: ${String(e.source_type)}`);
+    }
+  }
   const valid = input.entries.filter(
     (e) => typeof e.source_type === "string" && typeof e.source_id === "string",
   );

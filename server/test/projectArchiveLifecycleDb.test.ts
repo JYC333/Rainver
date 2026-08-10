@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { PgProjectRepository } from "../src/modules/projects/repository";
@@ -10,6 +10,7 @@ import { ProjectOperationService } from "../src/modules/projects/projectOperatio
 import { advanceOperation } from "../src/modules/projectResearch/operationProjection";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const CONFIG = loadConfig({});
@@ -33,6 +34,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[project-archive-lifecycle-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -125,12 +127,10 @@ beforeEach(async () => {
       [randomUUID(), SPACE, CHANNEL, AGENT, projectId, projectId, OWNER, now],
     );
     const workflowId = randomUUID();
-    await pool.query(
-      `INSERT INTO project_research_workflows (
-         id,space_id,project_id,workflow_type,current_stage,status,mode,state_json,created_at,updated_at
-       ) VALUES ($1,$2,$3,'literature_review','screening','active','autonomous','{}'::jsonb,$4,$4)`,
-      [workflowId, SPACE, projectId, now],
-    );
+    await insertResearchWorkflowFixture(pool, {
+      id: workflowId, spaceId: SPACE, projectId, startedByUserId: OWNER,
+      currentStage: "screening", now,
+    });
     await pool.query(
       `INSERT INTO project_operations (
          id,space_id,project_id,kind,title,status,progress_json,created_at,updated_at
@@ -247,7 +247,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     if (!available || !pool) return;
     await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     const workflow = await pool.query<{ id: string }>(
-      `SELECT id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
+      `SELECT object_id AS id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
     const state = {
@@ -283,7 +283,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     const pendingItemId = "99999999-9999-4999-8999-999999999999";
     await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     const workflow = await pool.query<{ id: string }>(
-      `SELECT id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
+      `SELECT object_id AS id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
     const binding = await pool.query<{ id: string }>(
@@ -300,7 +300,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     await pool.query(
       `UPDATE project_research_workflows
           SET state_json=$4::jsonb
-        WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3`,
       [SPACE, PROJECT, workflow.rows[0]!.id, JSON.stringify({
         research_question: question,
         research_question_version: 1,
@@ -345,7 +345,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     const appendedItem = "88888888-8888-4888-8888-888888888882";
     await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     const workflow = await pool.query<{ id: string }>(
-      `SELECT id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
+      `SELECT object_id AS id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
     const binding = await pool.query<{ id: string }>(
@@ -361,7 +361,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     await pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
     await pool.query(
       `UPDATE project_research_workflows SET state_json=$4::jsonb
-        WHERE space_id=$1 AND project_id=$2 AND id=$3`,
+        WHERE space_id=$1 AND project_id=$2 AND object_id=$3`,
       [SPACE, PROJECT, workflow.rows[0]!.id, JSON.stringify({
         research_question: question,
         research_question_version: 1,
@@ -392,8 +392,8 @@ describe("Project archive lifecycle (real Postgres)", () => {
          JOIN project_operations operation
            ON operation.space_id=workflow.space_id
           AND operation.project_id=workflow.project_id
-          AND operation.progress_json->>'workflow_id'=workflow.id
-        WHERE workflow.space_id=$1 AND workflow.project_id=$2 AND workflow.id=$3`,
+          AND operation.progress_json->>'workflow_id'=workflow.object_id
+        WHERE workflow.space_id=$1 AND workflow.project_id=$2 AND workflow.object_id=$3`,
       [SPACE, PROJECT, workflow.rows[0]!.id],
     );
     const durableIds = new Set([

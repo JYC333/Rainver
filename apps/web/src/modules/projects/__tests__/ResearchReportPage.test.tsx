@@ -36,7 +36,7 @@ const report: ProjectResearchReport = {
   ],
 }
 const documentPayload: ReaderDocumentPayload = {
-  document_type: 'research_report', document_id: 'report-1', space_id: 'space-1', title: 'Research report', plain_text: 'Summary', normalized_text: 'Summary', content_hash: 'hash',
+  document_type: 'research_report', document_id: 'report-1', space_id: 'space-1', project_id: 'project-1', title: 'Research report', plain_text: 'Summary', normalized_text: 'Summary', content_hash: 'hash',
   content_format: 'tiptap_json', content_schema_version: 1, content_json: { type: 'doc', content: [] }, source_item_id: null, artifact_id: null, source_snapshot_id: null,
   raw_artifact_id: null, extracted_artifact_id: null, source_uri: null, content_state: null, retention_policy: null, can_annotate: true,
 }

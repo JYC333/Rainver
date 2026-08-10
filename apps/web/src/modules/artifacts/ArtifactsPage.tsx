@@ -22,7 +22,6 @@ import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
 import { PreviewBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
-import { CONTEXT_ATTACHABLE_ARTIFACT_TYPES, isContextAttachableArtifactType } from './contextArtifactTypes'
 import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 import { TechnicalIdField } from '../../components/TechnicalIdField'
 
@@ -105,18 +104,8 @@ export default function ArtifactsPage() {
     return `/artifacts/${id}${folderFilter ? `?project_folder_id=${encodeURIComponent(folderFilter)}` : ''}`
   }
 
-  function contextHref(artifact: Artifact): string {
-    const params = new URLSearchParams({ artifact_id: artifact.id })
-    const projectFolderId = artifact.project_folder_id ?? folderFilter
-    if (projectFolderId) params.set('project_folder_id', projectFolderId)
-    return `/context?${params.toString()}`
-  }
-
   const types = Array.from(new Set(items.map(a => a.artifact_type))).sort()
-  const typeOptions = Array.from(new Set([
-    ...types,
-    ...CONTEXT_ATTACHABLE_ARTIFACT_TYPES,
-  ])).sort()
+  const typeOptions = types
 
   async function dl(id: string) {
     try {
@@ -610,11 +599,6 @@ export default function ArtifactsPage() {
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {isContextAttachableArtifactType(a.artifact_type) && (
-                  <Button size="sm" variant="outline" asChild>
-                    <Link to={contextHref(a)}><FilePlus2 className="size-3.5" />Context</Link>
-                  </Button>
-                )}
                 <Button size="sm" variant="outline" onClick={() => dl(a.id)}>Export</Button>
               </div>
             </Card>

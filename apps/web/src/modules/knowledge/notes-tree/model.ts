@@ -24,23 +24,49 @@ export function buildCollectionTree(collections: NoteCollection[]): CollectionNo
   return roots
 }
 
+/**
+ * One row of the tree: a note *in a particular folder*. The tree draws
+ * placements, not notes — a note filed in two folders is two rows, and every
+ * position-sensitive operation (reorder, remove-from-folder, range selection)
+ * has to say which one it means.
+ */
+export interface PlacedNote {
+  note: NoteSummary
+  collectionId: string
+  sortOrder: number
+  /** Stable identity of the row. A note id alone is not unique in this tree. */
+  key: string
+}
+
+export function placementKey(collectionId: string, noteId: string) {
+  return `${collectionId}:${noteId}`
+}
+
 export function groupNotesByCollection(notes: NoteSummary[]) {
-  const map = new Map<string, NoteSummary[]>()
+  const map = new Map<string, PlacedNote[]>()
 
   for (const note of notes) {
-    if (!note.collection_id) continue
-    const bucket = map.get(note.collection_id)
-    if (bucket) bucket.push(note)
-    else map.set(note.collection_id, [note])
+    for (const placement of note.placements) {
+      const placed: PlacedNote = {
+        note,
+        collectionId: placement.collection_id,
+        sortOrder: placement.sort_order,
+        key: placementKey(placement.collection_id, note.id),
+      }
+      const bucket = map.get(placement.collection_id)
+      if (bucket) bucket.push(placed)
+      else map.set(placement.collection_id, [placed])
+    }
   }
 
   for (const bucket of map.values()) {
     // sort_order is only meaningful once a note has been created into or
-    // dragged within a folder at least once (see repository.ts's
-    // addNoteToCollection) — notes that still tie at the same value (e.g.
+    // dragged within a folder at least once (see noteWriter's
+    // insertNotePlacement) — notes that still tie at the same value (e.g.
     // both never moved) fall back to newest-updated-first, matching the
     // prior behavior before manual ordering existed.
-    bucket.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
+    bucket.sort((a, b) => a.sortOrder - b.sortOrder
+      || (b.note.updated_at ?? '').localeCompare(a.note.updated_at ?? ''))
   }
 
   return map
@@ -48,10 +74,10 @@ export function groupNotesByCollection(notes: NoteSummary[]) {
 
 export function flattenVisibleNotes(
   nodes: CollectionNode[],
-  notesByCollection: Map<string, NoteSummary[]>,
+  notesByCollection: Map<string, PlacedNote[]>,
   collapsedCollectionIds: Set<string>,
 ) {
-  const out: NoteSummary[] = []
+  const out: PlacedNote[] = []
 
   function visit(items: CollectionNode[]) {
     for (const node of items) {
@@ -103,6 +129,42 @@ export function findCollectionNode(nodes: CollectionNode[], id: string): Collect
   return null
 }
 
+/**
+ * Hoisting: the collections a surface hoisted to `rootId` covers — the root and
+ * everything beneath it.
+ *
+ * `null` means "not hoisted", which is *not* the same as an empty set: the
+ * former spans every collection, the latter spans none. Callers that turn this
+ * into a query filter depend on the difference.
+ *
+ * Computed from the flat collection list rather than from a built tree, because
+ * the note query needs the id set before anything is rendered.
+ */
+export function hoistedCollectionIds(
+  collections: NoteCollection[],
+  rootId: string | null,
+): Set<string> | null {
+  if (!rootId) return null
+  const ids = new Set<string>()
+  if (!collections.some(collection => collection.id === rootId)) return ids
+  const childrenByParent = new Map<string, NoteCollection[]>()
+  collections.forEach(collection => {
+    const parentId = collection.parent_id
+    if (!parentId) return
+    const bucket = childrenByParent.get(parentId)
+    if (bucket) bucket.push(collection)
+    else childrenByParent.set(parentId, [collection])
+  })
+  const queue = [rootId]
+  while (queue.length > 0) {
+    const id = queue.pop()!
+    if (ids.has(id)) continue
+    ids.add(id)
+    childrenByParent.get(id)?.forEach(child => queue.push(child.id))
+  }
+  return ids
+}
+
 /** A folder can never be dropped onto itself or one of its own descendants —
  * that would either no-op or orphan the subtree into a cycle. */
 export function collectionAndDescendantIds(node: CollectionNode): Set<string> {
@@ -119,7 +181,7 @@ export function collectionAndDescendantIds(node: CollectionNode): Set<string> {
 
 export type DragSourceData =
   | { type: 'collection'; collection: NoteCollection }
-  | { type: 'note'; note: NoteSummary }
+  | { type: 'note'; placed: PlacedNote }
 
 /** A drop target is either a folder row (drop into, appended at the end),
  * the top-level root strip (folders only — a rootless note would vanish
@@ -133,11 +195,14 @@ export type DropTargetData =
   | { kind: 'note-gap'; collectionId: string; beforeId: string | null }
 
 export interface CollectionMove { id: string; parentId: string | null; sortOrder: number }
-export interface NoteMove { id: string; collectionId: string; sortOrder: number }
+/** A placement's new position. `fromCollectionId` identifies which one moves. */
+export interface NoteMove { noteId: string; fromCollectionId: string; collectionId: string; sortOrder: number }
 
 export type ResolvedTreeDrop =
   | { kind: 'move-collections'; updates: CollectionMove[] }
   | { kind: 'move-notes'; updates: NoteMove[] }
+  /** An additive drop (U5): the note gains a placement instead of moving. */
+  | { kind: 'place-note'; noteId: string; collectionId: string }
 
 function applyMoves<T extends { id: string }, U extends { id: string }>(
   items: T[],
@@ -194,13 +259,30 @@ export function removeCollection(
 }
 
 /** Applies a server-shaped reorder plan to local note summaries. Used for the
- * immediate optimistic tree update while the atomic reorder is persisted. */
+ * immediate optimistic tree update while the atomic reorder is persisted.
+ *
+ * Applied per *placement*: an update moves the row it names and leaves the
+ * note's other placements exactly where they are. */
 export function applyNoteMoves(notes: NoteSummary[], updates: NoteMove[]): NoteSummary[] {
-  return applyMoves(notes, updates, (note, update) => ({
-    ...note,
-    collection_id: update.collectionId,
-    sort_order: update.sortOrder,
-  }))
+  const byNote = new Map<string, NoteMove[]>()
+  updates.forEach(update => {
+    const bucket = byNote.get(update.noteId)
+    if (bucket) bucket.push(update)
+    else byNote.set(update.noteId, [update])
+  })
+  return notes.map(note => {
+    const noteUpdates = byNote.get(note.id)
+    if (!noteUpdates) return note
+    return {
+      ...note,
+      placements: note.placements.map(placement => {
+        const update = noteUpdates.find(candidate => candidate.fromCollectionId === placement.collection_id)
+        return update
+          ? { collection_id: update.collectionId, sort_order: update.sortOrder }
+          : placement
+      }),
+    }
+  })
 }
 
 function reorderedSiblingIds(siblingIds: string[], draggedId: string, beforeId: string | null): string[] {
@@ -244,28 +326,44 @@ export function planCollectionMove(
   return [...sourceUpdates, ...targetUpdates]
 }
 
-/** Same as planCollectionMove but for notes within a folder — notes sort by
- * sort_order (see groupNotesByCollection), not by name. */
+/**
+ * Same as planCollectionMove but for one note placement — notes sort by
+ * sort_order (see groupNotesByCollection), not by name.
+ *
+ * The dragged row is identified by `(sourceCollectionId, draggedId)`, and every
+ * update it returns names the folder its row currently sits in. The note's
+ * other placements are untouched and never appear in the plan.
+ */
 export function planNoteMove(
   draggedId: string,
+  sourceCollectionId: string,
   targetCollectionId: string,
   beforeId: string | null,
   allNotes: NoteSummary[],
 ): NoteMove[] {
-  const dragged = allNotes.find(note => note.id === draggedId)
+  const placementsByCollection = groupNotesByCollection(allNotes)
+  const dragged = (placementsByCollection.get(sourceCollectionId) ?? [])
+    .find(placed => placed.note.id === draggedId)
   if (!dragged) return []
-  const sourceCollectionId = dragged.collection_id
-  const targetSiblings = allNotes
-    .filter(n => n.id === draggedId || (n.id !== draggedId && n.collection_id === targetCollectionId))
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
-  const orderedTargetIds = reorderedSiblingIds(targetSiblings.map(n => n.id), draggedId, beforeId)
-  const targetUpdates = orderedTargetIds.map((id, sortOrder) => ({ id, collectionId: targetCollectionId, sortOrder }))
-  if (sourceCollectionId === targetCollectionId || !sourceCollectionId) return targetUpdates
 
-  const sourceUpdates = allNotes
-    .filter(n => n.id !== draggedId && n.collection_id === sourceCollectionId)
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
-    .map((note, sortOrder) => ({ id: note.id, collectionId: sourceCollectionId, sortOrder }))
+  const move = (placed: PlacedNote, collectionId: string, sortOrder: number): NoteMove => ({
+    noteId: placed.note.id,
+    fromCollectionId: placed.collectionId,
+    collectionId,
+    sortOrder,
+  })
+
+  const targetSiblings = sourceCollectionId === targetCollectionId
+    ? (placementsByCollection.get(targetCollectionId) ?? [])
+    : [...(placementsByCollection.get(targetCollectionId) ?? []), dragged]
+  const byNoteId = new Map(targetSiblings.map(placed => [placed.note.id, placed]))
+  const orderedTargetIds = reorderedSiblingIds(targetSiblings.map(p => p.note.id), draggedId, beforeId)
+  const targetUpdates = orderedTargetIds.map((id, sortOrder) => move(byNoteId.get(id)!, targetCollectionId, sortOrder))
+  if (sourceCollectionId === targetCollectionId) return targetUpdates
+
+  const sourceUpdates = (placementsByCollection.get(sourceCollectionId) ?? [])
+    .filter(placed => placed.note.id !== draggedId)
+    .map((placed, sortOrder) => move(placed, sourceCollectionId, sortOrder))
   return [...sourceUpdates, ...targetUpdates]
 }
 
@@ -281,6 +379,8 @@ export function resolveTreeDrop(
   collectionTree: CollectionNode[],
   allCollections: NoteCollection[],
   allNotes: NoteSummary[],
+  /** An additive drop: the note gains a folder instead of changing folders. */
+  additive = false,
 ): ResolvedTreeDrop | null {
   if (source.type === 'collection') {
     const { collection } = source
@@ -293,11 +393,19 @@ export function resolveTreeDrop(
     const updates = planCollectionMove(collection.id, targetParentId, beforeId, allCollections)
     return updates.length > 0 ? { kind: 'move-collections', updates } : null
   }
-  const { note } = source
+  const { placed } = source
   const targetCollectionId = targetCollectionIdForNote(target)
   if (!targetCollectionId) return null // root or collection-gap target, invalid for a note
+  // A note cannot be placed in the same folder twice — `note_collection_items`
+  // is unique on `(collection_id, note_id, space_id)`. Dropping onto a folder
+  // that already holds this note is a no-op, not a second row.
+  const alreadyPlaced = placed.note.placements.some(p => p.collection_id === targetCollectionId)
+  if (additive) {
+    return alreadyPlaced ? null : { kind: 'place-note', noteId: placed.note.id, collectionId: targetCollectionId }
+  }
+  if (alreadyPlaced && targetCollectionId !== placed.collectionId) return null
   const beforeId = target.kind === 'note-gap' ? target.beforeId : null
-  const updates = planNoteMove(note.id, targetCollectionId, beforeId, allNotes)
+  const updates = planNoteMove(placed.note.id, placed.collectionId, targetCollectionId, beforeId, allNotes)
   return updates.length > 0 ? { kind: 'move-notes', updates } : null
 }
 

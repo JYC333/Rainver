@@ -14,7 +14,7 @@ export {
 } from "./taskStore";
 export {
   startBackgroundServices,
-  pruneMemoryAccessLogs,
+  pruneContentAccessLogs,
   type BackgroundServicesHandle,
 } from "./backgroundServices";
 export { buildSourceSchedulerTasks } from "./sourceTasks";

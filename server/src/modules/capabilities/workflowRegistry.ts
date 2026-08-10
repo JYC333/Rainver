@@ -1,8 +1,13 @@
-import { RESEARCH_WORKFLOW_TEMPLATES } from "./researchPack";
 import type { WorkflowTemplate } from "./types";
 
+let registryOverrideForTests: WorkflowTemplate[] | null = null;
+
+export function __setWorkflowTemplateRegistryForTests(templates: WorkflowTemplate[] | null): void {
+  registryOverrideForTests = templates;
+}
+
 export function listBuiltInWorkflowTemplates(): WorkflowTemplate[] {
-  return [...RESEARCH_WORKFLOW_TEMPLATES].sort((a, b) => a.id.localeCompare(b.id));
+  return [...(registryOverrideForTests ?? [])].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export function getBuiltInWorkflowTemplate(id: string): WorkflowTemplate | null {

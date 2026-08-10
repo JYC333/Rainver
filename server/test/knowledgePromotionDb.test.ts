@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { writeNote } from "../src/modules/knowledge/noteRevisionService";
@@ -47,6 +47,7 @@ beforeAll(async () => {
     await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
+    if (!isTestPostgresUnavailableError(error)) throw error;
     console.warn(`[knowledge-promotion-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }, 180_000);
@@ -98,13 +99,13 @@ async function seedNote(initialParagraphs: string[]): Promise<string> {
   const objectId = randomUUID();
   const now = new Date().toISOString();
   await pool!.query(
-    `INSERT INTO space_objects (id, space_id, object_type, title, status, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
-     VALUES ($1,$2,'note','Test note','active','space_shared',$3,$4,$3,$5,$5)`,
+    `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
+     VALUES ($1,$2,'note','Test note','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, PROJECT, now],
   );
   await pool!.query(
-    `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash,refs_json)
-     VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,1,'seed','[]'::jsonb)`,
+    `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash)
+     VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,1,'seed')`,
     [objectId, SPACE, JSON.stringify(doc(initialParagraphs)), initialParagraphs.join("\n\n")],
   );
   const { insertInitialNoteRevision } = await import("../src/modules/knowledge/noteRevisionService.js");
@@ -263,7 +264,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     const revalidationApplied = await proposalApplyService().accept(revalidationPromoted.created_proposal_id as string, identity);
     expect(revalidationApplied?.proposal.status).toBe("accepted");
     const original = await pool.query<{ status: string; content: string }>(
-      `SELECT so.status, ki.content FROM knowledge_items ki JOIN space_objects so ON so.id=ki.object_id WHERE ki.object_id=$1`,
+      `SELECT ki.status, ki.content FROM knowledge_items ki JOIN space_objects so ON so.id=ki.object_id WHERE ki.object_id=$1`,
       [knowledgeItemId],
     );
     expect(original.rows[0]).toMatchObject({ status: "superseded", content: "Block one: the finding that matters." });

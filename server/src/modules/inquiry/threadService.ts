@@ -1,3 +1,5 @@
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { assertLinkTypeAllowed } from "../ontology/validation";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import {
@@ -79,16 +81,34 @@ function threadToOut(row: ThreadRow): Record<string, unknown> {
   };
 }
 
-const THREAD_COLUMN_NAMES = [
-  "id", "space_id", "project_id", "kind", "statement", "lifecycle_status", "attention_state", "priority",
-  "primary_parent_id", "owner_user_id", "next_focus_kind", "next_focus_note", "blocked_reason",
-  "version", "created_from", "created_by_user_id", "created_at", "updated_at",
+// A Thread is an ontology object (ADR 0012): identity, ownership, provenance,
+// and timestamps come from `space_objects`, the rest from the extension table.
+// The external field stays `id` so the API shape is unchanged — only the
+// storage moved.
+const THREAD_ROOT_COLUMNS = ["owner_user_id", "created_by_user_id", "created_at", "updated_at"];
+const THREAD_OWN_COLUMNS = [
+  "space_id", "project_id", "kind", "statement", "lifecycle_status", "attention_state", "priority",
+  "primary_parent_id", "next_focus_kind", "next_focus_note", "blocked_reason", "version", "created_from",
 ];
 
-const THREAD_COLUMNS = THREAD_COLUMN_NAMES.join(", ");
+/** Thread columns for a query that uses {@link THREAD_FROM}. */
+const threadColumns = (alias = "t", rootAlias = "so"): string => [
+  `${alias}.object_id AS id`,
+  ...THREAD_OWN_COLUMNS.map((name) => `${alias}.${name}`),
+  ...THREAD_ROOT_COLUMNS.map((name) => `${rootAlias}.${name}`),
+].join(", ");
 
-/** Qualified Thread column list, required whenever the query joins another table. */
-const threadColumns = (alias: string): string => THREAD_COLUMN_NAMES.map((name) => `${alias}.${name}`).join(", ");
+export const THREAD_COLUMNS = threadColumns();
+
+/**
+ * Bumps the root's `updated_at` after a domain-field write. The timestamp lives
+ * on `space_objects` now, so a domain UPDATE alone would leave it stale.
+ */
+export const TOUCH_THREAD_ROOT_SQL = `UPDATE space_objects SET updated_at = $1 WHERE id = $2 AND space_id = $3`;
+
+/** Every Thread read joins the ontology root; there is no Thread without one. */
+export const THREAD_FROM = `inquiry_threads t
+     JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id`;
 
 /**
  * Thread CRUD, working relations, Note links, personal Focus, and Project
@@ -115,19 +135,56 @@ export class InquiryThreadService {
     if (kind !== "question" && kind !== "hypothesis") throw new HttpError(422, "kind must be question or hypothesis");
     const statement = requiredString(body.statement, "statement");
     const primaryParentId = optionalString(body.primary_parent_id);
+    const producerIdempotencyKey = optionalString(body.producer_idempotency_key);
+    if (producerIdempotencyKey && producerIdempotencyKey.length > 128) {
+      throw new HttpError(422, "producer_idempotency_key must be at most 128 characters");
+    }
     const now = new Date().toISOString();
     const threadId = randomUUID();
 
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      if (producerIdempotencyKey) {
+        const existing = await db.query<ThreadRow>(
+          `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+            WHERE t.space_id=$1 AND t.project_id=$2 AND t.producer_idempotency_key=$3
+            LIMIT 1`,
+          [identity.spaceId, projectId, producerIdempotencyKey],
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].kind !== kind || existing.rows[0].statement !== statement) {
+            throw new HttpError(409, "producer_idempotency_key was already used for a different Inquiry Thread");
+          }
+          return threadToOut(existing.rows[0]);
+        }
+      }
       if (primaryParentId) await this.assertThreadInProject(db, identity.spaceId, projectId, primaryParentId);
-      const inserted = await db.query<ThreadRow>(
+      // The root row carries identity, visibility, ownership, and provenance;
+      // the writer enforces the B12H rules, including that a Project-owned
+      // object cannot be created without its Project (see the
+      // `requiresProjectScope` declaration for `inquiry_thread`).
+      const object = buildSpaceObjectInsert({
+        id: threadId,
+        spaceId: identity.spaceId,
+        objectType: "inquiry_thread",
+        // Projection of the Thread's statement; `statement` remains the truth.
+        title: statement,
+        ownerUserId: identity.userId,
+        primaryProjectId: projectId,
+        createdByUserId: identity.userId,
+        createdAt: now,
+      });
+      await db.query(object.sql, object.params);
+      await db.query(
         `INSERT INTO inquiry_threads (
-           id, space_id, project_id, kind, statement, lifecycle_status, attention_state, priority,
-           primary_parent_id, owner_user_id, created_from, created_by_user_id, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, 'active', 'backlog', 0, $6, $7, 'user', $7, $8, $8)
-         RETURNING ${THREAD_COLUMNS}`,
-        [threadId, identity.spaceId, projectId, kind, statement, primaryParentId, identity.userId, now],
+           object_id, space_id, project_id, kind, statement, lifecycle_status, attention_state, priority,
+           primary_parent_id, created_from, producer_idempotency_key
+         ) VALUES ($1, $2, $3, $4, $5, 'active', 'backlog', 0, $6, 'user', $7)`,
+        [threadId, identity.spaceId, projectId, kind, statement, primaryParentId, producerIdempotencyKey],
+      );
+      const inserted = await db.query<ThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId],
       );
       if (kind === "question") {
         await db.query(
@@ -167,17 +224,21 @@ export class InquiryThreadService {
   async listThreads(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<ThreadRow>(
-      `SELECT ${THREAD_COLUMNS} FROM inquiry_threads
-        WHERE space_id = $1 AND project_id = $2
-        ORDER BY created_at ASC, id ASC`,
-      [identity.spaceId, projectId],
+      // Project membership is necessary but not sufficient now that a Thread is
+      // an ontology object: the root's visibility is what decides who sees it,
+      // and a `visibility` column nothing enforces is worse than none.
+      `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+        WHERE t.space_id = $1 AND t.project_id = $2
+          AND ${contentReadSql("space_object", "so", "$3")}
+        ORDER BY so.created_at ASC, t.object_id ASC`,
+      [identity.spaceId, projectId, identity.userId],
     );
     return rows.rows.map(threadToOut);
   }
 
   async getThread(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const row = await this.getThreadRow(identity.spaceId, projectId, threadId);
+    const row = await this.getThreadRow(identity.spaceId, projectId, threadId, identity.userId);
     if (!row) throw new HttpError(404, "Thread not found");
 
     const [questionState, hypothesisState, relations, noteLinks, decisionCases, personalFocus] = await Promise.all([
@@ -188,28 +249,38 @@ export class InquiryThreadService {
         ? this.db.query(`SELECT * FROM inquiry_hypothesis_states WHERE thread_id = $1`, [threadId]).then((r) => r.rows[0] ?? null)
         : Promise.resolve(null),
       this.db.query(
-        `SELECT id, from_thread_id, to_thread_id, relation_kind, created_at FROM inquiry_thread_relations
-          WHERE space_id = $1 AND project_id=$3 AND (from_thread_id = $2 OR to_thread_id = $2)`,
+        `SELECT r.id, r.from_object_id AS from_thread_id, r.to_object_id AS to_thread_id,
+                r.link_type AS relation_kind, r.created_at
+           FROM object_relations r
+           JOIN inquiry_threads ft ON ft.object_id = r.from_object_id AND ft.space_id = r.space_id
+           JOIN inquiry_threads tt ON tt.object_id = r.to_object_id AND tt.space_id = r.space_id
+          WHERE r.space_id = $1 AND r.status = 'active'
+            AND ft.project_id = $3 AND tt.project_id = $3
+            AND (r.from_object_id = $2 OR r.to_object_id = $2)`,
         [identity.spaceId, threadId, projectId],
       ).then((r) => r.rows),
       this.db.query(
-        `SELECT id, note_object_id, link_kind, created_at FROM inquiry_thread_note_links
-          WHERE space_id = $1 AND project_id=$4 AND thread_id = $2
-            AND note_object_id IN (
+        `SELECT r.id, r.to_object_id AS note_object_id,
+                COALESCE(r.metadata_json->>'link_kind', 'linked_note') AS link_kind, r.created_at
+           FROM object_relations r
+           JOIN inquiry_threads t ON t.object_id = r.from_object_id AND t.space_id = r.space_id
+          WHERE r.space_id = $1 AND r.status = 'active' AND r.link_type = 'references'
+            AND t.project_id = $4 AND r.from_object_id = $2
+            AND r.to_object_id IN (
               SELECT o.id FROM space_objects o
-               WHERE o.space_id = $1 AND ${contentReadSql("space_object", "o", "$3")}
+               WHERE o.space_id = $1 AND o.object_type = 'note'
+                 AND ${contentReadSql("space_object", "o", "$3")}
             )`,
         [identity.spaceId, threadId, identity.userId, projectId],
       ).then((r) => r.rows),
       this.db.query(
-        `SELECT c.id, c.title, c.status
-           FROM decision_case_sources s
-           JOIN decision_cases c
-             ON c.id = s.decision_case_id
-            AND c.space_id = s.space_id
-            AND c.project_id = s.project_id
-          WHERE s.space_id = $1 AND s.project_id = $2 AND s.thread_id = $3
-          ORDER BY c.created_at DESC`,
+        `SELECT c.object_id AS id, so.title, c.status
+           FROM object_relations r
+           JOIN decision_cases c ON c.object_id = r.from_object_id AND c.space_id = r.space_id
+           JOIN space_objects so ON so.id = c.object_id AND so.space_id = c.space_id
+          WHERE r.space_id = $1 AND r.status = 'active' AND r.link_type = 'derived_from'
+            AND c.project_id = $2 AND r.to_object_id = $3
+          ORDER BY so.created_at DESC`,
         [identity.spaceId, projectId, threadId],
       ).then((r) => r.rows),
       this.db.query(
@@ -251,12 +322,26 @@ export class InquiryThreadService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await this.assertThreadInProject(db, identity.spaceId, projectId, fromThreadId);
       await this.assertThreadInProject(db, identity.spaceId, projectId, toThreadId);
+      // Thread structure is an `object_relations` edge now (ADR 0011 decision
+      // 3). The registry keeps it a direct write: the same words between Claims
+      // are reviewed assertions, and the endpoint-specific declaration is what
+      // lets both keep their behaviour.
+      assertLinkTypeAllowed({
+        linkType: relationKind,
+        fromObjectType: "inquiry_thread",
+        toObjectType: "inquiry_thread",
+        via: "direct",
+      });
       const inserted = await db.query(
-        `INSERT INTO inquiry_thread_relations (id, space_id, project_id, from_thread_id, to_thread_id, relation_kind, created_by_user_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (from_thread_id, to_thread_id, relation_kind) DO NOTHING
-         RETURNING id, from_thread_id, to_thread_id, relation_kind, created_at`,
-        [randomUUID(), identity.spaceId, projectId, fromThreadId, toThreadId, relationKind, identity.userId, new Date().toISOString()],
+        `INSERT INTO object_relations (
+           id, space_id, from_object_id, to_object_id, link_type, status,
+           created_by_user_id, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $7)
+         ON CONFLICT (space_id, from_object_id, to_object_id, link_type)
+           WHERE status = 'active' DO NOTHING
+         RETURNING id, from_object_id AS from_thread_id, to_object_id AS to_thread_id,
+                   link_type AS relation_kind, created_at`,
+        [randomUUID(), identity.spaceId, fromThreadId, toThreadId, relationKind, identity.userId, new Date().toISOString()],
       );
       if (inserted.rows[0]) {
         await this.recordStructureEvent(
@@ -271,8 +356,12 @@ export class InquiryThreadService {
         return inserted.rows[0];
       }
       const existing = await db.query(
-        `SELECT id, from_thread_id, to_thread_id, relation_kind, created_at FROM inquiry_thread_relations
-          WHERE space_id = $1 AND project_id=$5 AND from_thread_id = $2 AND to_thread_id = $3 AND relation_kind = $4`,
+        `SELECT r.id, r.from_object_id AS from_thread_id, r.to_object_id AS to_thread_id,
+                r.link_type AS relation_kind, r.created_at
+           FROM object_relations r
+           JOIN inquiry_threads t ON t.object_id = r.from_object_id AND t.space_id = r.space_id
+          WHERE r.space_id = $1 AND r.status = 'active' AND t.project_id = $5
+            AND r.from_object_id = $2 AND r.to_object_id = $3 AND r.link_type = $4`,
         [identity.spaceId, fromThreadId, toThreadId, relationKind, projectId],
       );
       return existing.rows[0]!;
@@ -284,10 +373,10 @@ export class InquiryThreadService {
     await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const removed = await db.query<{ from_thread_id: string; to_thread_id: string; relation_kind: string }>(
-        `DELETE FROM inquiry_thread_relations
-          WHERE id = $1 AND space_id = $2 AND project_id=$3
-            AND from_thread_id IN (SELECT id FROM inquiry_threads WHERE project_id = $3 AND space_id = $2)
-          RETURNING from_thread_id, to_thread_id, relation_kind`,
+        `DELETE FROM object_relations
+          WHERE id = $1 AND space_id = $2
+            AND from_object_id IN (SELECT object_id FROM inquiry_threads WHERE project_id = $3 AND space_id = $2)
+          RETURNING from_object_id AS from_thread_id, to_object_id AS to_thread_id, link_type AS relation_kind`,
         [relationId, identity.spaceId, projectId],
       );
       const edge = removed.rows[0];
@@ -313,9 +402,9 @@ export class InquiryThreadService {
         await this.assertThreadInProject(db, identity.spaceId, projectId, parentThreadId);
         const cycle = await db.query(
           `WITH RECURSIVE descendants AS (
-             SELECT id FROM inquiry_threads WHERE primary_parent_id=$1 AND space_id=$2 AND project_id=$3
+             SELECT object_id AS id FROM inquiry_threads WHERE primary_parent_id=$1 AND space_id=$2 AND project_id=$3
              UNION ALL
-             SELECT t.id FROM inquiry_threads t JOIN descendants d ON t.primary_parent_id=d.id
+             SELECT t.object_id AS id FROM inquiry_threads t JOIN descendants d ON t.primary_parent_id=d.id
               WHERE t.space_id=$2 AND t.project_id=$3
            ) SELECT 1 FROM descendants WHERE id=$4 LIMIT 1`,
           [threadId, identity.spaceId, projectId, parentThreadId],
@@ -323,16 +412,22 @@ export class InquiryThreadService {
         if (cycle.rows[0]) throw new HttpError(422, "primary_parent_id would create a cycle");
       }
       const before = await db.query<{ primary_parent_id: string | null }>(
-        `SELECT primary_parent_id FROM inquiry_threads WHERE id=$1 AND space_id=$2`,
+        `SELECT primary_parent_id FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,
         [threadId, identity.spaceId],
       );
-      const updated = await db.query<ThreadRow>(
-        `UPDATE inquiry_threads SET primary_parent_id = $1, updated_at = $2
-          WHERE id = $3 AND space_id = $4
-          RETURNING ${THREAD_COLUMNS}`,
-        [parentThreadId, new Date().toISOString(), threadId, identity.spaceId],
+      const now = new Date().toISOString();
+      const changed = await db.query(
+        `UPDATE inquiry_threads SET primary_parent_id = $1
+          WHERE object_id = $2 AND space_id = $3
+          RETURNING object_id`,
+        [parentThreadId, threadId, identity.spaceId],
       );
-      if (!updated.rows[0]) throw new HttpError(404, "Thread not found");
+      if (!changed.rows[0]) throw new HttpError(404, "Thread not found");
+      await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
+      const updated = await db.query<ThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId],
+      );
       await this.recordStructureEvent(
         db,
         identity,
@@ -348,6 +443,45 @@ export class InquiryThreadService {
 
   // Deep writing uses the unified Note model (plan section 9.7) — this only
   // creates the link, never a copy of Note content.
+  /**
+   * NE: raise a passage of a note as a Question.
+   *
+   * Composes the two writes that already exist rather than adding a third
+   * path: the Thread is created exactly as the Inquiry surface creates one,
+   * and the link back to the note is the same `references` edge `linkNote`
+   * writes. Both are direct writes — P2 confirmed Thread structure stays
+   * direct rather than moving behind a proposal.
+   *
+   * The link is what makes the action worth having. Without it the Question
+   * would be a retyped sentence with no way back to the reasoning it came
+   * from, which is the disconnection this plan exists to fix.
+   */
+  async raiseNoteAsQuestion(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const noteObjectId = requiredString(body.note_object_id, "note_object_id");
+    const statement = requiredString(body.statement, "statement");
+    // One transaction across both writes. Separately they are each atomic, but
+    // a failure between them would leave a Thread with no route back to the
+    // note — which is precisely the disconnection this action exists to fix,
+    // and worse than the action failing outright.
+    return withQueryableTransaction(this.db, async (db) => {
+      const scoped = new InquiryThreadService(db);
+      const thread = await scoped.createThread(identity, projectId, {
+        ...body,
+        kind: optionalString(body.kind) ?? "question",
+        statement,
+      });
+      await scoped.linkNote(identity, projectId, String(thread.id), {
+        note_object_id: noteObjectId,
+        link_kind: optionalString(body.link_kind) ?? "linked_note",
+      });
+      return thread;
+    });
+  }
+
   async linkNote(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -374,12 +508,26 @@ export class InquiryThreadService {
         [noteObjectId, identity.spaceId, identity.userId],
       );
       if (!note.rows[0]) throw new HttpError(422, "Note not found in this Space");
+      // Thread-to-Note is now an ontology edge with both endpoints inside the
+      // ontology; the half-edge table it replaces existed only because Thread
+      // was not an object.
+      assertLinkTypeAllowed({
+        linkType: "references",
+        fromObjectType: "inquiry_thread",
+        toObjectType: "note",
+        via: "direct",
+      });
       const inserted = await db.query(
-        `INSERT INTO inquiry_thread_note_links (id, space_id, project_id, thread_id, note_object_id, link_kind, created_by_user_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (thread_id, note_object_id) DO UPDATE SET link_kind = EXCLUDED.link_kind
-         RETURNING id, thread_id, note_object_id, link_kind, created_at`,
-        [randomUUID(), identity.spaceId, projectId, threadId, noteObjectId, linkKind, identity.userId, new Date().toISOString()],
+        `INSERT INTO object_relations (
+           id, space_id, from_object_id, to_object_id, link_type, status,
+           metadata_json, created_by_user_id, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, 'references', 'active', $5::jsonb, $6, $7, $7)
+         ON CONFLICT (space_id, from_object_id, to_object_id, link_type)
+           WHERE status = 'active'
+           DO UPDATE SET metadata_json = EXCLUDED.metadata_json, updated_at = EXCLUDED.updated_at
+         RETURNING id, from_object_id AS thread_id, to_object_id AS note_object_id,
+                   metadata_json->>'link_kind' AS link_kind, created_at`,
+        [randomUUID(), identity.spaceId, threadId, noteObjectId, JSON.stringify({ link_kind: linkKind }), identity.userId, new Date().toISOString()],
       );
       return inserted.rows[0]!;
     });
@@ -390,10 +538,10 @@ export class InquiryThreadService {
     await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await db.query(
-        `DELETE FROM inquiry_thread_note_links
-          WHERE space_id = $1 AND project_id=$4 AND thread_id = $2 AND note_object_id = $3
-            AND thread_id IN (SELECT id FROM inquiry_threads WHERE project_id = $4 AND space_id = $1)
-            AND note_object_id IN (
+        `DELETE FROM object_relations
+          WHERE space_id = $1 AND from_object_id = $2 AND to_object_id = $3 AND link_type = 'references'
+            AND from_object_id IN (SELECT object_id FROM inquiry_threads WHERE project_id = $4 AND space_id = $1)
+            AND to_object_id IN (
               SELECT o.id FROM space_objects o
                WHERE o.space_id=$1 AND ${contentReadSql("space_object", "o", "$5")}
             )`,
@@ -423,8 +571,8 @@ export class InquiryThreadService {
   async listPersonalFocus(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<ThreadRow>(
-      `SELECT ${threadColumns("t")} FROM inquiry_threads t
-         JOIN inquiry_thread_personal_focus f ON f.thread_id = t.id
+      `SELECT ${threadColumns("t")} FROM ${THREAD_FROM}
+         JOIN inquiry_thread_personal_focus f ON f.thread_id = t.object_id
         WHERE t.space_id = $1 AND t.project_id = $2 AND f.user_id = $3
         ORDER BY f.created_at DESC`,
       [identity.spaceId, projectId, identity.userId],
@@ -468,16 +616,23 @@ export class InquiryThreadService {
 
   async assertThreadInProject(db: Queryable, spaceId: string, projectId: string, threadId: string): Promise<void> {
     const row = await db.query<{ id: string }>(
-      `SELECT id FROM inquiry_threads WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+      `SELECT object_id AS id FROM inquiry_threads WHERE object_id = $1 AND space_id = $2 AND project_id = $3`,
       [threadId, spaceId, projectId],
     );
     if (!row.rows[0]) throw new HttpError(422, "Thread not found in this Project");
   }
 
-  private async getThreadRow(spaceId: string, projectId: string, threadId: string): Promise<ThreadRow | null> {
+  private async getThreadRow(
+    spaceId: string,
+    projectId: string,
+    threadId: string,
+    viewerUserId: string,
+  ): Promise<ThreadRow | null> {
     const row = await this.db.query<ThreadRow>(
-      `SELECT ${THREAD_COLUMNS} FROM inquiry_threads WHERE id = $1 AND space_id = $2 AND project_id = $3`,
-      [threadId, spaceId, projectId],
+      `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+        WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3
+          AND ${contentReadSql("space_object", "so", "$4")}`,
+      [threadId, spaceId, projectId, viewerUserId],
     );
     return row.rows[0] ?? null;
   }
@@ -510,4 +665,4 @@ export class InquiryThreadService {
   }
 }
 
-export { threadToOut, THREAD_COLUMNS, ATTENTION_STATES, type ThreadRow, type AttentionState };
+export { threadToOut, ATTENTION_STATES, type ThreadRow, type AttentionState };

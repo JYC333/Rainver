@@ -33,7 +33,6 @@ context_policy:
     - workspace_metadata
     - recent_runs
     - recent_proposals
-    - manual_context
   default_input_contexts:
     - approved_memory
     - knowledge_items

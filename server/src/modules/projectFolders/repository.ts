@@ -6,7 +6,6 @@ import { getDbPool, type Pool } from "../../db/pool";
 import { withTransaction } from "../../db/tx";
 import { loadActionRegistry } from "../policy/actionRegistry";
 import { enforce } from "../policy/service";
-import { disableScopeDigests } from "../context/digestService";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
 import { assertProjectWriter } from "../projects/access";
 import { projectFolderReadAccessSql } from "./access";
@@ -388,7 +387,6 @@ export class PgProjectFolderRepository {
         [folderId, identity.spaceId, projectId, now],
       );
       if ((result.rowCount ?? 0) === 0) return false;
-      await disableScopeDigests(db, identity.spaceId, "project_folder", folderId);
       return true;
     };
     if (isPool(this.db)) return withTransaction(this.db, (client) => run(client));

@@ -3,6 +3,7 @@ import { getDbPool } from "../../db/pool";
 import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
 import { PgJobQueueRepository } from "../jobs/repository";
 import type { Queryable } from "../routeUtils/common";
+import { pinnedResearchThreadId } from "../projectResearch/workflowOntology";
 import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService";
 
 export const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
@@ -33,8 +34,8 @@ export async function queueAdviceForFocusedThread(
   if (!input.userId) return;
 
   const focused = await db.query<{ id: string }>(
-    `SELECT id FROM inquiry_threads
-      WHERE id = $1 AND space_id = $2 AND project_id = $3
+    `SELECT object_id AS id FROM inquiry_threads
+      WHERE object_id = $1 AND space_id = $2 AND project_id = $3
         AND lifecycle_status = 'active' AND attention_state = 'focused'`,
     [input.threadId, input.spaceId, input.projectId],
   );
@@ -97,12 +98,11 @@ export async function tryQueueAdviceForWorkflowThread(
   },
 ): Promise<void> {
   try {
-    const workflow = await db.query<{ primary_thread_id: string | null }>(
-      `SELECT primary_thread_id FROM project_research_workflows
-        WHERE id = $1 AND space_id = $2 AND project_id = $3`,
-      [input.workflowId, input.spaceId, input.projectId],
-    );
-    const threadId = workflow.rows[0]?.primary_thread_id;
+    const threadId = await pinnedResearchThreadId(db, {
+      workflowId: input.workflowId,
+      spaceId: input.spaceId,
+      projectId: input.projectId,
+    });
     if (!threadId) return;
     await queueAdviceForFocusedThread(db, {
       spaceId: input.spaceId,
