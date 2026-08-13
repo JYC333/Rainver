@@ -10,9 +10,6 @@ import { z } from "zod";
 import { IdSchema, RunTriggerOriginSchema, SecretResponseGuards } from "./common.js";
 
 export const ProviderCredentialsAuthoritySchema = z.enum(["server"]);
-export type ProviderCredentialsAuthority = z.infer<
-  typeof ProviderCredentialsAuthoritySchema
->;
 
 export const ProviderCompletionInternalRequestSchema = z.object({
   space_id: IdSchema,
@@ -48,9 +45,6 @@ export const ProviderCompletionInternalRequestSchema = z.object({
     });
   }
 });
-export type ProviderCompletionInternalRequest = z.infer<
-  typeof ProviderCompletionInternalRequestSchema
->;
 
 export const ProviderCompletionInternalResponseSchema = z
   .object({
@@ -60,9 +54,6 @@ export const ProviderCompletionInternalResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ProviderCompletionInternalResponse = z.infer<
-  typeof ProviderCompletionInternalResponseSchema
->;
 
 export const RuntimeCredentialResolveRequestSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -84,9 +75,6 @@ export const RuntimeCredentialResolveRequestSchema = z.discriminatedUnion("kind"
     user_id: IdSchema,
   }),
 ]);
-export type RuntimeCredentialResolveRequest = z.infer<
-  typeof RuntimeCredentialResolveRequestSchema
->;
 
 export const RuntimeCredentialResolveResponseSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -108,9 +96,6 @@ export const RuntimeCredentialResolveResponseSchema = z.discriminatedUnion("kind
     readonly: z.boolean(),
   }),
 ]);
-export type RuntimeCredentialResolveResponse = z.infer<
-  typeof RuntimeCredentialResolveResponseSchema
->;
 
 export const CliCredentialGrantRequestSchema = z.object({
   run_id: z.string().min(1),
@@ -121,7 +106,6 @@ export const CliCredentialGrantRequestSchema = z.object({
   profile_id: z.string().nullish(),
   user_id: IdSchema,
 });
-export type CliCredentialGrantRequest = z.infer<typeof CliCredentialGrantRequestSchema>;
 
 export const CliCredentialGrantResponseSchema = z
   .object({
@@ -137,7 +121,6 @@ export const CliCredentialGrantResponseSchema = z
     fallback_reason: z.string().nullish(),
   })
   .passthrough();
-export type CliCredentialGrantResponse = z.infer<typeof CliCredentialGrantResponseSchema>;
 
 export const CliCredentialAuditRequestSchema = z.object({
   space_id: IdSchema,
@@ -151,7 +134,6 @@ export const CliCredentialAuditRequestSchema = z.object({
   cleanup_status: z.string().optional(),
   action: z.string().optional(),
 });
-export type CliCredentialAuditRequest = z.infer<typeof CliCredentialAuditRequestSchema>;
 
 export const CliCredentialAuditResponseSchema = z
   .object({
@@ -160,9 +142,6 @@ export const CliCredentialAuditResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliCredentialAuditResponse = z.infer<
-  typeof CliCredentialAuditResponseSchema
->;
 
 export const ProviderResilienceFailureClassSchema = z.enum([
   "rate_limit",
@@ -172,9 +151,6 @@ export const ProviderResilienceFailureClassSchema = z.enum([
   "transient",
   "permanent",
 ]);
-export type ProviderResilienceFailureClass = z.infer<
-  typeof ProviderResilienceFailureClassSchema
->;
 
 export const ProviderResilienceActionSchema = z.enum([
   "retry_same_key_once",
@@ -205,7 +181,6 @@ export const ProviderRotationStrategySchema = z.enum([
   "least_used",
   "random",
 ]);
-export type ProviderRotationStrategy = z.infer<typeof ProviderRotationStrategySchema>;
 
 /**
  * Pool membership + health state for one credential. Secret-free: the
@@ -229,7 +204,6 @@ export const ProviderPoolMemberDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ProviderPoolMemberDTO = z.infer<typeof ProviderPoolMemberDTOSchema>;
 
 export const ProviderPoolResponseSchema = z
   .object({
@@ -240,7 +214,6 @@ export const ProviderPoolResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ProviderPoolResponse = z.infer<typeof ProviderPoolResponseSchema>;
 
 /** `api_key` is request-only secret material; it never appears in responses. */
 export const ProviderPoolCredentialAddRequestSchema = z.object({
@@ -248,17 +221,11 @@ export const ProviderPoolCredentialAddRequestSchema = z.object({
   name: z.string().min(1).optional(),
   position: z.number().int().optional(),
 });
-export type ProviderPoolCredentialAddRequest = z.infer<
-  typeof ProviderPoolCredentialAddRequestSchema
->;
 
 export const ProviderPoolConfigUpdateRequestSchema = z.object({
   rotation_strategy: ProviderRotationStrategySchema.optional(),
   fallback_provider_ids: z.array(IdSchema).optional(),
 });
-export type ProviderPoolConfigUpdateRequest = z.infer<
-  typeof ProviderPoolConfigUpdateRequestSchema
->;
 
 export const ProviderTaskChainEntrySchema = z.object({
   provider_id: IdSchema,
@@ -275,7 +242,6 @@ export const ProviderTaskPolicyDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ProviderTaskPolicyDTO = z.infer<typeof ProviderTaskPolicyDTOSchema>;
 
 export const ProviderTaskPolicyPutRequestSchema = z.object({
   chain: z.array(ProviderTaskChainEntrySchema).min(1),

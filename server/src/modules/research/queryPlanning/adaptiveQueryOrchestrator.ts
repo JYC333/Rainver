@@ -72,6 +72,13 @@ interface AdaptiveResearchQueryDependencies {
   ladder?: ResearchQueryLadderBuilder;
 }
 
+/**
+ * The page size Sources history import requests (`Math.min(100, remaining)`).
+ * Evaluation previews far fewer rows, so this is the shape that has to be
+ * proven before a plan is called validated.
+ */
+const IMPORT_PAGE_SIZE = 100;
+
 export class AdaptiveQueryOrchestrator {
   private readonly repository: ResearchQueryStore;
   private readonly contextRepository: Pick<ResearchContextRepository, "get">;
@@ -259,7 +266,7 @@ export class AdaptiveQueryOrchestrator {
     let step = initialDirection
       ? { ...this.ladder.next(baseline, intent, initialDirection, plan.provider_key), sequence: 1 as const }
       : baseline;
-    const observed: Array<{ attemptId: string; evaluation: AdaptiveQueryEvaluation }> = [];
+    const observed: ObservedAttempt[] = [];
     const seenFingerprints = new Set<string>();
     for (let sequence = 1; sequence <= policy.maxAttempts; sequence += 1) {
       const compiled = this.compiler.compile(plan.provider_key, step.semanticQuery, { pageSize: policy.previewSampleSize });
@@ -272,7 +279,7 @@ export class AdaptiveQueryOrchestrator {
         // never changes the outcome, so stop with the best of what's
         // already been observed instead of re-running it.
         const best = bestObservedAttempt(observed);
-        await this.repository.selectAttempt(identity.spaceId, plan.id, best.attemptId, {
+        await this.selectVerifiedAttempt(identity, input, plan, best, {
           terminalDecision: "stop",
           decisionReason: best.evaluation.reason,
           coverageWarning: "Query evaluation stopped: adaptation converged back to a previously tried query.",
@@ -299,7 +306,7 @@ export class AdaptiveQueryOrchestrator {
         await this.repository.completeAttempt(identity.spaceId, attempt.id, { errorClass: errorClass(error) });
         if (observed.length > 0) {
           const best = bestObservedAttempt(observed);
-          await this.repository.selectAttempt(identity.spaceId, plan.id, best.attemptId, {
+          await this.selectVerifiedAttempt(identity, input, plan, best, {
             terminalDecision: "stop",
             decisionReason: best.evaluation.reason,
             coverageWarning: `A later ${plan.provider_key} preview failed; the best previously observed query was retained. ${errorMessage(error)}`,
@@ -320,17 +327,18 @@ export class AdaptiveQueryOrchestrator {
         decision: evaluation.decision,
         decisionReason: evaluation.reason,
       });
-      observed.push({ attemptId: attempt.id, evaluation });
+      observed.push({ attemptId: attempt.id, evaluation, semanticQuery: step.semanticQuery });
       if (evaluation.decision === "accept") {
-        await this.repository.selectAttempt(identity.spaceId, plan.id, attempt.id, {
-          terminalDecision: "accept",
-          decisionReason: evaluation.reason,
-        });
+        await this.selectVerifiedAttempt(
+          identity, input, plan,
+          { attemptId: attempt.id, semanticQuery: step.semanticQuery },
+          { terminalDecision: "accept", decisionReason: evaluation.reason },
+        );
         return;
       }
       if (evaluation.decision === "stop") {
         const best = bestObservedAttempt(observed);
-        await this.repository.selectAttempt(identity.spaceId, plan.id, best.attemptId, {
+        await this.selectVerifiedAttempt(identity, input, plan, best, {
           terminalDecision: "stop",
           decisionReason: best.evaluation.reason,
           coverageWarning: evaluation.coverageWarning ?? undefined,
@@ -340,11 +348,67 @@ export class AdaptiveQueryOrchestrator {
       step = this.ladder.next(step, intent, evaluation.decision, plan.provider_key);
     }
   }
+
+  /**
+   * Records the chosen query, having first checked it at the page size history
+   * import will actually request.
+   *
+   * Evaluation previews 15 results; the import asks for 100. Those are
+   * different requests to the provider, and a query can pass one while failing
+   * the other — a broad boolean arXiv query answered 200 at 15 rows and 5xx at
+   * 100, so a plan validated here imported nothing, and Research went on to
+   * report "no relevant sources" over a corpus that was missing that provider
+   * entirely. Verifying the shape that will be used is the only way the gap is
+   * visible before the import runs.
+   *
+   * A failure here is recorded, not fatal: the import narrows its page size on
+   * exactly this failure and may still succeed. The warning exists so the
+   * reader is not told the query was validated when only a smaller form of it
+   * was.
+   */
+  private async selectVerifiedAttempt(
+    identity: SpaceUserIdentity,
+    input: AdaptiveResearchQueryInput,
+    plan: StoredResearchQueryProviderPlan,
+    chosen: { attemptId: string; semanticQuery: ResearchSemanticQuery },
+    selection: { terminalDecision: "accept" | "stop"; decisionReason: string; coverageWarning?: string },
+  ): Promise<void> {
+    const executionWarning = await this.executionShapeWarning(identity, input, plan, chosen.semanticQuery);
+    const coverageWarning = [selection.coverageWarning, executionWarning].filter(Boolean).join(" ") || undefined;
+    await this.repository.selectAttempt(identity.spaceId, plan.id, chosen.attemptId, {
+      terminalDecision: selection.terminalDecision,
+      decisionReason: selection.decisionReason,
+      ...(coverageWarning ? { coverageWarning } : {}),
+    });
+  }
+
+  private async executionShapeWarning(
+    identity: SpaceUserIdentity,
+    input: AdaptiveResearchQueryInput,
+    plan: StoredResearchQueryProviderPlan,
+    semanticQuery: ResearchSemanticQuery,
+  ): Promise<string | null> {
+    const compiled = this.compiler.compile(plan.provider_key, semanticQuery, { pageSize: IMPORT_PAGE_SIZE });
+    try {
+      await this.previewGateway.preview(identity, {
+        compiledQuery: compiled,
+        accessibleResultCap: IMPORT_PAGE_SIZE,
+        credentialId: input.credentials?.[plan.provider_key],
+      });
+      return null;
+    } catch (error) {
+      return `The query was validated on a small preview but did not answer at the ${IMPORT_PAGE_SIZE}-result page size history import uses (${errorMessage(error)}). The import will retry at smaller pages; expect it to be slower, or narrow the query.`;
+    }
+  }
 }
 
-function bestObservedAttempt(
-  observed: Array<{ attemptId: string; evaluation: AdaptiveQueryEvaluation }>,
-): { attemptId: string; evaluation: AdaptiveQueryEvaluation } {
+interface ObservedAttempt {
+  attemptId: string;
+  evaluation: AdaptiveQueryEvaluation;
+  semanticQuery: ResearchSemanticQuery;
+}
+
+function bestObservedAttempt(observed: ObservedAttempt[]): ObservedAttempt {
   // An attempt whose own evaluation asked for more adaptation (narrow/broaden)
   // said, in effect, "this result isn't good enough as-is" — it must not
   // outrank a settled (stop/accept) attempt just because a saturated yield

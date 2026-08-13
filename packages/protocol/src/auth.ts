@@ -21,6 +21,3 @@ export const IdentityIntrospectionResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type IdentityIntrospectionResponse = z.infer<
-  typeof IdentityIntrospectionResponseSchema
->;

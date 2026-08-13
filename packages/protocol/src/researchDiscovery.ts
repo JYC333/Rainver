@@ -160,7 +160,6 @@ export const ListResearchQueryStrategiesResponseSchema = z.object({
   active_strategy_ids: z.array(z.string().uuid()),
   strategies: z.array(ResearchQueryStrategySchema),
 }).strict();
-export type ListResearchQueryStrategiesResponse = z.infer<typeof ListResearchQueryStrategiesResponseSchema>;
 
 export const EvaluateResearchQueryStrategyRequestSchema = z.object({
   project_id: z.string().uuid(),
@@ -188,12 +187,10 @@ export const RetryResearchQueryProviderRequestSchema = z.object({
     model_name: z.string().trim().min(1).optional(),
   }).strict().optional(),
 }).strict();
-export type RetryResearchQueryProviderRequest = z.infer<typeof RetryResearchQueryProviderRequestSchema>;
 
 export const RetryResearchQueryProviderResponseSchema = z.object({
   strategy: ResearchQueryStrategySchema,
 }).strict();
-export type RetryResearchQueryProviderResponse = z.infer<typeof RetryResearchQueryProviderResponseSchema>;
 
 export const MaterializeResearchQueryStrategyRequestSchema = z.object({
   provider_keys: z.array(ResearchProviderKeySchema).min(1).max(4),
@@ -208,7 +205,6 @@ export const MaterializedResearchSourceSchema = z.object({
   project_source_binding_id: z.string().uuid(),
   query_fingerprint: z.string().min(16).max(128),
 }).strict();
-export type MaterializedResearchSource = z.infer<typeof MaterializedResearchSourceSchema>;
 
 export const MaterializeResearchQueryStrategyResponseSchema = z.object({
   query_strategy_id: z.string().uuid(),
@@ -221,7 +217,6 @@ export type MaterializeResearchQueryStrategyResponse = z.infer<typeof Materializ
 export const ActivateResearchQueryStrategyRequestSchema = z.object({
   reason: z.enum(["manual", "rollback"]),
 }).strict();
-export type ActivateResearchQueryStrategyRequest = z.infer<typeof ActivateResearchQueryStrategyRequestSchema>;
 
 export const ActivateResearchQueryStrategyResponseSchema = z.object({
   strategy_id: z.string().uuid(),
@@ -229,4 +224,3 @@ export const ActivateResearchQueryStrategyResponseSchema = z.object({
   sequence: z.number().int().min(1),
   channel_ids: z.array(z.string().uuid()).min(1).max(4),
 }).strict();
-export type ActivateResearchQueryStrategyResponse = z.infer<typeof ActivateResearchQueryStrategyResponseSchema>;

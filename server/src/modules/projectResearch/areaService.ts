@@ -193,7 +193,7 @@ export class ProjectResearchAreaService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const value = text(body.text, 2000); if (!value) throw new HttpError(422, "text is required");
     const now = new Date().toISOString();
-    const result = await this.db.query(`INSERT INTO research_checklist_items (id,space_id,project_id,text,status,sort_order,origin,created_at,updated_at) SELECT $1,$2,$3,$4,'open',COALESCE(max(sort_order)+1,0),'user',$5,$5 FROM research_checklist_items WHERE space_id=$2 AND project_id=$3 RETURNING *`, [randomUUID(), identity.spaceId, projectId, value, now]);
+    const result = await this.db.query(`INSERT INTO research_checklist_items (id,space_id,project_id,text,status,sort_order,origin,created_at,updated_at) SELECT $1,$2,$3,$4,'open',COALESCE(max(sort_order)+1,0),'user',$5,$5 FROM research_checklist_items WHERE space_id=$2::varchar AND project_id=$3::varchar RETURNING *`, [randomUUID(), identity.spaceId, projectId, value, now]);
     return result.rows[0];
   }
 

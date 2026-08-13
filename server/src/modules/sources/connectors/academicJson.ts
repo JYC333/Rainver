@@ -44,7 +44,8 @@ export class OpenAlexConnectorHandler implements SourceConnectorHandler {
   }
 
   getCapabilities(): SourceConnectorCapabilities {
-    return academicCapabilities("openalex_json_api", ["doi", "arxiv_id", "openalex_id"]);
+    // Paged by `page`, so a narrower `per_page` would land on a different set.
+    return academicCapabilities("openalex_json_api", ["doi", "arxiv_id", "openalex_id"], { pageSizeNarrowing: false });
   }
 }
 
@@ -79,7 +80,7 @@ export class SemanticScholarConnectorHandler implements SourceConnectorHandler {
   }
 
   getCapabilities(): SourceConnectorCapabilities {
-    return academicCapabilities("semantic_scholar_graph_api", ["doi", "arxiv_id", "semantic_scholar_id"]);
+    return academicCapabilities("semantic_scholar_graph_api", ["doi", "arxiv_id", "semantic_scholar_id"], { pageSizeNarrowing: true });
   }
 }
 
@@ -107,7 +108,7 @@ export class BraveWebSearchConnectorHandler implements SourceConnectorHandler {
     return { more_results_available: more };
   }
   getCapabilities(): SourceConnectorCapabilities {
-    return { protocol: "brave_web_search_api", supports_search: true, supports_categories: false, supports_date_range: false, supports_all_history: false, supports_incremental: true, supports_conditional_requests: false, id_fields: ["canonical_uri"] };
+    return { protocol: "brave_web_search_api", supports_search: true, supports_categories: false, supports_date_range: false, supports_all_history: false, supports_incremental: true, supports_conditional_requests: false, supports_page_size_narrowing: false, id_fields: ["canonical_uri"] };
   }
 }
 
@@ -226,6 +227,20 @@ function reconstructAbstract(value: unknown): string | null {
   for (const [word, positions] of Object.entries(inverted)) if (Array.isArray(positions)) for (const position of positions) if (Number.isInteger(position)) words.push([Number(position), word]);
   return words.length ? words.sort((a, b) => a[0] - b[0]).map(([, word]) => word).join(" ") : null;
 }
-function academicCapabilities(protocol: string, ids: string[]): SourceConnectorCapabilities {
-  return { protocol, supports_search: true, supports_categories: false, supports_date_range: true, supports_all_history: true, supports_incremental: true, supports_conditional_requests: false, id_fields: ids };
+function academicCapabilities(
+  protocol: string,
+  ids: string[],
+  options: { pageSizeNarrowing: boolean },
+): SourceConnectorCapabilities {
+  return {
+    protocol,
+    supports_search: true,
+    supports_categories: false,
+    supports_date_range: true,
+    supports_all_history: true,
+    supports_incremental: true,
+    supports_conditional_requests: false,
+    supports_page_size_narrowing: options.pageSizeNarrowing,
+    id_fields: ids,
+  };
 }

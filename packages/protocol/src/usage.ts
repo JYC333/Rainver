@@ -70,7 +70,6 @@ export const UsageDetailsSchema = z.record(UsageBucketNameSchema, z.number().int
 export type UsageDetails = z.infer<typeof UsageDetailsSchema>;
 
 export const UsageGroupBySchema = z.string();
-export type UsageGroupBy = z.infer<typeof UsageGroupBySchema>;
 
 export const UsageViewSchema = z.enum(["mine", "shared", "all_visible"]);
 export type UsageView = z.infer<typeof UsageViewSchema>;
@@ -96,15 +95,12 @@ export const UsageQuerySchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
   offset: z.number().int().nonnegative().optional(),
 }).strict();
-export type UsageQuery = z.infer<typeof UsageQuerySchema>;
 
 export const UsageSummaryQuerySchema = UsageQuerySchema;
-export type UsageSummaryQuery = z.infer<typeof UsageSummaryQuerySchema>;
 
 export const UsageTimeseriesQuerySchema = UsageQuerySchema.extend({
   granularity: z.enum(["day", "week", "month"]).optional(),
 });
-export type UsageTimeseriesQuery = z.infer<typeof UsageTimeseriesQuerySchema>;
 
 export const UsageTotalsSchema = z.object({
   event_count: z.number().int().nonnegative(),
@@ -128,7 +124,6 @@ export const UsageAccuracyMixSchema = z.object({
   quota_snapshot: z.number().int().nonnegative(),
   unknown: z.number().int().nonnegative(),
 });
-export type UsageAccuracyMix = z.infer<typeof UsageAccuracyMixSchema>;
 
 export const UsageBreakdownItemSchema = z.object({
   group_key: z.string(),
@@ -272,7 +267,6 @@ export type UsageSessionsResponse = z.infer<typeof UsageSessionsResponseSchema>;
 export const UsageBudgetPreviewQuerySchema = UsageQuerySchema.extend({
   projection_window_days: z.number().int().positive().max(366).optional(),
 });
-export type UsageBudgetPreviewQuery = z.infer<typeof UsageBudgetPreviewQuerySchema>;
 
 export const UsageBudgetPreviewItemSchema = z.object({
   meter_subject_type: z.string(),
@@ -283,7 +277,6 @@ export const UsageBudgetPreviewItemSchema = z.object({
   totals: UsageTotalsSchema,
   last_seen_at: ISODateTimeSchema.nullable(),
 });
-export type UsageBudgetPreviewItem = z.infer<typeof UsageBudgetPreviewItemSchema>;
 
 export const UsageBudgetPreviewResponseSchema = z.object({
   from: ISODateTimeSchema,
@@ -300,7 +293,6 @@ export const UsageOperationalTotalsQuerySchema = z.object({
   from: ISODateTimeSchema.optional(),
   to: ISODateTimeSchema.optional(),
 });
-export type UsageOperationalTotalsQuery = z.infer<typeof UsageOperationalTotalsQuerySchema>;
 
 export const UsageOperationalTotalsResponseSchema = z.object({
   from: ISODateTimeSchema,
@@ -319,7 +311,6 @@ export const UsageCliHistorySourceKindSchema = z.enum([
   "server_path",
   "scanner_manifest",
 ]);
-export type UsageCliHistorySourceKind = z.infer<typeof UsageCliHistorySourceKindSchema>;
 
 export const UsageCliHistoryPreviewRequestSchema = z.object({
   runtime: UsageCliHistoryRuntimeSchema,

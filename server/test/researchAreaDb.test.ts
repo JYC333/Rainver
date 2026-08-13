@@ -130,6 +130,13 @@ describe("Research Area (real Postgres)", () => {
       { type: "paragraph", content: [{ type: "text", text: "Second block" }] },
     ] };
     await knowledge.updateNote(identity, understandingId, { expect_version: 1, content_json: boldDoc, plain_text: "User formatted claim\n\nSecond block" });
+    // Blocks carry a system-assigned stable id; capture the untouched block's
+    // id up front so the AI write can be held to preserving it.
+    const blockContent = (note: { content_json: unknown }) =>
+      (note.content_json as { content: Array<Record<string, unknown>> }).content;
+    const beforeFirst = blockContent(await knowledge.getNote(identity, understandingId) as { content_json: unknown })[0]!;
+    const beforeBlockId = (beforeFirst.attrs as { blockId?: string } | undefined)?.blockId;
+    expect(beforeBlockId).toEqual(expect.any(String));
     const written = await writeNote(pool, {
       spaceId: SPACE, noteId: understandingId,
       content: { kind: "ops", ops: [{ op: "replace", index: 1, count: 1, markdown: "Replaced second block" }, { op: "append", markdown: "## Monitoring update\n\n- New contradiction" }] },
@@ -137,8 +144,12 @@ describe("Research Area (real Postgres)", () => {
     });
     expect(written.outcome).toBe("written");
     if (written.outcome !== "written") return;
-    // The user's formatted block survives byte-identical — the whole point of block ops.
-    expect((written.note.content_json as { content: Array<Record<string, unknown>> }).content[0]).toEqual(boldDoc.content[0]);
+    // The user's formatted block survives untouched — the whole point of block
+    // ops — including its identity, so anchors into it stay valid.
+    const afterFirst = blockContent(written.note)[0]!;
+    const { attrs: afterAttrs, ...afterUserContent } = afterFirst;
+    expect(afterUserContent).toEqual(boldDoc.content[0]);
+    expect((afterAttrs as { blockId?: string } | undefined)?.blockId).toBe(beforeBlockId);
     expect(written.note.plain_text).toBe("User formatted claim\n\nReplaced second block\n\nMonitoring update\n\n- New contradiction");
     const revisions = await knowledge.listNoteRevisions(identity, understandingId);
     expect(revisions.map((row) => [row.version, row.source])).toEqual([[3, "ai_monitoring"], [2, "user_edit"], [1, "seed"]]);

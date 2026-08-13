@@ -22,6 +22,7 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
+import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 export default function ExperimentAreaPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -264,6 +265,7 @@ export default function ExperimentAreaPage() {
 
   return (
     <div className="space-y-5 p-6">
+      <ThreadOriginBar projectId={projectId} kinds={['design_run_experiment']} />
       <div>
         <Link to={`/projects/${projectId}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-3" />{project.name}

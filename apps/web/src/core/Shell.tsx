@@ -11,6 +11,7 @@ import { GlobalRail, type PluginNavItem } from '../components/shell/GlobalRail'
 import { SceneSidebar, SceneTabs } from '../components/shell/SceneSidebar'
 import { MobileTabBar } from '../components/shell/MobileTabBar'
 import { FloatingQuickCapture } from '../components/FloatingQuickCapture'
+import { ProjectCaptureTargetProvider } from '../contexts/CaptureContext'
 import { routeScopeForPath, sceneForPath, stripSpacePrefix } from './navigation'
 import { moduleForPath } from '../modules/registry'
 import { useEffectiveModules } from '../modules/plugins/useEffectivePlugins'
@@ -214,6 +215,10 @@ export default function Shell() {
   }
 
   return (
+    // The capture composer is mounted once here, so one gesture serves every
+    // page. What it may offer as a destination is declared from below: the
+    // Project shell names the Project, an Area names the object it is about.
+    <ProjectCaptureTargetProvider>
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <GlobalRail
         expanded={railExpanded}
@@ -265,5 +270,6 @@ export default function Shell() {
         }}
       />
     </div>
+    </ProjectCaptureTargetProvider>
   )
 }

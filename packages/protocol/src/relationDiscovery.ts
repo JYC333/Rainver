@@ -43,6 +43,7 @@ export const RelationDiscoveryScanRequestSchema = z
   })
   .strict();
 export type RelationDiscoveryScanRequest = z.infer<typeof RelationDiscoveryScanRequestSchema>;
+export type RelationDiscoveryScanRequestInput = z.input<typeof RelationDiscoveryScanRequestSchema>;
 
 export const RelationDiscoveryCandidateKindSchema = z.enum([
   "object_relation_candidate",
@@ -51,7 +52,6 @@ export const RelationDiscoveryCandidateKindSchema = z.enum([
   "relation_review_candidate",
   "knowledge_item_candidate",
 ]);
-export type RelationDiscoveryCandidateKind = z.infer<typeof RelationDiscoveryCandidateKindSchema>;
 
 const EvidenceRefSchema = z
   .object({
@@ -87,7 +87,6 @@ export const RelationDiscoveryProposedActionSchema = z.union([
     })
     .strict(),
 ]);
-export type RelationDiscoveryProposedAction = z.infer<typeof RelationDiscoveryProposedActionSchema>;
 
 export const RelationDiscoveryCandidateSchema = z
   .object({

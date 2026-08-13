@@ -59,6 +59,15 @@ export function summarizeBackfillFailures(rows: FailedBackfillRow[]): BackfillFa
       automatic_attempts: integerValue(diagnostics.attempts) ?? row.attempt_count,
       retryable: diagnostics.retryable === true,
       failure_kind: stringValue(diagnostics.failure_kind),
+      // Named apart from `error_code` below, which is the Source-layer error
+      // code; these two describe different layers and used to be conflated.
+      transport_error_name: stringValue(diagnostics.error_name),
+      transport_error_code: stringValue(diagnostics.error_code),
+      elapsed_ms: integerValue(diagnostics.elapsed_ms),
+      timeout_ms: integerValue(diagnostics.timeout_ms),
+      page_sizes_attempted: Array.isArray(diagnostics.page_sizes_attempted)
+        ? diagnostics.page_sizes_attempted.filter((value): value is number => Number.isInteger(value))
+        : null,
       plan_id: row.plan_id,
       segment_id: row.segment_id,
       source_channel_id: row.source_channel_id,
@@ -76,9 +85,14 @@ export function summarizeBackfillFailures(rows: FailedBackfillRow[]): BackfillFa
     .map(String));
   const attempts = Math.max(0, ...failedSources.map((source) => source.automatic_attempts));
   const providerLabel = providers.join(", ") || "a source provider";
+  // "could not be reached" used to cover timeouts too, which sends the reader
+  // to check connectivity for a provider that was answering the whole time.
+  const timedOut = failedSources.some((source) => source.failure_kind === "timeout");
   const reason = statuses.length > 0
     ? ` returned HTTP ${statuses.join("/")}`
-    : " could not be reached";
+    : timedOut
+      ? " did not answer in time"
+      : " could not be reached";
   const attemptLabel = attempts > 0
     ? ` after ${attempts} automatic attempt${attempts === 1 ? "" : "s"}`
     : "";
@@ -104,6 +118,10 @@ function stringValue(value: unknown): string | null {
 }
 
 function integerValue(value: unknown): number | null {
+  // `Number(null)` is 0, which turned every "no status at all" failure into a
+  // reported `HTTP 0` — a status that does not exist and that hid whether the
+  // provider had answered.
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }

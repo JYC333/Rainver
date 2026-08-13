@@ -9,11 +9,6 @@
 
 import type { z } from "zod";
 import type {
-  SpaceRefSchema,
-  UserRefSchema,
-  AgentRefSchema,
-  ProjectFolderRefSchema,
-  ProjectRefSchema,
   ActivityDTOSchema,
   ProposalDTOSchema,
   RunDTOSchema,
@@ -22,13 +17,6 @@ import type {
   MemoryDTOSchema,
   KnowledgeItemDTOSchema,
 } from "./schemas.js";
-
-// References
-export type SpaceRef = z.infer<typeof SpaceRefSchema>;
-export type UserRef = z.infer<typeof UserRefSchema>;
-export type AgentRef = z.infer<typeof AgentRefSchema>;
-export type ProjectFolderRef = z.infer<typeof ProjectFolderRefSchema>;
-export type ProjectRef = z.infer<typeof ProjectRefSchema>;
 
 // Domain DTOs
 export type ActivityDTO = z.infer<typeof ActivityDTOSchema>;

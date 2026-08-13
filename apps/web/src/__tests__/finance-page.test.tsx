@@ -109,7 +109,9 @@ describe('FinancePage', () => {
     await screen.findByText('Household (USD)')
 
     fireEvent.click(screen.getByText('+ Transaction'))
-    fireEvent.click(screen.getByText('Post transaction'))
+    // The posting editor mounts in a state update; querying it synchronously
+    // raced the render and failed intermittently under a loaded suite.
+    fireEvent.click(await screen.findByText('Post transaction'))
     expect(await screen.findByText('A transaction needs at least two postings')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Posting 1 account'), { target: { value: 'acc-1' } })
@@ -128,7 +130,7 @@ describe('FinancePage', () => {
     await screen.findByText('Household (USD)')
 
     fireEvent.click(screen.getByText('+ Transaction'))
-    fireEvent.change(screen.getByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })
+    fireEvent.change(await screen.findByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })
     fireEvent.change(screen.getByLabelText('Posting 1 amount'), { target: { value: '42.10' } })
     fireEvent.change(screen.getByLabelText('Posting 2 account'), { target: { value: 'acc-1' } })
     fireEvent.click(screen.getByText('Post transaction'))
@@ -230,7 +232,7 @@ describe('FinancePage', () => {
     await screen.findByText('Household (USD)')
 
     fireEvent.click(screen.getByText('+ Transaction'))
-    const commoditySelect = screen.getByLabelText('Posting 1 commodity') as HTMLSelectElement
+    const commoditySelect = await screen.findByLabelText('Posting 1 commodity') as HTMLSelectElement
     expect(commoditySelect.value).toBe('USD')
 
     fireEvent.change(screen.getByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })

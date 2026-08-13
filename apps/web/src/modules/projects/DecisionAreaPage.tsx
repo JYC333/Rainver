@@ -10,6 +10,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Badge } from '../../components/ui/badge'
 import { Select } from '../../components/ui/select'
 import { toast } from 'sonner'
+import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 const err = (error: unknown) => error instanceof Error ? error.message : String(error)
 
@@ -59,6 +60,7 @@ export default function DecisionAreaPage() {
   }
 
   return <div className="p-6 space-y-5">
+    <ThreadOriginBar projectId={projectId} kinds={['create_decision_case']} />
     <div className="flex items-center gap-3"><Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}`}><ArrowLeft className="size-4" />Project</Link></Button><div><h1 className="text-xl font-semibold">Decisions</h1><p className="text-sm text-muted-foreground">Frame choices, compare options, commit, then create Delivery work.</p></div></div>
     <Card className="grid gap-3 p-4">
       <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]"><Input placeholder="Decision title" value={title} onChange={e => setTitle(e.target.value)} /><Input placeholder="Framing (optional)" value={framing} onChange={e => setFraming(e.target.value)} /><Button disabled={!title.trim()} onClick={createCase}><Plus className="size-4" />New case</Button></div>

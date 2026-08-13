@@ -249,6 +249,8 @@ export class SourceAnnotationService {
       job_id: null,
       command_source: "internal",
       prompt: instruction,
+      // The runtime prompt is the rendered batch; the run's goal is the query.
+      retrieval_intent: run.prompt,
     });
     const finished = await runs.getRun(spaceId, run.id);
     if (!finished) throw new Error("Annotation run disappeared after execution");

@@ -79,7 +79,6 @@ export const ModelProviderCreateRequestSchema = z.object({
   enabled: z.boolean().optional(),
   is_default: z.boolean().optional(),
 });
-export type ModelProviderCreateRequest = z.infer<typeof ModelProviderCreateRequestSchema>;
 
 /** Request body for patching a ModelProvider. All fields are optional. */
 export const ModelProviderUpdateRequestSchema = z.object({
@@ -95,7 +94,6 @@ export const ModelProviderUpdateRequestSchema = z.object({
   enabled: z.boolean().optional(),
   is_default: z.boolean().optional(),
 });
-export type ModelProviderUpdateRequest = z.infer<typeof ModelProviderUpdateRequestSchema>;
 
 export const ModelProviderSpaceGrantRequestSchema = z.object({
   space_id: IdSchema,
@@ -103,9 +101,6 @@ export const ModelProviderSpaceGrantRequestSchema = z.object({
   is_default: z.boolean().optional(),
   network_profile_id: IdSchema.nullish(),
 });
-export type ModelProviderSpaceGrantRequest = z.infer<
-  typeof ModelProviderSpaceGrantRequestSchema
->;
 
 export const ModelProviderSpaceGrantDTOSchema = z
   .object({
@@ -122,15 +117,11 @@ export const ModelProviderSpaceGrantDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ModelProviderSpaceGrantDTO = z.infer<
-  typeof ModelProviderSpaceGrantDTOSchema
->;
 
 export const ModelProviderModelsResponseSchema = z.object({
   models: z.array(z.string()),
   source: z.union([z.literal("configured"), z.literal("live")]),
 });
-export type ModelProviderModelsResponse = z.infer<typeof ModelProviderModelsResponseSchema>;
 
 /** `GET /providers/catalog` response; static, secret-free. */
 export const ProviderCatalogInfoSchema = z
@@ -147,7 +138,6 @@ export type ProviderCatalogInfo = z.infer<typeof ProviderCatalogInfoSchema>;
 
 /** `GET /providers/litellm-providers`: litellm chat provider ids. */
 export const LitellmProvidersResponseSchema = z.array(z.string());
-export type LitellmProvidersResponse = z.infer<typeof LitellmProvidersResponseSchema>;
 
 export const ProviderPresetModeSchema = z.enum(["chat", "embedding", "rerank"]);
 export type ProviderPresetMode = z.infer<typeof ProviderPresetModeSchema>;
@@ -175,7 +165,6 @@ export const ProviderPresetDTOSchema = z
 export type ProviderPresetDTO = z.infer<typeof ProviderPresetDTOSchema>;
 
 export const ProviderPresetListResponseSchema = z.array(ProviderPresetDTOSchema);
-export type ProviderPresetListResponse = z.infer<typeof ProviderPresetListResponseSchema>;
 
 export const ProviderFromPresetCreateRequestSchema = z.object({
   preset_id: z.string().min(1),
@@ -217,13 +206,11 @@ export const ProviderConnectionTestResultSchema = z.object({
   message: z.string(),
   model: z.string().nullish(),
 });
-export type ProviderConnectionTestResult = z.infer<typeof ProviderConnectionTestResultSchema>;
 
 export const ProviderChatMessageSchema = z.object({
   role: z.string().min(1),
   content: z.string(),
 });
-export type ProviderChatMessage = z.infer<typeof ProviderChatMessageSchema>;
 
 /**
  * Public credential-channel metadata. This is not a secret carrier and does not
@@ -241,4 +228,3 @@ export const CredentialChannelMetadataSchema = z.discriminatedUnion("channel", [
     rotated: z.literal(false),
   }),
 ]);
-export type CredentialChannelMetadata = z.infer<typeof CredentialChannelMetadataSchema>;

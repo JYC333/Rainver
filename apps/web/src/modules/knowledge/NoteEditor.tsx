@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { subscribeNoteChanged } from '../../core/noteEvents'
 import { CornerDownLeft, Link2, Share2, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -364,6 +365,17 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   }, [noteId, activeSpaceId, loadLinks, loadShares, onNoteResolved, seedFromNote, revalidate])
 
   useEffect(() => { load() }, [load])
+
+  // Someone wrote to this note from outside the editor — quick capture
+  // appending marginalia, or this note open in a second tab. The message is
+  // only a nudge: `revalidate` re-reads the note and refuses to apply anything
+  // over an unsaved local edit, so a nudge can never cost the user text.
+  useEffect(
+    () => subscribeNoteChanged(detail => {
+      if (detail.noteId && detail.noteId === noteId) void revalidate(noteId)
+    }),
+    [noteId, revalidate],
+  )
 
   // Lazily fetch candidates for the link picker (notes + wiki items in this space).
   useEffect(() => {

@@ -1,3 +1,5 @@
+import { modelSpec } from "../providers/modelSpecs";
+
 export interface ModelWindowSpec {
   model: string;
   contextWindowTokens: number;
@@ -15,33 +17,26 @@ export interface ModelWindowOverride {
   tokenizerVersion?: string;
 }
 
-const CATALOG_VERSION = "model-catalog.2026-08-09";
+const CATALOG_VERSION = "model-catalog.2026-08-11";
 const TOKENIZER_VERSION = "utf8-byte-upper-bound.v1";
+// Used when a model is not in the shared registry. Deliberately conservative:
+// planning a large window for an unknown model would push the overflow to the
+// provider instead of the planner. Add the model to `modelSpecs` rather than
+// raising this.
 const GENERIC_MODEL_WINDOW = {
   contextWindowTokens: 16_384,
-  outputReserveTokens: 4_096,
+  defaultOutputReserveTokens: 4_096,
   providerOverheadTokens: 512,
 } as const;
-
-const MODEL_WINDOWS = new Map<string, {
-  contextWindowTokens: number;
-  outputReserveTokens: number;
-  providerOverheadTokens: number;
-}>([
-  ["gpt-4o", { contextWindowTokens: 128_000, outputReserveTokens: 16_384, providerOverheadTokens: 512 }],
-  ["gpt-4o-mini", { contextWindowTokens: 128_000, outputReserveTokens: 16_384, providerOverheadTokens: 512 }],
-  ["claude-3-5-sonnet-latest", { contextWindowTokens: 200_000, outputReserveTokens: 16_384, providerOverheadTokens: 512 }],
-  ["claude-sonnet-4-6", { contextWindowTokens: 200_000, outputReserveTokens: 16_384, providerOverheadTokens: 512 }],
-]);
 
 export function resolveModelWindow(model: string, override?: ModelWindowOverride | null): ModelWindowSpec {
   const normalized = model.trim();
   if (!normalized) throw new Error("A model is required for context-window planning");
-  const matched = MODEL_WINDOWS.get(normalized.toLowerCase());
+  const matched = modelSpec(normalized) ?? GENERIC_MODEL_WINDOW;
   const resolved = override ?? {
-    contextWindowTokens: (matched ?? GENERIC_MODEL_WINDOW).contextWindowTokens,
-    defaultOutputReserveTokens: (matched ?? GENERIC_MODEL_WINDOW).outputReserveTokens,
-    providerOverheadTokens: (matched ?? GENERIC_MODEL_WINDOW).providerOverheadTokens,
+    contextWindowTokens: matched.contextWindowTokens,
+    defaultOutputReserveTokens: matched.defaultOutputReserveTokens,
+    providerOverheadTokens: matched.providerOverheadTokens,
     catalogVersion: CATALOG_VERSION,
     tokenizerVersion: TOKENIZER_VERSION,
   };

@@ -330,8 +330,8 @@ export class EvolutionRepository {
     const result = await this.db.query(
       `UPDATE evolution_signals es
           SET triage_status = $3,
-              triaged_at = CASE WHEN $3 = 'new' THEN NULL ELSE $4 END,
-              triaged_by_user_id = CASE WHEN $3 = 'new' THEN NULL ELSE $5 END,
+              triaged_at = CASE WHEN $3::varchar = 'new' THEN NULL ELSE $4::timestamptz END,
+              triaged_by_user_id = CASE WHEN $3::varchar = 'new' THEN NULL ELSE $5 END,
               triage_note = CASE WHEN $6::boolean THEN $7 ELSE triage_note END
         FROM evolution_targets et
        WHERE es.id = $1

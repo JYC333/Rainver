@@ -7,6 +7,7 @@ import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService";
 import { withNoteWrites } from "../src/modules/knowledge/noteWriter";
+import { blockIds } from "../src/modules/knowledge/noteBlockIds";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
 /**
@@ -167,5 +168,97 @@ describe("shared note writer (real Postgres)", () => {
     );
     expect(after.rows).toHaveLength(1);
     expect(after.rows[0]!.id).toEqual(before.rows[0]!.id);
+  });
+});
+
+/**
+ * Notes written before block ids existed. Absence is legal: nothing migrates
+ * them, nothing rewrites their revisions, and they must keep loading.
+ */
+describe("block ids on notes written before they existed (real Postgres)", () => {
+  it("loads an id-less note and stamps it on the next write, leaving its history alone", async () => {
+    if (!available || !pool) return;
+    const repository = new PgKnowledgeRepository(pool);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const note = await repository.createNote(identity, { title: "Legacy" }) as { id: string };
+
+    // Rewrite the stored document to the pre-block-id shape, exactly as a note
+    // saved before this feature would sit in the database.
+    const legacy = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Older text." }] }] };
+    await pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
+    await pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1`, [note.id, JSON.stringify(legacy)]);
+
+    const loaded = await repository.getNote(identity, note.id) as { content_json: unknown; version: number };
+    expect(blockIds(loaded.content_json)).toEqual([null]);
+
+    const updated = await repository.updateNote(identity, note.id, {
+      content_json: legacy,
+      expect_version: loaded.version,
+    }) as { content_json: unknown };
+    expect(blockIds(updated.content_json).every(id => typeof id === "string")).toBe(true);
+
+    // The historical revision is untouched — history is evidence, not something
+    // to backfill.
+    const revisions = await pool.query<{ content_json: unknown }>(
+      `SELECT content_json FROM note_revisions WHERE note_id = $1 ORDER BY version ASC LIMIT 1`,
+      [note.id],
+    );
+    expect(blockIds(revisions.rows[0]!.content_json)).toEqual([null]);
+  });
+
+  it("anchors an append on the appended block, not on the first pre-existing one", async () => {
+    if (!available || !pool) return;
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const repository = new PgKnowledgeRepository(pool);
+    const note = await repository.createNote(identity, { title: "Pre-block-id note" }) as { id: string };
+
+    // Exactly the shape every note written before block ids has — and the shape
+    // of every marginalia note P1 already created in production.
+    const legacy = {
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "old one" }] },
+        { type: "paragraph", content: [{ type: "text", text: "old two" }] },
+      ],
+    };
+    await pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
+
+    const result = await withNoteWrites(pool, (scope) => scope.write({
+      spaceId: SPACE,
+      noteId: note.id,
+      content: { kind: "ops", ops: [{ op: "append", markdown: "THE CAPTURE" }] },
+      source: "user_edit",
+      userId: OWNER,
+    }));
+    expect(result.outcome).toBe("written");
+    if (result.outcome !== "written") return;
+
+    // One block was added, and it is the one the append wrote. Diffing against
+    // the unstamped document would have reported all three as added and
+    // anchored the capture on "old one".
+    expect(result.addedBlockIds).toHaveLength(1);
+    const stored = await repository.getNote(identity, note.id) as { content_json: unknown };
+    const ids = blockIds(stored.content_json);
+    expect(ids).toHaveLength(3);
+    expect(ids[2]).toBe(result.addedBlockIds[0]);
+    expect(ids[0]).not.toBe(result.addedBlockIds[0]);
+  });
+
+  it("stamps a rollback that restores an id-less revision", async () => {
+    if (!available || !pool) return;
+    const repository = new PgKnowledgeRepository(pool);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const note = await repository.createNote(identity, { title: "Rollback" }) as { id: string };
+    const legacy = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Version one." }] }] };
+    await pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1 AND version = 1`, [note.id, JSON.stringify(legacy)]);
+
+    const current = await repository.getNote(identity, note.id) as { version: number };
+    await repository.updateNote(identity, note.id, {
+      content_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Version two." }] }] },
+      expect_version: current.version,
+    });
+    const rolled = await repository.rollbackNote(identity, note.id, 1) as { content_json: unknown };
+
+    expect(blockIds(rolled.content_json).every(id => typeof id === "string")).toBe(true);
   });
 });

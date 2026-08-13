@@ -207,7 +207,7 @@ export class InquirySignalService {
       : MATERIAL_BY_DEFAULT.has(classification as SignalClassification);
     const now = new Date().toISOString();
 
-    const created = await withQueryableTransaction(this.db, async (db) => {
+    const delivery = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const thread = await db.query<{ id: string; lifecycle_status: string }>(
         `SELECT object_id AS id, lifecycle_status FROM inquiry_threads
@@ -296,7 +296,7 @@ export class InquirySignalService {
         if (delivered.dedupe_key !== dedupeKey) {
           throw new HttpError(409, "producer_idempotency_key was already used for a different Signal payload");
         }
-        return signalToOut(delivered);
+        return { signal: signalToOut(delivered), consolidatedNow: false };
       }
       if (isMaterial && initialStatus === "pending") {
         const candidateId = await this.consolidateSignal(
@@ -316,13 +316,13 @@ export class InquirySignalService {
         );
         signal = linked.rows[0]!;
       }
-      return signalToOut(signal);
+      return { signal: signalToOut(signal), consolidatedNow: signal.status === "consolidated" };
     });
 
     // Only a material Signal changes what the Thread should do next; routine
     // support auto-attaches and is not worth re-advising on. Queued after
     // commit, and never allowed to fail Signal creation.
-    if (created.status === "consolidated") {
+    if (delivery.consolidatedNow) {
       await tryQueueAdviceForFocusedThread(this.db, {
         spaceId: identity.spaceId,
         userId: identity.userId,
@@ -331,7 +331,7 @@ export class InquirySignalService {
         triggerKind: "candidate_created",
       });
     }
-    return created;
+    return delivery.signal;
   }
 
   // Consolidation (plan section 10.2): find the one open Candidate for this

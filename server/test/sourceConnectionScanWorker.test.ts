@@ -625,7 +625,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("records safe diagnostics after an arXiv backfill exhausts automatic retries", async () => {
+  it("records safe diagnostics after an arXiv backfill exhausts every page size", async () => {
     __setArxivThrottleForTests({ sleep: async () => {} });
     const db = new ScanDb({
       connectorKey: "arxiv_api",
@@ -639,7 +639,12 @@ describe("SourceExtractionWorker connection_scan", () => {
     await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "failed" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // A provider 5xx is now worth a narrower ask before the segment is failed:
+    // three rungs of the page ladder, each retried once inside the fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const requestedPageSizes = fetchMock.mock.calls.map(call =>
+      new URL(String(call[0])).searchParams.get("max_results"));
+    expect(requestedPageSizes).toEqual(["100", "100", "25", "25", "10", "10"]);
     const diagnosticsWrite = db.calls.find(call =>
       call.sql.includes("failure_diagnostics")
     );
@@ -651,6 +656,11 @@ describe("SourceExtractionWorker connection_scan", () => {
       attempts: 2,
       retryable: true,
       failure_kind: "upstream_http",
+      error_name: null,
+      error_code: null,
+      elapsed_ms: expect.any(Number),
+      timeout_ms: expect.any(Number),
+      page_sizes_attempted: [100, 25, 10],
     });
     const failure = db.calls.find(call => call.sql.includes("SET status = $3"));
     expect(failure?.params.slice(2, 6)).toEqual([

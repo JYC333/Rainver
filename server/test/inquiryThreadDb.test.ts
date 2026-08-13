@@ -9,6 +9,7 @@ import { InquiryGraphService } from "../src/modules/inquiry/graphService";
 import { buildSpaceObjectInsert } from "../src/db/spaceObjectWriter";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
+import { completeBackgroundStep } from "../src/modules/inquiry/stepService";
 
 // Real-Postgres coverage for the Inquiry Core vertical slice: Thread
 // creation, working relations, Note links, the cognitive Iteration command,
@@ -257,16 +258,13 @@ describe("Inquiry Core (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("enforces the Next Focus invariant: a focused Thread needs a next_focus_kind or a blocked_reason", async () => {
+  it("rejects a step and a blocking reason together, but allows a focused Thread to hold neither", async () => {
     if (!available || !pool) return;
     const threadSvc = new InquiryThreadService(pool);
     const iterationSvc = new InquiryIterationService(pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Q" });
 
-    await expect(
-      iterationSvc.updateWork(identity, PROJECT, question.id as string, { attention_state: "focused" }),
-    ).rejects.toMatchObject({ statusCode: 422 });
     await expect(
       iterationSvc.updateWork(identity, PROJECT, question.id as string, {
         attention_state: "focused",
@@ -275,11 +273,325 @@ describe("Inquiry Core (real Postgres)", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 422 });
 
-    const focused = await iterationSvc.updateWork(identity, PROJECT, question.id as string, {
+    // Focusing a Thread no longer demands that a next step be named first.
+    // That demand was the reason the UI made users pick from a menu before
+    // they could put a Thread in Focus at all.
+    const bare = await iterationSvc.updateWork(identity, PROJECT, question.id as string, {
       attention_state: "focused",
+    });
+    expect(bare.attention_state).toBe("focused");
+    expect(bare.next_focus_kind).toBeNull();
+    expect(bare.blocked_reason).toBeNull();
+
+    const focused = await iterationSvc.updateWork(identity, PROJECT, question.id as string, {
       blocked_reason: "waiting on a source",
     });
-    expect(focused.attention_state).toBe("focused");
+    expect(focused.blocked_reason).toBe("waiting on a source");
+  });
+
+  it("records a step for each declared Next Focus and keeps the Thread column as its projection", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Steps" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    let steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ kind: "read_evidence", status: "in_progress", slot: "primary", origin: "user" });
+
+    // Re-declaring the same step must not restart it or open a second row.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    expect(await iterationSvc.listSteps(identity, PROJECT, threadId)).toHaveLength(1);
+
+    // Choosing a different action abandons the previous intent rather than
+    // queueing beside it.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "synthesize" });
+    steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps).toHaveLength(2);
+    expect(steps.find((s) => s.kind === "read_evidence")).toMatchObject({ status: "abandoned" });
+    const detail = await threadSvc.getThread(identity, PROJECT, threadId);
+    expect(detail.next_focus_kind).toBe("synthesize");
+
+    // Clearing the step clears the projection and its note together.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: null });
+    const cleared = await threadSvc.getThread(identity, PROJECT, threadId);
+    expect(cleared.next_focus_kind).toBeNull();
+    expect(cleared.next_focus_note).toBeNull();
+  });
+
+  it("moves a search into the background slot so the primary slot stays free", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Background" });
+    const threadId = question.id as string;
+
+    const searching = await iterationSvc.updateWork(identity, PROJECT, threadId, {
+      next_focus_kind: "search_acquisition",
+    });
+    // The search is running, so the user's one attention slot is not spent on
+    // watching it — which is what `wait_for_monitoring` used to stand for.
+    expect(searching.next_focus_kind).toBeNull();
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps[0]).toMatchObject({ kind: "search_acquisition", slot: "background", status: "in_progress" });
+
+    // Reading evidence meanwhile takes the primary slot without disturbing it.
+    const reading = await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    expect(reading.next_focus_kind).toBe("read_evidence");
+    const after = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(after.find((s) => s.kind === "search_acquisition")).toMatchObject({ status: "in_progress" });
+    expect(after.filter((s) => s.status === "in_progress")).toHaveLength(2);
+  });
+
+  it("finishes the evidence step when the search finishes, without asking the user to say so", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Auto-complete" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    const completed = await completeBackgroundStep(pool, {
+      spaceId: SPACE,
+      threadId,
+      kind: "search_acquisition",
+      at: new Date().toISOString(),
+      targetRefKind: "research_workflow",
+      targetRefId: "workflow-1",
+    });
+    expect(completed).toBe(true);
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    // The step records what produced it, which is what lets the destination
+    // Area name the Thread that sent the user there.
+    expect(steps[0]).toMatchObject({
+      kind: "search_acquisition",
+      status: "done",
+      target_ref_kind: "research_workflow",
+      target_ref_id: "workflow-1",
+    });
+
+    // Manual work has no such fact behind it and is deliberately left alone.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    expect(await completeBackgroundStep(pool, {
+      spaceId: SPACE, threadId, kind: "read_evidence", at: new Date().toISOString(),
+    })).toBe(false);
+  });
+
+  it("does not carry a private Thread's statement into another member's origin bar", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const thread = await threadSvc.createThread(ownerIdentity(), PROJECT, {
+      kind: "question",
+      statement: "SECRET owner-only question",
+    });
+    await iterationSvc.updateWork(ownerIdentity(), PROJECT, thread.id as string, { next_focus_kind: "synthesize" });
+    await pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [randomUUID(), SPACE, PROJECT, VIEWER],
+    );
+    expect(await iterationSvc.listOpenProjectSteps(viewerIdentity(), PROJECT)).toHaveLength(1);
+
+    await pool.query(
+      `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
+      [thread.id as string, SPACE],
+    );
+    // This read carries the Thread's statement, so Project membership is not
+    // sufficient — the same gate every other Inquiry read applies.
+    expect(await iterationSvc.listOpenProjectSteps(viewerIdentity(), PROJECT)).toEqual([]);
+    expect(await iterationSvc.listOpenProjectSteps(ownerIdentity(), PROJECT)).toHaveLength(1);
+  });
+
+  it("carries an open step across Areas with the Thread it belongs to", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Where did I come from?" });
+    await iterationSvc.updateWork(identity, PROJECT, question.id as string, { next_focus_kind: "synthesize" });
+
+    const open = await iterationSvc.listOpenProjectSteps(identity, PROJECT);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ kind: "synthesize", statement: "Where did I come from?" });
+
+    // Closing the step takes the context with it: the user is no longer on
+    // that errand, so no Area should claim they are.
+    await iterationSvc.updateWork(identity, PROJECT, question.id as string, { next_focus_kind: null });
+    expect(await iterationSvc.listOpenProjectSteps(identity, PROJECT)).toEqual([]);
+  });
+
+  it("assigns every settled step to the round that closed, so the next round starts empty", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Rounds" });
+    const threadId = question.id as string;
+
+    // A search started and called off inside round 1 ends as `abandoned`,
+    // which no close-out would otherwise stamp — leaving it visible to every
+    // later round as if that round had already gathered evidence.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: null });
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    const first = await iterationSvc.recordIteration(identity, PROJECT, threadId, {
+      change_summary: "Round one", answer_state: "partial",
+    });
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps).toHaveLength(2);
+    expect(steps.every((s) => s.iteration_id === first.id)).toBe(true);
+  });
+
+  it("can call off a running background search, which the primary-only column cannot express", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Cancel" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    // `next_focus_kind` reads null while the search runs, so a dirty-check
+    // against the column alone would treat this call as a no-op.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: null });
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps.every((s) => s.status !== "in_progress")).toBe(true);
+  });
+
+  it("refuses to mark a Thread blocked while a background search is still open", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Blocked+bg" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    await expect(
+      iterationSvc.updateWork(identity, PROJECT, threadId, { blocked_reason: "no institutional access" }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+
+    // Clearing the step first is the supported route.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: null });
+    const blocked = await iterationSvc.updateWork(identity, PROJECT, threadId, {
+      blocked_reason: "no institutional access",
+    });
+    expect(blocked.blocked_reason).toBe("no institutional access");
+  });
+
+  it("keeps a note written for a background step instead of discarding it", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Notes" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, {
+      next_focus_kind: "search_acquisition",
+      next_focus_note: "only 2020 onwards",
+    });
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps[0]).toMatchObject({ kind: "search_acquisition", note: "only 2020 onwards" });
+  });
+
+  it("keeps a step's note when the same step is re-declared, and never copies it onto another", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Notes across steps" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, {
+      next_focus_kind: "search_acquisition",
+      next_focus_note: "only 2020+",
+    });
+    // Following the call to action again sends no note. The card documents this
+    // as free, so it must not cost the user what they wrote.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    let steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps.find((s) => s.kind === "search_acquisition")?.note).toBe("only 2020+");
+
+    // A note belongs to the step it was written for. The Thread column is only
+    // a projection of the primary step, so it must not seed a different one.
+    await iterationSvc.updateWork(identity, PROJECT, threadId, {
+      next_focus_kind: "read_evidence",
+      next_focus_note: "read the six papers",
+    });
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "synthesize" });
+    steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps.find((s) => s.kind === "synthesize")?.note).toBeNull();
+    expect(steps.find((s) => s.kind === "read_evidence")?.note).toBe("read the six papers");
+  });
+
+  it("records no work event when a running step is re-declared", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Audit" });
+    const threadId = question.id as string;
+
+    for (let i = 0; i < 3; i += 1) {
+      await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    }
+    const events = await iterationSvc.listWorkEvents(identity, PROJECT, threadId);
+    expect(events.filter((e) => e.action_kind === "next_focus_kind")).toHaveLength(1);
+  });
+
+  it("ends open steps when a Thread leaves the active lifecycle", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Resolve" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    await iterationSvc.transitionLifecycle(identity, PROJECT, threadId, { lifecycle_status: "resolved", reason: "answered" });
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    // Nothing may stay open on a Thread no command can act on again — an open
+    // primary step would also hold the single-primary index if it reopens.
+    expect(steps.every((s) => s.status !== "in_progress")).toBe(true);
+  });
+
+  it("closes the round's steps into the Iteration that ended it", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Round" });
+    const threadId = question.id as string;
+
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+    const iteration = await iterationSvc.recordIteration(identity, PROJECT, threadId, {
+      change_summary: "Read the first six sources",
+      answer_state: "partial",
+    });
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    const read = steps.find((s) => s.kind === "read_evidence");
+    expect(read).toMatchObject({ status: "done", iteration_id: iteration.id });
+    // A search does not finish because the user wrote up what they learned so
+    // far; it keeps running and belongs to the next round.
+    expect(steps.find((s) => s.kind === "search_acquisition")).toMatchObject({
+      status: "in_progress",
+      iteration_id: null,
+    });
+    expect((iteration.thread as Record<string, unknown>).next_focus_kind).toBeNull();
   });
 
   it("lists the personal Focus of the calling user only", async () => {
@@ -320,6 +632,42 @@ describe("Inquiry Core (real Postgres)", () => {
     });
     expect(fourth.wip_limit_exceeded).toBe(true);
     expect(fourth.attention_state).toBe("focused"); // soft limit — the transition is not blocked
+  });
+
+  it("does not spend a WIP slot on a Thread whose only running work is a background search", async () => {
+    if (!available || !pool) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const identity = ownerIdentity();
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const t = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: `WIP${i}` });
+      ids.push(t.id as string);
+    }
+    // Three Threads focused on a search each: the searches run without a
+    // person, so none of them occupies the Project's attention budget.
+    for (let i = 0; i < 3; i += 1) {
+      await iterationSvc.updateWork(identity, PROJECT, ids[i]!, {
+        attention_state: "focused",
+        next_focus_kind: "search_acquisition",
+      });
+    }
+    const fourth = await iterationSvc.updateWork(identity, PROJECT, ids[3]!, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    expect(fourth.wip_limit_exceeded).toBe(false);
+
+    // Once one of those Threads needs a person again, it counts.
+    for (const id of ids.slice(0, 3)) {
+      await iterationSvc.updateWork(identity, PROJECT, id, { next_focus_kind: "synthesize" });
+    }
+    const fifth = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "WIP4" });
+    const result = await iterationSvc.updateWork(identity, PROJECT, fifth.id as string, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    expect(result.wip_limit_exceeded).toBe(true);
   });
 
   it("keeps Inquiry write commands Space- and membership-gated", async () => {

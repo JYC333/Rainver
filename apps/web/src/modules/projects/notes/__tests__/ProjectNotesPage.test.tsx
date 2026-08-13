@@ -52,7 +52,7 @@ vi.mock('../../../../api/client', () => {
       addPlacement: vi.fn(), removePlacement: vi.fn(),
     },
     knowledgeApi: { list: vi.fn().mockResolvedValue(emptyPage), search: vi.fn().mockResolvedValue({ items: [] }) },
-    inquiryApi: { raiseFromNote: vi.fn() },
+    inquiryApi: { raiseFromNote: vi.fn(), listOpenSteps: vi.fn().mockResolvedValue([]) },
     providersApi: { list: vi.fn().mockResolvedValue([]) },
     sessionsApi: { messages: vi.fn().mockResolvedValue([]) },
     projectNotebookChatApi: { send: vi.fn() },

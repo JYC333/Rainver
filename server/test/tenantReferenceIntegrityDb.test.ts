@@ -293,6 +293,32 @@ describe("tenant reference integrity", () => {
     expect(alert.rows[0]).toEqual({ space_id: SPACE_A, source_item_id: null });
   });
 
+  it("clears an Inquiry Step's round pointer without clearing its tenant key", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    const now = new Date().toISOString();
+    await seedInquiryRound(pool, "round-clear", SPACE_A, PROJECT_A, now);
+
+    await pool.query(`DELETE FROM inquiry_iterations WHERE id = 'round-clear-iteration'`);
+
+    const step = await pool.query<{ space_id: string; project_id: string; iteration_id: string | null }>(
+      `SELECT space_id, project_id, iteration_id FROM inquiry_thread_steps WHERE id = 'round-clear-step'`,
+    );
+    expect(step.rows[0]).toEqual({ space_id: SPACE_A, project_id: PROJECT_A, iteration_id: null });
+  });
+
+  it("still deletes an Inquiry Thread's Steps and Iterations with the Thread", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    const now = new Date().toISOString();
+    await seedInquiryRound(pool, "round-cascade", SPACE_A, PROJECT_A, now);
+
+    await pool.query(`DELETE FROM space_objects WHERE id = 'round-cascade-thread'`);
+
+    const steps = await pool.query(`SELECT id FROM inquiry_thread_steps WHERE id = 'round-cascade-step'`);
+    const iterations = await pool.query(`SELECT id FROM inquiry_iterations WHERE id = 'round-cascade-iteration'`);
+    expect(steps.rowCount).toBe(0);
+    expect(iterations.rowCount).toBe(0);
+  });
+
   it("has no SET NULL foreign key that includes the tenant column", async (ctx) => {
     if (!available || !pool) return ctx.skip();
     const constraints = await pool.query<{ conname: string }>(
@@ -324,5 +350,48 @@ async function insertRun(
        status, mode, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'queued', 'live', $5, $5)`,
     [id, spaceId, agentId, agentVersionId, now],
+  );
+}
+
+/**
+ * A Thread, one round, and one Step pointing at it. The Step's round pointer is
+ * the only optional cross-reference here, so it is what the two Inquiry cases
+ * above watch: cleared on its own when the round goes, gone entirely when the
+ * Thread does.
+ */
+async function seedInquiryRound(
+  pool: Pool,
+  prefix: string,
+  spaceId: string,
+  projectId: string,
+  now: string,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO space_objects (
+       id, space_id, object_type, title, visibility, access_level,
+       owner_user_id, primary_project_id, created_at, updated_at
+     ) VALUES ($1, $2, 'inquiry_thread', 'Thread', 'space_shared', 'full', $3, $4, $5, $5)`,
+    [`${prefix}-thread`, spaceId, USER, projectId, now],
+  );
+  await pool.query(
+    `INSERT INTO inquiry_threads (
+       object_id, space_id, project_id, statement, kind, lifecycle_status,
+       attention_state, priority, version
+     ) VALUES ($1, $2, $3, 'Statement', 'question', 'active', 'backlog', 0, 1)`,
+    [`${prefix}-thread`, spaceId, projectId],
+  );
+  await pool.query(
+    `INSERT INTO inquiry_iterations (
+       id, space_id, project_id, thread_id, trigger_kind,
+       previous_position_json, new_position_json, change_summary, created_at
+     ) VALUES ($1, $2, $3, $4, 'user_edit', '{}'::jsonb, '{}'::jsonb, 'Change', $5)`,
+    [`${prefix}-iteration`, spaceId, projectId, `${prefix}-thread`, now],
+  );
+  await pool.query(
+    `INSERT INTO inquiry_thread_steps (
+       id, space_id, project_id, thread_id, iteration_id, kind, status, slot,
+       origin, started_at, created_at
+     ) VALUES ($1, $2, $3, $4, $5, 'synthesize', 'in_progress', 'primary', 'user', $6, $6)`,
+    [`${prefix}-step`, spaceId, projectId, `${prefix}-thread`, `${prefix}-iteration`, now],
   );
 }

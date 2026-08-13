@@ -10,6 +10,7 @@ import type {
   TurnContextRequest,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
+import { loadProtocol } from "../providers/protocolRuntime";
 import { getDbPool } from "../../db/pool";
 import {
   executeManagedApiNoToolAdapter,
@@ -81,6 +82,7 @@ import {
   isHardTerminalRunStatus,
   isTerminalRunStatus,
   materializationEventStatus,
+  managedToolDegradation,
   outputJsonWithMaterialization,
   protocolRunStatus,
   recordValue,
@@ -300,6 +302,14 @@ export interface RunCodePatchCollectorPort {
 export interface RunExecutionInput extends RunExecuteRequest {
   run_input?: RunInputEnvelope;
   prompt?: string | null;
+  /**
+   * The turn's retrieval query, when the caller has one that is not its prompt.
+   * Internal batch runs send a whole rendered instruction as `prompt` (Source
+   * screening renders sixteen items into it) while the meaningful query is the
+   * rule's goal, so they pass it here instead of leaving retrieval to guess
+   * from a truncated instruction.
+   */
+  retrieval_intent?: string | null;
   system_prompt?: string | null;
   model?: string | null;
   max_tokens?: number | null;
@@ -1160,9 +1170,12 @@ export class RunOrchestrationService {
             "CLI usage could not be recorded, so automatic retry is held to preserve the Run cost cap.",
         };
       }
+      const toolDegradation = adapterResult.success
+        ? managedToolDegradation(adapterResult)
+        : null;
       const terminalStatus = semanticFailure
         ? "failed"
-        : adapterResult.success && materialization.errors.length > 0
+        : adapterResult.success && (materialization.errors.length > 0 || toolDegradation)
           ? "degraded"
           : adapterTerminalStatus;
 
@@ -1195,6 +1208,24 @@ export class RunOrchestrationService {
           exit_code: adapterResult.exit_code,
         },
       });
+      if (toolDegradation) {
+        await this.appendRunEventBestEffort({
+          run_id: running.id,
+          space_id: running.space_id,
+          event_type: "warning",
+          status: "warning",
+          step_id: step?.id ?? null,
+          summary: `Managed tools were unavailable and the Run answered without them: ${toolDegradation.tool_names.join(", ")}.`,
+          error_code: "managed_tool_degraded",
+          error_message: null,
+          project_folder_id: running.project_folder_id,
+          metadata_json: {
+            event_code: "managed_tool_degraded",
+            tool_names: toolDegradation.tool_names,
+            error_codes: toolDegradation.error_codes,
+          },
+        });
+      }
       await this.cleanupRuntimeContext(preparedRuntime, run);
       let terminalRun = await this.publishRunTerminalWithConversationRuntime({
         run_id: running.id,
@@ -1972,7 +2003,7 @@ export class RunOrchestrationService {
             expected_setup_version: Number(effectiveBindings.workContextSetupRef.version),
             current_message_ref: currentRuntimeContextInputRef(run),
             one_off_refs: [],
-            retrieval_intent: input.prompt ?? run.prompt ?? null,
+            retrieval_intent: await retrievalIntentFor(input.retrieval_intent ?? input.prompt ?? run.prompt),
             invocation_purpose: "agent_task",
           },
           cliBinding,
@@ -2767,4 +2798,22 @@ function cliVendor(adapterType: string): string {
   if (adapterType === "claude_code") return "anthropic";
   if (adapterType === "codex_cli") return "openai";
   return adapterType;
+}
+
+/**
+ * `retrieval_intent` is the turn's retrieval query, not its instruction. A
+ * managed run's prompt can be a whole rendered batch — Source screening sends
+ * sixteen items in one prompt — and the protocol bounds the query, so a long
+ * prompt used to fail envelope validation and take the entire run with it.
+ * Truncate into a query rather than rejecting the turn; the bound comes from
+ * the protocol schema so the two cannot drift. Truncation is the fallback for
+ * callers with nothing better — a caller that knows its real query passes
+ * `retrieval_intent` and never reaches the slice.
+ */
+export async function retrievalIntentFor(prompt: string | null | undefined): Promise<string | null> {
+  const trimmed = prompt?.trim();
+  if (!trimmed) return null;
+  const { RETRIEVAL_INTENT_MAX_CHARS } = await loadProtocol();
+  if (trimmed.length <= RETRIEVAL_INTENT_MAX_CHARS) return trimmed;
+  return trimmed.slice(0, RETRIEVAL_INTENT_MAX_CHARS).trim();
 }

@@ -85,7 +85,6 @@ export const CanonicalModelRequestSchema = z.object({
   tools: z.array(CanonicalToolDefinitionSchema).optional(),
   stream: z.boolean().optional(),
 });
-export type CanonicalModelRequest = z.infer<typeof CanonicalModelRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // Streaming events
@@ -103,7 +102,6 @@ export const ModelEventType = {
   MessageStop: "model.message_stop",
   Error: "model.error",
 } as const;
-export type ModelEventTypeValue = (typeof ModelEventType)[keyof typeof ModelEventType];
 
 export const ModelMessageStartEventSchema = z.object({
   type: z.literal(ModelEventType.MessageStart),
@@ -111,13 +109,11 @@ export const ModelMessageStartEventSchema = z.object({
   model: z.string().optional(),
   occurred_at: ISODateTimeSchema.optional(),
 });
-export type ModelMessageStartEvent = z.infer<typeof ModelMessageStartEventSchema>;
 
 export const ModelTextDeltaEventSchema = z.object({
   type: z.literal(ModelEventType.TextDelta),
   delta: z.string(),
 });
-export type ModelTextDeltaEvent = z.infer<typeof ModelTextDeltaEventSchema>;
 
 /** Incremental tool-call assembly; `index` correlates deltas of one call. */
 export const ModelToolCallDeltaEventSchema = z.object({
@@ -127,20 +123,17 @@ export const ModelToolCallDeltaEventSchema = z.object({
   name: z.string().optional(),
   arguments_delta: z.string().optional(),
 });
-export type ModelToolCallDeltaEvent = z.infer<typeof ModelToolCallDeltaEventSchema>;
 
 export const ModelUsageEventSchema = z.object({
   type: z.literal(ModelEventType.Usage),
   usage: CanonicalUsageSchema,
 });
-export type ModelUsageEvent = z.infer<typeof ModelUsageEventSchema>;
 
 export const ModelMessageStopEventSchema = z.object({
   type: z.literal(ModelEventType.MessageStop),
   /** Provider finish reason (e.g. `stop`, `length`, `tool_calls`); permissive. */
   finish_reason: z.string().nullable().optional(),
 });
-export type ModelMessageStopEvent = z.infer<typeof ModelMessageStopEventSchema>;
 
 export const ModelErrorEventSchema = z.object({
   type: z.literal(ModelEventType.Error),
@@ -149,7 +142,6 @@ export const ModelErrorEventSchema = z.object({
     message: z.string(),
   }),
 });
-export type ModelErrorEvent = z.infer<typeof ModelErrorEventSchema>;
 
 /** Any canonical model stream event, discriminated on `type`. */
 export const CanonicalModelEventSchema = z.discriminatedUnion("type", [

@@ -30,7 +30,6 @@ export const CommandEnvelopeSchema = z.object({
   issued_by_user_id: IdSchema.nullish(),
   payload: z.unknown(),
 });
-export type CommandEnvelope = z.infer<typeof CommandEnvelopeSchema>;
 
 function commandSchema<TType extends string, TPayload extends z.ZodTypeAny>(
   type: TType,
@@ -57,7 +56,6 @@ export const CommandType = {
   RejectProposal: "proposal.reject",
   StartRun: "run.start",
 } as const;
-export type CommandTypeValue = (typeof CommandType)[keyof typeof CommandType];
 
 // ---------------------------------------------------------------------------
 // Payloads + command envelopes
@@ -89,7 +87,6 @@ export const ProcessActivityCommandSchema = commandSchema(
   CommandType.ProcessActivity,
   ProcessActivityPayloadSchema,
 );
-export type ProcessActivityCommand = z.infer<typeof ProcessActivityCommandSchema>;
 
 /** Approve a pending proposal (mirror of the proposals approve gate). */
 export const ApproveProposalPayloadSchema = z.object({
@@ -101,7 +98,6 @@ export const ApproveProposalCommandSchema = commandSchema(
   CommandType.ApproveProposal,
   ApproveProposalPayloadSchema,
 );
-export type ApproveProposalCommand = z.infer<typeof ApproveProposalCommandSchema>;
 
 /** Reject a pending proposal. */
 export const RejectProposalPayloadSchema = z.object({
@@ -113,7 +109,6 @@ export const RejectProposalCommandSchema = commandSchema(
   CommandType.RejectProposal,
   RejectProposalPayloadSchema,
 );
-export type RejectProposalCommand = z.infer<typeof RejectProposalCommandSchema>;
 
 /** Start an agent run (mirror of `POST /runs`). */
 export const StartRunPayloadSchema = z.object({
@@ -139,4 +134,3 @@ export const AnyCommandSchema = z.discriminatedUnion("type", [
   RejectProposalCommandSchema,
   StartRunCommandSchema,
 ]);
-export type AnyCommand = z.infer<typeof AnyCommandSchema>;

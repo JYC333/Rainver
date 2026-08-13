@@ -27,6 +27,7 @@ const DeliveryAreaPage = lazy(() => import('./DeliveryAreaPage'))
 const OperationsAreaPage = lazy(() => import('./OperationsAreaPage'))
 const ProjectRoomsPage = lazy(() => import('../agent_groups/AgentGroupsPage'))
 const ProjectNotesPage = lazy(() => import('./notes/ProjectNotesPage'))
+const ProjectRawMaterialPage = lazy(() => import('./ProjectRawMaterialPage'))
 
 function PageFallback() {
   return (
@@ -59,6 +60,7 @@ export default function ProjectsModule() {
         {/* Splat, like /knowledge/notes: the open note changes the URL without
             remounting the surface, so its tree and tabs stay alive. */}
         <Route path="notes/*" element={<Suspense fallback={<PageFallback />}><ProjectNotesPage /></Suspense>} />
+        <Route path="raw" element={<Suspense fallback={<PageFallback />}><ProjectRawMaterialPage /></Suspense>} />
         <Route path="research/reports/:reportId" element={<Suspense fallback={<PageFallback />}><ResearchReportPage /></Suspense>} />
         <Route path="research" element={<Suspense fallback={<PageFallback />}><ResearchAreaPage /></Suspense>} />
       </Route>

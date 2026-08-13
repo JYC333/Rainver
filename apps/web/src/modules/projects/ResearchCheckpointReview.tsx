@@ -140,7 +140,10 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {(summary.unclassified ?? 0) > 0 && <Badge variant="warning">{summary.unclassified} not classified</Badge>}
         {summary.processing_status === 'complete' && <Badge variant="success">Screening complete</Badge>}
-        <span>{summary.missing_full_text ?? 0} missing full text</span>
+        {/* Reads as a fault ("missing") when it is usually a setting: a source
+            captured reference_only never fetches full text, so screening works
+            from the abstract by design. State the fact, not a blame. */}
+        <span>{summary.missing_full_text ?? 0} screened on abstract only</span>
         <span>{summary.evidence_count ?? 0} evidence records</span>
         {(summary.failed_items ?? 0) > 0 && <span className="text-destructive">{summary.failed_items} failed</span>}
         {summary.partial === true && <Badge variant="warning">Partial intake</Badge>}

@@ -83,6 +83,7 @@ import {
 } from "./resultParser";
 import { joinText, stringList } from "./textUtils";
 import { SOURCE_POST_PROCESSING_LIMITS } from "./config";
+import { resolveModelWindow } from "../../usage/modelCatalog";
 import { SOURCE_POST_PROCESSING_OUTPUT_CONTRACT } from "../../projectResearch/outputSchemas";
 
 interface RetrievalContextDomainConfig {
@@ -97,7 +98,18 @@ interface CandidatePrefilterResult {
   metadata: Record<string, unknown> | null;
 }
 
-const SOURCE_POST_PROCESSING_PROMPT_BUDGET_CHARS = 48_000;
+/**
+ * Floor for the prompt budget, used when the rule's model is not in the model
+ * registry. The budget itself is derived from the model's context window — see
+ * `promptBudgetCharsFor`.
+ */
+const SOURCE_POST_PROCESSING_PROMPT_BUDGET_FLOOR_CHARS = 48_000;
+/**
+ * The context planner counts a token as one UTF-8 byte, and one character can
+ * be three bytes, so a character budget of a third of the token budget cannot
+ * overflow the window even on CJK-heavy material.
+ */
+const SOURCE_POST_PROCESSING_PROMPT_BYTES_PER_CHAR = 3;
 const SOURCE_POST_PROCESSING_PROMPT_FIXED_RESERVE_CHARS = 12_000;
 const SOURCE_POST_PROCESSING_EXTRACTED_TEXT_SNIPPET_RESERVE_CHARS = 2_400;
 
@@ -916,7 +928,15 @@ export class SourcePostProcessingService {
       throw new HttpError(409, "Research question changed; apply it to future runs before processing this item");
     }
     const repo = new PgSourcePostProcessingRepository(this.db);
-    const batch = fitBatchToPromptBudget(input.batch, input.inputConfig);
+    const batch = fitBatchToPromptBudget(
+      input.batch,
+      input.inputConfig,
+      promptBudgetCharsFor(await this.agentModelName(input.connection.space_id, input.agentId)),
+    );
+    // Trimming is not free: the items left behind carry no decision, so the
+    // Research recovery loop re-queues them as another batch and the reviewer
+    // gets another gate. Say so in the run rather than dropping them quietly.
+    const trimmedItemCount = input.batch.items.length - batch.items.length;
     const prefilter = await this.prefilterCandidateBatch({
       connection: input.connection,
       projectId: input.projectId,
@@ -1079,7 +1099,12 @@ export class SourcePostProcessingService {
         outputJobIds: materialized.jobIds,
         retrievalContext: retrievalContext as unknown as Record<string, unknown>,
         itemDecisions: result.item_decisions as unknown as Record<string, unknown>[],
-        summary: resultSummary(result).slice(0, 1000),
+        summary: [
+          resultSummary(result),
+          trimmedItemCount > 0
+            ? `${trimmedItemCount} item(s) did not fit this run's prompt budget and were left for a follow-up batch.`
+            : null,
+        ].filter(Boolean).join("\n").slice(0, 1000),
       });
     } catch (error) {
       const failed = await repo.markRunFinished({
@@ -1236,6 +1261,27 @@ export class SourcePostProcessingService {
     }
   }
 
+  /**
+   * The model the rule's agent runs on, which decides how much prompt one
+   * screening batch may spend. Null when the agent has no pinned model — the
+   * caller then falls back to the conservative floor.
+   */
+  private async agentModelName(spaceId: string, agentId: string): Promise<string | null> {
+    const result = await this.db.query<{ model: string | null }>(
+      `SELECT COALESCE(version.model_config_json->>'model', version.model_name) AS model
+         FROM agents agent
+         JOIN agent_versions version
+           ON version.id = agent.current_version_id
+          AND version.agent_id = agent.id
+          AND version.space_id = agent.space_id
+        WHERE agent.space_id = $1 AND agent.id = $2
+        LIMIT 1`,
+      [spaceId, agentId],
+    );
+    const model = result.rows[0]?.model;
+    return typeof model === "string" && model.trim() ? model.trim() : null;
+  }
+
   private async createAndExecuteAgentRun(input: {
     spaceId: string;
     userId: string;
@@ -1296,6 +1342,8 @@ export class SourcePostProcessingService {
       space_id: input.spaceId,
       ...sourcePostProcessingExecutionRequest(input.postProcessingRunId, input.executionTimeoutMs),
       prompt: sourcePostProcessingRuntimePrompt(input.instruction),
+      // The runtime prompt is the rendered batch; the rule's goal is the query.
+      retrieval_intent: input.prompt,
     });
     const finished = await repository.getRun(input.spaceId, run.id);
     if (!finished) throw new Error("Agent run disappeared after execution");
@@ -2100,14 +2148,38 @@ function effectiveInputConfig(rule: SourcePostProcessingRuleRow): SourcePostProc
   };
 }
 
+/**
+ * How much prompt one screening run may spend, in characters.
+ *
+ * This used to be a flat 48k — a figure from when every model was assumed to
+ * have a ~16k context window. On a model with a half-million-token window it
+ * trimmed a sixteen-item intake to four items per run, and because the trim is
+ * silent the leftovers came back as fresh recovery batches: one research pass
+ * turned into five screening runs and the reviewer was asked to approve the
+ * same intake more than once. The window is the real constraint, so read it
+ * from the model registry.
+ */
+export function promptBudgetCharsFor(model: string | null): number {
+  if (!model) return SOURCE_POST_PROCESSING_PROMPT_BUDGET_FLOOR_CHARS;
+  const spec = resolveModelWindow(model);
+  const availableTokens = spec.contextWindowTokens
+    - spec.defaultOutputReserveTokens
+    - spec.providerOverheadTokens;
+  return Math.max(
+    SOURCE_POST_PROCESSING_PROMPT_BUDGET_FLOOR_CHARS,
+    Math.floor(availableTokens / SOURCE_POST_PROCESSING_PROMPT_BYTES_PER_CHAR),
+  );
+}
+
 function fitBatchToPromptBudget(
   batch: SourcePostProcessingInputBatch,
   inputConfig: SourcePostProcessingInputConfig,
+  budgetChars: number,
 ): SourcePostProcessingInputBatch {
   if (batch.items.length <= 1) return batch;
   const available = Math.max(
     6_000,
-    SOURCE_POST_PROCESSING_PROMPT_BUDGET_CHARS -
+    budgetChars -
       SOURCE_POST_PROCESSING_PROMPT_FIXED_RESERVE_CHARS -
       estimateInputConfigPromptChars(inputConfig),
   );

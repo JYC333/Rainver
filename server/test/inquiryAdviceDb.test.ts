@@ -9,7 +9,8 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
 import { InquiryAdviceService, INQUIRY_NEXT_STEP_ADVICE_PROMPT_KEY } from "../src/modules/inquiry/adviceService";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { queueAdviceForFocusedThread } from "../src/modules/inquiry/adviceJob";
+import { adviceJobMayPersist, queueAdviceForFocusedThread, runInquiryAdviceJob } from "../src/modules/inquiry/adviceJob";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository";
 import type { ServerConfig } from "../src/config";
 
 // Real-Postgres coverage for model-generated next-step advice. The provider
@@ -188,7 +189,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
 
   it("dismissal retires the suggestion, and regenerating reopens it", async () => {
     if (!available || !pool) return;
-    const service = serviceReturning({ recommended_focus_kind: "pause", rationale: "Blocked upstream.", cited_refs: [] });
+    const service = serviceReturning({ recommended_focus_kind: "clarify_or_decompose", rationale: "Blocked upstream.", cited_refs: [] });
     await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
 
     expect((await service.dismissAdvice(identity(), PROJECT, THREAD)).status).toBe("dismissed");
@@ -212,7 +213,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   it("queues automatic advice only for Threads the project has actually focused", async () => {
     if (!available || !pool) return;
     const jobCount = async () => Number((await pool!.query(
-      "SELECT COUNT(*)::text AS total FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
+      "SELECT COUNT(*)::text AS total FROM jobs WHERE job_type = 'inquiry_next_step_advice' AND status IN ('pending','claimed','running')",
     )).rows[0].total);
 
     // Backlog by default — automatic spend stays bounded by the Focus WIP limit.
@@ -238,17 +239,269 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     expect(await jobCount()).toBe(1);
   });
 
-  it("queues nothing when the triggering path has no acting user", async () => {
+  it("retires open advice as soon as replacement analysis is requested", async () => {
+    if (!available || !pool) return;
+    const service = serviceReturning({
+      recommended_focus_kind: "search_acquisition",
+      rationale: "No evidence has arrived yet.",
+      cited_refs: [],
+    });
+    await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+
+    // An unfocused Thread does not spend on automatic analysis, but the event
+    // still makes its old recommendation unsafe to keep presenting.
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
+    });
+    expect((await service.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
+    expect((await pool.query(
+      "SELECT id FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
+    )).rows).toHaveLength(0);
+
+    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
+    });
+    expect((await service.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
+    expect((await pool.query(
+      "SELECT id FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
+    )).rows).toHaveLength(1);
+  });
+
+  it("does not rewrite advice that was already adopted or dismissed", async () => {
+    if (!available || !pool) return;
+    const service = serviceReturning({
+      recommended_focus_kind: "search_acquisition",
+      rationale: "No evidence has arrived yet.",
+      cited_refs: [],
+    });
+    await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await service.markAdopted(identity(), PROJECT, THREAD);
+    const adoptedAt = (await service.getAdvice(identity(), PROJECT, THREAD))!.updated_at;
+
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: null, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
+    });
+    const adopted = await service.getAdvice(identity(), PROJECT, THREAD);
+    expect(adopted?.status).toBe("adopted");
+    expect(adopted?.updated_at).toBe(adoptedAt);
+
+    await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await service.dismissAdvice(identity(), PROJECT, THREAD);
+    const dismissedAt = (await service.getAdvice(identity(), PROJECT, THREAD))!.updated_at;
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: null, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
+    });
+    const dismissed = await service.getAdvice(identity(), PROJECT, THREAD);
+    expect(dismissed?.status).toBe("dismissed");
+    expect(dismissed?.updated_at).toBe(dismissedAt);
+  });
+
+  it("fences an in-flight automatic generation and queues one fresh successor", async () => {
+    if (!available || !pool) return;
+    const current = serviceReturning({
+      recommended_focus_kind: "read_evidence",
+      rationale: "Review the evidence already available.",
+      cited_refs: [],
+    });
+    await current.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+
+    const job = await new PgJobQueueRepository(pool).enqueue({
+      job_type: "inquiry_next_step_advice",
+      space_id: SPACE,
+      user_id: OWNER,
+      payload: { project_id: PROJECT, thread_id: THREAD, trigger_kind: "iteration_recorded" },
+    });
+    await pool.query(
+      `UPDATE jobs SET status='running', started_at=$2, updated_at=$2 WHERE id=$1`,
+      [job.id, new Date().toISOString()],
+    );
+
+    let releaseProvider!: () => void;
+    let providerStarted!: () => void;
+    const started = new Promise<void>((resolve) => { providerStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseProvider = resolve; });
+    const late = new InquiryAdviceService(pool, config, async () => {
+      providerStarted();
+      await release;
+      return {
+        recommended_focus_kind: "search_acquisition",
+        rationale: "This was computed from the older context.",
+        cited_refs: [],
+      };
+    });
+    const generation = late.generateAdvice(identity(), PROJECT, THREAD, "iteration_recorded", {
+      beforePersist: (tx) => adviceJobMayPersist(tx, job.id),
+    });
+    await started;
+
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE,
+      userId: OWNER,
+      projectId: PROJECT,
+      threadId: THREAD,
+      triggerKind: "candidate_created",
+    });
+    releaseProvider();
+
+    expect(await generation).toBeNull();
+    expect((await current.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
+    const jobs = await pool.query<{ status: string; superseded: boolean }>(
+      `SELECT status, payload_json ? 'advice_superseded_at' AS superseded
+         FROM jobs WHERE job_type='inquiry_next_step_advice' ORDER BY created_at`,
+    );
+    expect(jobs.rows).toEqual([
+      { status: "running", superseded: true },
+      { status: "pending", superseded: false },
+    ]);
+  });
+
+  it("keeps job-before-advice lock order when generation and invalidation overlap", async () => {
+    if (!available || !pool) return;
+    const current = serviceReturning({
+      recommended_focus_kind: "read_evidence",
+      rationale: "Current recommendation.",
+      cited_refs: [],
+    });
+    await current.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    const job = await new PgJobQueueRepository(pool).enqueue({
+      job_type: "inquiry_next_step_advice",
+      space_id: SPACE,
+      user_id: OWNER,
+      payload: { project_id: PROJECT, thread_id: THREAD, trigger_kind: "iteration_recorded" },
+    });
+    await pool.query("UPDATE jobs SET status='running' WHERE id=$1", [job.id]);
+
+    let guardLocked!: () => void;
+    let releaseGuard!: () => void;
+    const locked = new Promise<void>((resolve) => { guardLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseGuard = resolve; });
+    const generation = serviceReturning({
+      recommended_focus_kind: "synthesize",
+      rationale: "Generation that reached persistence first.",
+      cited_refs: [],
+    }).generateAdvice(identity(), PROJECT, THREAD, "iteration_recorded", {
+      beforePersist: async (tx) => {
+        const mayPersist = await adviceJobMayPersist(tx, job.id);
+        guardLocked();
+        await release;
+        return mayPersist;
+      },
+    });
+    await locked;
+    const invalidation = queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE,
+      userId: OWNER,
+      projectId: PROJECT,
+      threadId: THREAD,
+      triggerKind: "candidate_created",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseGuard();
+
+    await expect(generation).resolves.not.toBeNull();
+    await expect(invalidation).resolves.toBeUndefined();
+    expect((await current.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
+  });
+
+  it("leaves exactly one current job when a worker claim races invalidation", async () => {
+    if (!available || !pool) return;
+    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
+    });
+
+    await Promise.all([
+      queueAdviceForFocusedThread(pool, {
+        spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
+      }),
+      new PgJobQueueRepository(pool).claimNext("race-worker", ["inquiry_next_step_advice"]),
+    ]);
+
+    const active = await pool.query<{ status: string; superseded: boolean }>(
+      `SELECT status, payload_json ? 'advice_superseded_at' AS superseded
+         FROM jobs
+        WHERE job_type='inquiry_next_step_advice' AND status IN ('pending','claimed','running')`,
+    );
+    expect(active.rows.filter((row) => !row.superseded)).toHaveLength(1);
+    expect(active.rows.filter((row) => row.superseded).every((row) => row.status === "claimed")).toBe(true);
+  });
+
+  it("cancels pending advice when the latest trigger has no actor or the Thread is unfocused", async () => {
     if (!available || !pool) return;
     await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "search_acquisition",
     });
     await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
+    });
+    await queueAdviceForFocusedThread(pool, {
       spaceId: SPACE, userId: null, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
     });
-    const jobs = await pool.query("SELECT id FROM jobs WHERE job_type = 'inquiry_next_step_advice'");
-    expect(jobs.rows).toHaveLength(0);
+    const jobs = await pool.query<{ status: string }>(
+      "SELECT status FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
+    );
+    expect(jobs.rows).toEqual([{ status: "cancelled" }]);
+
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
+    });
+    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "backlog",
+    });
+    await queueAdviceForFocusedThread(pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
+    });
+    const afterUnfocus = await pool.query<{ status: string }>(
+      "SELECT status FROM jobs WHERE job_type = 'inquiry_next_step_advice' ORDER BY created_at",
+    );
+    expect(afterUnfocus.rows).toEqual([{ status: "cancelled" }, { status: "cancelled" }]);
+  });
+
+  it("skips a superseded retry before invoking the provider", async () => {
+    if (!available || !pool) return;
+    let providerCalls = 0;
+    const service = new InquiryAdviceService(pool, config, async () => {
+      providerCalls += 1;
+      return { recommended_focus_kind: "read_evidence", rationale: "Old", cited_refs: [] };
+    });
+    const job = await new PgJobQueueRepository(pool).enqueue({
+      job_type: "inquiry_next_step_advice",
+      space_id: SPACE,
+      user_id: OWNER,
+      payload: {
+        project_id: PROJECT,
+        thread_id: THREAD,
+        trigger_kind: "candidate_created",
+        advice_superseded_at: new Date().toISOString(),
+      },
+    });
+    await pool.query("UPDATE jobs SET status='running' WHERE id=$1", [job.id]);
+
+    const result = await runInquiryAdviceJob(pool, service, {
+      job_id: job.id,
+      space_id: SPACE,
+      user_id: OWNER,
+      payload: job.payload_json,
+    });
+    expect(result).toEqual({ thread_id: THREAD, superseded: true });
+    expect(providerCalls).toBe(0);
   });
 
 

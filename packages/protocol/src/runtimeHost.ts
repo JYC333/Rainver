@@ -19,7 +19,6 @@ import {
 import { RunInputEnvelopeSchema } from "./runOrchestration.js";
 
 export const RuntimeHostToolModeSchema = z.enum(["disabled", "authorized_bindings"]);
-export type RuntimeHostToolMode = z.infer<typeof RuntimeHostToolModeSchema>;
 
 export const RuntimeHostToolBindingSchema = z
   .object({
@@ -36,7 +35,6 @@ export const RuntimeHostToolBindingSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type RuntimeHostToolBinding = z.infer<typeof RuntimeHostToolBindingSchema>;
 
 export const RuntimeHostStructuredOutputSchema = z.object({
   type: z.literal("json_schema"),
@@ -45,7 +43,6 @@ export const RuntimeHostStructuredOutputSchema = z.object({
   strict: z.boolean().default(true),
   stage: z.string().trim().min(1).optional(),
 });
-export type RuntimeHostStructuredOutput = z.infer<typeof RuntimeHostStructuredOutputSchema>;
 
 export const RuntimeHostExecuteRequestSchema = z.object({
   run_input: RunInputEnvelopeSchema,

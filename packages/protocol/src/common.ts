@@ -45,7 +45,6 @@ export type Id = z.infer<typeof IdSchema>;
  * structurally-validated value.
  */
 export const ISODateTimeSchema = z.string();
-export type ISODateTime = z.infer<typeof ISODateTimeSchema>;
 
 /**
  * Documented visibility values (see `docs/README.md` / `docs/SPACE_MODEL.md`).
@@ -57,7 +56,6 @@ export const VISIBILITY_VALUES = [
   "selected_users",
 ] as const;
 export const CONTENT_ACCESS_LEVEL_VALUES = ["full", "summary"] as const;
-export type ContentAccessLevelValue = (typeof CONTENT_ACCESS_LEVEL_VALUES)[number];
 export const ContentAccessLevelSchema = z.enum(CONTENT_ACCESS_LEVEL_VALUES);
 export type VisibilityValue = (typeof VISIBILITY_VALUES)[number];
 export const VisibilitySchema = z.enum(VISIBILITY_VALUES);

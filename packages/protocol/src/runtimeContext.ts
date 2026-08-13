@@ -130,7 +130,6 @@ export type RuntimeContextPolicyResolveRequest = z.infer<typeof RuntimeContextPo
 export const RuntimeContextPolicyVersionListResponseSchema = z.object({
   items: z.array(RuntimeContextPolicyVersionSchema),
 }).strict();
-export type RuntimeContextPolicyVersionListResponse = z.infer<typeof RuntimeContextPolicyVersionListResponseSchema>;
 
 export const RuntimeContextActorSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("user"), user_id: IdSchema }).strict(),
@@ -160,7 +159,6 @@ export const RuntimeContextActorSchema = z.discriminatedUnion("type", [
     instructed_by_user_id: IdSchema.nullable(),
   }).strict(),
 ]);
-export type RuntimeContextActor = z.infer<typeof RuntimeContextActorSchema>;
 
 export const ExecutionReadableScopeSchema = z.object({
   space_id: IdSchema,
@@ -292,7 +290,6 @@ export const WorkContextScopeKindSchema = z.enum([
   "root_task",
   "workflow_execution",
 ]);
-export type WorkContextScopeKind = z.infer<typeof WorkContextScopeKindSchema>;
 
 export const WorkRetrievalPreferencesSchema = z.object({
   enabled: z.boolean().optional(),
@@ -334,7 +331,6 @@ export const WorkContextSetupSchema = z.object({
   created_by_user_id: IdSchema,
   created_at: ISODateTimeSchema,
 }).strict();
-export type WorkContextSetup = z.infer<typeof WorkContextSetupSchema>;
 
 export const WorkContextSetupWriteRequestSchema = WorkContextSetupSchema.pick({
   work_context_scope_id: true,
@@ -353,12 +349,19 @@ export const WorkContextSetupWriteRequestSchema = WorkContextSetupSchema.pick({
 }).strict();
 export type WorkContextSetupWriteRequest = z.infer<typeof WorkContextSetupWriteRequestSchema>;
 
+/**
+ * `retrieval_intent` is a search query, not the turn's instruction. Producers
+ * bound their value with this constant so a long prompt is truncated into a
+ * query instead of failing the whole run on schema validation.
+ */
+export const RETRIEVAL_INTENT_MAX_CHARS = 4_000;
+
 export const TurnContextRequestSchema = z.object({
   work_context_scope_id: IdSchema,
   expected_setup_version: z.number().int().positive(),
   current_message_ref: RefSchema,
   one_off_refs: z.array(RefSchema).max(1_000).default([]),
-  retrieval_intent: z.string().trim().max(4000).nullable().optional(),
+  retrieval_intent: z.string().trim().max(RETRIEVAL_INTENT_MAX_CHARS).nullable().optional(),
   invocation_purpose: z.string().trim().min(1).max(128),
 }).strict();
 export type TurnContextRequest = z.infer<typeof TurnContextRequestSchema>;
@@ -727,7 +730,6 @@ export const InvocationDeliverySchema = z.object({
 export type InvocationDelivery = z.infer<typeof InvocationDeliverySchema>;
 
 export const ContextCaptureStatusSchema = z.enum(["complete", "recovered", "partial"]);
-export type ContextCaptureStatus = z.infer<typeof ContextCaptureStatusSchema>;
 
 export const DeliveryAcknowledgementSchema = z.object({
   status: z.enum(["accepted", "rejected", "failed"]),
@@ -813,7 +815,6 @@ export const SemanticCheckpointCorrectionRequestSchema = z.object({
   canonical_ref: RefSchema,
   correction: JsonObjectSchema,
 }).strict();
-export type SemanticCheckpointCorrectionRequest = z.infer<typeof SemanticCheckpointCorrectionRequestSchema>;
 
 export const ContextEventSchema = z.object({
   id: IdSchema,

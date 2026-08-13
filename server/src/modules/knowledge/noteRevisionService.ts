@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common";
 import { applyNoteOps, normalizePmText, parseNoteOps, pmBlocksText, type NoteOp } from "./noteDocument";
+import { addedBlockIds, withBlockIds } from "./noteBlockIds";
 import { emitDomainChangeEvent } from "../knowledgePromotion/outbox";
 
 export type NoteRevisionSource = "user_edit" | "ai_monitoring" | "ai_adhoc" | "seed" | "rollback";
@@ -22,7 +23,15 @@ function refStrings(value: unknown): string[] {
 }
 
 export type NoteWriteResult =
-  | { outcome: "written"; note: NoteContentRow }
+  | {
+      outcome: "written";
+      note: NoteContentRow;
+      /**
+       * Top-level blocks this write introduced, in document order. Capture
+       * anchors on the first of them; every other caller ignores it.
+       */
+      addedBlockIds: string[];
+    }
   | { outcome: "version_conflict"; currentVersion: number };
 
 /**
@@ -51,7 +60,21 @@ export async function writeNote(db: Queryable, input: {
   if (input.expectVersion !== null && input.expectVersion !== undefined && input.expectVersion !== current.version) {
     return { outcome: "version_conflict", currentVersion: current.version };
   }
-  const doc = input.content.kind === "doc" ? input.content.doc : applyNoteOps(current.content_json ?? {}, input.content.ops);
+  // Every note write in the system funnels through here, which is why block
+  // ids are stamped at this line and nowhere else: a doc save, an AI ops write,
+  // a capture append and a rollback all leave with ids, and no caller can
+  // forget to ask for them.
+  //
+  // The stamping happens on the *current* document first, and that is
+  // load-bearing rather than tidy. Diffing against the raw stored document
+  // would report every id-less block as "added" — a note written before ids
+  // existed has none — so a capture appended to one would anchor on the
+  // document's first paragraph instead of its own. Stamping `current` first
+  // means the diff sees only blocks that are genuinely new.
+  const stamped = withBlockIds(current.content_json ?? {});
+  const written = input.content.kind === "doc" ? input.content.doc : applyNoteOps(stamped, input.content.ops);
+  const doc = withBlockIds(written);
+  const introduced = addedBlockIds(stamped, doc);
   // Ordinary editor saves pass their own plain-text extraction (matches the
   // rich-text editor's rendering exactly); AI ops writes have no client-side
   // extraction, so they derive it from the resulting Tiptap blocks.
@@ -90,7 +113,7 @@ export async function writeNote(db: Queryable, input: {
     spaceId: input.spaceId, noteId: note.object_id, version: note.version, doc, normalized, hash, refs: mergedRefs,
     source: input.source, userId: input.userId ?? null, runId: input.runId ?? null, diff: input.diff ?? null, at: now,
   });
-  return { outcome: "written", note };
+  return { outcome: "written", note, addedBlockIds: introduced };
 }
 
 /**

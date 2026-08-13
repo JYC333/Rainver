@@ -63,7 +63,7 @@ async function createCorpusItem(visibility: "private" | "space_shared" = "privat
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    "TRUNCATE inquiry_delta_briefs, inquiry_signal_candidates, inquiry_evidence_signals, inquiry_review_packets, inquiry_thread_work_events, inquiry_iterations, inquiry_thread_statement_revisions, inquiry_thread_personal_focus, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, inquiry_project_settings, project_corpus_items, space_objects, projects, space_memberships, users, spaces CASCADE",
+    "TRUNCATE inquiry_thread_advice, jobs, inquiry_delta_briefs, inquiry_signal_candidates, inquiry_evidence_signals, inquiry_review_packets, inquiry_thread_work_events, inquiry_iterations, inquiry_thread_statement_revisions, inquiry_thread_personal_focus, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, inquiry_project_settings, project_corpus_items, space_objects, projects, space_memberships, users, spaces CASCADE",
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
@@ -268,6 +268,43 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
       semantic_key: "memory-regression",
     });
     expect(await service.listCandidates(identity(), PROJECT, "pending")).toHaveLength(2);
+  });
+
+  it("does not retire current advice when a material Signal delivery is replayed", async () => {
+    if (!available || !pool) return;
+    const service = new InquirySignalService(pool);
+    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    const body = {
+      corpus_item_id: await createCorpusItem(),
+      classification: "contradicts",
+      producer_idempotency_key: "replayed-material-signal",
+    };
+    const first = await service.createSignal(identity(), PROJECT, THREAD, body);
+    const generatedAt = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO inquiry_thread_advice
+         (id, space_id, project_id, thread_id, recommended_focus_kind, rationale,
+          cited_refs_json, thread_version, status, trigger_kind, model_version,
+          generated_by_user_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'read_evidence','Review the contradiction','[]'::jsonb,
+               2,'open','candidate_created',NULL,$5,$6,$6)`,
+      [randomUUID(), SPACE, PROJECT, THREAD, OWNER, generatedAt],
+    );
+
+    const retry = await service.createSignal(identity(), PROJECT, THREAD, body);
+    expect(retry.id).toBe(first.id);
+    const advice = await pool.query<{ status: string; updated_at: Date }>(
+      "SELECT status, updated_at FROM inquiry_thread_advice WHERE thread_id=$1",
+      [THREAD],
+    );
+    expect(advice.rows[0]?.status).toBe("open");
+    expect(advice.rows[0]?.updated_at.toISOString()).toBe(generatedAt);
+    expect((await pool.query(
+      "SELECT id FROM jobs WHERE job_type='inquiry_next_step_advice'",
+    )).rows).toHaveLength(1);
   });
 
   it("keeps a Candidate hidden unless every contributing Signal is readable", async () => {

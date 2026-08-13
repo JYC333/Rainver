@@ -26,8 +26,10 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	attentionState: varchar("attention_state", { length: 16 }).default('backlog').notNull(),
 	priority: integer().default(0).notNull(),
 	primaryParentId: varchar("primary_parent_id", { length: 36 }),
-	// Current Next Focus invariant (plan section 9.5): an active, focused
-	// Thread has exactly one of nextFocusKind or blockedReason set.
+	// Projection of the Thread's current primary in-progress step's kind
+	// (`inquiry_thread_steps`). The column stays so the Thread read shape is
+	// unchanged and the contradiction CHECK below stays enforceable; the step
+	// row is the authority and the service writes both in one transaction.
 	nextFocusKind: varchar("next_focus_kind", { length: 32 }),
 	nextFocusNote: text("next_focus_note"),
 	blockedReason: text("blocked_reason"),
@@ -72,7 +74,14 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	check("ck_inquiry_threads_lifecycle_status", sql`(lifecycle_status)::text = ANY (ARRAY[('active'::character varying)::text, ('resolved'::character varying)::text, ('rejected'::character varying)::text, ('superseded'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_inquiry_threads_attention_state", sql`(attention_state)::text = ANY (ARRAY[('focused'::character varying)::text, ('monitoring'::character varying)::text, ('backlog'::character varying)::text, ('blocked'::character varying)::text, ('resolved'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_inquiry_threads_created_from", sql`(created_from)::text = ANY (ARRAY[('user'::character varying)::text, ('ai_candidate'::character varying)::text, ('decomposition'::character varying)::text])`),
-	check("ck_inquiry_threads_focused_next_focus", sql`attention_state <> 'focused' OR ((next_focus_kind IS NULL) <> (blocked_reason IS NULL))`),
+	// A step and a blocking reason contradict each other, so a Thread may never
+	// hold both. What this no longer requires is that a focused Thread hold one
+	// of them: a Thread between rounds, or one whose only running work is a
+	// background search, is legitimately doing neither. The former XOR made
+	// "focus this Thread" refuse until a next step had been picked from a
+	// menu — the invariant was itself a source of the busywork the step model
+	// exists to remove.
+	check("ck_inquiry_threads_focused_next_focus", sql`next_focus_kind IS NULL OR blocked_reason IS NULL`),
 	check("ck_inquiry_threads_lifecycle_attention", sql`
 		(lifecycle_status = 'active' AND attention_state IN ('focused', 'monitoring', 'backlog', 'blocked'))
 		OR (lifecycle_status = 'resolved' AND attention_state = 'resolved')
@@ -312,6 +321,85 @@ export const inquiryThreadWorkEvents = pgTable("inquiry_thread_work_events", {
 			foreignColumns: [spaces.id],
 			name: "inquiry_thread_work_events_space_id_fkey"
 		}),
+]);
+
+// A step is one attempt at advancing a Thread: what was going to be done, that
+// it was started, what it produced, and which round it belonged to. Before
+// this table the same information was a single `varchar(32)` on the Thread,
+// which could state an intention and nothing else — no start, no outcome, no
+// history — so a user who followed the call to action into another Area left
+// no trace, and rounds had no factual basis.
+//
+// `slot` is what keeps human attention singular while long-running system work
+// continues: an action with an operation behind it (search, experiment) moves
+// to `background` once started and frees the `primary` slot immediately.
+export const inquiryThreadSteps = pgTable("inquiry_thread_steps", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	threadId: varchar("thread_id", { length: 36 }).notNull(),
+	kind: varchar({ length: 32 }).notNull(),
+	status: varchar({ length: 16 }).default('in_progress').notNull(),
+	slot: varchar({ length: 16 }).default('primary').notNull(),
+	// The note belongs to the step it describes rather than to the Thread, so
+	// a note written for a background search is not lost just because the
+	// Thread column projects the primary slot only.
+	note: text(),
+	// What this step produced, once it exists. Deliberately a loose reference
+	// and not an FK: the targets live in six different Areas, and a step must
+	// survive its target being deleted rather than cascade away with it.
+	targetRefKind: varchar("target_ref_kind", { length: 32 }),
+	targetRefId: varchar("target_ref_id", { length: 36 }),
+	// Set when the round closes out, which is what makes Iteration history
+	// able to say which steps a round actually went through.
+	iterationId: varchar("iteration_id", { length: 36 }),
+	origin: varchar({ length: 16 }).default('user').notNull(),
+	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }),
+	completedAt: timestamp("completed_at", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_inquiry_thread_steps_thread_id").using("btree", table.threadId.asc().nullsLast(), table.createdAt.desc()),
+	index("ix_inquiry_thread_steps_project_id").using("btree", table.projectId.asc().nullsLast()),
+	// The single-primary-step rule, enforced by the database rather than by
+	// whichever caller remembers it.
+	uniqueIndex("uq_inquiry_thread_steps_primary_open").using("btree", table.threadId.asc().nullsLast()).where(sql`slot = 'primary' AND status = 'in_progress'`),
+	foreignKey({
+			columns: [table.threadId, table.projectId, table.spaceId],
+			foreignColumns: [inquiryThreads.objectId, inquiryThreads.projectId, inquiryThreads.spaceId],
+			name: "inquiry_thread_steps_thread_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "inquiry_thread_steps_project_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "inquiry_thread_steps_space_id_fkey"
+		}),
+	// An Iteration is deleted only with its Thread, which takes the steps too;
+	// this keeps the round pointer honest if one is ever removed on its own.
+	// Split in two on purpose: SET NULL clears every column of the key it is
+	// declared on, so a composite key carrying space_id would blank the tenant
+	// along with the pointer. The single-column reference does the clearing and
+	// the composite one enforces tenancy without cascading.
+	foreignKey({
+			columns: [table.iterationId],
+			foreignColumns: [inquiryIterations.id],
+			name: "inquiry_thread_steps_iteration_delete_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.iterationId, table.projectId, table.spaceId],
+			foreignColumns: [inquiryIterations.id, inquiryIterations.projectId, inquiryIterations.spaceId],
+			name: "inquiry_thread_steps_iteration_fkey"
+		}),
+	check("ck_inquiry_thread_steps_kind", sql`(kind)::text = ANY (ARRAY[('clarify_or_decompose'::character varying)::text, ('search_acquisition'::character varying)::text, ('design_run_experiment'::character varying)::text, ('read_evidence'::character varying)::text, ('synthesize'::character varying)::text, ('promote_knowledge'::character varying)::text, ('create_decision_case'::character varying)::text, ('create_delivery_task'::character varying)::text])`),
+	check("ck_inquiry_thread_steps_status", sql`(status)::text = ANY (ARRAY[('in_progress'::character varying)::text, ('done'::character varying)::text, ('abandoned'::character varying)::text])`),
+	check("ck_inquiry_thread_steps_slot", sql`(slot)::text = ANY (ARRAY[('primary'::character varying)::text, ('background'::character varying)::text])`),
+	check("ck_inquiry_thread_steps_origin", sql`(origin)::text = ANY (ARRAY[('user'::character varying)::text, ('advice'::character varying)::text, ('system'::character varying)::text])`),
+	check("ck_inquiry_thread_steps_completed_at", sql`(status = 'in_progress') = (completed_at IS NULL)`),
+	check("ck_inquiry_thread_steps_target_ref", sql`(target_ref_kind IS NULL) = (target_ref_id IS NULL)`),
 ]);
 
 // Personal Focus (plan section 9.6): each member's own working set, separate

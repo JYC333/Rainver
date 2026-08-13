@@ -11,6 +11,18 @@ export const spaces = pgTable("spaces", {
 	snapshotMaxCountDefault: integer("snapshot_max_count_default"),
 	oversightMode: varchar("oversight_mode", { length: 16 }).notNull().default('none'),
 	egressNotificationsEnabled: boolean("egress_notifications_enabled").notNull().default(false),
+	/**
+	 * Whether a member may copy content out of this Space into their personal
+	 * one (ADR 0013 amendments 6a/6b). Default off, matching this ADR's threat
+	 * model: the failure guarded against is accidental disclosure, so defaults
+	 * collapse inward and widening is a deliberate act by an owner or admin.
+	 *
+	 * Separate from `egress_notifications_enabled`, which governs whether an
+	 * egress is *announced*. Whether it is permitted and whether it is announced
+	 * are two questions, and one switch answering both would mean turning off
+	 * the announcement quietly turns off the capability.
+	 */
+	memberCopyOutEnabled: boolean("member_copy_out_enabled").notNull().default(false),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

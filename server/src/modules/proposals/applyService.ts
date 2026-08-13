@@ -23,11 +23,33 @@ import { PgProjectFolderRepository, projectFolderAbsoluteRoot } from "../project
 import { validatePath } from "../projectFolders/pathPolicy";
 import type {
   ProposalAcceptOut,
+  ProposalAcceptResultType,
   ProposalApprovalOut,
   ProposalOut,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { loadProtocol } from "../providers/protocolRuntime";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService";
 import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
+
+/**
+ * The accept response is a union discriminated on `result_type`, and the
+ * applier registry types its payload only as an object, so the boundary parses
+ * rather than asserts. This is also the one place a protocol schema validates
+ * a server response, which is what keeps the typed members honest: an applier
+ * that stops returning what its contract declares fails here instead of
+ * quietly reaching the client.
+ */
+async function acceptOut(
+  proposal: ProposalOut,
+  result: { result_type: ProposalAcceptResultType; result: Record<string, unknown> },
+): Promise<ProposalAcceptOut> {
+  const protocol = await loadProtocol();
+  return protocol.ProposalAcceptOutSchema.parse({
+    proposal,
+    result_type: result.result_type,
+    result: result.result,
+  }) as ProposalAcceptOut;
+}
 
 export class ProposalApplyHttpError extends Error {
   constructor(
@@ -193,7 +215,7 @@ export class PgProposalApplyService {
       );
       if (!accepted) throw new Error("accepted proposal is not visible after apply");
       return {
-        outcome: { proposal: accepted, result_type: result.result_type, result: result.result },
+        outcome: await acceptOut(accepted, result),
         rollback: rollbackOnFailure ?? undefined,
       };
     } catch (error) {
@@ -261,7 +283,7 @@ export class PgProposalApplyService {
       const accepted = await new PgProposalRepository(client).getVisible(proposal.space_id, grantingUserId, proposal.id);
       if (!accepted) throw new Error("accepted proposal is not visible after grant apply");
       await client.query("COMMIT");
-      return { proposal: accepted, result_type: result.result_type, result: result.result };
+      return await acceptOut(accepted, result);
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
       if (rollbackOnFailure) await rollbackOnFailure().catch(() => undefined);

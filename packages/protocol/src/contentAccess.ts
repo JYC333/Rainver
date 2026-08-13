@@ -20,4 +20,3 @@ export const ContentReadTraceSchema = z
   })
   .passthrough();
 
-export type ContentReadTrace = z.infer<typeof ContentReadTraceSchema>;

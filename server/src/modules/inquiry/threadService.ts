@@ -18,17 +18,22 @@ import { RetrievalProjectionService } from "../retrieval";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter";
 import { recordThreadRevision } from "./threadRevisionService";
 
+/**
+ * Actions only, in the order of the stages they belong to. The vocabulary
+ * previously also carried `pause` and `wait_for_monitoring`, which are states
+ * rather than actions: `pause` restated what `attention_state` already says,
+ * and waiting on monitoring is what a running background step means. Offering
+ * them beside "Read evidence" put two different kinds of thing in one list.
+ */
 export const NEXT_FOCUS_KINDS = [
+  "clarify_or_decompose",
   "search_acquisition",
+  "design_run_experiment",
   "read_evidence",
   "synthesize",
-  "clarify_or_decompose",
-  "design_run_experiment",
+  "promote_knowledge",
   "create_decision_case",
   "create_delivery_task",
-  "wait_for_monitoring",
-  "promote_knowledge",
-  "pause",
 ] as const;
 export type NextFocusKind = (typeof NEXT_FOCUS_KINDS)[number];
 

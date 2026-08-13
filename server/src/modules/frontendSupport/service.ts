@@ -587,8 +587,16 @@ export class PgFrontendSupportService {
       due_connections: string | number;
     }>(
       `SELECT
-         (SELECT count(*)::text FROM source_items
-           WHERE space_id = $1 AND deleted_at IS NULL AND status IN ('new', 'triaged', 'selected')) AS open_items,
+         -- Triage moved from source_items.status to per-user library_status, so
+         -- there is no longer an item-level "open" flag. Home stays space-scoped:
+         -- an item is open while nobody in the space has dismissed it, which is
+         -- what the old status IN ('new','triaged','selected') meant.
+         (SELECT count(*)::text FROM source_items si
+           WHERE si.space_id = $1 AND si.deleted_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM source_item_user_states suis
+                WHERE suis.space_id = si.space_id AND suis.source_item_id = si.id
+                  AND suis.library_status IN ('ignored', 'archived'))) AS open_items,
          (SELECT count(*)::text FROM source_items
            WHERE space_id = $1 AND deleted_at IS NULL AND created_at >= date_trunc('day', now())) AS new_items_today,
          (SELECT count(*)::text FROM extraction_jobs

@@ -23,7 +23,7 @@ export function ReasonDialog({ open, onOpenChange, title, description, label, pl
   placeholder?: string
   required?: boolean
   confirmLabel: string
-  onConfirm: (reason: string) => Promise<void> | void
+  onConfirm: (reason: string) => Promise<void | boolean> | void | boolean
 }) {
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
@@ -34,8 +34,8 @@ export function ReasonDialog({ open, onOpenChange, title, description, label, pl
     if (required && !reason.trim()) { toast.error(`${label} is required`); return }
     setSaving(true)
     try {
-      await onConfirm(reason.trim())
-      onOpenChange(false)
+      const confirmed = await onConfirm(reason.trim())
+      if (confirmed !== false) onOpenChange(false)
     } catch (error) {
       toast.error(errMsg(error))
     } finally {

@@ -247,6 +247,38 @@ npm run build
 
 ```
 
+## SQL Guards
+
+Two layers, both prepare real statements against a migrated schema so a bad
+column, an ambiguous reference, or a parameter typed two ways fails at test
+time instead of in a rarely-taken production branch.
+
+`test/staticSqlPrepare.test.ts` runs in any normal `vitest run` and covers SQL
+written as a complete literal. Runtime-assembled SQL (column-list constants,
+clause helpers, builder-generated parameter numbering) is invisible to it, so
+that half is captured while the suites run and prepared afterwards:
+
+```bash
+cd server
+rm -rf .tmp/sql-capture
+SQL_CAPTURE_DIR=$PWD/.tmp/sql-capture npx vitest run
+SQL_CAPTURE_DIR=$PWD/.tmp/sql-capture npx vitest run test/capturedSqlPrepare.test.ts
+```
+
+Only statements issued from `src/` are recorded; test fixtures build rows with
+their own SQL, including deliberately invalid values. Coverage equals whatever
+the DB-backed suites exercise — it rises with test coverage rather than being a
+guarantee. Without `SQL_CAPTURE_DIR` the capture shim is inert.
+
+## Model Limit Registry
+
+`server/src/modules/providers/modelSpecs.ts` is the single source for per-model
+context windows and output guidance; both Runtime Context planning and provider
+request building read it. Every row carries `source` and `verifiedOn`, and
+`test/modelSpecs.test.ts` prints how stale the oldest row is on each run. When
+adding a model or touching a figure, re-read the vendor page in `source` and
+move `verifiedOn` to that day.
+
 ## Product acceptance
 
 Run the deterministic product gate from the repository root:

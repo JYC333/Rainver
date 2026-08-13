@@ -57,6 +57,7 @@ import { personalMemoryGrantsModule } from "../modules/personalMemoryGrants";
 import { memoryModule } from "../modules/memory";
 import { contextOpsModule } from "../modules/contextOps";
 import { askSpaceModule } from "../modules/askSpace";
+import { captureModule } from "../modules/capture";
 import { captureFilingModule } from "../modules/captureFiling";
 import { crossSpaceRetrievalModule } from "../modules/crossSpaceRetrieval";
 import { activityModule } from "../modules/activity";
@@ -148,6 +149,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   memoryModule,
   contextOpsModule,
   askSpaceModule,
+  captureModule,
   captureFilingModule,
   crossSpaceRetrievalModule,
   activityModule,

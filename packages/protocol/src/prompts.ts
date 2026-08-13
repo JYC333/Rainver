@@ -69,7 +69,6 @@ export const PromptMessageSchema = z
 export type PromptMessage = z.infer<typeof PromptMessageSchema>;
 
 export const PromptRenderingEngineSchema = z.enum(["plain"]);
-export type PromptRenderingEngine = z.infer<typeof PromptRenderingEngineSchema>;
 
 /** The logical shape stored in `evolvable_asset_versions.content_json` for a prompt version. */
 export const PromptAssetContentSchema = z
@@ -262,6 +261,7 @@ export const PromptPromotionRequestSchema = z
   })
   .strict();
 export type PromptPromotionRequest = z.infer<typeof PromptPromotionRequestSchema>;
+export type PromptPromotionRequestInput = z.input<typeof PromptPromotionRequestSchema>;
 
 export const PromptRollbackRequestSchema = z
   .object({
@@ -283,7 +283,6 @@ export const PromptResolveRequestSchema = z
     variables: JsonObjectSchema.optional(),
   })
   .strict();
-export type PromptResolveRequest = z.infer<typeof PromptResolveRequestSchema>;
 
 export const PromptResolveResultSchema = z
   .object({

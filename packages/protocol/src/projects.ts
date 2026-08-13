@@ -16,9 +16,6 @@ export const ProjectPublicSummaryReviewStatusSchema = z.enum([
   "approved",
   "archived",
 ]);
-export type ProjectPublicSummaryReviewStatus = z.infer<
-  typeof ProjectPublicSummaryReviewStatusSchema
->;
 
 /** Pointer-only provenance ref. Must never embed raw source content. */
 export const ProjectPublicSummarySourceRefSchema = z
@@ -29,9 +26,6 @@ export const ProjectPublicSummarySourceRefSchema = z
     trust_level: z.string().optional(),
   })
   .passthrough();
-export type ProjectPublicSummarySourceRef = z.infer<
-  typeof ProjectPublicSummarySourceRefSchema
->;
 
 export const ProjectPublicSummarySchema = z
   .object({
@@ -52,7 +46,6 @@ export const ProjectPublicSummarySchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ProjectPublicSummary = z.infer<typeof ProjectPublicSummarySchema>;
 
 export const ProjectPublicSummaryListResponseSchema = z
   .object({
@@ -63,9 +56,6 @@ export const ProjectPublicSummaryListResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ProjectPublicSummaryListResponse = z.infer<
-  typeof ProjectPublicSummaryListResponseSchema
->;
 
 /**
  * PUT body. A bare write stages a `draft`; `review_status` other than `draft`
@@ -196,7 +186,6 @@ export const ProjectModeTransitionSchema = z
     created_at: ISODateTimeSchema,
   })
   .passthrough();
-export type ProjectModeTransition = z.infer<typeof ProjectModeTransitionSchema>;
 
 export const ProjectAttentionSeveritySchema = z.enum(["low", "normal", "high", "critical"]);
 export type ProjectAttentionSeverity = z.infer<typeof ProjectAttentionSeveritySchema>;
@@ -288,4 +277,3 @@ export const ProjectOverviewResponseSchema = z
     ),
   })
   .passthrough();
-export type ProjectOverviewResponse = z.infer<typeof ProjectOverviewResponseSchema>;

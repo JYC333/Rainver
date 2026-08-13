@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectOperation } from '../../types/api'
-import { researchOperationDetail, researchOperationPercent, researchOperationSteps, synthesisHealth } from './FocusResearchWorkbench'
+import { researchOperationDetail, researchOperationNextStep, researchOperationPercent, researchOperationSteps, synthesisHealth } from './FocusResearchWorkbench'
 
 function operation(overrides: Partial<ProjectOperation['progress_json']> = {}): ProjectOperation {
   return {
@@ -239,5 +239,53 @@ describe('FocusResearchWorkbench operation progress', () => {
     value.status = 'failed'
     expect(researchOperationDetail(value)).toBe('2/9 screening batches · 18/87 materials classified')
     expect(researchOperationPercent(value)).toBeGreaterThan(40)
+  })
+})
+
+/**
+ * The failure that motivated this: arXiv never imported, screening saw only the
+ * other provider's three items, and the run reported "no relevant evidence" —
+ * advising the reader to broaden a query that had never actually been run in
+ * full. A conclusion drawn over a partial corpus has to say so.
+ */
+describe('completion wording when a source never contributed', () => {
+  const emptyOutcome = {
+    current_stage: 'complete',
+    empty_result: { kind: 'no_relevant_sources', message: 'no relevant material' },
+  } as Partial<ProjectOperation['progress_json']>
+
+  it('marks the conclusion as drawn from incomplete coverage', () => {
+    const op = operation({ ...emptyOutcome, coverage_degraded: true })
+    expect(researchOperationDetail(op)).toContain('incomplete source coverage')
+  })
+
+  it('names the provider that did not finish, and points at the import first', () => {
+    const op = operation({
+      ...emptyOutcome,
+      backfill_progress: {
+        total_segments: 2, completed_segments: 1, failed_segments: 0, deferred_segments: 1,
+        running_segments: 0, pending_segments: 1, items_ingested: 3, plans: [],
+        deferred_sources: [{ provider_key: 'arxiv', provider_display_name: 'arXiv' }],
+        updated_at: '2026-08-12T00:00:00.000Z',
+      },
+    } as Partial<ProjectOperation['progress_json']>)
+    const next = researchOperationNextStep(op)
+    expect(next).toContain('arXiv did not finish importing')
+    expect(next).toContain('incomplete corpus')
+    // Broadening the query is the wrong first move when a source is missing.
+    expect(next).not.toBe('Next: review the collected materials and adjust the research scope or search settings. This is a completed research outcome, not an execution failure.')
+  })
+
+  it('keeps the plain wording when every source did report', () => {
+    const op = operation({
+      ...emptyOutcome,
+      backfill_progress: {
+        total_segments: 2, completed_segments: 2, failed_segments: 0, deferred_segments: 0,
+        running_segments: 0, pending_segments: 0, items_ingested: 40, plans: [],
+        updated_at: '2026-08-12T00:00:00.000Z',
+      },
+    } as Partial<ProjectOperation['progress_json']>)
+    expect(researchOperationDetail(op)).toBe('Screening complete · no relevant evidence for synthesis')
+    expect(researchOperationNextStep(op)).toContain('not an execution failure')
   })
 })

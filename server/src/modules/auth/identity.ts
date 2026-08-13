@@ -37,6 +37,13 @@ export interface UserSpace {
   /** Immutable, creation-time only. Visible to every member (transparency requirement). */
   oversight_mode: string;
   egress_notifications_enabled: boolean;
+  /**
+   * Active members, the client's signal for whether a "team / mine" division
+   * means anything here. A single-member Space has no team to divide from, and
+   * showing the ladder there is noise rather than a privacy affordance — the
+   * stored model is identical either way.
+   */
+  member_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -94,6 +101,7 @@ type SpaceRow = {
   egress_notifications_enabled: boolean;
   created_at: Date | string;
   updated_at: Date | string;
+  member_count?: string | number;
 };
 
 let repositoryOverride: AuthRepository | null = null;
@@ -269,7 +277,9 @@ export class PgAuthRepository implements AuthRepository {
   async getUserSpaces(userId: string): Promise<UserSpace[]> {
     const res = await this.pool.query<SpaceRow>(
       `SELECT s.id, s.name, s.type, m.role, s.created_by_user_id, s.oversight_mode,
-              s.egress_notifications_enabled, s.created_at, s.updated_at
+              s.egress_notifications_enabled, s.created_at, s.updated_at,
+              (SELECT count(*) FROM space_memberships active
+                WHERE active.space_id = s.id AND active.status = 'active') AS member_count
          FROM space_memberships m
          JOIN spaces s ON s.id = m.space_id
         WHERE m.user_id = $1 AND m.status = 'active'
@@ -283,6 +293,7 @@ export class PgAuthRepository implements AuthRepository {
       role: row.role,
       oversight_mode: row.oversight_mode,
       egress_notifications_enabled: row.egress_notifications_enabled,
+      member_count: Number(row.member_count ?? 1),
       created_at: asIso(row.created_at)!,
       updated_at: asIso(row.updated_at)!,
     }));
@@ -291,7 +302,9 @@ export class PgAuthRepository implements AuthRepository {
   async getSpaceForUser(userId: string, spaceId: string): Promise<SpaceView | AuthFailure | null> {
     const res = await this.pool.query<SpaceRow>(
       `SELECT s.id, s.name, s.type, m.role, s.created_by_user_id, s.oversight_mode,
-              s.egress_notifications_enabled, s.created_at, s.updated_at
+              s.egress_notifications_enabled, s.created_at, s.updated_at,
+              (SELECT count(*) FROM space_memberships active
+                WHERE active.space_id = s.id AND active.status = 'active') AS member_count
          FROM spaces s
          JOIN space_memberships m ON m.space_id = s.id
         WHERE s.id = $1 AND m.user_id = $2 AND m.status = 'active'
@@ -310,6 +323,7 @@ export class PgAuthRepository implements AuthRepository {
       role: row.role,
       oversight_mode: row.oversight_mode,
       egress_notifications_enabled: row.egress_notifications_enabled,
+      member_count: Number(row.member_count ?? 1),
       created_by_user_id: row.created_by_user_id,
       created_at: asIso(row.created_at)!,
       updated_at: asIso(row.updated_at)!,

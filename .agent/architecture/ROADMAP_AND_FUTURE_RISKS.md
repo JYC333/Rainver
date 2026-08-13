@@ -150,10 +150,10 @@ OpenCode-first Router preference and does not route the managed API path through
   cost-based retry supervision must treat that uncertainty explicitly.
 - Managed-provider cancellation currently relies on discarding late results;
   propagate abort support before treating it as reliable execution cancellation.
-- A tool-enabled managed run that degrades to a tool-free completion must emit
-  visible uncertainty rather than looking equivalent to a fully capable run.
-- Keep Codex CLI at conservative trust while runtime-internal subagent control
-  remains unverified; a server tool boundary alone cannot prevent hidden fan-out.
+- Keep Codex CLI at conservative trust. Runtime-internal subagent control stays
+  unverified and is no longer required to change — see the delegation boundary
+  in [EXECUTION_MODEL.md](EXECUTION_MODEL.md) for why low trust is the accepted
+  price rather than a gap.
 
 **Not now**
 - Docker sandbox pool, production container infrastructure, broad runtime marketplace.
@@ -307,7 +307,7 @@ OpenCode-first Router preference and does not route the managed API path through
   lives in [autonomy.md](../modules/autonomy.md) and
   [automations.md](../modules/automations.md). Remaining
   planning/routing/verification follow-ups (A2.1, B4.1, D1.2) live in
-  [product-capability-followups-plan.md](../plans/product-capability-followups-plan.md).
+  [backlog.md](../plans/backlog.md).
 - Decision 2-B (2026-07-11): the evolvable-asset promotion evaluation gate
   starts **warn-only**. When an asset type accumulates enough evaluation
   cases (threshold set in plan Track D2), high/critical-risk promotions for

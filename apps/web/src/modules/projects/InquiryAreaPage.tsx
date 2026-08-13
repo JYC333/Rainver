@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -11,7 +11,7 @@ import { errMsg } from '../../lib/utils'
 import { currentPendingContextVersion } from './currentPendingContextVersion'
 import type {
   InquiryCandidate, InquiryEvidenceSignal, InquiryIteration, InquiryThread, InquiryThreadAdvice,
-  InquiryThreadDetail, NoteSummary, Project, ProjectBriefVersion, ProjectCorpusItem,
+  InquiryThreadDetail, InquiryThreadStep, NoteSummary, Project, ProjectBriefVersion, ProjectCorpusItem,
   ProjectResearchWorkflow, SpaceMember,
 } from '../../types/api'
 import { Button } from '../../components/ui/button'
@@ -21,7 +21,7 @@ import { Tabs, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../components/ui/dialog'
-import { AdvanceCard } from './inquiryArea/AdvanceCard'
+import { StageWorkspace } from './inquiryArea/StageWorkspace'
 import { MapView } from './inquiryArea/MapView'
 import { ReviewView } from './inquiryArea/ReviewView'
 import { ThreadHeader } from './inquiryArea/ThreadHeader'
@@ -29,7 +29,8 @@ import { ThreadNavigator } from './inquiryArea/ThreadNavigator'
 import { ThreadTabs } from './inquiryArea/ThreadTabs'
 import { CreateThreadDialog } from './inquiryArea/dialogs'
 import { draftWorkflowFor, isQuestionRefined, startedWorkflowFor, type ThreadTabId } from './inquiryArea/nextFocus'
-import { useDeclareProjectCaptureTarget } from './notes/projectCaptureTarget'
+import { deriveStages } from './inquiryArea/stages'
+import { useDeclareProjectCaptureTarget } from '../../contexts/CaptureContext'
 
 type ViewId = 'focus' | 'map' | 'review'
 
@@ -56,8 +57,13 @@ export default function InquiryAreaPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<InquiryThreadDetail | null>(null)
   const [iterations, setIterations] = useState<InquiryIteration[]>([])
+  const [steps, setSteps] = useState<InquiryThreadStep[]>([])
   const [signals, setSignals] = useState<InquiryEvidenceSignal[]>([])
   const [advice, setAdvice] = useState<InquiryThreadAdvice | null>(null)
+  const threadScopeGeneration = useRef(0)
+  const selectedThreadScope = `${projectId ?? ''}:${selectedId ?? ''}`
+  const selectedThreadScopeRef = useRef(selectedThreadScope)
+  selectedThreadScopeRef.current = selectedThreadScope
   // Keyed by Project: this route keeps its component instance when the
   // Project changes, so an unkeyed cache would keep serving the previous
   // Project's titles.
@@ -86,22 +92,31 @@ export default function InquiryAreaPage() {
     }, { replace: true })
   }, [setSearchParams])
 
-  // Best-effort and separate from the main load: whether a Thread has a
-  // evidence search isn't part of the Inquiry read model, and a failure
-  // here must not block Thread loading.
-  useEffect(() => {
+  const loadResearchWorkflows = useCallback(async () => {
     if (!projectId) return
-    void projectResearchApi.workflows(projectId).then(setResearchWorkflows).catch(() => setResearchWorkflows([]))
+    try {
+      setResearchWorkflows(await projectResearchApi.workflows(projectId))
+    } catch { /* Keep the last successful snapshot; active work may still be running. */ }
   }, [projectId])
+
+  // Best-effort and separate from the main load: whether a Thread has an
+  // evidence search isn't part of the Inquiry read model, and a failure here
+  // must not block Thread loading.
+  useEffect(() => {
+    // A previous Project's snapshot is not useful, but a transient failure
+    // while refreshing this Project must not turn active work into idle work.
+    setResearchWorkflows([])
+    void loadResearchWorkflows()
+  }, [loadResearchWorkflows])
 
   useEffect(() => {
     if (!activeSpaceId) return
     void spacesApi.members(activeSpaceId).then(setMembers).catch(() => setMembers([]))
   }, [activeSpaceId])
 
-  const loadProjectScope = useCallback(async () => {
+  const loadProjectScope = useCallback(async (showLoading = true) => {
     if (!projectId) return
-    setLoading(true)
+    if (showLoading) setLoading(true)
     try {
       const [proj, brief, list, focus, pending, deferred, notePage] = await Promise.all([
         projectsApi.get(projectId),
@@ -124,42 +139,57 @@ export default function InquiryAreaPage() {
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
   }, [projectId])
 
   useEffect(() => { void loadProjectScope() }, [loadProjectScope])
 
   const loadThreadScope = useCallback(async () => {
+    const generation = ++threadScopeGeneration.current
+    const scope = `${projectId ?? ''}:${selectedId ?? ''}`
+    const isCurrent = () => generation === threadScopeGeneration.current
+      && scope === selectedThreadScopeRef.current
     if (!projectId || !selectedId) {
       setDetail(null)
       setIterations([])
+      setSteps([])
       setSignals([])
       setAdvice(null)
       return
     }
     try {
-      const [nextDetail, nextIterations, nextSignals] = await Promise.all([
+      const [nextDetail, nextIterations, nextSteps, nextSignals] = await Promise.all([
         inquiryApi.getThread(projectId, selectedId),
         inquiryApi.listIterations(projectId, selectedId),
+        inquiryApi.listSteps(projectId, selectedId),
         inquiryApi.listSignals(projectId, selectedId),
       ])
+      if (!isCurrent()) return
       setDetail(nextDetail)
       setIterations(nextIterations)
+      setSteps(nextSteps)
       setSignals(nextSignals)
     } catch (error) {
-      toast.error(errMsg(error))
+      if (isCurrent()) toast.error(errMsg(error))
+      return
     }
     // Advice is an aid, not part of the Thread read model: a failure here must
     // not blank out the Thread the user came to work on.
     try {
-      setAdvice(await inquiryApi.getAdvice(projectId, selectedId))
+      const nextAdvice = await inquiryApi.getAdvice(projectId, selectedId)
+      if (isCurrent()) setAdvice(nextAdvice)
     } catch {
-      setAdvice(null)
+      if (isCurrent()) setAdvice(null)
     }
   }, [projectId, selectedId])
 
-  useEffect(() => { void loadThreadScope() }, [loadThreadScope])
+  useEffect(() => {
+    void loadThreadScope()
+    // Invalidate every request owned by the Thread being left before the next
+    // effect starts. An older poll must never repoint B's workspace back to A.
+    return () => { threadScopeGeneration.current += 1 }
+  }, [loadThreadScope])
 
   // Corpus titles turn Signal rows from opaque ids into readable evidence, so
   // fetch it only once and only when a Thread actually has Signals.
@@ -208,9 +238,29 @@ export default function InquiryAreaPage() {
     if (changed) setSearchParams(params, { replace: true })
   }, [searchParams, setSearchParams])
 
+  const refreshInFlight = useRef(new Map<string, { promise: Promise<void>; queued: boolean }>())
   const refresh = useCallback(async () => {
-    await Promise.all([loadProjectScope(), loadThreadScope()])
-  }, [loadProjectScope, loadThreadScope])
+    const scope = `${projectId ?? ''}:${selectedId ?? ''}`
+    const existing = refreshInFlight.current.get(scope)
+    if (existing) {
+      existing.queued = true
+      return existing.promise
+    }
+    const flight = { promise: Promise.resolve(), queued: false }
+    const request = (async () => {
+      do {
+        flight.queued = false
+        await Promise.all([
+          loadProjectScope(false), loadThreadScope(), loadResearchWorkflows(),
+        ])
+      } while (flight.queued)
+    })().finally(() => {
+      if (refreshInFlight.current.get(scope) === flight) refreshInFlight.current.delete(scope)
+    })
+    flight.promise = request
+    refreshInFlight.current.set(scope, flight)
+    return request
+  }, [loadProjectScope, loadResearchWorkflows, loadThreadScope, projectId, selectedId])
 
   const startedWorkflow = useMemo(
     () => (detail ? startedWorkflowFor(detail.id, researchWorkflows) : null),
@@ -221,6 +271,38 @@ export default function InquiryAreaPage() {
     [detail, researchWorkflows],
   )
   const pendingForThread = detail ? candidates.filter(candidate => candidate.thread_id === detail.id) : []
+  const stageSummary = detail
+    ? deriveStages({
+      detail,
+      signals,
+      pendingCandidateCount: pendingForThread.length,
+      startedWorkflow,
+      questionRefined,
+      roundSteps: steps.filter(step => step.iteration_id === null),
+      closedRounds: iterations.length,
+      roundStartedAt: iterations[0]?.created_at ?? null,
+    })
+    : null
+  const hasLiveWork = steps.some(step => step.status === 'in_progress') || startedWorkflow !== null
+
+  // Returning to a backgrounded tab should never leave a completed search or
+  // newly generated recommendation looking stale, even when no polling loop is
+  // active for this Thread.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [refresh])
+
+  // Five seconds is a read refresh cadence only. Model analysis remains
+  // event-driven on the server; idle Threads install no interval at all.
+  useEffect(() => {
+    if (!hasLiveWork) return
+    const interval = window.setInterval(() => { void refresh() }, 5_000)
+    return () => window.clearInterval(interval)
+  }, [hasLiveWork, refresh])
 
   if (!projectId) return null
 
@@ -279,8 +361,15 @@ export default function InquiryAreaPage() {
             {detail
               ? (
                 <>
-                  <ThreadHeader projectId={projectId} detail={detail} members={members} onChanged={refresh} />
-                  <AdvanceCard
+                  <ThreadHeader
+                    projectId={projectId}
+                    detail={detail}
+                    members={members}
+                    round={stageSummary?.round ?? iterations.length + 1}
+                    allowEarlyClose={stageSummary?.current !== 'land'}
+                    onChanged={refresh}
+                  />
+                  <StageWorkspace
                     projectId={projectId}
                     detail={detail}
                     signals={signals}
@@ -288,6 +377,9 @@ export default function InquiryAreaPage() {
                     startedWorkflow={startedWorkflow}
                     questionRefined={questionRefined}
                     advice={advice}
+                    steps={steps}
+                    closedRounds={iterations.length}
+                    roundStartedAt={iterations[0]?.created_at ?? null}
                     onOpenTab={setThreadTab}
                     onChanged={refresh}
                   />

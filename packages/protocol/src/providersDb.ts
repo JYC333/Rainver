@@ -24,4 +24,3 @@ export const MODEL_PROVIDERS_READ_COLUMNS = [
   "created_at",
   "updated_at",
 ] as const;
-export type ModelProvidersReadColumn = (typeof MODEL_PROVIDERS_READ_COLUMNS)[number];

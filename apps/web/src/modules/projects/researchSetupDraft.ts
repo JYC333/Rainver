@@ -1,6 +1,6 @@
 import type {
   ProjectResearchInitialIntakeInput,
-  ProjectResearchQuestionRefinement,
+  ProjectResearchQuestionRefinementResult,
   ProjectResearchWorkflow,
 } from '../../types/api'
 
@@ -17,7 +17,7 @@ export interface ResearchSetupDraft {
   report_depth: 'quick' | 'full'
   question_refine_skipped: boolean
   /** Latest refinement assessment; persisted with the server-side draft so it survives devices and sessions. */
-  question_refinement?: ProjectResearchQuestionRefinement | null
+  question_refinement?: ProjectResearchQuestionRefinementResult | null
   execution: {
     model_provider_id: string
     model_name: string
@@ -61,7 +61,7 @@ export function researchSetupDraftFromWorkflow(
     report_depth: initialIntake.report_depth === 'quick' ? 'quick' : initialIntake.report_depth === 'full' ? 'full' : corpusItemCount < 15 ? 'quick' : 'full',
     question_refine_skipped: state.question_refine_skipped !== false,
     question_refinement: state.question_refinement && typeof state.question_refinement === 'object' && !Array.isArray(state.question_refinement)
-      ? state.question_refinement as ProjectResearchQuestionRefinement
+      ? state.question_refinement as ProjectResearchQuestionRefinementResult
       : null,
     execution: {
       model_provider_id: stringValue(execution.model_provider_id) ?? '',

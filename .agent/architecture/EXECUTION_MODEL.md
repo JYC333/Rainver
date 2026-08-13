@@ -407,8 +407,19 @@ subagents; that behavior is not uniformly controllable across runtimes.
 Claude runs currently render and verify a run-scoped `.claude/settings.json`
 denying the runtime-internal `Task` tool; OpenCode renders and verifies a
 run-scoped locked-agent `opencode.json` denying Task and webfetch; Codex
-remains `unknown` until its equivalent control is verified. Absence of a
-server tool alone does not prove single-agent execution.
+remains `unknown`. Absence of a server tool alone does not prove single-agent
+execution.
+
+Codex is not required to gain an equivalent control (decided 2026-08-13).
+Runtime-internal subagents widen no permission surface: they execute in the
+same worktree sandbox and the same freshly cleared `HOME`, reach providers only
+through the same loopback proxy, and spend the same Run cost cap, and
+file-scope conformance judges the resulting worktree diff whichever internal
+agent wrote it. What they do cost is attribution and cancellation certainty,
+and Codex is already priced for that — its `unknown` declaration fails the
+subagent conformance check by construction, which holds every Codex route at
+`low` trust. The declaration stays `unknown` because that is the truth; a
+verified value would have to come from an actual probe.
 
 ### Runtime capability declarations
 

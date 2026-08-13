@@ -100,6 +100,7 @@ export * from "./contextOps.js";
 
 // Ask Space unified entry-point contracts
 export * from "./askSpace.js";
+export * from "./capture.js";
 export * from "./capturefiling.js";
 export * from "./crossSpaceRetrieval.js";
 

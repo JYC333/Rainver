@@ -83,24 +83,6 @@ export const SkillSourceSchema = z
   .passthrough();
 export type SkillSource = z.infer<typeof SkillSourceSchema>;
 
-export const SkillPackageSchema = z
-  .object({
-    id: IdSchema,
-    source_id: IdSchema,
-    package_name: z.string().min(1),
-    version: z.string().nullable(),
-    license: z.string().nullable(),
-    raw_storage_ref: z.string().nullable(),
-    manifest_json: JsonObjectSchema,
-    normalized_json: JsonObjectSchema,
-    risk_level: SkillRiskLevelSchema,
-    status: SkillPackageStatusSchema,
-    created_at: ISODateTimeSchema,
-    updated_at: ISODateTimeSchema,
-  })
-  .passthrough();
-export type SkillPackage = z.infer<typeof SkillPackageSchema>;
-
 export const SkillPackageFilePreviewSchema = z
   .object({
     path: z.string().min(1),
@@ -124,6 +106,28 @@ export const SkillPackageFileSchema = SkillPackageFilePreviewSchema.extend({
   created_at: ISODateTimeSchema,
 }).passthrough();
 export type SkillPackageFile = z.infer<typeof SkillPackageFileSchema>;
+
+export const SkillPackageSchema = z
+  .object({
+    id: IdSchema,
+    source_id: IdSchema,
+    package_name: z.string().min(1),
+    version: z.string().nullable(),
+    license: z.string().nullable(),
+    raw_storage_ref: z.string().nullable(),
+    manifest_json: JsonObjectSchema,
+    normalized_json: JsonObjectSchema,
+    risk_level: SkillRiskLevelSchema,
+    status: SkillPackageStatusSchema,
+    created_at: ISODateTimeSchema,
+    updated_at: ISODateTimeSchema,
+    // Detail read only: `GET /skill-packages/:id` joins the owning Source and
+    // the file inventory; the list read returns neither.
+    source: SkillSourceSchema.optional(),
+    package_files: z.array(SkillPackageFileSchema).optional(),
+  })
+  .passthrough();
+export type SkillPackage = z.infer<typeof SkillPackageSchema>;
 
 export const SkillLocalOverlayScopeSchema = z.enum([
   "space",
@@ -200,9 +204,6 @@ export const SkillImportPreviewRequestSchema = z.object({
   url: z.string().min(1),
   source_type: SkillSourceTypeSchema.optional(),
 });
-export type SkillImportPreviewRequest = z.infer<
-  typeof SkillImportPreviewRequestSchema
->;
 
 export const SkillImportPreviewResponseSchema = z
   .object({
@@ -229,7 +230,6 @@ export const SkillImportRequestSchema = z.object({
   url: z.string().min(1),
   source_type: SkillSourceTypeSchema.optional(),
 });
-export type SkillImportRequest = z.infer<typeof SkillImportRequestSchema>;
 
 export const SkillConvertToCapabilityRequestSchema = z.object({
   capability_id: z.string().min(1).optional(),
@@ -240,9 +240,6 @@ export const SkillConvertToCapabilityRequestSchema = z.object({
   enable_for_project_id: IdSchema.nullish(),
   create_runtime_bindings: z.boolean().default(true),
 });
-export type SkillConvertToCapabilityRequest = z.infer<
-  typeof SkillConvertToCapabilityRequestSchema
->;
 
 export const SkillImportApprovalProposalResponseSchema = ProposalOutSchema;
 export type SkillImportApprovalProposalResponse = z.infer<

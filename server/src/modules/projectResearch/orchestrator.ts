@@ -81,7 +81,7 @@ import {
   PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS,
   latestPublicationWatermarkForItems,
 } from "./monitoringWindow";
-import { tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob";
+import { tryCompleteSearchStepForWorkflow, tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob";
 
 const MONITORING_FIELDS = new Set(["submittedDate", "lastUpdatedDate"]);
 const MAX_ITEMS_DEFAULT = 10_000;
@@ -980,7 +980,22 @@ export class ProjectResearchOrchestrator {
       // even after the user already approved it and synthesis started. That is
       // exactly what "I approved the checkpoint but it came back after
       // refresh" looks like from the outside.
-      const stillAtOrBeforeScreening = state.current_stage === "backfill" || state.current_stage === "screening";
+      // The stage alone is not enough: approving the gate does not move
+      // `current_stage` out of "screening" until the next tick advances it, so
+      // a reconcile racing that approval (the approval itself enqueues one)
+      // would re-enter the transition and drag the operation back. The gate's
+      // decision is the durable signal that screening is behind us.
+      const screeningGateDecided = await this.db.query<{ id: string }>(
+        `SELECT id FROM project_research_checkpoints
+          WHERE space_id=$1 AND project_id=$2 AND workflow_id=$3
+            AND checkpoint_type='screening_gate'
+            AND machine_result_json->>'operation_id'=$4
+            AND status <> 'pending'
+          LIMIT 1`,
+        [spaceId, row.project_id, state.workflow_id, row.id],
+      );
+      const stillAtOrBeforeScreening = !screeningGateDecided.rows[0]
+        && (state.current_stage === "backfill" || state.current_stage === "screening");
       if (backfillDone && stillAtOrBeforeScreening && !plans.rows.some((plan) => plan.status === "failed")) {
         state.coverage_degraded = deferredPlans.length > 0;
         // Keep the items-in-scope list and screening progress fresh on every
@@ -1456,7 +1471,10 @@ export class ProjectResearchOrchestrator {
         await this.flushPendingIncremental(spaceId, projectId, workflowId);
       }
       // A finished search changes what the pinned Thread should do next even
-      // when it produced no material Signal of its own.
+      // when it produced no material Signal of its own — and the Thread's
+      // evidence-gathering step is finished because the search is, so the user
+      // never has to come back and say so.
+      await tryCompleteSearchStepForWorkflow(this.db, { spaceId, projectId, workflowId });
       await tryQueueAdviceForWorkflowThread(this.db, {
         spaceId, userId, projectId, workflowId, triggerKind: "search_completed",
       });

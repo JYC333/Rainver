@@ -24,7 +24,6 @@ import { IdSchema, ISODateTimeSchema } from "./common.js";
 const JsonObjectSchema = z.record(z.unknown());
 
 export const CUSTOM_SOURCE_HANDLER_KIND_VALUES = ["built_in", "generated_custom"] as const;
-export type CustomSourceHandlerKind = (typeof CUSTOM_SOURCE_HANDLER_KIND_VALUES)[number];
 
 /**
  * Level 3 generated-handler language identifiers. `typescript_node` is the
@@ -35,7 +34,6 @@ export type CustomSourceHandlerKind = (typeof CUSTOM_SOURCE_HANDLER_KIND_VALUES)
  * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md`.
  */
 export const CUSTOM_SOURCE_HANDLER_LANGUAGE_VALUES = ["typescript_node", "declarative_pipeline_v1"] as const;
-export type CustomSourceHandlerLanguage = (typeof CUSTOM_SOURCE_HANDLER_LANGUAGE_VALUES)[number];
 
 export const CUSTOM_SOURCE_HANDLER_VERSION_STATUS_VALUES = [
   "draft",
@@ -45,8 +43,6 @@ export const CUSTOM_SOURCE_HANDLER_VERSION_STATUS_VALUES = [
   "superseded",
   "disabled",
 ] as const;
-export type CustomSourceHandlerVersionStatus =
-  (typeof CUSTOM_SOURCE_HANDLER_VERSION_STATUS_VALUES)[number];
 
 export const CUSTOM_SOURCE_HANDLER_RUN_STATUS_VALUES = [
   "queued",
@@ -56,7 +52,6 @@ export const CUSTOM_SOURCE_HANDLER_RUN_STATUS_VALUES = [
   "validation_failed",
   "blocked",
 ] as const;
-export type CustomSourceHandlerRunStatus = (typeof CUSTOM_SOURCE_HANDLER_RUN_STATUS_VALUES)[number];
 
 export const CUSTOM_SOURCE_REPAIR_STATUS_VALUES = [
   "ok",
@@ -64,10 +59,8 @@ export const CUSTOM_SOURCE_REPAIR_STATUS_VALUES = [
   "repair_pending",
   "disabled",
 ] as const;
-export type CustomSourceRepairStatus = (typeof CUSTOM_SOURCE_REPAIR_STATUS_VALUES)[number];
 
 export const CUSTOM_SOURCE_HANDLER_RUN_MODE_VALUES = ["scan", "test"] as const;
-export type CustomSourceHandlerRunMode = (typeof CUSTOM_SOURCE_HANDLER_RUN_MODE_VALUES)[number];
 
 export const CUSTOM_SOURCE_CREATOR_ROLE_VALUES = ["owner", "admin", "reviewer", "member"] as const;
 export type CustomSourceCreatorRole = (typeof CUSTOM_SOURCE_CREATOR_ROLE_VALUES)[number];
@@ -317,7 +310,6 @@ export const CustomSourceHandlerVersionDTOSchema = z
     superseded_at: ISODateTimeSchema.nullish(),
   })
   .passthrough();
-export type CustomSourceHandlerVersionDTO = z.infer<typeof CustomSourceHandlerVersionDTOSchema>;
 
 export const CustomSourceHandlerRunDTOSchema = z
   .object({
@@ -339,7 +331,6 @@ export const CustomSourceHandlerRunDTOSchema = z
     completed_at: ISODateTimeSchema.nullish(),
   })
   .passthrough();
-export type CustomSourceHandlerRunDTO = z.infer<typeof CustomSourceHandlerRunDTOSchema>;
 
 export const CustomSourcePendingProposalDTOSchema = z
   .object({
@@ -348,7 +339,6 @@ export const CustomSourcePendingProposalDTOSchema = z
     created_at: ISODateTimeSchema,
   })
   .passthrough();
-export type CustomSourcePendingProposalDTO = z.infer<typeof CustomSourcePendingProposalDTOSchema>;
 
 export const CustomSourceHandlerSummaryDTOSchema = z
   .object({
@@ -359,7 +349,6 @@ export const CustomSourceHandlerSummaryDTOSchema = z
     pending_proposals: z.array(CustomSourcePendingProposalDTOSchema),
   })
   .passthrough();
-export type CustomSourceHandlerSummaryDTO = z.infer<typeof CustomSourceHandlerSummaryDTOSchema>;
 
 // --- Handler sandbox contract (server-owned input.json / output.json) ---
 
@@ -435,7 +424,6 @@ export const CustomSourceHandlerOutputItemSchema = z
     evidence: z.array(CustomSourceHandlerOutputEvidenceSchema).default([]),
   })
   .passthrough();
-export type CustomSourceHandlerOutputItem = z.infer<typeof CustomSourceHandlerOutputItemSchema>;
 
 export const CustomSourceHandlerOutputSchema = z
   .object({
@@ -471,7 +459,6 @@ export const CustomSourceSpacePolicyDTOSchema = z
     updated_at: ISODateTimeSchema.nullish(),
   })
   .passthrough();
-export type CustomSourceSpacePolicyDTO = z.infer<typeof CustomSourceSpacePolicyDTOSchema>;
 
 export const CustomSourceSpacePolicyUpdateSchema = z
   .object({
@@ -503,9 +490,6 @@ export const CustomSourceInstanceRunnerSettingsDTOSchema = z
     artifact_retention_days: z.number().int().positive(),
   })
   .passthrough();
-export type CustomSourceInstanceRunnerSettingsDTO = z.infer<
-  typeof CustomSourceInstanceRunnerSettingsDTOSchema
->;
 
 export const CustomSourceInstanceRunnerSettingsUpdateSchema = z
   .object({
@@ -522,7 +506,6 @@ export const CustomSourceSettingsDTOSchema = z
     instance: CustomSourceInstanceRunnerSettingsDTOSchema,
   })
   .passthrough();
-export type CustomSourceSettingsDTO = z.infer<typeof CustomSourceSettingsDTOSchema>;
 
 // --- Custom Source credential channel (Phase 10) ---
 //
@@ -555,4 +538,3 @@ export const CustomSourceCredentialCreateSchema = z
     header_value_prefix: z.string().max(256).optional(),
   })
   .strict();
-export type CustomSourceCredentialCreate = z.infer<typeof CustomSourceCredentialCreateSchema>;

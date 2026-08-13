@@ -25,7 +25,6 @@ export const AGENT_RUN_GROUP_STATUS_VALUES = [
   "archived",
 ] as const;
 export const AgentRunGroupStatusSchema = z.enum(AGENT_RUN_GROUP_STATUS_VALUES);
-export type AgentRunGroupStatus = z.infer<typeof AgentRunGroupStatusSchema>;
 
 export const AGENT_RUN_GROUP_MEMBER_ROLE_VALUES = [
   "manager",
@@ -38,9 +37,6 @@ export const AGENT_RUN_GROUP_MEMBER_ROLE_VALUES = [
 export const AgentRunGroupMemberRoleSchema = z.enum(
   AGENT_RUN_GROUP_MEMBER_ROLE_VALUES,
 );
-export type AgentRunGroupMemberRole = z.infer<
-  typeof AgentRunGroupMemberRoleSchema
->;
 
 export const AGENT_RUN_GROUP_MEMBER_STATUS_VALUES = [
   "active",
@@ -49,9 +45,6 @@ export const AGENT_RUN_GROUP_MEMBER_STATUS_VALUES = [
 export const AgentRunGroupMemberStatusSchema = z.enum(
   AGENT_RUN_GROUP_MEMBER_STATUS_VALUES,
 );
-export type AgentRunGroupMemberStatus = z.infer<
-  typeof AgentRunGroupMemberStatusSchema
->;
 
 export const AGENT_RUN_MESSAGE_TYPE_VALUES = [
   "user_instruction",
@@ -64,7 +57,6 @@ export const AGENT_RUN_MESSAGE_TYPE_VALUES = [
 export const AgentRunMessageTypeSchema = z.enum(
   AGENT_RUN_MESSAGE_TYPE_VALUES,
 );
-export type AgentRunMessageType = z.infer<typeof AgentRunMessageTypeSchema>;
 
 export const RUN_DELEGATION_STATUS_VALUES = [
   "requested",
@@ -78,7 +70,6 @@ export const RUN_DELEGATION_STATUS_VALUES = [
 export const RunDelegationStatusSchema = z.enum(
   RUN_DELEGATION_STATUS_VALUES,
 );
-export type RunDelegationStatus = z.infer<typeof RunDelegationStatusSchema>;
 
 export const AgentRunMentionSchema = z
   .object({
@@ -286,7 +277,6 @@ export const SpawnChildRunRequestSchema = z
     context_policy_json: TraceSafeObjectSchema.nullish(),
   })
   .strict();
-export type SpawnChildRunRequest = z.infer<typeof SpawnChildRunRequestSchema>;
 
 export const SpawnChildRunResponseSchema = z
   .object({
@@ -296,7 +286,6 @@ export const SpawnChildRunResponseSchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type SpawnChildRunResponse = z.infer<typeof SpawnChildRunResponseSchema>;
 
 export const RuntimeDelegationOutputItemSchema = z
   .object({
@@ -316,9 +305,6 @@ export const RuntimeDelegationsOutputSchema = z
     delegations: z.array(RuntimeDelegationOutputItemSchema).default([]),
   })
   .passthrough();
-export type RuntimeDelegationsOutput = z.infer<
-  typeof RuntimeDelegationsOutputSchema
->;
 
 export const AgentRunGroupTimelineSchema = z
   .object({

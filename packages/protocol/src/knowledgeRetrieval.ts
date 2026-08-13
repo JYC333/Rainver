@@ -30,7 +30,6 @@ export const RetrievalObjectProfileSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z][a-z0-9_]*$/);
-export type RetrievalObjectProfile = z.infer<typeof RetrievalObjectProfileSchema>;
 
 export const EvidenceKindSchema = z.enum([
   "alias_hit",
@@ -222,7 +221,6 @@ export const RetrievalMaintenanceFindingKindSchema = z.enum([
   "stale",
   "relation_suggestion",
 ]);
-export type RetrievalMaintenanceFindingKind = z.infer<typeof RetrievalMaintenanceFindingKindSchema>;
 
 export const RetrievalMaintenanceObjectSchema = z
   .object({
@@ -231,7 +229,6 @@ export const RetrievalMaintenanceObjectSchema = z
     title: z.string(),
   })
   .passthrough();
-export type RetrievalMaintenanceObject = z.infer<typeof RetrievalMaintenanceObjectSchema>;
 
 export const RetrievalMaintenanceFindingSchema = z
   .object({
@@ -243,7 +240,6 @@ export const RetrievalMaintenanceFindingSchema = z
     proposed_action: z.record(z.unknown()).nullable().optional(),
   })
   .passthrough();
-export type RetrievalMaintenanceFinding = z.infer<typeof RetrievalMaintenanceFindingSchema>;
 
 export const RetrievalMaintenanceScanRequestSchema = z.object({
   persist_report: z.boolean().optional(),
@@ -251,6 +247,7 @@ export const RetrievalMaintenanceScanRequestSchema = z.object({
   review_scope: z.enum(["private", "space_ops"]).default("private"),
 });
 export type RetrievalMaintenanceScanRequest = z.infer<typeof RetrievalMaintenanceScanRequestSchema>;
+export type RetrievalMaintenanceScanRequestInput = z.input<typeof RetrievalMaintenanceScanRequestSchema>;
 
 export const RetrievalMaintenanceReportSchema = z
   .object({
@@ -263,7 +260,6 @@ export const RetrievalMaintenanceReportSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type RetrievalMaintenanceReport = z.infer<typeof RetrievalMaintenanceReportSchema>;
 
 const RetrievalEvalKeySchema = z
   .string()
@@ -311,7 +307,6 @@ export const RetrievalEvalRankAttributionSchema = z
     score_buckets: RetrievalEvalCountMapSchema.default({}),
   })
   .strict();
-export type RetrievalEvalRankAttribution = z.infer<typeof RetrievalEvalRankAttributionSchema>;
 
 // P2 eval/explain artifact input. This shape is intentionally aggregate-only:
 // no candidate ids, titles, snippets, or arbitrary content fields are accepted.
@@ -333,7 +328,6 @@ export type RetrievalEvalReportRequest = z.infer<typeof RetrievalEvalReportReque
 export const RetrievalEvalReportPersistResponseSchema = z.object({
   artifact_id: IdSchema,
 });
-export type RetrievalEvalReportPersistResponse = z.infer<typeof RetrievalEvalReportPersistResponseSchema>;
 
 export const RetrievalEvalDiagnosticsReportRequestSchema = z
   .object({
@@ -353,7 +347,6 @@ export const RetrievalEvalDiagnosticsReportResponseSchema = RetrievalEvalReportP
   diagnostic_codes: z.array(RetrievalEvalDiagnosticCodeSchema).max(50),
   proposal_id: IdSchema.optional(),
 });
-export type RetrievalEvalDiagnosticsReportResponse = z.infer<typeof RetrievalEvalDiagnosticsReportResponseSchema>;
 
 export const RetrievalCalibrationMechanicSchema = z.enum([
   "visible_edge_backlink",
@@ -494,7 +487,6 @@ const RetrievalTraceSummarySchema = z
     adaptive_return: z.record(z.unknown()).optional(),
   })
   .strict();
-export type RetrievalTraceSummary = z.infer<typeof RetrievalTraceSummarySchema>;
 
 export const RetrievalExplainRequestSchema = z
   .object({

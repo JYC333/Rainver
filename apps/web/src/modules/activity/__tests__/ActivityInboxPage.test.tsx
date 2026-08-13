@@ -1,10 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Link, Route, Routes } from 'react-router-dom'
 import ActivityInboxPage from '../ActivityInboxPage'
-import { activityApi } from '../../../api/client'
-import type { ActivityInboxRecord } from '../../../types/api'
+import { activityApi, projectsApi } from '../../../api/client'
+import type { ActivityInboxRecord, Project } from '../../../types/api'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -25,6 +25,9 @@ vi.mock('../../../api/client', () => ({
     list: vi.fn(),
     review: vi.fn(),
     archive: vi.fn(),
+  },
+  projectsApi: {
+    list: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 }),
   },
 }))
 
@@ -47,6 +50,25 @@ function activityRecord(overrides: Partial<ActivityInboxRecord> = {}): ActivityI
     visibility: 'space_shared',
     created_at: '2026-07-08T10:00:00.000Z',
     updated_at: '2026-07-08T10:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'project-1',
+    space_id: 'space-1',
+    owner_user_id: 'user-1',
+    name: 'Marginalia',
+    description: null,
+    status: 'active',
+    current_focus: null,
+    settings_json: null,
+    primary_mode: 'research',
+    active_brief_version_id: null,
+    created_at: '2026-07-08T10:00:00.000Z',
+    updated_at: '2026-07-08T10:00:00.000Z',
+    archived_at: null,
     ...overrides,
   }
 }
@@ -107,5 +129,52 @@ describe('ActivityInboxPage', () => {
       .toHaveAttribute('href', '/activity/activity-1')
     expect(screen.getByRole('link', { name: 'Generate proposals' }))
       .toHaveAttribute('href', '/activity/activity-1')
+  })
+})
+
+/**
+ * Capture inside a Project writes raw material to the Space's one review queue
+ * — there is no second queue in the Project. That is only legible if the row
+ * says which Project it belongs to; without it, the capture reads as having
+ * gone somewhere the user did not choose.
+ */
+describe('ActivityInboxPage project ownership', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(projectsApi.list).mockResolvedValue({
+      items: [project()], total: 1, limit: 200, offset: 0,
+    })
+  })
+
+  it('names the owning Project on a record captured inside one', async () => {
+    vi.mocked(activityApi.list).mockResolvedValue([
+      activityRecord({ id: 'raw-1', project_id: 'project-1' }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByText('Marginalia')).toBeInTheDocument()
+  })
+
+  it('narrows the queue to that Project when the tag is clicked', async () => {
+    vi.mocked(activityApi.list).mockResolvedValue([
+      activityRecord({ id: 'raw-1', project_id: 'project-1' }),
+    ])
+
+    renderPage()
+    fireEvent.click(await screen.findByLabelText('Filter by project Marginalia'))
+
+    await waitFor(() => expect(activityApi.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ project_id: 'project-1' }),
+    ))
+  })
+
+  it('leaves a record with no Project untagged', async () => {
+    vi.mocked(activityApi.list).mockResolvedValue([activityRecord({ id: 'raw-2' })])
+
+    renderPage()
+
+    expect(await screen.findByText('Captured note')).toBeInTheDocument()
+    expect(screen.queryByText('Marginalia')).toBeNull()
   })
 })

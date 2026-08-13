@@ -1,6 +1,7 @@
 import { checkLinkTypeAllowed } from "../ontology/validation";
 import { hasDeclaration } from "../ontology/linkTypes";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { objectStatusScalarSql } from "../../db/objectStatusSql";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ProposalApplyContext,
@@ -1593,10 +1594,12 @@ async function requireSpaceObjectForMutation(
 
 async function getSpaceObjectById(db: Queryable, spaceId: string, objectId: string): Promise<SpaceObjectRow> {
   const result = await db.query<SpaceObjectRow>(
-    `SELECT id, space_id, object_type, title, status, visibility, owner_user_id,
-            primary_project_id, project_folder_id, created_by_user_id
-       FROM space_objects
-      WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
+    `SELECT so.id, so.space_id, so.object_type, so.title,
+            ${objectStatusScalarSql("so")} AS status,
+            so.visibility, so.owner_user_id,
+            so.primary_project_id, so.project_folder_id, so.created_by_user_id
+       FROM space_objects so
+      WHERE so.id = $1 AND so.space_id = $2 AND so.deleted_at IS NULL`,
     [objectId, spaceId],
   );
   const row = result.rows[0];

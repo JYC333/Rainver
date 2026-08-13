@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'rea
 import { EditorContent, useEditor } from '@tiptap/react'
 import { Extension, Mark, Node, mergeAttributes } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
+import { BlockIdAttribute } from './blockIds'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
@@ -341,6 +342,10 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
     const extensions = useMemo(
       () => [
         StarterKit.configure({ link: false }),
+        // Declared, not generated: the reader never saves, but a schema
+        // without the attribute would drop ids from the document it reasons
+        // about. Minting ids in a read-only view would be pure churn.
+        BlockIdAttribute,
         ReaderLink,
         ReaderImage,
         ReaderTable,

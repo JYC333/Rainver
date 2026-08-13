@@ -199,6 +199,18 @@ be safely converted into durable records. Safe records are still created when
 possible. If the adapter succeeds but artifact/proposal/finalization
 materialization partially fails, the run is marked `degraded`.
 
+A successful adapter result is also `degraded` when any server-owned managed
+tool call failed — a `retrieval_tool_calls` or `agent_room_tool_calls` summary
+with `ok: false`. Those Runs still produce an answer, but they produced it
+without the tool, and a terminal `succeeded` would make an answer written
+without retrieval indistinguishable from one written with it. The Run
+additionally carries a `warning` event with `error_code`
+`managed_tool_degraded` naming the tools and their error codes. A managed
+invocation that falls back to a different Provider likewise emits a `warning`
+event carrying `event_code` `model_provider_mismatch` with the requested and
+actual Provider ids, since a fallback Provider serves its own default model
+rather than the requested one.
+
 Artifact INSERTs run the `artifact.persist` policy gate first. Proposal INSERTs
 run the `proposal.create` policy gate first.
 

@@ -39,8 +39,6 @@ export const POLICY_ACTION_LIFECYCLE_VALUES = [
   "wired_via_proposal",
   "reserved",
 ] as const;
-export type PolicyActionLifecycle =
-  (typeof POLICY_ACTION_LIFECYCLE_VALUES)[number];
 export const PolicyActionLifecycleEnum = z.enum(
   POLICY_ACTION_LIFECYCLE_VALUES,
 );
@@ -49,8 +47,6 @@ export const POLICY_RECORD_FAILURE_MODE_VALUES = [
   "best_effort",
   "fail_closed",
 ] as const;
-export type PolicyRecordFailureMode =
-  (typeof POLICY_RECORD_FAILURE_MODE_VALUES)[number];
 export const PolicyRecordFailureModeEnum = z.enum(
   POLICY_RECORD_FAILURE_MODE_VALUES,
 );
@@ -1380,7 +1376,6 @@ export const POLICY_ACTION_REGISTRY = [
 ] as const satisfies readonly PolicyActionDefinition[];
 
 export type PolicyActionId = (typeof POLICY_ACTION_REGISTRY)[number]["action"];
-export const POLICY_ACTION_IDS = POLICY_ACTION_REGISTRY.map((definition) => definition.action) as readonly PolicyActionId[];
 
 // ---------------------------------------------------------------------------
 // Enforcement request (PolicyCheckRequest, gateway.py)
@@ -1433,9 +1428,6 @@ export const PolicyProposalApplyRequestSchema = z
     metadata_json: JsonRecordSchema.nullish(),
   })
   .strict();
-export type PolicyProposalApplyRequest = z.infer<
-  typeof PolicyProposalApplyRequestSchema
->;
 
 // ---------------------------------------------------------------------------
 // Decision result (PolicyDecision, decisions.py)
@@ -1518,8 +1510,6 @@ export const POLICY_ENFORCE_ERROR_CODES = [
   "unauthorized_internal_port",
   "policy_invalid_request",
 ] as const;
-export type PolicyEnforceErrorCode =
-  (typeof POLICY_ENFORCE_ERROR_CODES)[number];
 export const PolicyEnforceErrorCodeEnum = z.enum(POLICY_ENFORCE_ERROR_CODES);
 
 export const PolicyEnforceResultSchema = z

@@ -55,7 +55,11 @@ class ClaimApplyFakeDb {
     if (norm.includes("FROM claim_sources")) {
       return { rows: [], rowCount: 0 };
     }
-    if (norm.startsWith("SELECT id, space_id, object_type")) {
+    // Space-object lookup by id. `status` is no longer a column on
+    // space_objects — it is derived from the ontology extension tables — so the
+    // projection is alias-qualified. Match the query's shape rather than a
+    // literal column-list prefix, which broke the moment the projection moved.
+    if (/FROM space_objects so\b/.test(norm) && /WHERE so\.id = \$1/.test(norm)) {
       const row = this.objects.get(String(params[0]));
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }

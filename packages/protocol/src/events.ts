@@ -31,7 +31,6 @@ export const EventEnvelopeSchema = z.object({
   space_id: IdSchema,
   payload: z.unknown(),
 });
-export type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
 
 function eventSchema<TType extends string, TPayload extends z.ZodTypeAny>(
   type: TType,
@@ -59,7 +58,6 @@ export const EventType = {
   ArtifactCreated: "artifact.created",
   MemoryChanged: "memory.changed",
 } as const;
-export type EventTypeValue = (typeof EventType)[keyof typeof EventType];
 
 // ---------------------------------------------------------------------------
 // Payloads + event envelopes
@@ -81,7 +79,6 @@ export const ProposalCreatedEventSchema = eventSchema(
   EventType.ProposalCreated,
   ProposalCreatedPayloadSchema,
 );
-export type ProposalCreatedEvent = z.infer<typeof ProposalCreatedEventSchema>;
 
 export const ProposalStatusChangedPayloadSchema = z.object({
   proposal_id: IdSchema,
@@ -93,9 +90,6 @@ export const ProposalStatusChangedEventSchema = eventSchema(
   EventType.ProposalStatusChanged,
   ProposalStatusChangedPayloadSchema,
 );
-export type ProposalStatusChangedEvent = z.infer<
-  typeof ProposalStatusChangedEventSchema
->;
 
 export const RunStatusChangedPayloadSchema = z.object({
   run_id: IdSchema,
@@ -124,10 +118,8 @@ export const ArtifactCreatedEventSchema = eventSchema(
   EventType.ArtifactCreated,
   ArtifactCreatedPayloadSchema,
 );
-export type ArtifactCreatedEvent = z.infer<typeof ArtifactCreatedEventSchema>;
 
 export const MEMORY_CHANGE_VALUES = ["created", "updated", "deleted"] as const;
-export type MemoryChangeValue = (typeof MEMORY_CHANGE_VALUES)[number];
 export const MemoryChangedPayloadSchema = z.object({
   memory_id: IdSchema,
   change: z.string(), // one of MEMORY_CHANGE_VALUES; permissive per protocol convention
@@ -137,7 +129,6 @@ export const MemoryChangedEventSchema = eventSchema(
   EventType.MemoryChanged,
   MemoryChangedPayloadSchema,
 );
-export type MemoryChangedEvent = z.infer<typeof MemoryChangedEventSchema>;
 
 /** Discriminated union of all known events, keyed on `type`. */
 export const AnyEventSchema = z.discriminatedUnion("type", [
@@ -149,4 +140,3 @@ export const AnyEventSchema = z.discriminatedUnion("type", [
   ArtifactCreatedEventSchema,
   MemoryChangedEventSchema,
 ]);
-export type AnyEvent = z.infer<typeof AnyEventSchema>;

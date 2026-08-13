@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
 import { stripSpacePrefix } from '../../core/navigation'
+import { subscribeNoteChanged } from '../../core/noteEvents'
 import { FolderPlus, Plus, Search, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError, notesApi, notesCollectionsApi, notesTreeApi } from '../../api/client'
@@ -271,6 +272,14 @@ export default function NotesPage({ scope }: NotesPageProps) {
   useEffect(() => { writeHoistRoot(scope.tabsScopeKey, focusRootId) }, [scope.tabsScopeKey, focusRootId])
 
   useEffect(() => { loadNotes() }, [loadNotes])
+
+  // A capture can create the note it writes into, so the list and the tree have
+  // to hear about it too — the open editor refreshing itself is not enough when
+  // the note is not in the list yet.
+  useEffect(
+    () => subscribeNoteChanged(() => { void Promise.all([loadNotes(), loadAllNotes()]) }),
+    [loadAllNotes, loadNotes],
+  )
 
   useEffect(() => {
     if (prevSpace.current !== activeSpaceId) {

@@ -84,10 +84,62 @@ enabled if the connection currently has at least one active post-processing
 rule. Existing reviewed rows are re-surfaced to `raw` when a new run lands for
 the same source local day.
 
+Project source bindings emit the same shape, one row per Project per local day:
+
+```
+source item matches an active project_source_binding
+    → upsert ActivityRecord(activity_type=project_source_collection,
+                            aggregate_key=project_source_collection:<project_id>:<local_date>)
+    → Inbox row opens /projects/:projectId/sources
+```
+
+The individual `source_items` never enter the Inbox. Emission is gated per
+binding by `project_source_bindings.collection_notifications_enabled` (default
+true).
+
 Source recommendation rows are also pointers only: they open
 `/sources?view=pending&connection_id=...`. Reviewing or archiving the pointer
 does not change `source_connection_user_subscriptions`; Follow, Dismiss, Mute,
 and Unsubscribe are handled by Sources.
+
+## What enters the Inbox row by row
+
+The Inbox is the queue of things **a person has to decide about one at a time**.
+That, not "is it raw material", is the admission test — Project source items and
+a hand-typed capture are equally raw, and they belong in different places.
+
+| Input | Volume | Who decides its fate | Inbox form |
+|---|---|---|---|
+| User capture (any of the four capture destinations that stay `raw`) | one per act | the user, per record | one row each |
+| Source items matched to a Project | up to hundreds a day | nobody, per item; they live in the Project's Sources surface and its corpus | one aggregate pointer per Project per day, toggleable |
+| Daily digests, source recommendations | one per source per day | the user, per notification | one aggregate pointer |
+
+Both directions of getting this wrong are silent failures. Admitting source
+items row by row buries the user's own captures under machine volume and the
+queue stops being reviewable at all. Aggregating user captures into "3 things
+captured today" deletes the per-record decision the queue exists to collect.
+
+Project-owned raw material stays in **the Space's one queue** — but that queue
+has two mountings, because checking on a capture is something done from inside
+the Project and bouncing out to the Space Inbox to do it cost the reader their
+place every time:
+
+| Surface | Scope |
+|---|---|
+| `/activity` (Activity Inbox) | the whole Space; a Project filter the reader can set and clear |
+| `/projects/:projectId/raw` (Raw material) | pinned to that Project |
+
+One queue, one implementation: both render `ActivityQueue`, which owns the
+filters, the records and the review/archive actions. A second implementation
+would be free to drift on what "reviewed" does, which is the entire content of
+the pipeline — so a Project surface that needs different framing adds a header,
+not a queue. The pinned mounting takes its Project from the route and ignores
+`?project_id=`, so the address bar cannot retarget a Project's page at another
+Project's material.
+
+Space-wide rows carry a Project tag so a capture made inside a Project is not
+read as having been filed somewhere the user did not choose; the pinned
+mounting drops it, since every row would repeat it.
 
 ## Invariants
 - `ActivityRecord` is L0 raw event layer; it is not active Memory
@@ -105,12 +157,19 @@ and Unsubscribe are handled by Sources.
   Do not grow Inbox detail rendering into a general-purpose reading UI.
   Pointer rows use `aggregate_key IS NOT NULL` and are excluded from
   Activity-to-Memory consolidation.
+- Machine-volume input enters only as an aggregate pointer; only records
+  requiring a per-record human decision enter row by row. There is exactly one
+  raw-review queue per Space and one component implementing it
+  (`ActivityQueue`) — a Project surface mounts that queue pinned to its
+  `project_id`, it does not get a queue or an implementation of its own.
 
 ## Related Files
 - `server/migrations/`
 - `server/src/modules/activity/`
 - `server/src/modules/memory/`
-- `apps/web/src/modules/activity/ActivityInboxPage.tsx`
+- `apps/web/src/modules/activity/ActivityQueue.tsx` (the queue itself)
+- `apps/web/src/modules/activity/ActivityInboxPage.tsx` (Space-wide mounting)
+- `apps/web/src/modules/projects/ProjectRawMaterialPage.tsx` (pinned mounting)
 
 ## Related Decisions
 - [0003-memory-proposal-flow.md](../decisions/0003-memory-proposal-flow.md)

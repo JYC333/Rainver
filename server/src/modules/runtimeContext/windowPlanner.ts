@@ -51,7 +51,9 @@ export class ContextWindowPlanner {
     if (mandatoryTokens > available) {
       throw new RuntimeContextPlanningError(
         "required_context_overflow",
-        `Required and pinned context needs ${mandatoryTokens} tokens but only ${available} are available`,
+        `Required and pinned context needs ${mandatoryTokens} tokens but only ${available} are available`
+        + ` (model ${spec.model}: ${spec.contextWindowTokens}-token window, ${reserve} reserved for output,`
+        + ` ${spec.providerOverheadTokens} provider overhead)`,
         ordered.filter((item) => item.selection !== "ranked" && !conflicts.suppressed.has(item.id)).map((item) => item.id),
       );
     }

@@ -168,17 +168,6 @@ export type OfficialPluginEffectiveMap = Record<string, OfficialPluginEffectiveS
 
 // ── Request types ─────────────────────────────────────────────────────────────
 
-export interface OfficialPluginEnableRequest {
-  /** Initial settings to store alongside the enablement row. */
-  settings?: Record<string, unknown>;
-}
-
-export type OfficialPluginDisableRequest = Record<string, never>;
-
-export interface OfficialPluginSettingsPatchRequest {
-  settings: Record<string, unknown>;
-}
-
 // ── Plugin guard error ────────────────────────────────────────────────────────
 
 /** Error shape returned by the plugin guard when a plugin is not enabled. */

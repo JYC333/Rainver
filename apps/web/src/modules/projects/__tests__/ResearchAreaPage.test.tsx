@@ -51,7 +51,8 @@ vi.mock('../../../api/client', () => ({
   notesApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), jot: vi.fn(), linkingTo: vi.fn() },
   projectsApi: { get: vi.fn(), updateCorpusItem: vi.fn(), operations: vi.fn() },
   projectFoldersApi: { list: vi.fn() },
-  inquiryApi: { listThreads: vi.fn() },
+  inquiryApi: {
+    listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn() },
   sourcesApi: { channels: vi.fn(), projectSourceBindings: vi.fn(), projectItems: vi.fn() },
   providersApi: { list: vi.fn() },
 }))

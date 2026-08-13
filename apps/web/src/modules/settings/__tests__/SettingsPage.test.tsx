@@ -40,6 +40,7 @@ beforeEach(() => {
     name: 'My Team',
     type: 'team',
     role: 'owner',
+    member_count: 1,
     oversight_mode: 'none',
     egress_notifications_enabled: true,
     created_at: '2026-07-10T00:00:00.000Z',

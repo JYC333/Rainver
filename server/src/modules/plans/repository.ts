@@ -634,7 +634,7 @@ export class PgPlanRepository {
       if (node.node_kind === "integration") {
         const verification = await verifyIntegrationNode(client, identity.spaceId, node.id, node.depends_on);
         const now = new Date().toISOString();
-        await client.query(`UPDATE plan_nodes SET status = $3, blocked_reason = CASE WHEN $3 = 'failed' THEN $4 ELSE NULL END, updated_at = $5 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, verification.status === "passed" ? "done" : "failed", verification.summary, now]);
+        await client.query(`UPDATE plan_nodes SET status = $3, blocked_reason = CASE WHEN $3::varchar = 'failed' THEN $4 ELSE NULL END, updated_at = $5 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, verification.status === "passed" ? "done" : "failed", verification.summary, now]);
         scheduled.push(node.id);
         continue;
       }

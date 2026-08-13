@@ -1,5 +1,5 @@
 {
-  "id": "dc100472-460c-4ff4-a0ac-acded6272fba",
+  "id": "11f470e5-f8b0-44d0-88d5-e42fcd6f7b68",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -21199,6 +21199,253 @@
       },
       "isRLSEnabled": false
     },
+    "public.inquiry_thread_steps": {
+      "name": "inquiry_thread_steps",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'in_progress'"
+        },
+        "slot": {
+          "name": "slot",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'primary'"
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_ref_kind": {
+          "name": "target_ref_kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_ref_id": {
+          "name": "target_ref_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "iteration_id": {
+          "name": "iteration_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "origin": {
+          "name": "origin",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'user'"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_inquiry_thread_steps_thread_id": {
+          "name": "ix_inquiry_thread_steps_thread_id",
+          "columns": [
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_inquiry_thread_steps_project_id": {
+          "name": "ix_inquiry_thread_steps_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_inquiry_thread_steps_primary_open": {
+          "name": "uq_inquiry_thread_steps_primary_open",
+          "columns": [
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "slot = 'primary' AND status = 'in_progress'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inquiry_thread_steps_thread_fkey": {
+          "name": "inquiry_thread_steps_thread_fkey",
+          "tableFrom": "inquiry_thread_steps",
+          "tableTo": "inquiry_threads",
+          "columnsFrom": [
+            "thread_id",
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "object_id",
+            "project_id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "inquiry_thread_steps_project_fkey": {
+          "name": "inquiry_thread_steps_project_fkey",
+          "tableFrom": "inquiry_thread_steps",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "inquiry_thread_steps_space_id_fkey": {
+          "name": "inquiry_thread_steps_space_id_fkey",
+          "tableFrom": "inquiry_thread_steps",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inquiry_thread_steps_iteration_fkey": {
+          "name": "inquiry_thread_steps_iteration_fkey",
+          "tableFrom": "inquiry_thread_steps",
+          "tableTo": "inquiry_iterations",
+          "columnsFrom": [
+            "iteration_id",
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "space_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_inquiry_thread_steps_kind": {
+          "name": "ck_inquiry_thread_steps_kind",
+          "value": "(kind)::text = ANY (ARRAY[('clarify_or_decompose'::character varying)::text, ('search_acquisition'::character varying)::text, ('design_run_experiment'::character varying)::text, ('read_evidence'::character varying)::text, ('synthesize'::character varying)::text, ('promote_knowledge'::character varying)::text, ('create_decision_case'::character varying)::text, ('create_delivery_task'::character varying)::text])"
+        },
+        "ck_inquiry_thread_steps_status": {
+          "name": "ck_inquiry_thread_steps_status",
+          "value": "(status)::text = ANY (ARRAY[('in_progress'::character varying)::text, ('done'::character varying)::text, ('abandoned'::character varying)::text])"
+        },
+        "ck_inquiry_thread_steps_slot": {
+          "name": "ck_inquiry_thread_steps_slot",
+          "value": "(slot)::text = ANY (ARRAY[('primary'::character varying)::text, ('background'::character varying)::text])"
+        },
+        "ck_inquiry_thread_steps_origin": {
+          "name": "ck_inquiry_thread_steps_origin",
+          "value": "(origin)::text = ANY (ARRAY[('user'::character varying)::text, ('advice'::character varying)::text, ('system'::character varying)::text])"
+        },
+        "ck_inquiry_thread_steps_completed_at": {
+          "name": "ck_inquiry_thread_steps_completed_at",
+          "value": "(status = 'in_progress') = (completed_at IS NULL)"
+        },
+        "ck_inquiry_thread_steps_target_ref": {
+          "name": "ck_inquiry_thread_steps_target_ref",
+          "value": "(target_ref_kind IS NULL) = (target_ref_id IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.inquiry_thread_structure_events": {
       "name": "inquiry_thread_structure_events",
       "schema": "",
@@ -21744,7 +21991,7 @@
         },
         "ck_inquiry_threads_focused_next_focus": {
           "name": "ck_inquiry_threads_focused_next_focus",
-          "value": "attention_state <> 'focused' OR ((next_focus_kind IS NULL) <> (blocked_reason IS NULL))"
+          "value": "next_focus_kind IS NULL OR blocked_reason IS NULL"
         },
         "ck_inquiry_threads_lifecycle_attention": {
           "name": "ck_inquiry_threads_lifecycle_attention",
@@ -28793,6 +29040,24 @@
           "type": "varchar(64)",
           "primaryKey": false,
           "notNull": false
+        },
+        "marginalia_project_id": {
+          "name": "marginalia_project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "marginalia_owner_user_id": {
+          "name": "marginalia_owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "marginalia_target_object_id": {
+          "name": "marginalia_target_object_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -28865,6 +29130,40 @@
           ],
           "isUnique": true,
           "where": "(project_role IS NOT NULL)",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_notes_one_marginalia_note_per_owner": {
+          "name": "ix_notes_one_marginalia_note_per_owner",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "marginalia_project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "marginalia_owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "COALESCE(marginalia_target_object_id, '')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "(marginalia_owner_user_id IS NOT NULL)",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -28967,6 +29266,34 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "notes_marginalia_project_id_fkey": {
+          "name": "notes_marginalia_project_id_fkey",
+          "tableFrom": "notes",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "marginalia_project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "notes_marginalia_owner_user_id_fkey": {
+          "name": "notes_marginalia_owner_user_id_fkey",
+          "tableFrom": "notes",
+          "tableTo": "users",
+          "columnsFrom": [
+            "marginalia_owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -28989,6 +29316,10 @@
         "ck_notes_status": {
           "name": "ck_notes_status",
           "value": "(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])"
+        },
+        "ck_notes_marginalia_binding": {
+          "name": "ck_notes_marginalia_binding",
+          "value": "((marginalia_project_id IS NULL) = (marginalia_owner_user_id IS NULL)) AND ((marginalia_target_object_id IS NULL) OR (marginalia_owner_user_id IS NOT NULL))"
         },
         "ck_notes_version": {
           "name": "ck_notes_version",
@@ -61681,6 +62012,13 @@
         },
         "egress_notifications_enabled": {
           "name": "egress_notifications_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "member_copy_out_enabled": {
+          "name": "member_copy_out_enabled",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

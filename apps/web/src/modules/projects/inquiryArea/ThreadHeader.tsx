@@ -13,6 +13,10 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from '../../../components/ui/dropdown-menu'
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+} from '../../../components/ui/dialog'
+import { CloseOutForm } from './CloseOutForm'
 import { ReasonDialog } from './dialogs'
 import { PRIORITY_OPTIONS, priorityLabel } from './threadGrouping'
 
@@ -24,18 +28,32 @@ const ATTENTION_STATES: InquiryAttentionState[] = ['focused', 'monitoring', 'bac
  * can strand a pinned research Workflow at its alignment guard, so it belongs
  * in the assessment workspace that owns confirmed wording.
  */
-export function ThreadHeader({ projectId, detail, members, onChanged }: {
+export function ThreadHeader({ projectId, detail, members, round, allowEarlyClose, onChanged }: {
   projectId: string
   detail: InquiryThreadDetail
   members: SpaceMember[]
+  round: number
+  allowEarlyClose: boolean
   onChanged: () => Promise<void>
 }) {
   const [editing, setEditing] = useState(false)
   const [statement, setStatement] = useState(detail.statement)
   const [saving, setSaving] = useState(false)
   const [lifecycleTarget, setLifecycleTarget] = useState<'resolved' | 'rejected' | 'archived' | null>(null)
+  const [blockDialogOpen, setBlockDialogOpen] = useState(false)
+  const [closeOutOpen, setCloseOutOpen] = useState(false)
 
-  useEffect(() => { setStatement(detail.statement); setEditing(false) }, [detail])
+  useEffect(() => {
+    setStatement(detail.statement)
+    setEditing(false)
+    // A different Thread is a different draft. Polling the same Thread must
+    // not eject the user from an edit in progress.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail.id])
+
+  useEffect(() => {
+    if (!editing) setStatement(detail.statement)
+  }, [detail.statement, editing])
 
   const canAct = detail.lifecycle_status === 'active'
   const owner = members.find(member => member.user_id === detail.owner_user_id)
@@ -58,23 +76,19 @@ export function ThreadHeader({ projectId, detail, members, onChanged }: {
     }
   }
 
-  async function updateWork(body: Record<string, unknown>) {
+  async function updateWork(body: Record<string, unknown>): Promise<boolean> {
     try {
       const result = await inquiryApi.updateWork(projectId, detail.id, body)
       if (result.wip_limit_exceeded) toast.warning('Shared Focus WIP limit exceeded — consider moving another Thread to Monitoring')
       await onChanged()
-    } catch (error) { toast.error(errMsg(error)) }
+      return true
+    } catch (error) {
+      toast.error(errMsg(error))
+      return false
+    }
   }
 
-  /**
-   * The domain requires a focused Thread to carry exactly one of a Next Focus
-   * or a blocking reason. Saying so here beats letting the command 422.
-   */
-  function focusOrWarn(state: InquiryAttentionState) {
-    if (state === 'focused' && !detail.next_focus_kind && !detail.blocked_reason) {
-      toast.error('Decide a next step first — a focused Thread needs one.')
-      return
-    }
+  function setAttention(state: InquiryAttentionState) {
     void updateWork({ attention_state: state })
   }
 
@@ -124,10 +138,14 @@ export function ThreadHeader({ projectId, detail, members, onChanged }: {
                   <DropdownMenuSeparator />
                   <DropdownMenuLabel>Attention</DropdownMenuLabel>
                   {ATTENTION_STATES.filter(state => state !== 'blocked').map(state => (
-                    <DropdownMenuItem key={state} onSelect={() => focusOrWarn(state)}>
-                      {state}{detail.attention_state === state ? ' ✓' : ''}
+                    <DropdownMenuItem key={state} onSelect={() => setAttention(state)}>
+                      {state === 'backlog' ? 'Pause' : state === 'monitoring' ? 'Monitor' : 'Focus'}
+                      {detail.attention_state === state ? ' ✓' : ''}
                     </DropdownMenuItem>
                   ))}
+                  {detail.attention_state !== 'blocked' && (
+                    <DropdownMenuItem onSelect={() => setBlockDialogOpen(true)}>Mark blocked…</DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuLabel>Owner</DropdownMenuLabel>
                   <DropdownMenuItem onSelect={() => updateWork({ owner_user_id: null })}>
@@ -142,6 +160,9 @@ export function ThreadHeader({ projectId, detail, members, onChanged }: {
                   <DropdownMenuItem asChild>
                     <Link to={`/projects/${projectId}/inquiry/${detail.id}/assess`}>Redefine this {detail.kind}…</Link>
                   </DropdownMenuItem>
+                  {allowEarlyClose && (
+                    <DropdownMenuItem onSelect={() => setCloseOutOpen(true)}>Close out round {round} early…</DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onSelect={() => setLifecycleTarget('resolved')}>Mark resolved…</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setLifecycleTarget('rejected')}>Mark rejected…</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setLifecycleTarget('archived')}>Archive…</DropdownMenuItem>
@@ -189,6 +210,34 @@ export function ThreadHeader({ projectId, detail, members, onChanged }: {
                 ? ` (confidence ${detail.hypothesis_state.confidence})` : ''}`}
         </p>
       </Card>
+
+      <ReasonDialog
+        open={blockDialogOpen}
+        onOpenChange={setBlockDialogOpen}
+        title="Mark this Thread blocked"
+        description="The stage workspace remains readable, but its actions stay disabled until the blocker clears."
+        label="What is blocking it?"
+        placeholder="Waiting on the Q1.2 experiment to finish"
+        required
+        confirmLabel="Mark blocked"
+        onConfirm={reason => updateWork({ attention_state: 'blocked', blocked_reason: reason, next_focus_kind: null })}
+      />
+
+      <Dialog open={closeOutOpen} onOpenChange={setCloseOutOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Close out round {round} early</DialogTitle>
+            <DialogDescription>
+              Record where the position moved even though the current round has not reached Land.
+            </DialogDescription>
+          </DialogHeader>
+          <CloseOutForm
+            projectId={projectId}
+            detail={detail}
+            onRecorded={async () => { setCloseOutOpen(false); await onChanged() }}
+          />
+        </DialogContent>
+      </Dialog>
 
       <ReasonDialog
         open={lifecycleTarget !== null}

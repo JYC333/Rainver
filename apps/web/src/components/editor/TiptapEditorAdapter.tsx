@@ -15,6 +15,7 @@ import {
 import { Button } from '../ui/button'
 import { Select } from '../ui/select'
 import { cn } from '../../lib/utils'
+import { BlockIds, stripEmptyBlockIds } from './blockIds'
 import { richTextSnapshotFromDocument } from './document'
 import type { RichTextDocument, RichTextEditorHandle, RichTextEditorProps } from './types'
 
@@ -30,7 +31,7 @@ export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEdit
     const [renderKey, setRenderKey] = useState(0)
     const initialContentKey = useMemo(() => JSON.stringify(initialContent), [initialContent])
     const extensions = useMemo(
-      () => [StarterKit.configure({ heading: { levels: [1, 2, 3] } })],
+      () => [StarterKit.configure({ heading: { levels: [1, 2, 3] } }), BlockIds],
       [],
     )
 
@@ -76,7 +77,10 @@ export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEdit
     // documents).
     useEffect(() => {
       if (!editor) return
-      if (JSON.stringify(editor.getJSON()) === initialContentKey) return
+      // Compared after the same strip the snapshot applies, or a server
+      // document without the key would never match the editor's identical one
+      // and every load would reset the cursor.
+      if (JSON.stringify(stripEmptyBlockIds(editor.getJSON())) === initialContentKey) return
       applyingExternal.current = true
       editor.commands.setContent(initialContent)
       applyingExternal.current = false
@@ -86,8 +90,10 @@ export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEdit
     useImperativeHandle(
       ref,
       () => ({
+        // Stripped on the way out, so the `blockId: null` a global attribute
+        // leaves on nested paragraphs never reaches the server or a revision.
         getSnapshot: () => richTextSnapshotFromDocument(
-          (editor?.getJSON() as RichTextDocument | undefined) ?? initialContent,
+          stripEmptyBlockIds((editor?.getJSON() as RichTextDocument | undefined) ?? initialContent),
         ),
         focus: () => {
           editor?.commands.focus()

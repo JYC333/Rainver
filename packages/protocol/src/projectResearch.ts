@@ -3,13 +3,10 @@ import { RESEARCH_QUESTION_MAX_LENGTH } from "./researchDiscovery.js";
 
 /** Public lifecycle vocabulary for the project research orchestration API. */
 export const ProjectResearchRunKindSchema = z.enum(["baseline", "historical_backfill", "incremental"]);
-export type ProjectResearchRunKind = z.infer<typeof ProjectResearchRunKindSchema>;
 
 export const ProjectResearchHistoryModeSchema = z.enum(["bounded_range", "all_available"]);
-export type ProjectResearchHistoryMode = z.infer<typeof ProjectResearchHistoryModeSchema>;
 
 export const ProjectResearchReportDepthSchema = z.enum(["quick", "full"]);
-export type ProjectResearchReportDepth = z.infer<typeof ProjectResearchReportDepthSchema>;
 
 export const ProjectResearchOperationStateSchema = z.enum([
   "pending",
@@ -19,16 +16,13 @@ export const ProjectResearchOperationStateSchema = z.enum([
   "failed",
   "skipped",
 ]);
-export type ProjectResearchOperationState = z.infer<typeof ProjectResearchOperationStateSchema>;
 
 export const ProjectResearchCheckpointTypeSchema = z.enum(["screening_gate", "idea_review"]);
-export type ProjectResearchCheckpointType = z.infer<typeof ProjectResearchCheckpointTypeSchema>;
 
 export const ProjectResearchExecutionConfigSchema = z.object({
   model_provider_id: z.string().trim().min(1).optional(),
   model_name: z.string().trim().min(1).optional(),
 }).strict();
-export type ProjectResearchExecutionConfig = z.infer<typeof ProjectResearchExecutionConfigSchema>;
 
 export const ProjectResearchInitialIntakeRequestSchema = z.object({
   query_strategy_id: z.string().uuid(),
@@ -43,7 +37,6 @@ export const ProjectResearchInitialIntakeRequestSchema = z.object({
   idempotency_key: z.string().trim().min(1).optional(),
   execution: ProjectResearchExecutionConfigSchema.optional(),
 }).strict();
-export type ProjectResearchInitialIntakeRequest = z.infer<typeof ProjectResearchInitialIntakeRequestSchema>;
 
 export const ProjectResearchQuestionRefinementSchema = z.object({
   reply: z.string().min(1),
@@ -73,11 +66,46 @@ export const ProjectResearchQuestionRefinementSchema = z.object({
     allow_multiple: z.boolean(),
   }).strict()).max(3),
 }).strict();
+/** The model's own output. The refine service stamps the context version onto
+ * it afterwards, which is why that field lives on the Result below and not
+ * here: this schema also validates what the model returned. */
 export type ProjectResearchQuestionRefinement = z.infer<typeof ProjectResearchQuestionRefinementSchema>;
 
 export const ProjectResearchQuestionRefinementResultSchema = ProjectResearchQuestionRefinementSchema.extend({
   research_context_version_id: z.string().min(1),
 }).strict();
+export type ProjectResearchQuestionRefinementResult = z.infer<
+  typeof ProjectResearchQuestionRefinementResultSchema
+>;
+
+/**
+ * A confirmed research context, projected from the owning ResearchContextVersion
+ * by the refine service. `confirm` answers with the refinement Result plus this.
+ */
+export const ProjectResearchQuestionAssessmentConfirmationSchema = z.object({
+  id: z.string().min(1),
+  version: z.number().int().min(1),
+  question: z.string().min(1),
+  assessment: ProjectResearchQuestionRefinementSchema.shape.assessment,
+  scope: z.object({
+    in: z.array(z.string()),
+    out: z.array(z.string()),
+  }).strict(),
+  sub_questions: z.array(z.string()),
+  manually_adjusted: z.boolean(),
+  created_at: z.string().min(1),
+}).strict();
+export type ProjectResearchQuestionAssessmentConfirmation = z.infer<
+  typeof ProjectResearchQuestionAssessmentConfirmationSchema
+>;
+
+export const ProjectResearchQuestionAssessmentConfirmationResponseSchema =
+  ProjectResearchQuestionRefinementResultSchema.extend({
+    confirmation: ProjectResearchQuestionAssessmentConfirmationSchema,
+  }).strict();
+export type ProjectResearchQuestionAssessmentConfirmationResponse = z.infer<
+  typeof ProjectResearchQuestionAssessmentConfirmationResponseSchema
+>;
 
 export const ProjectResearchQuestionAssessmentMessageSchema = z.object({
   id: z.string().min(1),
@@ -124,7 +152,6 @@ export const ResearchCitationRefSchema = z.object({
 }).refine((value) => Object.values(value).some((item) => item !== undefined), {
   message: "At least one source or evidence reference is required",
 });
-export type ResearchCitationRef = z.infer<typeof ResearchCitationRefSchema>;
 
 export const ResearchReportV1Schema = z.object({
   schema_version: z.literal("research_report.v1"),

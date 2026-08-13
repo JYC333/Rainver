@@ -124,5 +124,5 @@ The D1.1 inventory is complete for current durable event classes. The manual
 `review_requested` signal is an explicit user intent record, and the direct
 signal-create route is an explicit ingestion surface; neither represents a
 missing automatic performance emitter. Direct Artifact edit evidence remains
-D1.2 (see [../plans/product-capability-followups-plan.md](../plans/product-capability-followups-plan.md))
+D1.2 (see [../plans/backlog.md](../plans/backlog.md))
 because there is not yet an authoritative Artifact revision event.

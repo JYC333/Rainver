@@ -11,16 +11,23 @@ import { EmptyState } from '../../../components/ui/empty-state'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { flattenThreadTree } from './threadGrouping'
+import { STAGE_FOR_KIND, STAGE_LABELS } from './stages'
 
 const GraphView = lazy(async () => {
   const graph = await import('../../../components/graph')
   return { default: graph.GraphView }
 })
 
-/** A blocked Thread shows its blocker instead, so the two never both appear. */
-function nextFocusLabel(thread: InquiryThread): string | null {
-  if (thread.blocked_reason) return null
-  return thread.next_focus_kind ? thread.next_focus_kind.replace(/_/g, ' ') : null
+/**
+ * Map is the step-back view, so it annotates with the stage rather than the
+ * specific action: five values read at a glance across a whole Project ("all
+ * five Threads are stuck in Acquire") where eight action labels have to be read
+ * one row at a time. A blocked Thread shows its blocker instead, so the two
+ * never both appear.
+ */
+function stageLabel(thread: InquiryThread): string | null {
+  if (thread.blocked_reason || !thread.next_focus_kind) return null
+  return STAGE_LABELS[STAGE_FOR_KIND[thread.next_focus_kind]]
 }
 
 function StructureTree({ threads, candidates, selectedId, onSelect }: {
@@ -65,8 +72,10 @@ function StructureTree({ threads, candidates, selectedId, onSelect }: {
                 <Ban className="size-3" />blocked
               </span>
             )}
-            {nextFocusLabel(thread) && (
-              <span className="shrink-0 text-[11px] text-muted-foreground">{nextFocusLabel(thread)}</span>
+            {stageLabel(thread) && (
+              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                {stageLabel(thread)}
+              </span>
             )}
             {pending > 0 && (
               <span className="flex shrink-0 items-center gap-1 text-[11px] text-amber-600">

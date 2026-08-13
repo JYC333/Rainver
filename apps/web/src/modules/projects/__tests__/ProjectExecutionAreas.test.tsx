@@ -28,7 +28,8 @@ vi.mock('../../../api/client', () => ({
     retryOperation: vi.fn(),
     reconcileOperation: vi.fn(),
   },
-  inquiryApi: { listThreads: vi.fn().mockResolvedValue([]) },
+  inquiryApi: {
+    listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn().mockResolvedValue([]) },
 }))
 
 beforeEach(() => {

@@ -140,17 +140,49 @@ History-import fetches retry a transient network failure or upstream 5xx once
 inside the same extraction job, with the connector's normal request preparation
 and arXiv politeness interval applied to each attempt. Permanent 4xx responses
 are not retried. If both attempts fail, the job and segment retain safe
-structured diagnostics (provider, upstream status, attempt count, and
-retryability; never query text, endpoint URLs, response bodies, or credentials)
-for the owning operation. A retryable failure moves the segment back to
+structured diagnostics (provider, upstream status, failure kind, transport
+error name/code, elapsed and deadline milliseconds, attempt count, page sizes
+attempted, and retryability; never query text, endpoint URLs, response bodies,
+or credentials) for the owning operation.
+
+Failures are classified as `upstream_http`, `timeout`, or `network`, and those
+are three different operator actions — ask for less, wait longer, or check
+connectivity. Collapsing timeouts into `network` (with a null status) once cost
+a real investigation: a provider that answered 5xx after ~30s was recorded as
+unreachable.
+
+The per-request deadline scales with the page requested
+(`backfillFetchTimeoutMs`): a flat budget is simultaneously generous for a
+10-row page and too tight for a 100-row page of a broad boolean query, where a
+provider legitimately needs tens of seconds.
+
+**Page-size narrowing.** When a provider times out or returns 5xx, the page is
+re-requested down a quartering ladder (100 -> 25 -> 10, floor 10) before the
+segment is failed. A provider that cannot assemble 100 rows of a broad query
+often serves 25 without complaint, and failing outright discards one source's
+entire contribution — after which Research reports a confident "no relevant
+material" over a corpus missing half its inputs. Narrowing applies only to
+connectors declaring `supports_page_size_narrowing` (offset is counted in
+items: arXiv, Semantic Scholar); a page-numbered API such as OpenAlex cannot
+express "same position, fewer rows", so narrowing it would skip results. A
+width that succeeds is carried into subsequent pages rather than re-testing the
+full width each time.
+
+Backfill offsets are **item-based**, taken from `window.offset` /
+`consumed_items`. Deriving the offset as page index times a fixed width skipped
+results on any page narrower than that width — the normal case on a budget's
+last page, and the permanent case after narrowing.
+
+A retryable failure that survives the ladder moves the segment back to
 `pending`, pauses the plan until `next_eligible_at`, and retries after
 1 minute, 5 minutes, 30 minutes, 2 hours, 6 hours, then at most once per day.
 This provider-friendly repair cadence is not a failed Research operation.
 Permanent failures remain terminal and use the separate operation Retry action.
 
 For the Academic Research initial literature intake, an arXiv date window is a logical segment,
-not one API page. The extraction worker keeps paging at 100 items, persists the
-page cursor and cumulative segment count, and marks a segment exhausted only
+not one API page. The extraction worker pages at up to 100 items (less after
+narrowing, or when the remaining budget is smaller), persists the item offset
+and cumulative segment count, and marks a segment exhausted only
 after a short page. Reaching the operation's `max_items` budget is recorded as
 `partial` and requires the user to explicitly raise the item limit in Project
 Settings before resuming; recovery actions never allocate a default budget. It

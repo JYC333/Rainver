@@ -66,3 +66,49 @@ describe("Project Research backfill failure diagnostics", () => {
     expect(backfillCanProceed([completed], 2)).toBe(false);
   });
 });
+
+/**
+ * A provider that answered slowly and one that could not be reached produced
+ * the same sentence, which is what made a 30s arXiv 5xx read as a network
+ * outage. The wording now follows the recorded failure kind.
+ */
+describe("backfill failure wording by failure kind", () => {
+  const row = (diagnostics: Record<string, unknown>) => ({
+    plan_id: "plan-1",
+    segment_id: "segment-1",
+    source_channel_id: "channel-1",
+    provider_key: "arxiv",
+    provider_display_name: "arXiv",
+    attempt_count: 2,
+    error_json: { code: "source_backfill_deferred", message: "deferred", diagnostics },
+  });
+
+  it("says a slow provider did not answer in time", () => {
+    const summary = summarizeBackfillFailures([row({
+      provider_key: "arxiv", provider_display_name: "arXiv", failure_kind: "timeout",
+      upstream_status: null, attempts: 2, retryable: true,
+      error_name: "TimeoutError", elapsed_ms: 35_000, timeout_ms: 35_000,
+      page_sizes_attempted: [100, 25, 10],
+    })]);
+    expect(summary.message).toContain("did not answer in time");
+    expect(summary.message).not.toContain("could not be reached");
+    const failed = (summary.diagnostics.failed_sources as Array<Record<string, unknown>>)[0]!;
+    expect(failed).toMatchObject({
+      failure_kind: "timeout",
+      transport_error_name: "TimeoutError",
+      page_sizes_attempted: [100, 25, 10],
+      // The Source-layer code stays distinct from the transport one.
+      error_code: "source_backfill_deferred",
+    });
+  });
+
+  it("still says unreachable when nothing answered", () => {
+    const summary = summarizeBackfillFailures([row({
+      provider_key: "arxiv", provider_display_name: "arXiv", failure_kind: "network",
+      upstream_status: null, attempts: 2, retryable: true, error_code: "ENOTFOUND",
+    })]);
+    expect(summary.message).toContain("could not be reached");
+    const failed = (summary.diagnostics.failed_sources as Array<Record<string, unknown>>)[0]!;
+    expect(failed).toMatchObject({ transport_error_code: "ENOTFOUND" });
+  });
+});

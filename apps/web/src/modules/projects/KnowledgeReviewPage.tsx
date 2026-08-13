@@ -19,6 +19,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Badge } from '../../components/ui/badge'
 import { Select } from '../../components/ui/select'
 import { toast } from 'sonner'
+import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : String(error)
@@ -123,6 +124,7 @@ export default function KnowledgeReviewPage() {
   }
 
   return <div className="p-6 space-y-5">
+    <ThreadOriginBar projectId={projectId} kinds={['promote_knowledge']} />
     <div className="flex items-center gap-3">
       <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}`}><ArrowLeft className="size-4" />Project</Link></Button>
       <div>

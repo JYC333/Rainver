@@ -25,7 +25,6 @@ export const ContextOpsIndexFreshnessSchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsIndexFreshness = z.infer<typeof ContextOpsIndexFreshnessSchema>;
 
 export const ContextOpsEmbeddingBacklogSchema = z
   .object({
@@ -38,7 +37,6 @@ export const ContextOpsEmbeddingBacklogSchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsEmbeddingBacklog = z.infer<typeof ContextOpsEmbeddingBacklogSchema>;
 
 export const ContextOpsSourcePolicyWarningsSchema = z
   .object({
@@ -51,7 +49,6 @@ export const ContextOpsSourcePolicyWarningsSchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsSourcePolicyWarnings = z.infer<typeof ContextOpsSourcePolicyWarningsSchema>;
 
 export const ContextOpsArtifactSummarySchema = z
   .object({
@@ -89,7 +86,6 @@ export const ContextOpsMaintenanceSummarySchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsMaintenanceSummary = z.infer<typeof ContextOpsMaintenanceSummarySchema>;
 
 export const ContextOpsDiagnosticsSummarySchema = z
   .object({
@@ -102,7 +98,6 @@ export const ContextOpsDiagnosticsSummarySchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsDiagnosticsSummary = z.infer<typeof ContextOpsDiagnosticsSummarySchema>;
 
 export const ContextOpsRetrievalFeedbackSummarySchema = z
   .object({
@@ -113,7 +108,6 @@ export const ContextOpsRetrievalFeedbackSummarySchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsRetrievalFeedbackSummary = z.infer<typeof ContextOpsRetrievalFeedbackSummarySchema>;
 
 export const ContextOpsMemoryProvenanceSummarySchema = z
   .object({
@@ -124,7 +118,6 @@ export const ContextOpsMemoryProvenanceSummarySchema = z
     ...SecretResponseGuards,
   })
   .strict();
-export type ContextOpsMemoryProvenanceSummary = z.infer<typeof ContextOpsMemoryProvenanceSummarySchema>;
 
 export const ContextOpsSummarySchema = z
   .object({
@@ -230,6 +223,7 @@ export const ContextReviewCycleRequestSchema = z
   })
   .strict();
 export type ContextReviewCycleRequest = z.infer<typeof ContextReviewCycleRequestSchema>;
+export type ContextReviewCycleRequestInput = z.input<typeof ContextReviewCycleRequestSchema>;
 
 export const ContextOpsContextObservationScanRequestSchema = z
   .object({
@@ -241,6 +235,7 @@ export const ContextOpsContextObservationScanRequestSchema = z
 export type ContextOpsContextObservationScanRequest = z.infer<
   typeof ContextOpsContextObservationScanRequestSchema
 >;
+export type ContextOpsContextObservationScanRequestInput = z.input<typeof ContextOpsContextObservationScanRequestSchema>;
 
 export const ContextObservationSeveritySchema = z.enum(["red", "yellow", "green"]);
 export type ContextObservationSeverity = z.infer<typeof ContextObservationSeveritySchema>;

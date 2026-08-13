@@ -12,6 +12,7 @@ import { ResearchOperationRow } from './ResearchOperationRow'
 import { toast } from 'sonner'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { researchCheckpointOperationId, researchReviewToastId } from './researchReviewAttention'
+import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 function runState(run: Run): { label: string; variant: 'outline' | 'warning' | 'destructive' | 'success' } {
   if (run.status === 'waiting_for_review') return { label: 'Waiting for review', variant: 'warning' }
@@ -148,6 +149,7 @@ export default function OperationsAreaPage() {
   }
 
   return <div className="space-y-5 p-6">
+    <ThreadOriginBar projectId={projectId} kinds={['search_acquisition']} />
     <div><h1 className="text-xl font-semibold">Operations</h1><p className="text-sm text-muted-foreground">Monitor Automations, governed Runs, alerts, and recovery work for this Project.</p></div>
     {projectStatus === 'archived' && <Card className="border-warning/40 bg-warning/5 p-4 text-sm"><p className="font-medium">Project archived</p><p className="mt-1 text-muted-foreground">Historical Runs and alerts remain visible. Automations and new execution stay paused until the Project is reactivated and each owner is reviewed explicitly.</p></Card>}
     <div className="grid gap-3 sm:grid-cols-4">

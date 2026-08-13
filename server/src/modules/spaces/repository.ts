@@ -92,6 +92,15 @@ export interface SpaceRepository {
     spaceId: string,
     data: SnapshotDefaults,
   ): Promise<SnapshotDefaults | SpaceFailure>;
+  getContentEgressSetting(
+    userId: string,
+    spaceId: string,
+  ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure>;
+  updateContentEgressSetting(
+    userId: string,
+    spaceId: string,
+    enabled: boolean,
+  ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure>;
   getRetrievalSettings(
     userId: string,
     spaceId: string,
@@ -376,6 +385,44 @@ export class PgSpaceRepository implements SpaceRepository {
       [data.snapshot_retention_days_default, data.snapshot_max_count_default, spaceId],
     );
     return data;
+  }
+
+  /**
+   * Whether members may take content out of this Space into a personal one
+   * (ADR 0013 amendment 6b). Readable by any member — the boundary you are
+   * working inside should not be a secret — but changed only by an owner or
+   * admin, and off until one of them says otherwise.
+   */
+  async getContentEgressSetting(
+    userId: string,
+    spaceId: string,
+  ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure> {
+    const role = await this.activeRole(userId, spaceId);
+    if (!role) return { statusCode: 403, detail: "Not a member of this space" };
+    const res = await this.pool.query<{ member_copy_out_enabled: boolean }>(
+      `SELECT member_copy_out_enabled FROM spaces WHERE id = $1 LIMIT 1`,
+      [spaceId],
+    );
+    const row = res.rows[0];
+    if (!row) return { statusCode: 404, detail: "Space not found" };
+    return { space_id: spaceId, member_copy_out_enabled: row.member_copy_out_enabled };
+  }
+
+  async updateContentEgressSetting(
+    userId: string,
+    spaceId: string,
+    enabled: boolean,
+  ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure> {
+    const role = await this.activeRole(userId, spaceId);
+    if (!isSpaceOwnerOrAdmin(role)) {
+      return { statusCode: 403, detail: "Requires space owner or admin role" };
+    }
+    const res = await this.pool.query(
+      `UPDATE spaces SET member_copy_out_enabled = $1, updated_at = now() WHERE id = $2`,
+      [enabled, spaceId],
+    );
+    if ((res.rowCount ?? 0) === 0) return { statusCode: 404, detail: "Space not found" };
+    return { space_id: spaceId, member_copy_out_enabled: enabled };
   }
 
   async getRetrievalSettings(

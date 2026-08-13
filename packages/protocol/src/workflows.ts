@@ -207,9 +207,6 @@ export const WorkflowRunCreateBodyDraftSchema = z
     prompt_content_hash: z.string().nullish(),
   })
   .passthrough();
-export type WorkflowRunCreateBodyDraft = z.infer<
-  typeof WorkflowRunCreateBodyDraftSchema
->;
 
 export const WorkflowRunDraftResponseSchema = z
   .object({

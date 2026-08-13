@@ -10,6 +10,7 @@ import type {
   ProjectResearchQuestionAssessmentConfirmationResponse,
   ProjectResearchQuestionAssessmentSession,
   ProjectResearchQuestionRefinement,
+  ProjectResearchQuestionRefinementResult,
   ProjectResearchWorkflow,
 } from '../../types/api'
 import { inquiryApi, projectResearchApi } from '../../api/client'
@@ -158,7 +159,7 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
   const isHypothesis = thread.kind === 'hypothesis'
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(researchSetupDraftFromWorkflow(linkedDraftWorkflow, thread.statement)))
   const [sessionWorkflowId, setSessionWorkflowId] = useState<string | null>(linkedDraftWorkflow?.id ?? null)
-  const [refinement, setRefinement] = useState<ProjectResearchQuestionRefinement | null>(null)
+  const [refinement, setRefinement] = useState<ProjectResearchQuestionRefinementResult | null>(null)
   const [assessedFramework, setAssessedFramework] = useState<ProjectResearchQuestionRefinement | null>(null)
   const [assessmentBaseline, setAssessmentBaseline] = useState<ProjectResearchQuestionRefinement | null>(null)
   const [messages, setMessages] = useState<ConversationMessage[]>([])
@@ -345,7 +346,9 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
     setComposer(`Use this wording and update the framework: ${question}`)
   }
 
-  function editFramework(transform: (current: ProjectResearchQuestionRefinement) => ProjectResearchQuestionRefinement) {
+  function editFramework(
+    transform: (current: ProjectResearchQuestionRefinementResult) => ProjectResearchQuestionRefinementResult,
+  ) {
     if (!refinement) return
     const next = transform(refinement)
     setRefinement(next)

@@ -377,15 +377,31 @@ was the substance of the concern, and it is why these could land without
 reopening the decision. Making one agent-callable remains a separate product
 decision, now guarded by a test rather than by the field being unused.
 
+*Amended again 2026-08-12, when Next Focus became a Step record.* The rule this
+decision protects — advice never writes `next_focus_kind`, adoption goes
+through the ordinary work-state command — is unchanged, and so is its single
+enforcement point. What changed underneath is what that command writes: a row
+in `inquiry_thread_steps`, with `next_focus_kind` kept as a projection of the
+current primary Step. Adoption therefore now records that the suggestion was
+the origin of the Step (`origin = 'advice'`), which the bare enum could not
+express; the write authority did not move.
+
+Two kinds left the vocabulary in the same change. `pause` and
+`wait_for_monitoring` were states rather than actions — the first restated
+`attention_state`, the second restated a running background Step — so an
+advice payload naming either is now rejected rather than stored, and the output
+contract moves to `inquiry.next_step_advice.v2`.
+
 *Amended again 2026-08-05, during the post-implementation audit.* The entry
 point is resolved on the client, not carried in the advice payload. The first
 attempt put a focus-kind-to-href map on the server, which made the server a
 second authority over web route strings: four of its seven hrefs named routes
 the app does not have, and the client already owned a richer map that also
 knows whether a literature search is running. `recommended_action` is gone from
-the advice payload; the Advice block renders the same destination the confirmed
-Next Focus renders, so the suggestion is one click from where the work happens
-and there is exactly one place that knows where that is.
+the advice payload; the unified stage workspace's suggestion surface renders
+the same destination the confirmed Next Focus renders, so the suggestion is one
+click from where the work happens and there is exactly one place that knows
+where that is.
 
 The original decision read:
 

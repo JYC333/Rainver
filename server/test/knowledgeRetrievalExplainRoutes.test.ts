@@ -41,6 +41,7 @@ function adminAuth(): AuthRepository {
         role: "admin",
         oversight_mode: "none",
         egress_notifications_enabled: true,
+        member_count: 1,
         created_by_user_id: "owner-1",
         created_at: "2026-06-18T00:00:00.000Z",
         updated_at: "2026-06-18T00:00:00.000Z",

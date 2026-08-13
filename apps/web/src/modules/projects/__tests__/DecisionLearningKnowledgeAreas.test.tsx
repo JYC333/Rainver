@@ -19,7 +19,8 @@ vi.mock('../../../api/client', () => ({
     addCommitment: vi.fn(),
     createDelivery: vi.fn(),
   },
-  inquiryApi: { listThreads: vi.fn() },
+  inquiryApi: {
+    listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn() },
   agentsApi: { list: vi.fn() },
   experimentsApi: { listDefinitions: vi.fn(), listInterpretations: vi.fn() },
   knowledgeApi: { list: vi.fn() },

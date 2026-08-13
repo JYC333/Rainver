@@ -67,7 +67,6 @@ export const ClaimTrajectorySignalKindSchema = z.enum([
   "supersession",
   "kind_divergence",
 ]);
-export type ClaimTrajectorySignalKind = z.infer<typeof ClaimTrajectorySignalKindSchema>;
 
 export const ClaimTrajectorySignalSchema = z
   .object({
@@ -122,6 +121,7 @@ export const ClaimContradictionScanRequestSchema = z
   })
   .strict();
 export type ClaimContradictionScanRequest = z.infer<typeof ClaimContradictionScanRequestSchema>;
+export type ClaimContradictionScanRequestInput = z.input<typeof ClaimContradictionScanRequestSchema>;
 
 export const ClaimContradictionSignalSchema = z.enum([
   "negation",

@@ -1,13 +1,6 @@
 import { z } from "zod";
 
 export const ReaderDocumentTypeSchema = z.enum(["source_item", "source_snapshot", "research_report", "research_notebook"]);
-export type ReaderDocumentType = z.infer<typeof ReaderDocumentTypeSchema>;
-
-export const ReaderDocumentRefSchema = z.object({
-  document_type: ReaderDocumentTypeSchema,
-  document_id: z.string().min(1),
-  project_id: z.string().min(1).optional(),
-}).strict();
 
 export const ReaderAnnotationCreateSchema = z.object({
   document_type: ReaderDocumentTypeSchema,

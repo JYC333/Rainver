@@ -1,19 +1,36 @@
 import { z } from "zod";
 
 export const SourceProviderStatusSchema = z.enum(["active", "disabled"]);
-export type SourceProviderStatus = z.infer<typeof SourceProviderStatusSchema>;
 
 export const SourceConnectorStatusSchema = z.enum(["active", "disabled"]);
-export type SourceConnectorStatus = z.infer<typeof SourceConnectorStatusSchema>;
 
 export const SourceChannelStatusSchema = z.enum(["active", "paused", "archived"]);
-export type SourceChannelStatus = z.infer<typeof SourceChannelStatusSchema>;
 
 export const SourceChannelTypeSchema = z.enum(["search", "feed", "web_page", "custom_source"]);
-export type SourceChannelType = z.infer<typeof SourceChannelTypeSchema>;
 
 export const SourceFetchFrequencySchema = z.enum(["manual", "hourly", "daily", "weekly"]);
-export type SourceFetchFrequency = z.infer<typeof SourceFetchFrequencySchema>;
+
+export const SourceProviderCategoryOptionSchema = z.object({
+  value: z.string().min(1),
+  label: z.string().min(1),
+}).passthrough();
+export type SourceProviderCategoryOption = z.infer<typeof SourceProviderCategoryOptionSchema>;
+
+export const SourceProviderCategoryGroupSchema = z.object({
+  group: z.string().min(1),
+  options: z.array(SourceProviderCategoryOptionSchema),
+}).passthrough();
+export type SourceProviderCategoryGroup = z.infer<typeof SourceProviderCategoryGroupSchema>;
+
+/**
+ * Setup guidance a Provider offers the channel-creation form. Only arXiv
+ * declares category groups today; the shape stays open because the catalog
+ * owns which providers publish what.
+ */
+export const SourceProviderSetupSchemaSchema = z.object({
+  category_groups: z.array(SourceProviderCategoryGroupSchema).optional(),
+}).passthrough();
+export type SourceProviderSetupSchema = z.infer<typeof SourceProviderSetupSchemaSchema>;
 
 export const SourceProviderSchema = z.object({
   id: z.string().min(1),
@@ -24,7 +41,7 @@ export const SourceProviderSchema = z.object({
   status: SourceProviderStatusSchema,
   capabilities: z.record(z.unknown()),
   config_schema: z.record(z.unknown()).nullable(),
-  setup_schema: z.record(z.unknown()).nullable().optional(),
+  setup_schema: SourceProviderSetupSchemaSchema.nullable().optional(),
 }).passthrough();
 export type SourceProvider = z.infer<typeof SourceProviderSchema>;
 
@@ -49,10 +66,8 @@ export const SourceProviderConnectorSchema = z.object({
   capabilities: z.record(z.unknown()),
   config_schema: z.record(z.unknown()).nullable(),
 }).passthrough();
-export type SourceProviderConnector = z.infer<typeof SourceProviderConnectorSchema>;
 
 export const SourceChannelQuerySchema = z.record(z.unknown());
-export type SourceChannelQuery = z.infer<typeof SourceChannelQuerySchema>;
 
 export const SourceChannelCapabilitiesSchema = z.object({
   search: z.boolean().optional(),
@@ -62,7 +77,6 @@ export const SourceChannelCapabilitiesSchema = z.object({
   date_fields: z.array(z.string()).optional(),
   dedupe_keys: z.array(z.string()).optional(),
 }).passthrough();
-export type SourceChannelCapabilities = z.infer<typeof SourceChannelCapabilitiesSchema>;
 
 export const SourceChannelScanStateSchema = z.object({
   status: z.string().nullable(),
@@ -71,7 +85,17 @@ export const SourceChannelScanStateSchema = z.object({
   next_run_at: z.string().nullable(),
   last_run_at: z.string().nullable(),
 }).passthrough();
-export type SourceChannelScanState = z.infer<typeof SourceChannelScanStateSchema>;
+
+/**
+ * The values the `source_channels.capture_policy` CHECK constraint allows.
+ * The read model used to declare a bare string, which is looser than both the
+ * database and the create request.
+ */
+export const SourceChannelCapturePolicySchema = z.enum([
+  "reference_only",
+  "extract_text",
+  "archive_original",
+]);
 
 export const SourceChannelSchema = z.object({
   id: z.string().min(1),
@@ -89,7 +113,7 @@ export const SourceChannelSchema = z.object({
   schedule_rule: z.record(z.unknown()).nullable(),
   provider: z.object({ key: z.string().min(1), display_name: z.string().min(1) }),
   connection_status: z.string().min(1).nullable(),
-  capture_policy: z.string().min(1).nullable(),
+  capture_policy: SourceChannelCapturePolicySchema.nullable(),
   scan_state: SourceChannelScanStateSchema,
 }).passthrough();
 export type SourceChannel = z.infer<typeof SourceChannelSchema>;
@@ -102,6 +126,5 @@ export const SourceChannelCreateRequestSchema = z.object({
   endpoint_url: z.string().url().optional(),
   fetch_frequency: SourceFetchFrequencySchema.optional(),
   schedule_rule: z.record(z.unknown()).optional(),
-  capture_policy: z.enum(["reference_only", "extract_text", "archive_original"]).optional(),
+  capture_policy: SourceChannelCapturePolicySchema.optional(),
 }).passthrough();
-export type SourceChannelCreateRequest = z.infer<typeof SourceChannelCreateRequestSchema>;

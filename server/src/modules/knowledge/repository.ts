@@ -3,6 +3,11 @@ import { assertEvidenceableObjectType } from "../ontology/validation";
 import { hasDeclaration } from "../ontology/linkTypes";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import {
+  appendMarginalia,
+  type MarginaliaInput,
+  type MarginaliaProjection,
+} from "./noteMarginalia";
+import {
   accessibleProjectIds,
   assertProjectReadable,
   assertProjectWriter,
@@ -973,14 +978,16 @@ export class PgKnowledgeRepository {
          $1, $2, $3, $4, $5, $6,
          $7, $8, $9, $10, $11
        )
-       RETURNING id, space_id, knowledge_item_id, source_id, link_type,
+       RETURNING id, space_id, knowledge_item_id, source_id, relation_type,
                  locator, quote, note, confidence, created_by_user_id, created_at`,
       [
         randomUUID(),
         identity.spaceId,
         itemId,
         sourceId,
-        optionalString(body.link_type) ?? "derived_from",
+        // The column, the list read model, and this route's RETURNING all call
+        // it relation_type; `link_type` stays accepted for older callers.
+        optionalString(body.relation_type) ?? optionalString(body.link_type) ?? "derived_from",
         optionalString(body.locator),
         optionalString(body.quote),
         optionalString(body.note),
@@ -1345,6 +1352,25 @@ export class PgKnowledgeRepository {
         [noteId, identity.spaceId],
       );
     }
+    // A marginalia note that is archived, deleted, or moved to another Project
+    // is no longer what the capture path resolves, so it must stop occupying
+    // the one-per-member slot. Leaving the binding behind would make the next
+    // capture insert a second row for the same slot and fail the unique index,
+    // which no later action could recover from.
+    await scope.db.query(
+      `UPDATE notes n
+          SET marginalia_project_id = NULL,
+              marginalia_owner_user_id = NULL,
+              marginalia_target_object_id = NULL
+         FROM space_objects so
+        WHERE n.object_id = $1 AND n.space_id = $2
+          AND so.id = n.object_id AND so.space_id = n.space_id
+          AND n.marginalia_owner_user_id IS NOT NULL
+          AND (n.status <> 'active'
+               OR so.deleted_at IS NOT NULL
+               OR n.marginalia_project_id IS DISTINCT FROM so.primary_project_id)`,
+      [noteId, identity.spaceId],
+    );
     // Runs after the root update above, so assigning a role in the same
     // request that moves a note into a Project scopes the role to the new
     // Project rather than the old one.
@@ -1600,7 +1626,9 @@ export class PgKnowledgeRepository {
         [`note-jot:${identity.spaceId}:${projectId ?? "unbound"}:${targetId}`],
       );
       let jottedId: string;
-      const existingNoteId = noteId ?? await scoped.noteForJotTarget(identity, targetId, projectId);
+      // `null` owner: a jot from an evidence card is team material, so every
+      // member's private marginalia note on the same object is excluded.
+      const existingNoteId = noteId ?? await scoped.noteForJotTarget(identity, targetId, projectId, null);
       if (existingNoteId) {
         await scoped.requireWritableNote(identity, existingNoteId);
         // Append rather than replace, and with no `expectVersion`: a jot adds a
@@ -1648,6 +1676,27 @@ export class PgKnowledgeRepository {
       return jottedId;
     });
     return (await this.getNote(identity, jottedNoteId))!;
+  }
+
+  /**
+   * The note half of a marginalia capture (ADR 0013 decision 3a).
+   *
+   * Lives beside the shared jot rather than inside it: a jot from an evidence
+   * card is team material by intent, while marginalia is one member's private
+   * margin note, and collapsing them would mean one of the two silently gets
+   * the other's visibility.
+   */
+  appendMarginalia(
+    identity: SpaceUserIdentity,
+    input: MarginaliaInput,
+  ): Promise<MarginaliaProjection> {
+    return appendMarginalia(this.db, identity, input, {
+      requireVisibleSpaceObject: (db, id, objectId, message) =>
+        new PgKnowledgeRepository(db).requireVisibleSpaceObject(id, objectId, message),
+      createNoteLink: (db, id, noteId, body) => new PgKnowledgeRepository(db).createNoteLink(id, noteId, body),
+      noteForJotTarget: (db, id, targetId, projectId, ownerUserId) =>
+        new PgKnowledgeRepository(db).noteForJotTarget(id, targetId, projectId, ownerUserId),
+    });
   }
 
   // The purge is a hard DELETE, so it honors the retention window it reports:
@@ -1995,7 +2044,7 @@ export class PgKnowledgeRepository {
           AND to_so.space_id = r.space_id
           AND to_so.object_type = 'claim'
           AND to_so.deleted_at IS NULL
-        WHERE space_id = $1
+        WHERE r.space_id = $1
           AND r.to_object_id = $2
           AND r.link_type = 'supersedes'
           AND r.status = 'active'
@@ -2256,26 +2305,56 @@ export class PgKnowledgeRepository {
     return note;
   }
 
-  /** Resolve the existing quick-capture note for one target inside one scope. */
-  private async noteForJotTarget(
+  /**
+   * Resolve the existing capture note for one target inside one scope.
+   *
+   * The owner dimension is what keeps the two kinds of note about the same
+   * object apart. A jot from an evidence card is team material and passes
+   * `null`; a marginalia capture passes its owner. Without the split the
+   * shared jot would find the caller's own private note first — it is linked
+   * to the same object and the caller can read it — and quietly append team
+   * material into something no teammate can see.
+   *
+   * The two branches deliberately key on different things. Marginalia keys on
+   * the binding columns, which are also its uniqueness key, so the lookup can
+   * never miss a row the index would reject — deleting the note's link, which
+   * the note editor offers, must not turn the next capture into a constraint
+   * violation. The shared jot keys on the link, which is all a team note about
+   * an object has, and additionally refuses a `private` note: a binding can be
+   * cleared (by an archive, say) while the note stays private, and "no binding"
+   * alone would then read as "team note".
+   */
+  async noteForJotTarget(
     identity: SpaceUserIdentity,
     targetId: string,
     projectId: string | null,
+    marginaliaOwnerUserId: string | null = null,
   ): Promise<string | null> {
     const candidates = await this.db.query<{ note_id: string }>(
-      `SELECT nl.from_object_id AS note_id
-         FROM note_links nl
+      `SELECT n.object_id AS note_id
+         FROM notes n
          JOIN space_objects note_so
-           ON note_so.id = nl.from_object_id
-          AND note_so.space_id = nl.space_id
+           ON note_so.id = n.object_id
+          AND note_so.space_id = n.space_id
           AND note_so.object_type = 'note'
           AND note_so.deleted_at IS NULL
-        WHERE nl.space_id = $1
-          AND nl.to_object_id = $2
-          AND nl.status = 'active'
+        WHERE n.space_id = $1
+          AND n.status = 'active'
           AND note_so.primary_project_id IS NOT DISTINCT FROM $3::varchar
-        ORDER BY nl.created_at ASC, nl.id ASC`,
-      [identity.spaceId, targetId, projectId],
+          AND CASE WHEN $4::varchar IS NULL
+                   THEN n.marginalia_owner_user_id IS NULL
+                        AND note_so.visibility <> 'private'
+                        AND EXISTS (
+                          SELECT 1 FROM note_links nl
+                           WHERE nl.space_id = n.space_id
+                             AND nl.from_object_id = n.object_id
+                             AND nl.to_object_id = $2
+                             AND nl.status = 'active')
+                   ELSE n.marginalia_owner_user_id = $4::varchar
+                        AND n.marginalia_target_object_id = $2
+              END
+        ORDER BY note_so.created_at ASC, n.object_id ASC`,
+      [identity.spaceId, targetId, projectId, marginaliaOwnerUserId],
     );
     for (const candidate of candidates.rows) {
       if (await this.getNoteRow(identity, candidate.note_id)) return candidate.note_id;

@@ -108,9 +108,6 @@ export type RoomDetail = z.infer<typeof RoomDetailSchema>;
 export const CreateRoomConversationRequestSchema = z.object({
   title: z.string().trim().min(1).max(512).nullish(),
 }).strict();
-export type CreateRoomConversationRequest = z.infer<
-  typeof CreateRoomConversationRequestSchema
->;
 
 export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().min(1).max(8000),
@@ -130,4 +127,3 @@ export const SendRoomMessageResponseSchema = z.object({
   run_ids: z.array(IdSchema).min(1),
   ...SecretResponseGuards,
 }).strict();
-export type SendRoomMessageResponse = z.infer<typeof SendRoomMessageResponseSchema>;

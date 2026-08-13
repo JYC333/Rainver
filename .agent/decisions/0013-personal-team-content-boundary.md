@@ -116,10 +116,116 @@ Decisions that would only harden against a deliberate insider are out of scope.
     is externally mutable, so a file-level ACL would drift from reality on the
     first `git checkout` and become a second, weaker source of truth.
 
+## Amended - 2026-08-11 (capture destinations)
+
+Merging the two competing capture entries forced the literal reading of
+decisions 3 and 5 to be settled, because taken at face value they say a thought
+typed inside a Project is published to the team on the keystroke. The
+amendment is recorded here rather than in a superseding ADR: two authorities on
+the same boundary is the failure this document exists to prevent.
+
+**3b. Ownership and pipeline are separate axes.** Decision 3 binds Space, scope
+and visibility to creation context, and that stands. It does *not* also bind
+the processing pipeline. Capture inside a Project therefore has four
+destinations, not one:
+
+| Destination | Scope | Visibility | Pipeline |
+|---|---|---|---|
+| Marginalia on the Area's current object | the Project | `private` | written straight into a note |
+| Project marginalia | the Project | `private` | written straight into a note |
+| Project raw material | the Project | `space_shared` | stays `raw`, awaiting processing |
+| Personal inbox | none | `private` | stays `raw`, awaiting processing |
+
+The failure this prevents is the mirror of the one the ADR was written for.
+Binding the axes together — Project implies shared, personal implies reviewed —
+leaves external material pasted into a Project with no correct destination: it
+becomes the user's private marginalia, invisible to the team it was meant for.
+Not accidental disclosure, but accidental concealment, and equally silent.
+
+**3c. Hand-typed capture inside a Project is decision 3a marginalia.** A thought
+captured against a Thread — "the control group here is wrong" — is marginalia in
+form, so it takes the Project's scope and defaults to `private`. Because
+`space_objects.visibility` is row-level, a note cannot mix private and shared
+paragraphs; marginalia therefore lands in a **separate per-user, per-target
+private note**. The model does not fork for single-member Spaces — only the UI
+omits the "team / mine" wording there, so a personal-Space Project that later
+gains members needs no migration.
+
+**Decision 5 is unchanged and still binding.** There is no draft state inside a
+Project. Marginalia is not a draft of team content; it is a different kind of
+object with its own visibility, and promoting it to team material is an
+explicit relocation rather than a state change.
+
+**Decision 2 is load-bearing here.** The destination default is inferred from a
+deterministic signal — a paste event or a URL — and is *never* remembered from
+the previous capture. A remembered destination is invisible at the moment of
+writing, which is the mode error decision 2 removed once already.
+
+## Amended - 2026-08-12 (relocation, the outward direction)
+
+Decision 6 legislates personal → Project and nothing legislates the reverse, so
+until now content that landed in a Project could not leave it. That gap was not
+neutral: capture ships **inferred** destination defaults, one of which sends a
+paste to the Project's team-visible raw material, and the whole case for
+inferring rather than asking is that a wrong inference can be undone. Without an
+outward path the inference is one-way and a misfiling has no remedy. Recorded
+here rather than in a new ADR for the same reason as the previous amendment.
+
+**6a. Move and copy are different acts with different authority.**
+
+*Move* is decision 6's transformation run backwards: the original leaves the
+Project. It requires authority over the **content** — its `owner_user_id`, the
+Project's owner, or a Space owner/admin. Being able to contribute to a Project
+is explicitly not authority to remove what a colleague contributed, so ordinary
+Project membership is not enough.
+
+*Copy* leaves the original in place. It is not a loss to the team but it is
+egress — a second holder outside the Space's boundary.
+
+The two are kept apart because their consequences differ: a move changes what
+the team has, a copy changes who else holds it.
+
+**6b. The Space setting governs other people's content, not your own.**
+`spaces.member_copy_out_enabled` is **default off** and changed by an owner or
+admin. It gates taking *another member's* content out of the Space, by either
+verb.
+
+Your own content is never gated by it. Taking a misfiled thought back out is the
+remedy that makes capture's inferred defaults defensible at all — a paste
+defaults to the Project's team-visible raw material, and a guess that cannot be
+undone should not have been made. A setting that is off by default would remove
+exactly the capability the outward direction exists for.
+
+**What counts as leaving is where the row lands, not what the destination is
+called.** Every Project destination resolves its Space from the caller's
+`project_id` and the request Space header, both client-supplied, so a
+destination named `project_marginalia` can cross a boundary. The gate resolves
+the destination Space first and compares it with the source. Testing the
+destination *label* would enforce B4 for one name and leave the others open.
+
+Authority for a move is checked on the source side and is project-scoped: a
+capture with no Project — every `personal_inbox` capture — is movable by its
+owner alone, because there is no Project for anyone to administer.
+
+A copy out is announced under decision 11, with its two non-negotiables intact:
+**pointer metadata only, never the content**, and disclosed in the composer
+before the action rather than reported after it.
+
+**What relocation carries is the user's decision.** The note's current text is
+authority, never the capture's `activity_record` snapshot — treating the
+snapshot as authority would silently discard every edit made after capturing.
+And block adhesion has no automatic rule: the anchored block is preselected, the
+blocks after it up to the next capture or heading are offered unchecked, and the
+author chooses. Absorbing too few tears a thought in half; too many drags a
+colleague's paragraph along. Both damage data, and only the author knows.
+
 ## Consequences
 
-- Users make zero privacy decisions during capture. The cost is that writing to
-  a team requires a project entry point or one explicit filing action.
+- Users make zero privacy decisions during capture *by default*: the
+  destination and its consequence are shown before typing and the default is
+  inferred, but choosing another destination is one click (amendment 3b). The
+  cost is that writing to a team still requires a project entry point or one
+  explicit filing action.
 - Personal Spaces become high-traffic. Their capture inbox has to be good, or
   users will route around it — the failure this ADR exists to prevent.
 - The strongest isolation boundary now has a controlled opening. Every
@@ -139,7 +245,7 @@ Decisions that would only harden against a deliberate insider are out of scope.
 ## Deferred
 
 Tracked with their triggers in
-[hardening-blind-spot-remediation-plan.md](../plans/hardening-blind-spot-remediation-plan.md):
+[deferred-register.md](../tasks/deferred-register.md):
 
 - Ownership of orphaned `private` rows after a member leaves a Space.
 - Explicit consent to a Space's `oversight_mode` when joining an existing Space.

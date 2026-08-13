@@ -69,14 +69,12 @@ export const SessionCreateRequestSchema = z
     metadata: JsonObjectSchema.nullish(),
   })
   .passthrough();
-export type SessionCreateRequest = z.infer<typeof SessionCreateRequestSchema>;
 
 export const MessageCreateRequestSchema = z
   .object({
     content: z.string().min(1),
   })
   .strict();
-export type MessageCreateRequest = z.infer<typeof MessageCreateRequestSchema>;
 
 export const ChatTurnRequestSchema = z
   .object({
@@ -89,7 +87,6 @@ export const ChatTurnRequestSchema = z
     }).strict().optional(),
   })
   .strict();
-export type ChatTurnRequest = z.infer<typeof ChatTurnRequestSchema>;
 
 export const ConversationBackendBindingSchema = z.object({
   runtime_profile_id: IdSchema,
@@ -190,9 +187,6 @@ export const ChatTurnPrepareRunRequestSchema = z.object({
   session_id: IdSchema,
   message: z.string().min(1).max(8000),
 });
-export type ChatTurnPrepareRunRequest = z.infer<
-  typeof ChatTurnPrepareRunRequestSchema
->;
 
 export const ChatTurnPrepareRunResultSchema = z
   .object({
@@ -201,9 +195,6 @@ export const ChatTurnPrepareRunResultSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ChatTurnPrepareRunResult = z.infer<
-  typeof ChatTurnPrepareRunResultSchema
->;
 
 export const MemoryScopeSchema = z.enum(["user", "project"]);
 export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
@@ -248,9 +239,6 @@ export const MemoryProposalOperationSchema = z.enum([
   "update",
   "archive",
 ]);
-export type MemoryProposalOperation = z.infer<
-  typeof MemoryProposalOperationSchema
->;
 
 const MemoryCreateFieldsSchema = z.object({
   title: z.string(),
@@ -325,9 +313,6 @@ export const MemoryProposalCommandSchema = z.discriminatedUnion("operation", [
   MemoryProposalUpdateCommandSchema,
   MemoryProposalArchiveCommandSchema,
 ]);
-export type MemoryProposalCommand = z.infer<
-  typeof MemoryProposalCommandSchema
->;
 
 export const MemoryProposalCreateResultSchema = z
   .object({
@@ -341,9 +326,6 @@ export const MemoryProposalCreateResultSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type MemoryProposalCreateResult = z.infer<
-  typeof MemoryProposalCreateResultSchema
->;
 
 // Memory search is identity-scoped: the surface intentionally has no space_id /
 // user_id fields. The server derives both from the authenticated identity, so a
@@ -358,7 +340,6 @@ export const MemorySearchRequestSchema = z
     limit: z.number().int().nonnegative().default(10),
   })
   .passthrough();
-export type MemorySearchRequest = z.infer<typeof MemorySearchRequestSchema>;
 
 export const MemoryReadRequestSchema = z.object({
   space_id: IdSchema,
@@ -372,7 +353,6 @@ export const MemoryReadRequestSchema = z.object({
   offset: z.number().int().nonnegative().default(0),
   reason: z.string().nullish(),
 });
-export type MemoryReadRequest = z.infer<typeof MemoryReadRequestSchema>;
 
 export const MemoryPageSchema = z
   .object({
@@ -435,9 +415,9 @@ export const MemoryMaintenanceScanRequestSchema = z
   })
   .strict();
 export type MemoryMaintenanceScanRequest = z.infer<typeof MemoryMaintenanceScanRequestSchema>;
+export type MemoryMaintenanceScanRequestInput = z.input<typeof MemoryMaintenanceScanRequestSchema>;
 
 export const MemoryMaintenanceJobStatusSchema = z.enum(["pending", "running", "completed", "failed"]);
-export type MemoryMaintenanceJobStatus = z.infer<typeof MemoryMaintenanceJobStatusSchema>;
 
 export const MemoryMaintenanceReportSchema = z
   .object({

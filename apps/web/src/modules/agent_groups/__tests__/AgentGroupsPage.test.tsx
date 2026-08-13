@@ -93,7 +93,6 @@ describe('Rooms page', () => {
         space_id: 'space-1',
         room_id: room.id,
         project_id: room.project_id,
-        user_id: null,
         project_folder_id: null,
         title: 'Evidence review',
         status: 'active',

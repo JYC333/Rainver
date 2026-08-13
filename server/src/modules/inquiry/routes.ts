@@ -144,6 +144,30 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/projects/:projectId/inquiry/open-steps", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await iterations().listOpenProjectSteps(identity, projectId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/steps", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const p = params(request);
+      const projectId = requiredString(p.projectId, "project_id");
+      const threadId = requiredString(p.threadId, "thread_id");
+      return reply.send(await iterations().listSteps(identity, projectId, threadId));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/lifecycle-transitions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -441,6 +465,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const thread = await iterations().updateWork(identity, projectId, threadId, {
         next_focus_kind: current.recommended_focus_kind,
         blocked_reason: null,
+        // Adoption is one user command: a backlogged or monitoring Thread must
+        // not be focused in one transaction and receive its Step in another.
+        attention_state: "focused",
+        // Records that the suggestion, not the user's own reading, is where
+        // this step came from — the distinction the bare enum could not hold.
+        step_origin: "advice",
       });
       await adviceService.markAdopted(identity, projectId, threadId);
       return reply.send({

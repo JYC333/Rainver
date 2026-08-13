@@ -11,7 +11,8 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 vi.mock('../../../api/client', () => ({
   projectsApi: { get: vi.fn() },
-  inquiryApi: { listThreads: vi.fn() },
+  inquiryApi: {
+    listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn() },
   agentsApi: { list: vi.fn() },
   projectFoldersApi: { list: vi.fn() },
   experimentsApi: {

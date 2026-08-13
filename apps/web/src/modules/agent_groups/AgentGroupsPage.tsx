@@ -714,7 +714,7 @@ function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
   })
 }
 
-function metadataRunIds(metadata: Record<string, unknown> | null): string[] {
+function metadataRunIds(metadata: Record<string, unknown> | null | undefined): string[] {
   const value = metadata?.run_ids
   if (Array.isArray(value)) return value.filter((id): id is string => typeof id === 'string')
   const runId = metadata?.run_id

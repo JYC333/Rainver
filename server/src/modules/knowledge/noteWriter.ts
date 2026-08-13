@@ -4,6 +4,7 @@ import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
 import { assertProjectWriter } from "../projects/access";
 import { RetrievalProjectionService } from "../retrieval";
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter";
+import { blockIds, withBlockIds } from "./noteBlockIds";
 import { normalizePmText, type NoteOp } from "./noteDocument";
 import { projectOwningCollection } from "./noteProjectFolders";
 import { shareSpaceObjectWithProject } from "./spaceObjectProjectShares";
@@ -54,7 +55,7 @@ import {
 export interface NoteWriteScope {
   /** The transaction. Use it for writes that belong with the note's own. */
   readonly db: Queryable;
-  create(input: NoteInsert): Promise<{ id: string; version: number }>;
+  create(input: NoteInsert): Promise<{ id: string; version: number; blockIds: string[] }>;
   write(input: NoteContentInput): Promise<NoteWriteResult>;
   applyOps(input: NoteOpsInput): Promise<{ note: NoteContentRow; conflict: boolean } | null>;
   rollback(input: NoteRollbackInput): Promise<NoteContentRow>;
@@ -101,6 +102,16 @@ export interface NoteInsert {
   createdFromActivityId?: string | null;
   collectionId?: string | null;
   projectRole?: string | null;
+  /**
+   * Marks the note as one member's private marginalia for a Project (ADR 0013
+   * decision 3a), which is how the capture path finds the same note again
+   * without resolving by title. Set together with `marginaliaOwnerUserId`; a
+   * CHECK rejects a half-set pair.
+   */
+  marginaliaProjectId?: string | null;
+  marginaliaOwnerUserId?: string | null;
+  /** Null for the Project-level note, set for a note about one object. */
+  marginaliaTargetObjectId?: string | null;
   at?: string;
 }
 
@@ -277,7 +288,10 @@ async function reindexInTransaction(tx: Queryable, touched: Map<string, string>)
  * Creates the root row, the extension row, the first revision, and — when
  * asked — collection membership and a Project role, in that order.
  */
-async function insertNote(db: Queryable, input: NoteInsert): Promise<{ id: string; version: number }> {
+async function insertNote(
+  db: Queryable,
+  input: NoteInsert,
+): Promise<{ id: string; version: number; blockIds: string[] }> {
   const at = input.at ?? new Date().toISOString();
   const actorUserId = actingUserId(input.actor);
   const projectId = input.primaryProjectId ?? null;
@@ -290,7 +304,12 @@ async function insertNote(db: Queryable, input: NoteInsert): Promise<{ id: strin
     await assertProjectWriter(db, input.spaceId, projectId, actorUserId);
   }
   const objectId = randomUUID();
-  const plainText = input.plainText !== undefined ? input.plainText : normalizePmText(input.doc);
+  // Creation does not pass through `writeNote`, so it stamps its own ids —
+  // otherwise a note's first blocks would be the only ones in the system
+  // without identity, and a capture that creates its marginalia note would
+  // have nothing to anchor on.
+  const doc = withBlockIds(input.doc);
+  const plainText = input.plainText !== undefined ? input.plainText : normalizePmText(doc);
   const ownerUserId = input.ownerUserId !== undefined ? input.ownerUserId : actorUserId;
   const createdByUserId = input.createdByUserId !== undefined ? input.createdByUserId : actorUserId;
   const object = buildSpaceObjectInsert({
@@ -314,27 +333,32 @@ async function insertNote(db: Queryable, input: NoteInsert): Promise<{ id: strin
      )
      INSERT INTO notes (
        object_id, space_id, status, content_json, content_format, content_schema_version,
-       plain_text, created_from_activity_id, version, content_hash
+       plain_text, created_from_activity_id, version, content_hash,
+       marginalia_project_id, marginalia_owner_user_id, marginalia_target_object_id
      ) VALUES (
        $${n + 1}, $${n + 2}, 'active', $${n + 3}::jsonb, $${n + 4}, COALESCE($${n + 5}::int, 1),
-       $${n + 6}, $${n + 7}, 1, $${n + 8}
+       $${n + 6}, $${n + 7}, 1, $${n + 8},
+       $${n + 9}, $${n + 10}, $${n + 11}
      )`,
     [
       ...object.params,
       objectId,
       input.spaceId,
-      JSON.stringify(input.doc),
+      JSON.stringify(doc),
       input.contentFormat ?? "prosemirror_json",
       input.contentSchemaVersion ?? null,
       plainText,
       input.createdFromActivityId ?? null,
       sha256(plainText ?? ""),
+      input.marginaliaProjectId ?? null,
+      input.marginaliaOwnerUserId ?? null,
+      input.marginaliaTargetObjectId ?? null,
     ],
   );
   await insertInitialNoteRevision(db, {
     spaceId: input.spaceId,
     noteId: objectId,
-    doc: input.doc,
+    doc,
     at,
     userId: createdByUserId,
   });
@@ -351,7 +375,7 @@ async function insertNote(db: Queryable, input: NoteInsert): Promise<{ id: strin
       at,
     });
   }
-  return { id: objectId, version: 1 };
+  return { id: objectId, version: 1, blockIds: blockIds(doc).filter((id): id is string => id !== null) };
 }
 
 /**

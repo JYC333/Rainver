@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft } from 'lucide-react'
@@ -10,6 +10,7 @@ import type { ActivityInboxRecord, Proposal } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
+import { CaptureRelocationDialog } from '../../components/CaptureRelocationDialog'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
@@ -25,31 +26,27 @@ export default function ActivityDetailPage() {
   const [loading, setLoading] = useState(true)
   const [consolidating, setConsolidating] = useState(false)
   const [generatedProposals, setGeneratedProposals] = useState<Proposal[] | null>(null)
+  const [relocating, setRelocating] = useState(false)
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!activityId) return
     if (!activeSpaceId) {
       setRow(null)
       setLoading(false)
       return
     }
-    let cancelled = false
-    ;(async () => {
-      setLoading(true)
-      try {
-        const r = await activityApi.get(activityId)
-        if (!cancelled) setRow(r)
-      } catch (e) {
-        if (!cancelled) {
-          if (!isNotFoundError(e)) toast.error(errMsg(e))
-          setRow(null)
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => { cancelled = true }
+    setLoading(true)
+    try {
+      setRow(await activityApi.get(activityId))
+    } catch (e) {
+      if (!isNotFoundError(e)) toast.error(errMsg(e))
+      setRow(null)
+    } finally {
+      setLoading(false)
+    }
   }, [activityId, activeSpaceId])
+
+  useEffect(() => { void load() }, [load])
 
   async function doConsolidate() {
     if (!activityId) return
@@ -120,6 +117,26 @@ export default function ActivityDetailPage() {
             <pre className="text-xs bg-muted/50 rounded-md p-3 overflow-auto max-h-64">
               {JSON.stringify(row.metadata_json, null, 2)}
             </pre>
+          )}
+          {/* Only a capture that was projected into a note has an anchor to
+              relocate by; anything else has nothing to extract. */}
+          {Boolean((row.metadata_json as { marginalia?: { block_id?: string } } | null)?.marginalia?.block_id) && (
+            <div className="pt-2 border-t border-border">
+              <Button size="sm" variant="outline" onClick={() => setRelocating(true)}>
+                Relocate…
+              </Button>
+              <p className="text-xs text-muted-foreground mt-1">
+                Send this capture somewhere else — or promote it from your private notes to the
+                project's material.
+              </p>
+              <CaptureRelocationDialog
+                activityId={row.id}
+                projectId={row.project_id ?? null}
+                open={relocating}
+                onOpenChange={setRelocating}
+                onRelocated={load}
+              />
+            </div>
           )}
           {(row.status === 'raw' || row.status === 'processed') && (
             <div className="pt-2 border-t border-border">

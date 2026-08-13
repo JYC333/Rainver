@@ -14,7 +14,6 @@ export const CaptureFilingRequestSchema = z.object({
   target_project_id: IdSchema,
   title: z.string().trim().min(1).max(512).optional(),
 }).strict();
-export type CaptureFilingRequest = z.infer<typeof CaptureFilingRequestSchema>;
 
 export const CaptureFilingResponseSchema = z.object({
   activity_id: IdSchema,
@@ -24,4 +23,3 @@ export const CaptureFilingResponseSchema = z.object({
   visibility: z.literal("space_shared"),
   filed_at: ISODateTimeSchema,
 }).strict();
-export type CaptureFilingResponse = z.infer<typeof CaptureFilingResponseSchema>;

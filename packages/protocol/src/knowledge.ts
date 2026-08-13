@@ -128,15 +128,6 @@ export const CLAIM_SOURCE_TRUST_VALUES = [
   "untrusted",
   "unknown",
 ] as const;
-export const CLAIM_RELATION_TYPE_VALUES = [
-  "supports",
-  "contradicts",
-  "supersedes",
-  "refines",
-  "same_as",
-  "depends_on",
-  "derived_from",
-] as const;
 
 const ClaimKindSchema = z.enum(CLAIM_KIND_VALUES);
 const ClaimStatusSchema = z.enum(CLAIM_STATUS_VALUES);
@@ -173,7 +164,6 @@ export const ClaimSourceOutSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ClaimSourceOut = z.infer<typeof ClaimSourceOutSchema>;
 
 export const ClaimSummaryOutSchema = z
   .object({
@@ -197,7 +187,6 @@ export const ClaimSummaryOutSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ClaimSummaryOut = z.infer<typeof ClaimSummaryOutSchema>;
 
 export const ClaimOutSchema = ClaimSummaryOutSchema.extend({
   holder_object_id: IdSchema.nullish(),
@@ -217,7 +206,6 @@ export const ClaimOutSchema = ClaimSummaryOutSchema.extend({
   created_at: ISODateTimeSchema.nullish(),
   archived_at: DateLikeSchema,
 }).passthrough();
-export type ClaimOut = z.infer<typeof ClaimOutSchema>;
 
 export const ClaimRelationOutSchema = z
   .object({
@@ -237,7 +225,6 @@ export const ClaimRelationOutSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ClaimRelationOut = z.infer<typeof ClaimRelationOutSchema>;
 
 export const ObjectRelationOutSchema = z
   .object({
@@ -261,7 +248,6 @@ export const ObjectRelationOutSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type ObjectRelationOut = z.infer<typeof ObjectRelationOutSchema>;
 
 const PacketSystemFieldsSchema = z.object({
   source_run_id: IdSchema.optional(),
@@ -309,7 +295,6 @@ const ClaimSourcePacketSchema = z
       });
     }
   });
-export type ClaimSourcePacket = z.infer<typeof ClaimSourcePacketSchema>;
 
 export const ClaimCreateProposalPayloadSchema = PacketSystemFieldsSchema.extend({
   operation: z.literal("claim_create"),
@@ -419,7 +404,6 @@ export const ClaimObjectProposalPayloadSchema = z.union([
   ObjectRelationCreateProposalPayloadSchema,
   ObjectRelationDeleteProposalPayloadSchema,
 ]);
-export type ClaimObjectProposalPayload = z.infer<typeof ClaimObjectProposalPayloadSchema>;
 
 export const ClaimCandidatePacketCreateRequestSchema = z
   .object({
@@ -450,6 +434,7 @@ export const ClaimCandidatePacketCreateRequestSchema = z
 export type ClaimCandidatePacketCreateRequest = z.infer<
   typeof ClaimCandidatePacketCreateRequestSchema
 >;
+export type ClaimCandidatePacketCreateRequestInput = z.input<typeof ClaimCandidatePacketCreateRequestSchema>;
 
 export const ClaimCandidatePacketCreateResponseSchema = z
   .object({

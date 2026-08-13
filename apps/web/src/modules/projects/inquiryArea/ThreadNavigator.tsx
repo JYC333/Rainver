@@ -4,6 +4,7 @@ import type { InquiryThread } from '../../../types/api'
 import { Badge } from '../../../components/ui/badge'
 import { EmptyState } from '../../../components/ui/empty-state'
 import { groupThreadsForNavigator, priorityLabel, type ThreadGroupId } from './threadGrouping'
+import { STAGE_FOR_KIND, STAGE_LABELS } from './stages'
 
 function ThreadRow({ thread, selected, onSelect, showPriority }: {
   thread: InquiryThread
@@ -24,11 +25,21 @@ function ThreadRow({ thread, selected, onSelect, showPriority }: {
         {thread.kind === 'question'
           ? <HelpCircle className="size-3.5 shrink-0 text-muted-foreground" />
           : <FlaskConical className="size-3.5 shrink-0 text-accent-foreground" />}
+        {/*
+          The stage, matching the Map and the card — the raw enum read
+          differently from both while sitting beside them. A Thread with no
+          step is no longer worth a warning: between rounds, and while a search
+          runs in the background, that is the ordinary state.
+        */}
         {thread.blocked_reason
           ? <Badge variant="destructive" className="text-[10px]">blocked</Badge>
           : thread.next_focus_kind
-            ? <span className="truncate text-[10px] text-muted-foreground">{thread.next_focus_kind.replace(/_/g, ' ')}</span>
-            : <span className="text-[10px] text-amber-600">no next step</span>}
+            ? (
+              <span className="truncate text-[10px] text-muted-foreground">
+                {STAGE_LABELS[STAGE_FOR_KIND[thread.next_focus_kind]]}
+              </span>
+            )
+            : null}
         <div className="flex-1" />
         {showPriority && thread.priority !== 1 && (
           <span className="text-[10px] text-muted-foreground">{priorityLabel(thread.priority)}</span>

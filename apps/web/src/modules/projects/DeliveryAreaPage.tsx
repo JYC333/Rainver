@@ -11,6 +11,7 @@ import { Select } from '../../components/ui/select'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
 import { toast } from 'sonner'
+import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 export default function DeliveryAreaPage() {
   const { projectId = '' } = useParams()
@@ -54,6 +55,7 @@ export default function DeliveryAreaPage() {
   const open = tasks.filter(task => !['done', 'cancelled'].includes(task.status))
   const completed = tasks.filter(task => task.status === 'done')
   return <div className="space-y-5 p-6">
+    <ThreadOriginBar projectId={projectId} kinds={['create_delivery_task']} />
     <div><h1 className="text-xl font-semibold">Delivery</h1><p className="text-sm text-muted-foreground">Plan and complete the work that delivers this Project’s target state.</p></div>
     <Card className="flex gap-2 p-4"><Input value={title} onChange={event => setTitle(event.target.value)} placeholder="New delivery task" /><Button disabled={!title.trim()} onClick={() => void createTask()}><Plus className="size-4" />Add</Button></Card>
     <div className="grid gap-3">

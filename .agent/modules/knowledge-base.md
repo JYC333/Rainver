@@ -216,13 +216,22 @@ Neither always-append nor always-create is right on its own: one inbox would
 bury ten papers' annotations together, and a note per thought turns the tree
 into fragments (U11).
 
-The affordance is a floating capture in the Project shell
-(`ProjectQuickCapture`, mounted by `ProjectAreaLayout`), so it is reachable from
-every Area — capture and workspace are separate surfaces (U2). An Area that
-knows what it is currently about declares it through
-`useDeclareProjectCaptureTarget`, and the capture hangs on that object instead
-of the inbox; the Inquiry Area declares its focused Thread. The composer names
-the destination before the user types.
+This inbox is the jot's destination, not capture's: the floating composer that
+used to append here was merged into the shell's single capture entry, whose
+Project destinations are marginalia and raw material (see
+[assistant-capture.md](assistant-capture.md)). The inbox note is still what a
+contextless `POST /api/v1/knowledge/notes/jot` appends to.
+
+The jot resolver is owner-dimensioned. `noteForJotTarget` passes `null` for the
+owner, which matches only unbound, non-`private` notes: both kinds of note are
+linked to the same object and the caller can read their own, so without the
+split a jot from an evidence card would append team material into a note no
+teammate can see. The `private` exclusion is the belt: a marginalia binding is
+cleared when its note is archived or moved, and "unbound" alone would then read
+as "team note". Marginalia passes its owner instead, and resolves on the binding
+columns rather than the link — those columns are also its unique index, so
+deleting the link (which the note editor offers) cannot leave the next capture
+inserting a row the index rejects.
 
 Reading-list cards offer capture only where the material already has an
 `object_id`, and say why when it does not — material becomes a `space_objects`

@@ -17,16 +17,24 @@ export async function upsertPendingResearchCheckpoint(
     machineResult: Record<string, unknown>;
   },
 ): Promise<string> {
-  const existing = await db.query<{ id: string }>(
-    `SELECT id FROM project_research_checkpoints
+  // A checkpoint is one decision point in one operation, so it exists at most
+  // once per (workflow, type, operation) — in any status. Matching only
+  // *pending* rows meant a reconcile tick firing after the user decided found
+  // nothing and minted a second pending gate for work that was already
+  // approved: the operation moved on to synthesis while the reviewer was left
+  // with a fresh screening gate to approve again.
+  const existing = await db.query<{ id: string; status: string }>(
+    `SELECT id, status FROM project_research_checkpoints
       WHERE space_id=$1 AND project_id=$2 AND workflow_id=$3
         AND checkpoint_type=$4
         AND machine_result_json->>'operation_id'=$5
-        AND status='pending'
       ORDER BY created_at DESC LIMIT 1`,
     [input.spaceId, input.projectId, input.workflowId, input.checkpointType, input.operationId],
   );
   const now = new Date().toISOString();
+  // A decided checkpoint keeps its decision and its machine result: the
+  // reviewer judged that snapshot, so later ticks must not rewrite it.
+  if (existing.rows[0] && existing.rows[0].status !== "pending") return existing.rows[0].id;
   if (existing.rows[0]) {
     await db.query(
       `UPDATE project_research_checkpoints

@@ -69,6 +69,31 @@ function isEmptySearchOperation(operation: ProjectOperation | null): boolean {
   return emptyResult.kind === 'no_source_items'
 }
 
+/**
+ * Whether a source failed to contribute at all. The operation records this, but
+ * the completion wording ignored it — so "no relevant evidence" was reported
+ * with equal confidence whether every provider had been read or one of them had
+ * never answered. Those are different claims and the reader has to be able to
+ * tell them apart before acting on the suggestion to broaden the query.
+ */
+function coverageIncomplete(operation: ProjectOperation): boolean {
+  if (operation.progress_json.coverage_degraded === true) return true
+  const backfill = objectValue(operation.progress_json.backfill_progress)
+  return numberValue(backfill.deferred_segments) > 0 || numberValue(backfill.failed_segments) > 0
+}
+
+function deferredProviderNames(operation: ProjectOperation): string[] {
+  const backfill = objectValue(operation.progress_json.backfill_progress)
+  const deferred = Array.isArray(backfill.deferred_sources) ? backfill.deferred_sources : []
+  return deferred
+    .map(entry => {
+      const source = objectValue(entry)
+      const name = source.provider_display_name ?? source.provider_key
+      return typeof name === 'string' && name.trim() ? name.trim() : null
+    })
+    .filter((name): name is string => name !== null)
+}
+
 function noReportOutcome(operation: ProjectOperation | null): Record<string, unknown> | null {
   if (!operation) return null
   const outcome = objectValue(operation.progress_json.empty_result)
@@ -159,8 +184,12 @@ export function researchOperationPercent(operation: ProjectOperation): number {
 export function researchOperationDetail(operation: ProjectOperation): string {
   if (isEmptySearchOperation(operation)) return 'Search returned 0 materials · setup required'
   const outcome = noReportOutcome(operation)
-  if (outcome?.kind === 'no_relevant_sources') return 'Screening complete · no relevant evidence for synthesis'
-  if (outcome?.kind === 'no_coherent_synthesis') return 'Research complete · no coherent citation-backed report'
+  if (outcome) {
+    const base = outcome.kind === 'no_relevant_sources'
+      ? 'Screening complete · no relevant evidence for synthesis'
+      : 'Research complete · no coherent citation-backed report'
+    return coverageIncomplete(operation) ? `${base} · incomplete source coverage` : base
+  }
   const stage = researchOperationStage(operation)
   const backfill = objectValue(operation.progress_json.backfill_progress)
   const total = numberValue(backfill.total_segments)
@@ -213,7 +242,16 @@ export function researchOperationDetail(operation: ProjectOperation): string {
 export function researchOperationNextStep(operation: ProjectOperation): string {
   if (isEmptySearchOperation(operation)) return 'Next: adjust the saved setup, then start the initial research search again. Screening and synthesis were skipped.'
   const outcome = noReportOutcome(operation)
-  if (outcome) return 'Next: review the collected materials and adjust the research scope or search settings. This is a completed research outcome, not an execution failure.'
+  if (outcome) {
+    if (coverageIncomplete(operation)) {
+      const names = deferredProviderNames(operation)
+      const who = names.length > 0 ? names.join(', ') : 'At least one source'
+      // Named before the advice, because "broaden the query" is the wrong move
+      // when the real gap is a provider that contributed nothing.
+      return `${who} did not finish importing, so this conclusion is drawn from an incomplete corpus. Next: let the background retry finish, or retry the import, before broadening the search settings.`
+    }
+    return 'Next: review the collected materials and adjust the research scope or search settings. This is a completed research outcome, not an execution failure.'
+  }
   const stage = researchOperationStage(operation)
   const backfill = objectValue(operation.progress_json.backfill_progress)
   const deferred = numberValue(backfill.deferred_segments)

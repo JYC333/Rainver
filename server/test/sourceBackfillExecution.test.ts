@@ -12,11 +12,32 @@ describe("source backfill extraction windows",()=>{
     expect(parsed.searchParams.get("max_results")).toBe("17");
   });
 
-  it("adds bounded pagination to cursor scans",()=>{
+  // The offset is counted in items. Deriving it as `cursor * 100` regardless of
+  // the page actually requested skipped every result between the real position
+  // and the assumed one — here, 150 papers that no page would ever return.
+  it("resumes a cursor scan at the item the previous pages reached",()=>{
     const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI" } }, { from: "2026-01-01T00:00:00.000Z", to: "2026-01-02T00:00:00.000Z", cursor: 2, max_items: 25 }, {} ).url;
     const parsed=new URL(url);
-    expect(parsed.searchParams.get("start")).toBe("200");
+    expect(parsed.searchParams.get("start")).toBe("50");
     expect(parsed.searchParams.get("max_results")).toBe("25");
+  });
+
+  it("prefers a recorded item offset over the page index",()=>{
+    const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI" } }, { from: "2026-01-01T00:00:00.000Z", to: "2026-01-02T00:00:00.000Z", cursor: 3, offset: 130, max_items: 25 }, {} ).url;
+    expect(new URL(url).searchParams.get("start")).toBe("130");
+  });
+
+  // Narrowing the page after a provider failure must not move the position:
+  // the next request resumes at the same item, just asking for fewer of them.
+  it("keeps the resume position when the page size is narrowed",()=>{
+    const build=(pageSize:number)=>new URL(sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest(
+      { endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI" } },
+      { from: "2026-01-01T00:00:00.000Z", to: "2026-01-02T00:00:00.000Z", consumed_items: 60, max_items: pageSize, page_size: pageSize },
+      {},
+    ).url);
+    expect(build(100).searchParams.get("start")).toBe("60");
+    expect(build(25).searchParams.get("start")).toBe("60");
+    expect(build(25).searchParams.get("max_results")).toBe("25");
   });
 
   it("uses lastUpdatedDate for historical windows when configured", () => {

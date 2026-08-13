@@ -225,13 +225,21 @@ Load only the module docs relevant to your task.
 
 ## 6. Current Work
 
-The single source of active task context is:
+Planned work lives in exactly four documents, each with one job. Reorganized
+2026-08-13 from six overlapping files.
 
-**[tasks/current-focus.md](tasks/current-focus.md)**
+| Document | Holds |
+|---|---|
+| [tasks/current-focus.md](tasks/current-focus.md) | What is actually being worked on, the verified state of this instance, and the gates that guard acceptance, CLI runtimes, and Always-on |
+| [plans/backlog.md](plans/backlog.md) | Real work with no trigger condition, pulled on demand |
+| [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, including watch items and parked ideas |
+| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — a design, not a checklist |
 
-Do not create competing task files under `.agent/tasks/` or `.agent/`. Multiple task docs
-cause context conflicts for both humans and AI agents. If the focus changes, update
-`current-focus.md` in place.
+Do not create competing task files. Multiple task docs cause context conflicts
+for both humans and AI agents; if the focus changes, update `current-focus.md`
+in place. An approved multi-phase implementation may keep a short-lived
+execution ledger under `plans/`, but it is retired into current-state
+architecture as soon as its phases are complete.
 
 ---
 
@@ -265,6 +273,7 @@ load all docs for every task.
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
 | Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `sandbox.md`, `project-files.md` |
 | Dogfooding / product slice | `current-focus.md` + `PRODUCT_AND_BOUNDARIES.md` + `NON_GOALS_AND_DISABLED_SURFACES.md` |
+| Picking up planned work | `current-focus.md` + `plans/backlog.md` + `tasks/deferred-register.md` |
 | Sync / offline / local-first compatibility | `local-first-compatibility` bundle: `LOCAL_FIRST_COMPATIBILITY.md`, `sync-and-conflicts.md`, `mobile-client.md` |
 
 Additional agent rules:

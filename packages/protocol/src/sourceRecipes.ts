@@ -69,7 +69,6 @@ export const SOURCE_RECIPE_PRIMITIVE_NAMES = [
 export type SourceRecipePrimitiveName = (typeof SOURCE_RECIPE_PRIMITIVE_NAMES)[number];
 
 export const SOURCE_RECIPE_VALUE_KIND_VALUES = ["none", "html", "items"] as const;
-export type SourceRecipeValueKind = (typeof SOURCE_RECIPE_VALUE_KIND_VALUES)[number];
 
 /** Network permission a primitive can require: none, only the (pre-fetched) primary endpoint, or live fetches guarded by the envelope's origin allowlist. */
 export const SOURCE_RECIPE_NETWORK_ACCESS_VALUES = ["none", "primary_endpoint", "live_fetch"] as const;
@@ -352,7 +351,6 @@ export const SourceRecipeVersionDTOSchema = z
     superseded_at: ISODateTimeSchema.nullish(),
   })
   .passthrough();
-export type SourceRecipeVersionDTO = z.infer<typeof SourceRecipeVersionDTOSchema>;
 
 // --- Dry-run result and step trace ---
 
@@ -477,7 +475,6 @@ export const ProjectSourceBindingDTOSchema = z
     updated_at: ISODateTimeSchema,
   })
   .passthrough();
-export type ProjectSourceBindingDTO = z.infer<typeof ProjectSourceBindingDTOSchema>;
 
 export const ProjectSourceItemDTOSchema = z
   .object({
@@ -495,7 +492,6 @@ export const ProjectSourceItemDTOSchema = z
     item: z.record(z.unknown()),
   })
   .passthrough();
-export type ProjectSourceItemDTO = z.infer<typeof ProjectSourceItemDTOSchema>;
 
 export const SourceHealthDTOSchema = z
   .object({
@@ -514,7 +510,6 @@ export const SourceHealthDTOSchema = z
     consecutive_failures: z.number().int().nonnegative(),
   })
   .passthrough();
-export type SourceHealthDTO = z.infer<typeof SourceHealthDTOSchema>;
 
 export const ProjectSourceSummaryDTOSchema = z
   .object({
@@ -525,4 +520,3 @@ export const ProjectSourceSummaryDTOSchema = z
     recent_items: z.array(ProjectSourceItemDTOSchema),
   })
   .passthrough();
-export type ProjectSourceSummaryDTO = z.infer<typeof ProjectSourceSummaryDTOSchema>;

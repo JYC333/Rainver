@@ -6,8 +6,7 @@ import { cn } from '../../lib/utils'
 import { Badge } from '../../components/ui/badge'
 import { spacePath } from '../../core/navigation'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from '../../core/reviewAttention'
-import { ProjectQuickCapture } from './notes/ProjectQuickCapture'
-import { ProjectCaptureTargetProvider } from './notes/projectCaptureTarget'
+import { useDeclareProjectCaptureProject } from '../../contexts/CaptureContext'
 
 const groups = [
   {
@@ -18,6 +17,10 @@ const groups = [
       // Areas and writing something down should not mean going to one of them.
       { label: 'Notes', path: 'notes' },
       { label: 'Rooms', path: 'rooms' },
+      // The Space's one review queue, pinned to this Project. Staying inside
+      // the Project matters: this is where a capture is checked on, and
+      // bouncing out to the Space Inbox to do it lost the reader their place.
+      { label: 'Raw material', path: 'raw' },
     ],
   },
   {
@@ -89,12 +92,14 @@ export default function ProjectAreaLayout() {
     }
   }, [projectId])
 
+  // Capture is one affordance in the app shell, not one per Area and not a
+  // second one per Project: a thought that arrives while doing an experiment
+  // must not require navigating to notes first (U2). This declares the Project
+  // the shell's composer may offer as a destination; Areas that know what they
+  // are currently about declare that object separately.
+  useDeclareProjectCaptureProject(projectId)
+
   return (
-    // Capture is provided by the shell, not by each Area: a thought that
-    // arrives while doing an experiment must not require navigating to notes
-    // first (U2). Areas that know what they are currently about declare it
-    // through the provider so the capture can hang on that object instead.
-    <ProjectCaptureTargetProvider>
     <div className="min-h-full lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r">
         <div className="mb-5 px-2">
@@ -158,8 +163,6 @@ export default function ProjectAreaLayout() {
         )}
       </aside>
       <main className="min-w-0"><Outlet /></main>
-      {projectId && <ProjectQuickCapture projectId={projectId} />}
     </div>
-    </ProjectCaptureTargetProvider>
   )
 }

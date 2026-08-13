@@ -32,9 +32,46 @@ describe("AdaptiveQueryOrchestrator", () => {
     });
 
     await orchestrator.evaluate({ spaceId: "space", userId: "user" }, input(["arxiv", "openalex"]));
-    expect(calls).toEqual({ arxiv: 2, openalex: 1 });
+    // Evaluation previews, plus one final check per provider at the page size
+    // history import actually requests — a query can pass the small preview and
+    // fail the large page, which is how a plan used to be "validated" and then
+    // import nothing.
+    expect(calls).toEqual({ arxiv: 3, openalex: 2 });
     expect(store.selected.map((item) => item.providerKey).sort()).toEqual(["arxiv", "openalex"]);
     expect(store.finalized).toBe(true);
+  });
+
+  /**
+   * The real failure: a broad boolean arXiv query answered 200 at the 15-row
+   * preview and 5xx at the 100-row page history import uses. The plan was
+   * recorded as validated, imported nothing, and Research reported "no relevant
+   * sources" over a corpus missing that provider entirely.
+   */
+  it("warns when the selected query fails at the page size history import uses", async () => {
+    const store = new FakeStore(["arxiv"]);
+    const pageSizes: unknown[] = [];
+    const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+      repository: store,
+      contextRepository: { get: async () => contextVersion() },
+      intentPlanner: { plan: async () => semanticIntent() },
+      previewGateway: { preview: async (_identity, input) => {
+        const pageSize = (input.compiledQuery.query as { max_results?: number }).max_results;
+        pageSizes.push(pageSize);
+        if (pageSize === 100) throw new HttpError(503, "The source provider is temporarily unavailable or rate limiting; try again shortly.");
+        return { providerHitCount: 50, accessibleHitCount: 50, candidates: [] };
+      } },
+      assessor: { assess: (_context, _semantic, preview) => observation(preview.providerHitCount) },
+    });
+
+    await orchestrator.evaluate({ spaceId: "space", userId: "user" }, input(["arxiv"]));
+
+    expect(pageSizes).toContain(100);
+    const selected = store.selected[0];
+    expect(selected?.coverageWarning ?? "").toContain("did not answer at the 100-result page size");
+    // The plan is still selected: the import narrows its page and may succeed,
+    // so this is a warning about what was proven, not a rejection.
+    expect(store.selected).toHaveLength(1);
+    expect(store.unavailable).toEqual([]);
   });
 
   it("never exceeds three attempts and selects the settled (stop) attempt over a higher-scoring broaden/narrow one", async () => {
@@ -118,8 +155,9 @@ describe("AdaptiveQueryOrchestrator", () => {
 
     // The third compiled query would be identical to the first — the
     // orchestrator must detect that before spending a third preview request
-    // or evaluator call, not after exhausting all four attempts.
-    expect(previewCalls).toBe(2);
+    // or evaluator call, not after exhausting all four attempts. The trailing
+    // call is the import-shape verification of whichever query was selected.
+    expect(previewCalls).toBe(3);
     expect(evaluateCalls).toBe(2);
     expect(store.attempts).toHaveLength(2);
     expect(store.selected[0]?.attemptId).toBe(store.attempts[1]?.id);

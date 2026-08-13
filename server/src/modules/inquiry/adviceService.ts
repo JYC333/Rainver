@@ -4,6 +4,7 @@ import { getDbPool } from "../../db/pool";
 import {
   HttpError,
   optionalString,
+  withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common";
@@ -27,7 +28,10 @@ export type AdviceTriggerKind = (typeof ADVICE_TRIGGER_KINDS)[number];
 
 export const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
   type: "json_schema" as const,
-  schema_id: "inquiry.next_step_advice.v1",
+  // v2: the enum this pins lost `pause` and `wait_for_monitoring` when Next
+  // Focus became a Step record, so the identifier had to move with it rather
+  // than name a schema that is no longer what v1 described.
+  schema_id: "inquiry.next_step_advice.v2",
   strict: true as const,
   stage: "question_refinement" as const,
   schema: {
@@ -101,6 +105,15 @@ type InvokeAdvice = (input: {
   system: string;
 }) => Promise<Record<string, unknown>>;
 
+export interface AdviceGenerationOptions {
+  /**
+   * Runs in the same transaction as the final upsert. Automatic jobs use this
+   * to lock and re-check their queue row after the provider call, so a domain
+   * event that superseded the job cannot publish an older recommendation.
+   */
+  beforePersist: (db: Queryable) => Promise<boolean>;
+}
+
 /**
  * Model-generated advice about a Thread's next step.
  *
@@ -143,14 +156,22 @@ export class InquiryAdviceService {
     return new InquiryAdviceService(getDbPool(config.databaseUrl), config);
   }
 
+  /**
+   * A stored recommendation naming a kind the vocabulary no longer has is
+   * retired rather than rewritten: it is filtered out here, so it cannot be
+   * shown or adopted, and the next generation replaces the row. Guessing a
+   * replacement kind would put words in the model's mouth about a Thread it
+   * reasoned over under different options.
+   */
   async getAdvice(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<InquiryThreadAdvice | null> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const row = await this.db.query<AdviceRow>(
       `SELECT a.*, t.version AS current_thread_version
          FROM inquiry_thread_advice a
          JOIN inquiry_threads t ON t.object_id = a.thread_id AND t.space_id = a.space_id
-        WHERE a.space_id = $1 AND a.project_id = $2 AND a.thread_id = $3`,
-      [identity.spaceId, projectId, threadId],
+        WHERE a.space_id = $1 AND a.project_id = $2 AND a.thread_id = $3
+          AND a.recommended_focus_kind = ANY($4::text[])`,
+      [identity.spaceId, projectId, threadId, [...NEXT_FOCUS_KINDS]],
     );
     return row.rows[0] ? mapAdvice(row.rows[0]) : null;
   }
@@ -189,7 +210,21 @@ export class InquiryAdviceService {
     projectId: string,
     threadId: string,
     triggerKind: AdviceTriggerKind,
-  ): Promise<InquiryThreadAdvice> {
+  ): Promise<InquiryThreadAdvice>;
+  async generateAdvice(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    threadId: string,
+    triggerKind: AdviceTriggerKind,
+    options: AdviceGenerationOptions,
+  ): Promise<InquiryThreadAdvice | null>;
+  async generateAdvice(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    threadId: string,
+    triggerKind: AdviceTriggerKind,
+    options?: AdviceGenerationOptions,
+  ): Promise<InquiryThreadAdvice | null> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const thread = await this.loadThreadContext(identity, projectId, threadId);
     if (thread.lifecycle_status !== "active") {
@@ -217,11 +252,18 @@ export class InquiryAdviceService {
     const rationale = optionalString(output.rationale);
     if (!rationale) throw new HttpError(502, "Advice returned no rationale");
 
-    const now = new Date().toISOString();
-    // One row per Thread: new advice replaces the previous suggestion rather
-    // than accumulating a queue of stale recommendations to triage.
-    const row = await this.db.query<AdviceRow>(
-      `INSERT INTO inquiry_thread_advice
+    return withQueryableTransaction(this.db, async (db) => {
+      // The provider call deliberately happens before this short transaction.
+      // The job guard locks its queue row here; a concurrent invalidation must
+      // therefore happen wholly before this check (and suppress the write) or
+      // wholly after the upsert (and dismiss what was just written).
+      if (options && !(await options.beforePersist(db))) return null;
+
+      const now = new Date().toISOString();
+      // One row per Thread: new advice replaces the previous suggestion rather
+      // than accumulating a queue of stale recommendations to triage.
+      const row = await db.query<AdviceRow>(
+        `INSERT INTO inquiry_thread_advice
          (id, space_id, project_id, thread_id, recommended_focus_kind, rationale, cited_refs_json,
           thread_version, status, trigger_kind, model_version, generated_by_user_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, 'open', $9, $10, $11, $12, $12)
@@ -239,13 +281,14 @@ export class InquiryAdviceService {
          SELECT t.version FROM inquiry_threads t
           WHERE t.object_id = inquiry_thread_advice.thread_id AND t.space_id = inquiry_thread_advice.space_id
        ) AS current_thread_version`,
-      [
-        randomUUID(), identity.spaceId, projectId, threadId,
-        recommended, rationale.slice(0, 4000), JSON.stringify(citedRefs(output.cited_refs)),
-        thread.version, triggerKind, optionalString(output.model_version), identity.userId, now,
-      ],
-    );
-    return mapAdvice(row.rows[0]!);
+        [
+          randomUUID(), identity.spaceId, projectId, threadId,
+          recommended, rationale.slice(0, 4000), JSON.stringify(citedRefs(output.cited_refs)),
+          thread.version, triggerKind, optionalString(output.model_version), identity.userId, now,
+        ],
+      );
+      return mapAdvice(row.rows[0]!);
+    });
   }
 
   /**

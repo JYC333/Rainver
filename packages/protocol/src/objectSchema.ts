@@ -195,6 +195,7 @@ export const SpaceObjectProfileCreateProposalRequestSchema = z
   .strict()
   .superRefine(refineObjectProfileKeyMatchesBase);
 export type SpaceObjectProfileCreateProposalRequest = z.infer<typeof SpaceObjectProfileCreateProposalRequestSchema>;
+export type SpaceObjectProfileCreateProposalRequestInput = z.input<typeof SpaceObjectProfileCreateProposalRequestSchema>;
 
 export const SpaceObjectProfileUpdateProposalRequestSchema = z
   .object({
@@ -222,6 +223,7 @@ export const SpaceObjectProfileUpdateProposalRequestSchema = z
     "at least one object kind field is required",
   );
 export type SpaceObjectProfileUpdateProposalRequest = z.infer<typeof SpaceObjectProfileUpdateProposalRequestSchema>;
+export type SpaceObjectProfileUpdateProposalRequestInput = z.input<typeof SpaceObjectProfileUpdateProposalRequestSchema>;
 
 export const SpaceObjectProfileStatusProposalRequestSchema = z
   .object({
@@ -279,6 +281,7 @@ export const ObjectSchemaImportRequestSchema = z
   })
   .strict();
 export type ObjectSchemaImportRequest = z.infer<typeof ObjectSchemaImportRequestSchema>;
+export type ObjectSchemaImportRequestInput = z.input<typeof ObjectSchemaImportRequestSchema>;
 
 export const ObjectSchemaImportResponseSchema = z
   .object({
@@ -301,6 +304,7 @@ export const ObjectSchemaSuggestionScanRequestSchema = z
   })
   .strict();
 export type ObjectSchemaSuggestionScanRequest = z.infer<typeof ObjectSchemaSuggestionScanRequestSchema>;
+export type ObjectSchemaSuggestionScanRequestInput = z.input<typeof ObjectSchemaSuggestionScanRequestSchema>;
 
 export const ObjectSchemaSuggestionFindingSchema = z
   .object({

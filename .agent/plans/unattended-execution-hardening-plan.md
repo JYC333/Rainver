@@ -13,14 +13,23 @@ from scratch and does not add cycles to Workflow DAGs.
 
 Begin after:
 
-- Project clean cutover and product acceptance are complete;
-- Runtime I/O convergence is complete;
-- one controlled real Provider, Source, and OpenCode smoke has run;
+- Project clean cutover and Runtime I/O convergence are complete — both are;
+- controlled product acceptance has run;
+- one controlled real Provider, Source, and CLI smoke has run;
 - observed failure evidence is available to validate retry classification and
   timing.
 
 Controlled local/manual testing does not wait for this plan. Thirty-day
 unattended dogfooding does.
+
+Status of the trigger, checked 2026-08-13: none of the last three conditions
+holds. Acceptance is deferred — [../tasks/current-focus.md](../tasks/current-focus.md)
+declares no active sequence and records the gate. No CLI runtime is installed on
+this instance, so the CLI half of the smoke cannot run at all. And the failure
+evidence this plan needs does not exist: across 2278 Runs there is not one
+`failed` or `degraded` record, so retry classification and backoff timing would
+be designed against imagined failures. That last point is the substantive reason
+to wait, not a bureaucratic one.
 
 ## Current implemented baseline
 

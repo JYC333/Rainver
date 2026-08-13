@@ -15,16 +15,25 @@ instead of re-deriving API payloads in multiple places.
 
 ## Frontend Contract Boundary
 
-`apps/web/src/types/api.ts` still contains local client API types and view-facing
-shapes. That is acceptable as an intermediate state, but it is a long-term drift
-risk because `packages/protocol` is the shared wire-contract package.
+`apps/web/src/types/api.ts` forwards every wire type from this package and
+declares none of them itself. Until 2026-08-13 it hand-wrote 204 of them a
+second time, and 98 of those had drifted from their protocol counterparts before
+anyone noticed. `packages/protocol/test/webForwarding.test.ts` now fails
+when a local declaration reuses a name this package exports; the forwarding form
+is what passes. Its local-redeclaration allowlist is empty and remains an
+explicit exception mechanism rather than a second contract surface.
 
-Move or align DTOs into `packages/protocol` when they are stable server/client
-wire contracts that benefit from shared Zod validation and compile-time reuse.
-Keep web-only screen state, form state, UI rollups, and presentation view models
-inside `apps/web`. Do not bulk-move the entire web `types/api.ts` file into
-`packages/protocol`; that would turn the protocol package into a frontend UI type
-bucket and weaken its contracts-only role.
+What remains in `apps/web` is what belongs there: web-only screen state, form
+state, UI rollups, and presentation view models. A client view model that merely
+shares a name with a wire contract gets renamed, not merged. Do not bulk-move
+`types/api.ts` into `packages/protocol`; that would turn the contract package
+into a frontend UI type bucket and weaken its contracts-only role.
+
+Request schemas whose fields carry `.default()` export two projections of the one
+schema: `X` is `z.infer`, the parsed value the server reads with defaults
+applied, and `XInput` is `z.input`, the payload a client may actually send. A
+client typed against the parsed form would be required to supply the very values
+the server exists to default.
 
 ## What It Owns
 

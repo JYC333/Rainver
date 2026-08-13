@@ -139,9 +139,6 @@ export const RunInputProjectFolderAccessSchema = z.object({
   access: z.enum(["read_only", "read_write"]),
   mount_point: z.literal("working"),
 }).strict();
-export type RunInputProjectFolderAccess = z.infer<
-  typeof RunInputProjectFolderAccessSchema
->;
 
 export const RunOutputDeclarationSchema = z.object({
   name: z.string().trim().min(1),
@@ -164,7 +161,6 @@ export const RunOutputContractSchema = z.object({
   structured_output: SecretFreeJsonSchema.nullish(),
   required_outputs: z.array(RunOutputDeclarationSchema).default([]),
 }).strict();
-export type RunOutputContract = z.infer<typeof RunOutputContractSchema>;
 
 export const RunToolGrantSchema = z.object({
   action_id: z.string().trim().min(1),
@@ -229,9 +225,6 @@ export const RUNTIME_SEMANTIC_EVENT_TYPE_VALUES = [
 export const RuntimeSemanticEventTypeSchema = z.enum(
   RUNTIME_SEMANTIC_EVENT_TYPE_VALUES,
 );
-export type RuntimeSemanticEventType = z.infer<
-  typeof RuntimeSemanticEventTypeSchema
->;
 
 export const RuntimeSemanticEventSchema = z.object({
   schema_version: z.literal("runtime_event.v1"),
@@ -309,7 +302,6 @@ export const RUN_EVENT_STATUS_VALUES = [
   "cancelled",
 ] as const;
 export const RunEventStatusSchema = z.enum(RUN_EVENT_STATUS_VALUES);
-export type RunEventStatus = z.infer<typeof RunEventStatusSchema>;
 
 export const RUN_EXECUTION_ERROR_CODES = [
   "adapter_nonzero_exit",
@@ -338,12 +330,8 @@ export const RUN_EXECUTION_ERROR_CODES = [
   "stale_run_recovered",
 ] as const;
 export const RunExecutionKnownErrorCodeSchema = z.enum(RUN_EXECUTION_ERROR_CODES);
-export type RunExecutionKnownErrorCode = z.infer<
-  typeof RunExecutionKnownErrorCodeSchema
->;
 
 export const RunExecutionErrorCodeSchema = z.string().min(1);
-export type RunExecutionErrorCode = z.infer<typeof RunExecutionErrorCodeSchema>;
 
 export const RunExecutionCommandSourceSchema = z.enum([
   "http",
@@ -351,9 +339,6 @@ export const RunExecutionCommandSourceSchema = z.enum([
   "recovery",
   "internal",
 ]);
-export type RunExecutionCommandSource = z.infer<
-  typeof RunExecutionCommandSourceSchema
->;
 
 export const RunExecuteRequestSchema = z.object({
   run_id: IdSchema,
@@ -373,7 +358,6 @@ export const RunCancelRequestSchema = z.object({
   reason: z.string().nullish(),
   terminate_process: z.boolean().default(true),
 });
-export type RunCancelRequest = z.infer<typeof RunCancelRequestSchema>;
 
 export const RunAdapterKindSchema = z.enum([
   "native",
@@ -381,7 +365,6 @@ export const RunAdapterKindSchema = z.enum([
   "local_cli",
   "custom",
 ]);
-export type RunAdapterKind = z.infer<typeof RunAdapterKindSchema>;
 
 export const RunAdapterResultEnvelopeSchema = z
   .object({
@@ -438,7 +421,6 @@ export const RunTerminalResultSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type RunTerminalResult = z.infer<typeof RunTerminalResultSchema>;
 
 export const RunEventAppendRequestSchema = z
   .object({
@@ -458,7 +440,6 @@ export const RunEventAppendRequestSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type RunEventAppendRequest = z.infer<typeof RunEventAppendRequestSchema>;
 
 export const RunJobPayloadSchema = z
   .object({
@@ -489,7 +470,6 @@ export const RunJobPayloadSchema = z
     (value) => Boolean(value.run_id || value.task_id || value.agent_id),
     "agent_run payload requires run_id, task_id, or agent_id",
   );
-export type RunJobPayload = z.infer<typeof RunJobPayloadSchema>;
 
 export const RunJobEnvelopeSchema = z.object({
   job_id: IdSchema,
@@ -500,7 +480,6 @@ export const RunJobEnvelopeSchema = z.object({
   worker_id: z.string().min(1).nullish(),
   payload: RunJobPayloadSchema,
 });
-export type RunJobEnvelope = z.infer<typeof RunJobEnvelopeSchema>;
 
 export const RunJobResultSchema = z
   .object({
@@ -527,7 +506,6 @@ export const RunTraceEventSummarySchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type RunTraceEventSummary = z.infer<typeof RunTraceEventSummarySchema>;
 
 export const RunTraceSafeSummarySchema = z
   .object({
@@ -573,4 +551,3 @@ export const RunTraceSafeSummarySchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type RunTraceSafeSummary = z.infer<typeof RunTraceSafeSummarySchema>;

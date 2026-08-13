@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { upsertPendingResearchCheckpoint } from "../src/modules/projectResearch/checkpointWriter";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
@@ -357,5 +358,53 @@ describe("ProjectResearchRepository checkpointReview classified count (real Post
     expect((secondPass[0] as { review: { summary: Record<string, unknown> } }).review.summary).toMatchObject({
       total: 3, classified: 3, unclassified: 0, processing_status: "complete",
     });
+  });
+});
+
+// The reviewer approves the screening gate; the approval itself enqueues a
+// reconcile, and that tick used to find no *pending* gate for the operation and
+// mint a second one — the operation moved on to synthesis while the reviewer
+// was handed the same intake to approve again.
+describe("research checkpoints are one decision point per operation (real Postgres)", () => {
+  it("does not open a second gate for an operation whose gate was already decided", async () => {
+    if (!available || !pool) return;
+    const operationId = randomUUID();
+    const input = {
+      spaceId: SPACE,
+      projectId: PROJECT,
+      workflowId: WORKFLOW,
+      operationId,
+      checkpointType: "screening_gate",
+      machineResult: { operation_id: operationId, total: 16 },
+    };
+
+    const first = await upsertPendingResearchCheckpoint(pool!, input);
+    // A tick before the decision keeps refreshing the pending gate in place.
+    expect(await upsertPendingResearchCheckpoint(pool!, { ...input, machineResult: { operation_id: operationId, total: 20 } })).toBe(first);
+
+    await pool!.query(
+      `UPDATE project_research_checkpoints
+          SET status='approved', user_decision='approved', decided_at=now(), updated_at=now()
+        WHERE id=$1 AND space_id=$2`,
+      [first, SPACE],
+    );
+
+    expect(await upsertPendingResearchCheckpoint(pool!, input)).toBe(first);
+    const rows = await pool!.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM project_research_checkpoints
+        WHERE space_id=$1 AND checkpoint_type='screening_gate'
+          AND machine_result_json->>'operation_id'=$2`,
+      [SPACE, operationId],
+    );
+    expect(rows.rows[0]!.count).toBe("1");
+
+    const decided = await pool!.query<{ status: string; total: string }>(
+      `SELECT status, machine_result_json->>'total' AS total
+         FROM project_research_checkpoints WHERE id=$1 AND space_id=$2`,
+      [first, SPACE],
+    );
+    // The decision stands and the snapshot the reviewer judged is untouched.
+    expect(decided.rows[0]!.status).toBe("approved");
+    expect(decided.rows[0]!.total).toBe("20");
   });
 });

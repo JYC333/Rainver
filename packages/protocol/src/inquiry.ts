@@ -23,17 +23,19 @@ export const InquiryAttentionStateSchema = z.enum([
 ]);
 export type InquiryAttentionState = z.infer<typeof InquiryAttentionStateSchema>;
 
+// Actions only, ordered by stage. `pause` and `wait_for_monitoring` were
+// states wearing an action's clothing and were removed with the step model:
+// pausing is an `attention_state` change, and waiting on monitoring is what a
+// running background step already means.
 export const InquiryNextFocusKindSchema = z.enum([
+  "clarify_or_decompose",
   "search_acquisition",
+  "design_run_experiment",
   "read_evidence",
   "synthesize",
-  "clarify_or_decompose",
-  "design_run_experiment",
+  "promote_knowledge",
   "create_decision_case",
   "create_delivery_task",
-  "wait_for_monitoring",
-  "promote_knowledge",
-  "pause",
 ]);
 export type InquiryNextFocusKind = z.infer<typeof InquiryNextFocusKindSchema>;
 
@@ -79,6 +81,33 @@ export const InquiryIterationSchema = z.object({
   created_at: z.string(),
 });
 export type InquiryIteration = z.infer<typeof InquiryIterationSchema>;
+
+// One attempt at advancing a Thread. `slot` is what keeps human attention
+// singular: `background` steps run without a person and leave the `primary`
+// slot free for whatever the user does meanwhile.
+export const InquiryThreadStepSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  thread_id: z.string(),
+  kind: InquiryNextFocusKindSchema,
+  status: z.enum(["in_progress", "done", "abandoned"]),
+  slot: z.enum(["primary", "background"]),
+  note: z.string().nullable(),
+  target_ref_kind: z.string().nullable(),
+  target_ref_id: z.string().nullable(),
+  iteration_id: z.string().nullable(),
+  origin: z.enum(["user", "advice", "system"]),
+  started_at: z.string().nullable(),
+  completed_at: z.string().nullable(),
+  created_at: z.string(),
+});
+export type InquiryThreadStep = z.infer<typeof InquiryThreadStepSchema>;
+
+/** An open Step with the Thread it belongs to, for the cross-Area origin bar. */
+export const InquiryOpenStepSchema = InquiryThreadStepSchema.extend({
+  statement: z.string(),
+});
+export type InquiryOpenStep = z.infer<typeof InquiryOpenStepSchema>;
 
 export const InquiryCandidateDecisionSchema = z.enum(["accept", "merge", "defer", "dismiss", "gap"]);
 export type InquiryCandidateDecision = z.infer<typeof InquiryCandidateDecisionSchema>;
@@ -184,7 +213,6 @@ export const InquiryDeltaBriefContentSchema = z.object({
 export type InquiryDeltaBriefContent = z.infer<typeof InquiryDeltaBriefContentSchema>;
 
 export const InquiryAdviceStatusSchema = z.enum(["open", "adopted", "dismissed"]);
-export type InquiryAdviceStatus = z.infer<typeof InquiryAdviceStatusSchema>;
 
 /**
  * A model-generated suggestion about a Thread's next step. It is never a
@@ -217,7 +245,6 @@ export const InquiryCreateSignalRequestSchema = z.object({
   producer_idempotency_key: z.string().nullable().optional(),
   proposed_change: z.record(z.unknown()).optional(),
 });
-export type InquiryCreateSignalRequest = z.infer<typeof InquiryCreateSignalRequestSchema>;
 
 export const InquiryCandidateDecisionRequestSchema = z.object({
   decision: InquiryCandidateDecisionSchema,
@@ -228,10 +255,8 @@ export const InquiryCandidateDecisionRequestSchema = z.object({
   defer_until: z.string().optional(),
   gap_statement: z.string().optional(),
 });
-export type InquiryCandidateDecisionRequest = z.infer<typeof InquiryCandidateDecisionRequestSchema>;
 
 export const InquiryLifecycleTransitionRequestSchema = z.object({
   lifecycle_status: z.enum(["active", "resolved", "rejected", "archived"]),
   reason: z.string().nullable().optional(),
 });
-export type InquiryLifecycleTransitionRequest = z.infer<typeof InquiryLifecycleTransitionRequestSchema>;

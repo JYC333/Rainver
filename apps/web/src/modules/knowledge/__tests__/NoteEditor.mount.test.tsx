@@ -59,6 +59,7 @@ vi.mock('../../../components/editor', async () => {
 
 import NoteEditor from '../NoteEditor'
 import { notesApi } from '../../../api/client'
+import { publishNoteChanged } from '../../../core/noteEvents'
 import type { Note } from '../../../types/api'
 
 function makeNote(overrides: Partial<Note> = {}): Note {
@@ -133,5 +134,44 @@ describe('NoteEditor is route-agnostic', () => {
       </MemoryRouter>,
     )
     expect(await screen.findByDisplayValue('Note note-b')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The open note has to show a capture that was written into it from the
+ * composer, without the user reloading and without the editor polling for it.
+ */
+describe('NoteEditor picks up an external write', () => {
+  it('re-reads the note it is showing when that note is announced as changed', async () => {
+    vi.mocked(notesApi.get)
+      .mockResolvedValueOnce(makeNote())
+      .mockResolvedValueOnce(makeNote({ title: 'Portable note (+ capture)', version: 2 }))
+
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByDisplayValue('Portable note')).toBeInTheDocument()
+
+    publishNoteChanged({ noteId: 'note-1', projectId: null, reason: 'capture' })
+
+    expect(await screen.findByDisplayValue('Portable note (+ capture)')).toBeInTheDocument()
+  })
+
+  it('ignores a write to some other note, so one capture refetches one editor', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote())
+
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('Portable note')
+    expect(notesApi.get).toHaveBeenCalledTimes(1)
+
+    publishNoteChanged({ noteId: 'note-2', projectId: null, reason: 'capture' })
+
+    await waitFor(() => expect(notesApi.get).toHaveBeenCalledTimes(1))
   })
 })

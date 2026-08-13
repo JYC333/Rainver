@@ -28,6 +28,31 @@ export function terminalStatusFromAdapter(result: RunAdapterResultEnvelope): Run
   return "failed";
 }
 
+/**
+ * A managed Run keeps going when one of its server-owned tools cannot be used —
+ * the tool call returns `ok: false` and the model answers without it. The
+ * summaries record that, but a terminal `succeeded` would make an answer
+ * produced without retrieval indistinguishable from one produced with it, which
+ * matters most exactly when nobody is reading the Run. Report the failed tools
+ * so the caller can settle the Run as `degraded` instead.
+ */
+export function managedToolDegradation(
+  result: RunAdapterResultEnvelope,
+): { tool_names: string[]; error_codes: string[] } | null {
+  const metadata = recordValue(result.metadata_json);
+  const failed = ["retrieval_tool_calls", "agent_room_tool_calls"]
+    .flatMap((key) => (Array.isArray(metadata[key]) ? metadata[key] as unknown[] : []))
+    .map((call) => recordValue(call))
+    .filter((call) => call.ok === false);
+  if (failed.length === 0) return null;
+  const unique = (values: unknown[]) =>
+    [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
+  return {
+    tool_names: unique(failed.map((call) => call.tool_name)),
+    error_codes: unique(failed.map((call) => call.error_code)),
+  };
+}
+
 export function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
   if (result.success) return {};
   const output = recordValue(result.output_json);

@@ -30,6 +30,7 @@ import {
   SourceFetchFailure,
   type SourceFetchFailureDiagnostics,
 } from "./sourceConnectionFetch";
+import { fetchBackfillPageWithNarrowing } from "./sourceBackfillPageFetch";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
@@ -310,25 +311,43 @@ export class SourceExtractionWorker {
       endpoint_url: connection.endpoint_url,
       compiled_query: connection.provider_query_json,
     };
-    const request = isBackfillJob(job)
-      ? handler.buildBackfillRequest(executableChannel, record(record(job.metadata_json).window), cursor as unknown as Record<string, unknown>)
-      : handler.buildScanRequest(executableChannel, cursor as unknown as Record<string, unknown>);
     const credential = await new CustomSourceCredentialService(this.db, this.config)
       .resolveCredentialHeader(job.space_id, connection.credential_id);
-    const requestHeaders = { ...headers, ...(request.headers ?? {}) };
-    if (credential) requestHeaders[credential.header_name] = credential.header_value;
-    const response = await fetchSourceConnection({
-      handler,
-      url: request.url,
-      headers: requestHeaders,
-      maxDownloadBytes: await this.maxDownloadBytes(job.space_id),
-      backfill: isBackfillJob(job),
-      provider: {
-        providerKey: connection.provider_key,
-        providerDisplayName: connection.provider_display_name,
-        connectorKey: connection.connector_key,
-      },
-    });
+    const provider = {
+      providerKey: connection.provider_key,
+      providerDisplayName: connection.provider_display_name,
+      connectorKey: connection.connector_key,
+    };
+    const maxDownloadBytes = await this.maxDownloadBytes(job.space_id);
+    const buildRequest = (window: Record<string, unknown>) => {
+      const spec = isBackfillJob(job)
+        ? handler.buildBackfillRequest(executableChannel, window, cursor as unknown as Record<string, unknown>)
+        : handler.buildScanRequest(executableChannel, cursor as unknown as Record<string, unknown>);
+      const requestHeaders = { ...headers, ...(spec.headers ?? {}) };
+      if (credential) requestHeaders[credential.header_name] = credential.header_value;
+      return { url: spec.url, headers: requestHeaders };
+    };
+
+    let pageSize = backfillMaxItems(job.metadata_json);
+    let request = buildRequest(record(record(job.metadata_json).window));
+    let response: SourceFetchResult;
+    if (isBackfillJob(job)) {
+      const page = await this.fetchBackfillPage({
+        job, handler, provider, maxDownloadBytes, buildRequest,
+      });
+      response = page.response;
+      pageSize = page.pageSize;
+      request = page.request;
+    } else {
+      response = await fetchSourceConnection({
+        handler,
+        url: request.url,
+        headers: request.headers,
+        maxDownloadBytes,
+        backfill: false,
+        provider,
+      });
+    }
     const completedAt = new Date().toISOString();
     if (response.notModified) {
       await this.queueFailedFollowUpsForConnection(job, connection, completedAt);
@@ -344,7 +363,7 @@ export class SourceExtractionWorker {
           0,
         );
       }
-      return { seen: 0, page_size: backfillMaxItems(job.metadata_json) };
+      return { seen: 0, page_size: pageSize };
     }
     if (!response.isText || response.text === null) {
       throw new HttpError(415, `Source connection returned unsupported binary content (${response.contentType ?? "unknown"})`);
@@ -393,7 +412,7 @@ export class SourceExtractionWorker {
         result.created,
       );
     }
-    return { seen: result.seen, page_size: backfillMaxItems(job.metadata_json) };
+    return { seen: result.seen, page_size: pageSize };
   }
 
   private async recordJobFailureDiagnostics(
@@ -438,6 +457,35 @@ export class SourceExtractionWorker {
    * segment running and advance its saved page cursor until the API returns a
    * short page or the segment's max_items budget is exhausted.
    */
+  /**
+   * One history page, with the provider-failure narrowing policy applied. The
+   * policy itself lives in `sourceBackfillPageFetch` so it can be exercised
+   * without a database; this method only supplies the worker's dependencies.
+   */
+  private async fetchBackfillPage(input: {
+    job: ExtractionJobRow;
+    handler: SourceConnectorHandler;
+    provider: { providerKey: string; providerDisplayName: string; connectorKey: string };
+    maxDownloadBytes: number;
+    buildRequest: (window: Record<string, unknown>) => { url: string; headers: Record<string, string> };
+  }): Promise<{ response: SourceFetchResult; request: { url: string; headers: Record<string, string> }; pageSize: number }> {
+    return fetchBackfillPageWithNarrowing({
+      window: record(record(input.job.metadata_json).window),
+      requestedPageSize: backfillMaxItems(input.job.metadata_json),
+      narrowingAllowed: input.handler.getCapabilities().supports_page_size_narrowing,
+      buildRequest: input.buildRequest,
+      fetchPage: ({ url, headers, timeoutMs }) => fetchSourceConnection({
+        handler: input.handler,
+        url,
+        headers,
+        maxDownloadBytes: input.maxDownloadBytes,
+        backfill: true,
+        provider: input.provider,
+        timeoutMs,
+      }),
+    });
+  }
+
   private async queueBackfillContinuationIfNeeded(
     job: ExtractionJobRow,
     result: { seen: number; page_size: number },
@@ -474,8 +522,13 @@ export class SourceExtractionWorker {
     const nextWindow = {
       ...window,
       cursor: (integerValue(window.cursor) ?? 0) + 1,
+      // Item offset is the authority for where the next page starts. Page index
+      // times a fixed width was wrong for any page that was not full width.
+      offset: consumedItems,
       remaining_items: nextRemaining,
-      page_size: Math.min(100, nextRemaining),
+      // Stay at the width the provider just proved it can serve. Returning to
+      // the full page would re-earn the same failure on every subsequent page.
+      page_size: Math.min(result.page_size, nextRemaining),
       consumed_items: consumedItems,
     };
     const nextJobId = randomUUID();
@@ -630,7 +683,7 @@ export class SourceExtractionWorker {
            retention_policy, metadata_json, created_at, updated_at,
            owner_user_id, visibility, access_level
          ) VALUES (
-           $1, $2, (SELECT project_id FROM source_connections WHERE space_id=$2 AND id=$3), $3, $4, $5, $6, $7,
+           $1, $2, (SELECT project_id FROM source_connections WHERE space_id=$2::varchar AND id=$3::varchar), $3, $4, $5, $6, $7,
            $8, $9, $10, $11::timestamptz, $12,
            $12, $13, $14, $15,
            $16, $17::jsonb, $12, $12,
@@ -1129,8 +1182,8 @@ export class SourceExtractionWorker {
       };
     }
     if (sourceType === "run_event") {
-      const row = await this.db.query<{ event_type: string | null; payload_json: unknown; run_id: string; project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
-        `SELECT re.event_type, re.payload_json, re.run_id, r.project_id, r.owner_user_id, r.visibility, r.access_level
+      const row = await this.db.query<{ event_type: string | null; summary: string | null; metadata_json: unknown; run_id: string; project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
+        `SELECT re.event_type, re.summary, re.metadata_json, re.run_id, r.project_id, r.owner_user_id, r.visibility, r.access_level
            FROM run_events re
            JOIN runs r ON r.space_id = re.space_id AND r.id = re.run_id
           WHERE re.space_id = $1 AND re.id = $2`,
@@ -1140,7 +1193,9 @@ export class SourceExtractionWorker {
       if (!event) throw new HttpError(404, "Run event not found");
       return {
         title: event.event_type ?? "Run event",
-        excerpt: JSON.stringify(event.payload_json ?? {}).slice(0, 4000),
+        // run_events carries the readable text in `summary` and structured
+        // detail in `metadata_json`; prefer the former as the evidence excerpt.
+        excerpt: (event.summary?.trim() || JSON.stringify(event.metadata_json ?? {})).slice(0, 4000),
         evidenceType: "event",
         ownerUserId: event.owner_user_id,
         visibility: event.visibility,
@@ -1385,8 +1440,8 @@ export class SourceExtractionWorker {
          captured_at, created_at, updated_at, owner_user_id, visibility, access_level
        ) VALUES (
          $1, $2, COALESCE(
-           (SELECT project_id FROM source_items WHERE space_id=$2 AND id=$3),
-           (SELECT project_id FROM source_connections WHERE space_id=$2 AND id=$4)
+           (SELECT project_id FROM source_items WHERE space_id=$2::varchar AND id=$3::varchar),
+           (SELECT project_id FROM source_connections WHERE space_id=$2::varchar AND id=$4::varchar)
          ), $3, $4, $5, $6,
          $7, $8, $9, $10, $11::jsonb,
          $12, $13, $14,

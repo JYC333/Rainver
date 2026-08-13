@@ -1312,9 +1312,16 @@ async function lockRetrievalAuthority(
   const result = await db.query(sql, [spaceId, objectId]);
   if (!result.rows[0]) throw new HttpError(409, "Invocation Delivery retrieval source no longer exists");
   if (objectType === "inquiry_thread") {
+    // Pins the viewer's membership row for the rest of the transaction, so a
+    // concurrent removal cannot land between this check and the read it
+    // authorises. The join is inner on purpose: PostgreSQL rejects `FOR SHARE`
+    // on the nullable side of an outer join, and a non-member has no row to
+    // pin anyway — an outer join could only ever have produced a NULL that
+    // locks nothing. Zero rows is therefore the correct, unremarkable result
+    // for a non-member, which is why nothing is asserted about the result.
     await db.query(
       `SELECT member.user_id FROM inquiry_threads thread
-        LEFT JOIN project_members member ON member.space_id=thread.space_id AND member.project_id=thread.project_id
+        JOIN project_members member ON member.space_id=thread.space_id AND member.project_id=thread.project_id
           AND member.user_id=$3 AND member.status='active'
        WHERE thread.space_id=$1 AND thread.object_id=$2 FOR SHARE OF member`,
       [spaceId, objectId, viewerUserId],

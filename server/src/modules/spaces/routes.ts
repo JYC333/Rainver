@@ -203,6 +203,32 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(result);
   });
 
+  app.get("/api/v1/spaces/:spaceId/content-egress", async (request, reply) => {
+    const auth = authRepositoryFromConfig(context.config);
+    const spaces = spaceRepositoryFromConfig(context.config);
+    if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
+    const result = await spaces.getContentEgressSetting(user.id, params(request).spaceId ?? "");
+    if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
+    return reply.send(result);
+  });
+
+  app.patch("/api/v1/spaces/:spaceId/content-egress", async (request, reply) => {
+    const auth = authRepositoryFromConfig(context.config);
+    const spaces = spaceRepositoryFromConfig(context.config);
+    if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
+    const enabled = jsonBody(request).member_copy_out_enabled;
+    if (typeof enabled !== "boolean") {
+      return reply.code(422).send({ detail: "member_copy_out_enabled must be a boolean" });
+    }
+    const result = await spaces.updateContentEgressSetting(user.id, params(request).spaceId ?? "", enabled);
+    if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
+    return reply.send(result);
+  });
+
   app.get("/api/v1/spaces/:spaceId/retrieval-settings", async (request, reply) => {
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);

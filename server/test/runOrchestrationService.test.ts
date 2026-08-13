@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { loadConfig } from "../src/config";
 import {
   RunOrchestrationService,
+  retrievalIntentFor,
   type RunDelegationLifecycleProjectorPort,
   type RunExecutionRepositoryPort,
   type RunPolicyEnforcer,
@@ -372,9 +373,12 @@ class FakeRepo implements RunExecutionRepositoryPort {
     return this.run;
   }
 
+  runEvents: RunEventInput[] = [];
+
   async appendRunEvent(input: RunEventInput): Promise<unknown> {
     if (this.failEvents) throw new Error("event write failed");
     this.calls.push(`event:${input.event_type}:${input.status}`);
+    this.runEvents.push(input);
     return {};
   }
 
@@ -1528,6 +1532,100 @@ describe("RunOrchestrationService", () => {
     });
   });
 
+  it("marks a successful adapter run degraded when a managed tool was unavailable", async () => {
+    const repo = new FakeRepo();
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      managedApi: {
+        executeRuntimeHost: async () => ({
+          success: true,
+          stdout: "answered",
+          stderr: "",
+          output_text: "answered",
+          output_json: { adapter_type: "ts_agent_host" },
+          exit_code: 0,
+          error_text: null,
+          error_code: null,
+          started_at: "2026-06-12T10:00:00.000Z",
+          completed_at: "2026-06-12T10:00:01.000Z",
+          model: "gpt-4o-mini",
+          usage: null,
+          events: [],
+          adapter_metadata: {
+            adapter_type: "ts_agent_host",
+            retrieval_tool_calls: [
+              { tool_name: "retrieval.search", ok: true, result_count: 3 },
+              { tool_name: "memory.retrieval.search", ok: false, error_code: "retrieval_tool_domain_not_enabled" },
+            ],
+            agent_room_tool_calls: [
+              { tool_name: "agent.delegate", ok: false, error_code: "delegation_policy_denied" },
+            ],
+          },
+          adapter_log_json: null,
+        }),
+      },
+    });
+
+    await expect(
+      service.executeRun({
+        run_id: "run-1",
+        space_id: "space-1",
+        worker_id: "worker-1",
+        command_source: "job",
+      }),
+    ).resolves.toMatchObject({ status: "degraded" });
+    expect(repo.terminalUpdates[0]).toMatchObject({ status: "degraded" });
+    const degraded = repo.runEvents.find((event) => event.error_code === "managed_tool_degraded");
+    expect(degraded).toMatchObject({
+      event_type: "warning",
+      status: "warning",
+      metadata_json: {
+        event_code: "managed_tool_degraded",
+        tool_names: ["memory.retrieval.search", "agent.delegate"],
+        error_codes: ["retrieval_tool_domain_not_enabled", "delegation_policy_denied"],
+      },
+    });
+  });
+
+  it("leaves a successful adapter run succeeded when every managed tool call worked", async () => {
+    const repo = new FakeRepo();
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      managedApi: {
+        executeRuntimeHost: async () => ({
+          success: true,
+          stdout: "answered",
+          stderr: "",
+          output_text: "answered",
+          output_json: { adapter_type: "ts_agent_host" },
+          exit_code: 0,
+          error_text: null,
+          error_code: null,
+          started_at: "2026-06-12T10:00:00.000Z",
+          completed_at: "2026-06-12T10:00:01.000Z",
+          model: "gpt-4o-mini",
+          usage: null,
+          events: [],
+          adapter_metadata: {
+            adapter_type: "ts_agent_host",
+            retrieval_tool_calls: [{ tool_name: "retrieval.search", ok: true, result_count: 3 }],
+          },
+          adapter_log_json: null,
+        }),
+      },
+    });
+
+    await expect(
+      service.executeRun({
+        run_id: "run-1",
+        space_id: "space-1",
+        worker_id: "worker-1",
+        command_source: "job",
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(repo.runEvents.some((event) => event.error_code === "managed_tool_degraded")).toBe(false);
+  });
+
   it("records failed runtime delegation materialization as run event evidence", async () => {
     const repo = new FakeRepo();
     const materializer = {
@@ -2340,4 +2438,42 @@ describe("RunOrchestrationService", () => {
     expect(delegationProjector.terminal).toEqual([]);
   });
 
+});
+
+// A managed run's prompt can be an entire rendered batch (Source screening
+// sends sixteen items at once), while `retrieval_intent` is only the turn's
+// retrieval query and is bounded by the protocol. An unbounded prompt used to
+// fail envelope validation and fail the whole run with a Zod error.
+describe("retrievalIntentFor", () => {
+  it("passes short prompts through untouched", async () => {
+    expect(await retrievalIntentFor("  compare memory architectures  ")).toBe("compare memory architectures");
+  });
+
+  it("returns null for empty or missing prompts", async () => {
+    expect(await retrievalIntentFor(null)).toBeNull();
+    expect(await retrievalIntentFor("   ")).toBeNull();
+  });
+
+  it("keeps an explicit intent whole, so a batch caller never relies on truncation", async () => {
+    const { RETRIEVAL_INTENT_MAX_CHARS } = await import("@agent-space/protocol");
+    const goal = "How do long-term memory architectures compare in personalization quality?";
+    const renderedBatch = "ITEM 1\n".repeat(RETRIEVAL_INTENT_MAX_CHARS);
+    expect(await retrievalIntentFor(goal ?? renderedBatch)).toBe(goal);
+    expect(goal.length).toBeLessThan(RETRIEVAL_INTENT_MAX_CHARS);
+  });
+
+  it("truncates a batch-sized prompt to something the turn schema accepts", async () => {
+    const { RETRIEVAL_INTENT_MAX_CHARS, TurnContextRequestSchema } = await import("@agent-space/protocol");
+    const intent = await retrievalIntentFor("x".repeat(RETRIEVAL_INTENT_MAX_CHARS * 4));
+    expect(intent!.length).toBeLessThanOrEqual(RETRIEVAL_INTENT_MAX_CHARS);
+    const parsed = TurnContextRequestSchema.safeParse({
+      work_context_scope_id: "11111111-1111-4111-8111-111111111111",
+      expected_setup_version: 1,
+      current_message_ref: { type: "message", id: "22222222-2222-4222-8222-222222222222" },
+      one_off_refs: [],
+      retrieval_intent: intent,
+      invocation_purpose: "agent_task",
+    });
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
 });

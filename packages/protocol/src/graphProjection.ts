@@ -27,7 +27,6 @@ export const CORE_GRAPH_NODE_KINDS = [
   "run",
   "cluster",
 ] as const;
-export type CoreGraphNodeKind = (typeof CORE_GRAPH_NODE_KINDS)[number];
 
 export const CORE_GRAPH_EDGE_KINDS = [
   "related_to",
@@ -49,7 +48,6 @@ export const CORE_GRAPH_EDGE_KINDS = [
   "similar_to",
   "cluster_contains",
 ] as const;
-export type CoreGraphEdgeKind = (typeof CORE_GRAPH_EDGE_KINDS)[number];
 
 export const GRAPH_PROJECTION_VIEW_MODES = [
   "global",
@@ -119,7 +117,6 @@ export const GraphProjectionViewSchema = z
     totalNodeCount: z.number().int().nonnegative().optional(),
   })
   .strict();
-export type GraphProjectionView = z.infer<typeof GraphProjectionViewSchema>;
 
 export const GraphProjectionLayoutSchema = z
   .object({
@@ -127,9 +124,6 @@ export const GraphProjectionLayoutSchema = z
     version: z.union([z.string(), z.number()]).optional(),
   })
   .strict();
-export type GraphProjectionLayout = z.infer<
-  typeof GraphProjectionLayoutSchema
->;
 
 export const GraphProjectionSchema = z
   .object({

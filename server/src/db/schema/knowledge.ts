@@ -898,6 +898,25 @@ export const notes = pgTable("notes", {
 	// written together and cleared together; nothing sets one without the other.
 	roleProjectId: varchar("role_project_id", { length: 36 }),
 	projectRole: varchar("project_role", { length: 64 }),
+	// The per-user private marginalia note for a Project, or for one object
+	// inside it (ADR 0013 decision 3a). Its own columns rather than a
+	// `project_role`, because a role is one note per Project by construction —
+	// that index is exactly what stops two members claiming the same baseline
+	// note — while marginalia is one note per member and must not displace
+	// anyone. `marginalia_target_object_id` is null for the Project-level note.
+	// Written together and cleared together; the CHECK below keeps a half-set
+	// combination out, and a note that is archived, deleted, or moved to another
+	// Project has the whole set cleared so it stops occupying the slot.
+	//
+	// `marginalia_target_object_id` carries no foreign key on purpose (B12B). A
+	// cascade would delete the member's whole private note along with the object
+	// it annotates, and the alternatives are no better: `SET NULL` would collide
+	// the row with that member's Project-level slot, and a restricting reference
+	// would block the note purge. A dangling id simply means that slot is never
+	// resolved again, which is what "the object is gone" should mean.
+	marginaliaProjectId: varchar("marginalia_project_id", { length: 36 }),
+	marginaliaOwnerUserId: varchar("marginalia_owner_user_id", { length: 36 }),
+	marginaliaTargetObjectId: varchar("marginalia_target_object_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_notes_created_from_activity_id").using("btree", table.createdFromActivityId.asc().nullsLast()),
 	index("ix_notes_status").using("btree", table.status.asc().nullsLast()),
@@ -905,6 +924,13 @@ export const notes = pgTable("notes", {
 	uniqueIndex("ix_notes_one_note_per_project_role")
 		.using("btree", table.spaceId.asc().nullsLast(), table.roleProjectId.asc().nullsLast(), table.projectRole.asc().nullsLast())
 		.where(sql`(project_role IS NOT NULL)`),
+	// The target is folded through COALESCE rather than indexed directly: a null
+	// target is the Project-level note, and under default NULLS DISTINCT that
+	// one slot — the one that genuinely must be single — would not be
+	// deduplicated at all.
+	uniqueIndex("ix_notes_one_marginalia_note_per_owner")
+		.using("btree", table.spaceId.asc().nullsLast(), table.marginaliaProjectId.asc().nullsLast(), table.marginaliaOwnerUserId.asc().nullsLast(), sql`COALESCE(marginalia_target_object_id, '')`)
+		.where(sql`(marginalia_owner_user_id IS NOT NULL)`),
 	foreignKey({
 			columns: [table.createdFromActivityId],
 			foreignColumns: [activityRecords.id],
@@ -940,9 +966,21 @@ export const notes = pgTable("notes", {
 			foreignColumns: [projects.id, projects.spaceId],
 			name: "notes_role_project_id_fkey"
 		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.marginaliaProjectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "notes_marginalia_project_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.marginaliaOwnerUserId],
+			foreignColumns: [users.id],
+			name: "notes_marginalia_owner_user_id_fkey"
+		}),
+
 	unique("notes_object_id_space_id_key").on(table.objectId, table.spaceId),
 	check("ck_notes_content_format", sql`(content_format)::text = ANY (ARRAY[('markdown'::character varying)::text, ('plain'::character varying)::text, ('prosemirror_json'::character varying)::text])`),
 	check("ck_notes_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])`),
+	check("ck_notes_marginalia_binding", sql`((marginalia_project_id IS NULL) = (marginalia_owner_user_id IS NULL)) AND ((marginalia_target_object_id IS NULL) OR (marginalia_owner_user_id IS NOT NULL))`),
 	check("ck_notes_version", sql`version >= 1`),
 	// B12F: the role vocabulary belongs to the registry, so the database only
 	// constrains the token's shape. What it does still enforce is the pairing —

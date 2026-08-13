@@ -30,6 +30,7 @@ const PROVIDER = "30000000-0000-4000-8000-000000000008";
 const SETUP = "30000000-0000-4000-8000-000000000009";
 const PROJECT = "30000000-0000-4000-8000-000000000011";
 const FOLDER = "30000000-0000-4000-8000-000000000012";
+const THREAD = "30000000-0000-4000-8000-000000000013";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -1185,6 +1186,157 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       [replacementInstructionId, PROJECT, SPACE],
     );
     await expect(create("model_api")).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  /**
+   * Reauthorizing an Inquiry Thread pins the viewer's project membership row
+   * for the transaction. The lock was written against the nullable side of an
+   * outer join, which PostgreSQL rejects outright — so every Delivery carrying
+   * a Thread failed with a database error, not a policy decision, and screening
+   * reported "0/N items classified". A fake `Queryable` accepts that SQL
+   * happily; only a real server refuses it.
+   */
+  it("locks Inquiry Thread membership without tripping PostgreSQL's outer-join lock rule", async () => {
+    if (!available || !pool) return;
+    const authoritative = control(0);
+    authoritative.project_id = PROJECT;
+    authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
+    authoritative.readable_scope.retrieval_enabled = true;
+    authoritative.readable_scope.retrieval_max_candidates = 10;
+    await pool.query(
+      `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'Inquiry Project','active',now(),now())`,
+      [PROJECT, SPACE, USER],
+    );
+    const threadSessionId = randomUUID();
+    await pool.query(
+      `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`,
+      [threadSessionId, SPACE, USER],
+    );
+    await pool.query(
+      `INSERT INTO messages (id,space_id,session_id,user_id,role,content,metadata_json,created_at)
+       VALUES ($1,$2,$3,$4,'user','Private question',$5::jsonb,now())`,
+      [MESSAGE, SPACE, threadSessionId, USER, JSON.stringify({ run_id: RUN })],
+    );
+    const setupDecisionId = randomUUID();
+    await pool.query(
+      `INSERT INTO policy_decision_records (
+         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
+         decision,risk_level,policy_source,metadata_json,created_at
+       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
+                 'allow','medium','test','{}',now())`,
+      [setupDecisionId, SPACE, USER, SETUP],
+    );
+    await pool.query(
+      `INSERT INTO work_context_setups (
+         id,space_id,work_context_scope_id,scope_kind,version,user_id,project_id,agent_id,
+         runtime_ref_json,pinned_refs_json,excluded_refs_json,retrieval_preferences_json,
+         continuity_preferences_json,project_instruction_enabled,governing_policy_refs_json,
+         setup_fingerprint,base_version,typed_diff_json,reason,policy_decision_record_id,
+         created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'root_task',1,$4,$5,$6,NULL,'[]','[]','{}','{}',FALSE,'[]',
+                 'inquiry-thread-authority',NULL,'{}','test',$7,$4,now())`,
+      [SETUP, SPACE, RUN, USER, PROJECT, AGENT, setupDecisionId],
+    );
+    const statement = "Does the control group hold?";
+    const threadUpdatedAt = "2026-08-12T02:00:00.000Z";
+    await pool.query(
+      `INSERT INTO space_objects (id,space_id,object_type,title,visibility,access_level,owner_user_id,primary_project_id,created_at,updated_at)
+       VALUES ($1,$2,'inquiry_thread',$3,'space_shared','full',$4,$5,$6,$6)`,
+      [THREAD, SPACE, statement, USER, PROJECT, threadUpdatedAt],
+    );
+    await pool.query(
+      `INSERT INTO inquiry_threads (object_id,space_id,project_id,kind,statement,lifecycle_status)
+       VALUES ($1,$2,$3,'question',$4,'active')`,
+      [THREAD, SPACE, PROJECT, statement],
+    );
+    await pool.query(
+      `INSERT INTO model_providers (
+         id,space_id,owner_user_id,name,provider_type,base_url,enabled,
+         capabilities_json,config_json,created_at,updated_at
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
+      [PROVIDER, SPACE, USER],
+    );
+    await pool.query(
+      `INSERT INTO model_provider_space_grants (
+         id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
+      [randomUUID(), PROVIDER, SPACE, USER],
+    );
+    await pool.query(
+      `UPDATE runs SET model_provider_id=$2,project_id=$3,session_id=$4,prompt='Private question',
+         model_override_json=$5::jsonb WHERE id=$1`,
+      [RUN, PROVIDER, PROJECT, threadSessionId, JSON.stringify({
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          session_id: threadSessionId,
+          user_id: USER,
+          user_message_id: MESSAGE,
+          agent_id: AGENT,
+          agent_version_id: VERSION,
+          project_id: PROJECT,
+        },
+      })],
+    );
+    await pool.query(
+      `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
+      [CONTROL, JSON.stringify(authoritative)],
+    );
+
+    const thread = normalizeContextItem({
+      sourceRef: { type: "inquiry_thread", id: THREAD },
+      acquisition: "retrieval",
+      selection: "ranked",
+      rank: 1,
+      semanticRole: "reference_data",
+      trust: "derived",
+      sensitivity: "normal",
+      visibility: "private",
+      ownerUserId: USER,
+      spaceId: SPACE,
+      egressEligible: true,
+      text: statement,
+      revalidation: {
+        status: "live",
+        checked_at: threadUpdatedAt,
+        source_updated_at: threadUpdatedAt,
+        source_connection_ids: [],
+      },
+    });
+    const planned = envelope();
+    const plan = new RuntimeContextPlanner().plan({
+      executionControlSnapshotId: CONTROL,
+      setupRef: authoritative.work_context_setup_ref,
+      turn: planned.turn_request,
+      model: "gpt-4o",
+      directItems: planned.items,
+      retrievalItems: [thread],
+    });
+    const snapshots = new InvocationSnapshotService(
+      pool,
+      new SealedPayloadCipher(Buffer.alloc(32, 13)),
+      new PgInvocationDeliveryAuthorizer(),
+    );
+    const createAttempt = () => snapshots.createAttempt({
+      spaceId: SPACE,
+      invocationId: RUN,
+      envelope: plan,
+      control: authoritative,
+      adapterType: "model_api",
+      providerId: PROVIDER,
+      model: "gpt-4o",
+      usageSourceId: `run:${RUN}:thread`,
+      viewerUserId: USER,
+      requireLiveAuthorization: true,
+    });
+
+    await expect(createAttempt()).resolves.toBeDefined();
+
+    // A non-member has no membership row to pin, which is an ordinary outcome
+    // and not an error — the reason the join was written outer in the first
+    // place. Personal-Space read authority still admits the read.
+    await pool.query(`DELETE FROM project_members WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    await expect(createAttempt()).resolves.toBeDefined();
   });
 
   it("rolls back the window plan when Delivery rendering fails", async () => {

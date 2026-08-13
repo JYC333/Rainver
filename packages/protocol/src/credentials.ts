@@ -40,7 +40,6 @@ export const CliCredentialProfileDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliCredentialProfileDTO = z.infer<typeof CliCredentialProfileDTOSchema>;
 
 export const CliCredentialAvailableProfileDTOSchema = z
   .object({
@@ -61,9 +60,6 @@ export const CliCredentialAvailableProfileDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliCredentialAvailableProfileDTO = z.infer<
-  typeof CliCredentialAvailableProfileDTOSchema
->;
 
 export const CliCredentialProfileCreateRequestSchema = z.object({
   runtime: z.string().min(1),
@@ -73,9 +69,6 @@ export const CliCredentialProfileCreateRequestSchema = z.object({
   network_profile_id: IdSchema.nullish(),
   is_default: z.boolean().optional(),
 });
-export type CliCredentialProfileCreateRequest = z.infer<
-  typeof CliCredentialProfileCreateRequestSchema
->;
 
 export const CliCredentialSpaceGrantRequestSchema = z.object({
   space_id: IdSchema,
@@ -83,9 +76,6 @@ export const CliCredentialSpaceGrantRequestSchema = z.object({
   is_default: z.boolean().optional(),
   network_profile_id: IdSchema.nullish(),
 });
-export type CliCredentialSpaceGrantRequest = z.infer<
-  typeof CliCredentialSpaceGrantRequestSchema
->;
 
 export const CliCredentialSpaceGrantDTOSchema = z
   .object({
@@ -102,7 +92,6 @@ export const CliCredentialSpaceGrantDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliCredentialSpaceGrantDTO = z.infer<typeof CliCredentialSpaceGrantDTOSchema>;
 
 /** Mirror of `POST /credentials/cli/profiles/{id}/detect`. */
 export const CliCredentialProfileDetectResponseSchema = z
@@ -119,9 +108,6 @@ export const CliCredentialProfileDetectResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliCredentialProfileDetectResponse = z.infer<
-  typeof CliCredentialProfileDetectResponseSchema
->;
 
 /** Mirror of one `GET /credentials/cli/methods` entry (`list_login_methods`). */
 export const CliLoginMethodDTOSchema = z
@@ -134,7 +120,6 @@ export const CliLoginMethodDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliLoginMethodDTO = z.infer<typeof CliLoginMethodDTOSchema>;
 
 /** Mirror of one `GET /credentials/cli/status` entry. */
 export const CliCredentialStatusDTOSchema = z
@@ -149,7 +134,6 @@ export const CliCredentialStatusDTOSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliCredentialStatusDTO = z.infer<typeof CliCredentialStatusDTOSchema>;
 
 /**
  * Documented event types on the `GET /credentials/cli/login/stream` SSE
@@ -186,19 +170,16 @@ export const CliLoginStreamEventSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
-export type CliLoginStreamEvent = z.infer<typeof CliLoginStreamEventSchema>;
 
 /** Request body for `POST /credentials/cli/login/input`. */
 export const CliLoginInputRequestSchema = z.object({
   input: z.string(),
   profile_id: IdSchema.optional(),
 });
-export type CliLoginInputRequest = z.infer<typeof CliLoginInputRequestSchema>;
 
 export const CliLoginInputResponseSchema = z
   .object({ status: z.literal("sent"), ...SecretResponseGuards })
   .passthrough();
-export type CliLoginInputResponse = z.infer<typeof CliLoginInputResponseSchema>;
 
 export const CliUsageAutoRefreshSettingsSchema = z
   .object({
@@ -215,6 +196,3 @@ export type CliUsageAutoRefreshSettings = z.infer<
 export const CliUsageAutoRefreshUpdateRequestSchema = z.object({
   enabled: z.boolean(),
 });
-export type CliUsageAutoRefreshUpdateRequest = z.infer<
-  typeof CliUsageAutoRefreshUpdateRequestSchema
->;

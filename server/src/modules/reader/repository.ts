@@ -234,12 +234,12 @@ async function enforceConnectionReadConsent(
   const consent = gov.consent;
   if (identity.userId === consent.owner_user_id) return;
   const subscription = await db.query<{ id: string }>(
-    `SELECT id
+    `SELECT scus.id
        FROM source_channel_user_subscriptions scus
        JOIN source_channels sch ON sch.id = scus.source_channel_id
       WHERE scus.space_id = $1
         AND sch.source_connection_id = $2
-        AND user_id = $3
+        AND scus.user_id = $3
         AND scus.status = 'subscribed'
       LIMIT 1`,
     [identity.spaceId, connectionId, identity.userId],

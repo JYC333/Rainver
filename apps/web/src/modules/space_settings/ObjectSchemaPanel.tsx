@@ -14,7 +14,7 @@ import {
   SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE,
   type ObjectSchemaExportManifest,
   type RetrievalObjectType,
-  type SpaceObjectProfileCreateProposalRequest,
+  type SpaceObjectProfileCreateProposalRequestInput,
   type SpaceObjectProfileOut,
   type SpaceObjectProfileRelationHintRequest,
   type SpaceObjectProfileStatus,
@@ -140,7 +140,7 @@ export function ObjectSchemaPanel() {
     }
     setCreating(true)
     try {
-      const body: SpaceObjectProfileCreateProposalRequest = {
+      const body: SpaceObjectProfileCreateProposalRequestInput = {
         key: form.key.trim(),
         label: form.label.trim(),
         description: form.description.trim() || null,

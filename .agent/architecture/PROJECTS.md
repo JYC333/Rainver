@@ -1205,9 +1205,70 @@ progress model.
 
 Inquiry is a Project-owned domain with Question/Hypothesis Threads, typed
 relations plus an acyclic primary-parent tree, protected cognitive Iterations,
-Definition/Structure/Lifecycle/Work commands, Focus Sets, and Current Next
-Focus. Focused Threads satisfy a DB-backed exact-one invariant:
-`next_focus_kind XOR blocked_reason`. Signal and Candidate reads revalidate
+Definition/Structure/Lifecycle/Work commands, Focus Sets, and Steps.
+
+A Step is one attempt at advancing a Thread: its kind, that it was started,
+what it produced, and which round it belonged to. The Next Focus vocabulary is
+eight actions — clarify/decompose, search, experiment, read evidence,
+synthesize, promote Knowledge, decision case, delivery task — and holds no
+states: `pause` restated `attention_state` and `wait_for_monitoring` restated a
+running background Step. Steps occupy one of two slots. A Thread has at most
+one open `primary` Step, enforced by a partial unique index, because that slot
+represents a person's attention; actions with a system operation behind them
+(search, experiment) take the `background` slot instead and release the primary
+slot immediately, so a running search never stops the Thread being worked on.
+`inquiry_threads.next_focus_kind` remains as a projection of the current
+primary Step, written in the same statement as any other Thread column so the
+per-statement CHECK never observes an inconsistent pair.
+
+The DB-backed invariant is `next_focus_kind IS NULL OR blocked_reason IS NULL`:
+a Step and a blocking reason contradict each other. It does not require a
+focused Thread to hold either, because a Thread between rounds, or one whose
+only running work is a background Step, legitimately holds neither. The CHECK
+sees the primary slot only, so the work-state command enforces the same rule
+against every open Step: a Thread cannot be blocked while a background search
+runs. Clearing the next Step ends background work as well, which is the only
+command that calls off a running search; a Thread leaving `active` ends its
+open Steps rather than orphaning rows no command could later close. The Shared
+Focus WIP limit counts attention rather than activity: a focused Thread whose
+only open Step is in the background does not occupy a slot, and counts again
+once that Step ends. The limit stays advisory.
+
+A Step with a system operation behind it is completed by that operation
+finishing, not by the user saying so: a finished research Workflow closes its
+Thread's `search_acquisition` Step and records the Workflow as the Step's
+target, on the same post-commit path that queues advice. Manual Steps have no
+such fact behind them and end when the round does. Open Steps are readable
+Project-wide, which is what lets the Area a user was sent to name the Thread
+that sent them and offer the way back.
+
+Rounds anchor to Iterations rather than to a separate counter. Recording an
+Iteration closes the round's open primary Step as `done` and stamps it with
+that Iteration, along with every Step that already settled in that round, so
+`iteration_id IS NULL` reliably means "this round"; background Steps still
+running keep running into the next one.
+
+That stamping is why round progress is measured against the current round and
+not against all-time state: a Thread that has ever concluded would otherwise
+read as concluded forever, and the second round would open already finished.
+It is also why the stages a person performs by hand are satisfied by that
+person having gone and done the work, rather than by the Step reaching `done` —
+a hand-done Step is marked `done` only by the close-out that stamps it out of
+the round, so waiting for it would never be observable while the round is open.
+Evidence gathering is the exception, judged on whether evidence actually
+arrived, because a search still running has produced none. The Focus UI exposes
+this derived round as one stage workspace: its stage row is the only stage
+selector, selecting a stage changes only the adjacent panel, and starting an
+action is the separate command that changes Thread work. The workspace keeps
+actual current, inspected, completed, and running states distinct. A manual
+inspection stays pinned across read refreshes; after a successful action it
+follows the newly derived current stage. One suggestion remains visible above
+the inspected stage's own actions, while pause, block, early close-out, and
+other low-frequency Thread management stay in the Thread menu. A blocked
+workspace remains readable with its actions disabled, and Unblock clears only
+the blocker rather than implicitly starting a Step.
+
+Signal and Candidate reads revalidate
 their underlying Project Corpus items through the Corpus owner, and Note links
 revalidate canonical content visibility. Authoritative Project/Inquiry domain
 mutations lock the active Project row in their transaction so archive cannot
@@ -1224,18 +1285,35 @@ unmounted; opening a later checkpoint also closes that user's older open
 packets and releases their pending Candidates, covering interrupted clients.
 
 Inquiry Thread Advice is a model-generated recommendation of a Thread's next
-step. It is a suggestion surface, never a write path: the recommendation is
+step. The UI has one suggestion surface: valid open, non-stale Advice takes its
+place there, otherwise an immediate deterministic recommendation fills it.
+Users are not asked to distinguish “AI advice” from “system advice”; they may
+ignore the current suggestion, which dismisses model Advice and reveals the
+fallback. Advice pinned to a superseded revision is withheld because it is not
+a valid recommendation for the current state. There is no manual re-analysis
+control. Advice is a suggestion surface, never a write path: the recommendation is
 stored on its own table and adopting it is routed through the ordinary
 work-state command, so `next_focus_kind` keeps exactly one write authority and
 one enforcement point for the focused-Thread invariant. A recommendation
 outside the defined Next Focus set is rejected rather than stored. Each Thread
 keeps one current recommendation, pinned to the Thread revision it reasoned
 about; a later revision marks it stale rather than silently outdated.
-Generation is on request for any Thread, and additionally queued as a job after
-an Iteration is recorded, a material Candidate consolidates, or a search
-completes — but only for Threads in the shared Focus set, which is what bounds
-automatic spend. Queuing happens after the triggering transaction commits and
-never fails the command that triggered it.
+Generation is queued only after meaningful state changes: an Iteration is
+recorded, a material Candidate consolidates, or a search completes, and only
+for Threads in the shared Focus set. Duplicate pending/running jobs are fenced,
+and any current Advice is retired synchronously when its reasoning context
+changes, so the read surface never waits for model latency to stop showing it.
+Invalidation changes only open Advice: adopted and explicitly dismissed records
+retain their terminal history. A newer event cancels pending analysis and marks
+claimed or running analysis superseded; the worker checks that fence before the
+provider call and again transactionally before persistence. Actorless events or
+Threads outside shared Focus leave no replacement job, preserving the bounded-
+spend rule without leaving an old recommendation visible.
+The UI may poll ordinary read state every five seconds while work is live and
+refreshes on visibility return or a local mutation, but that polling never
+invokes the model and idle Threads install no interval. Queuing happens after
+the triggering transaction commits and never fails the command that triggered
+it.
 
 A Delta Brief is a persisted, read-only, deterministic aggregation over
 Evidence Signals in one coverage window — no model call participates. Every

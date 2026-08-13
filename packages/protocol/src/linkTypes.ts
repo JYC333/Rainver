@@ -54,7 +54,6 @@ export type LinkType = z.infer<typeof LinkTypeSchema>;
 
 export const LINK_STATUS_VALUES = ["candidate", "active", "rejected", "archived"] as const;
 export const LinkStatusSchema = z.enum(LINK_STATUS_VALUES);
-export type LinkStatus = z.infer<typeof LinkStatusSchema>;
 
 export function isLinkType(value: string): value is LinkType {
   return (LINK_TYPE_VALUES as readonly string[]).includes(value);

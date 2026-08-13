@@ -105,14 +105,63 @@ export type ProposalAcceptResultType = z.infer<
   typeof ProposalAcceptResultTypeSchema
 >;
 
-export const ProposalAcceptOutSchema = z
+/**
+ * Applier results are per-applier shapes, so `result` is an open object for
+ * every type except the three whose fields consumers actually read. Those are
+ * declared from what the owning applier returns: `code_patch_apply` from the
+ * Project Folder patch applier, and the two review packets from the shared
+ * packet applier, which reports the child proposals it generated and, when it
+ * skipped any, how many.
+ */
+export const ProposalAcceptCodePatchResultSchema = z
   .object({
-    proposal: ProposalOutSchema,
-    result_type: ProposalAcceptResultTypeSchema,
-    result: JsonObjectSchema,
-    ...SecretResponseGuards,
+    updated_paths: z.array(z.string()),
+    code_patch_files: z.array(JsonObjectSchema).optional(),
   })
   .passthrough();
+
+export const ProposalAcceptReviewPacketResultSchema = z
+  .object({
+    generated_child_proposal_ids: z.array(IdSchema),
+    generated_child_proposal_count: z.number().int().nonnegative(),
+    skipped_child_proposal_count: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+const ProposalAcceptBaseShape = {
+  proposal: ProposalOutSchema,
+  ...SecretResponseGuards,
+};
+
+export const ProposalAcceptOutSchema = z.union([
+  z
+    .object({
+      ...ProposalAcceptBaseShape,
+      result_type: z.literal("code_patch_apply"),
+      result: ProposalAcceptCodePatchResultSchema,
+    })
+    .passthrough(),
+  z
+    .object({
+      ...ProposalAcceptBaseShape,
+      result_type: z.enum(["retrieval_maintenance_packet", "claim_candidate_packet"]),
+      result: ProposalAcceptReviewPacketResultSchema,
+    })
+    .passthrough(),
+  z
+    .object({
+      ...ProposalAcceptBaseShape,
+      // Excluded so the three typed members above can discriminate: a
+      // union whose fallback also accepts their literals narrows to nothing.
+      result_type: ProposalAcceptResultTypeSchema.exclude([
+        "code_patch_apply",
+        "retrieval_maintenance_packet",
+        "claim_candidate_packet",
+      ]),
+      result: JsonObjectSchema,
+    })
+    .passthrough(),
+]);
 export type ProposalAcceptOut = z.infer<typeof ProposalAcceptOutSchema>;
 
 export const ProposalApprovalOutSchema = z
@@ -138,18 +187,12 @@ export const ProposalAcceptDispatchRequestSchema = z.object({
   user_id: IdSchema,
   confirm_incomplete_patch: z.boolean().default(false),
 });
-export type ProposalAcceptDispatchRequest = z.infer<
-  typeof ProposalAcceptDispatchRequestSchema
->;
 
 export const ProposalRejectDispatchRequestSchema = z.object({
   proposal_id: IdSchema,
   space_id: IdSchema,
   user_id: IdSchema,
 });
-export type ProposalRejectDispatchRequest = z.infer<
-  typeof ProposalRejectDispatchRequestSchema
->;
 
 export const ProposalEgressApprovalDispatchRequestSchema = z.object({
   proposal_id: IdSchema,
@@ -157,6 +200,3 @@ export const ProposalEgressApprovalDispatchRequestSchema = z.object({
   user_id: IdSchema,
   grant_id: IdSchema.nullish(),
 });
-export type ProposalEgressApprovalDispatchRequest = z.infer<
-  typeof ProposalEgressApprovalDispatchRequestSchema
->;

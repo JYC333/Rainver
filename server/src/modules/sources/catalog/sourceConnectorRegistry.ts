@@ -18,6 +18,13 @@ export interface SourceConnectorCapabilities {
   supports_all_history: boolean;
   supports_incremental: boolean;
   supports_conditional_requests: boolean;
+  /**
+   * Whether a history page may be re-requested at a smaller size without
+   * disturbing paging. True only for connectors whose backfill offset is
+   * counted in items; a page-numbered or opaque-cursor API cannot express
+   * "the same position, fewer rows", so narrowing it would skip results.
+   */
+  supports_page_size_narrowing: boolean;
   id_fields: string[];
 }
 
@@ -109,13 +116,21 @@ class ArxivConnectorHandler implements SourceConnectorHandler {
       sort_by: monitoringField as ArxivQueryConfig["sort_by"],
       sort_order: "ascending",
     });
-    const pageCursor = Number.isInteger(window.cursor)
-      ? Number(window.cursor) * 100
-      : Number.isInteger(cursor.start)
-        ? Number(cursor.start)
-        : 0;
-    const pageSize = Number(window.max_items ?? window.page_size ?? query.max_results ?? 100);
-    return { url: this.withCursor(compiled, { start: pageCursor, max_results: Math.min(100, Math.max(1, pageSize)) }) };
+    const pageSize = Math.min(100, Math.max(1, Number(window.max_items ?? window.page_size ?? query.max_results ?? 100)));
+    // Offset is counted in items, not pages. Deriving it as `cursor * 100`
+    // silently skipped or repeated results whenever the page was smaller than
+    // 100 — which is the normal case on the last page of a budget, and the
+    // permanent case once a page size is narrowed after a provider failure.
+    const startOffset = Number.isInteger(window.offset)
+      ? Number(window.offset)
+      : Number.isInteger(window.consumed_items)
+        ? Number(window.consumed_items)
+        : Number.isInteger(window.cursor)
+          ? Number(window.cursor) * pageSize
+          : Number.isInteger(cursor.start)
+            ? Number(cursor.start)
+            : 0;
+    return { url: this.withCursor(compiled, { start: Math.max(0, startOffset), max_results: pageSize }) };
   }
 
   parseResponse(response: string): NormalizedSourceItem[] {
@@ -150,6 +165,8 @@ class ArxivConnectorHandler implements SourceConnectorHandler {
       supports_all_history: true,
       supports_incremental: true,
       supports_conditional_requests: false,
+      // `start` is an item offset, so a narrower page resumes at the same item.
+      supports_page_size_narrowing: true,
       id_fields: ["arxiv_id", "doi"],
     };
   }
@@ -192,7 +209,7 @@ class GenericFeedConnectorHandler implements SourceConnectorHandler {
     }));
   }
   getCapabilities(): SourceConnectorCapabilities {
-    return { protocol: this.connectorKey, supports_search: false, supports_categories: false, supports_date_range: false, supports_all_history: false, supports_incremental: true, supports_conditional_requests: true, id_fields: ["guid", "link"] };
+    return { protocol: this.connectorKey, supports_search: false, supports_categories: false, supports_date_range: false, supports_all_history: false, supports_incremental: true, supports_conditional_requests: true, supports_page_size_narrowing: false, id_fields: ["guid", "link"] };
   }
 }
 
@@ -220,7 +237,7 @@ class WebPageConnectorHandler implements SourceConnectorHandler {
     }];
   }
   getCapabilities(): SourceConnectorCapabilities {
-    return { protocol: "web_page", supports_search: false, supports_categories: false, supports_date_range: false, supports_all_history: false, supports_incremental: true, supports_conditional_requests: true, id_fields: ["canonical_uri"] };
+    return { protocol: "web_page", supports_search: false, supports_categories: false, supports_date_range: false, supports_all_history: false, supports_incremental: true, supports_conditional_requests: true, supports_page_size_narrowing: false, id_fields: ["canonical_uri"] };
   }
 }
 

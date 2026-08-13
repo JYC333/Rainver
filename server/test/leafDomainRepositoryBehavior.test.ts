@@ -1320,6 +1320,14 @@ describe("Leaf domain repository behavior", () => {
       }
       // Reading the note back audits cross-person reads (ADR 0013 decision 18).
       if (sql.includes("INSERT INTO content_access_logs")) return [];
+      // Every note update also drops marginalia bindings that no longer hold.
+      // This test is about collection membership carrying the current space, so
+      // the clean-up is unrelated here — but it must be declared rather than
+      // fall through, because the throw below is what keeps this fake honest.
+      if (sql.includes("SET marginalia_project_id = NULL")) {
+        expect(params).toEqual(["note-1", "space-1"]);
+        return [];
+      }
       throw new Error(`unexpected SQL: ${sql}`);
     });
 

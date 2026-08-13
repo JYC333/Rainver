@@ -49,6 +49,7 @@ function fakeRepo(overrides: Partial<AuthRepository> = {}): AuthRepository {
           role: "owner",
           oversight_mode: "none",
           egress_notifications_enabled: false,
+          member_count: 1,
           created_at: "2026-06-15T12:00:00.000Z",
           updated_at: "2026-06-15T12:00:00.000Z",
         },
@@ -62,6 +63,7 @@ function fakeRepo(overrides: Partial<AuthRepository> = {}): AuthRepository {
         role: "owner",
         oversight_mode: "none",
         egress_notifications_enabled: false,
+        member_count: 1,
         created_by_user_id: "user-1",
         created_at: "2026-06-15T12:00:00.000Z",
         updated_at: "2026-06-15T12:00:00.000Z",
@@ -96,6 +98,7 @@ function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepositor
         role: "owner",
         oversight_mode: input.oversight_mode ?? "none",
         egress_notifications_enabled: true,
+        member_count: 1,
         created_by_user_id: "user-1",
         created_at: "2026-06-15T12:00:00.000Z",
         updated_at: "2026-06-15T12:00:00.000Z",
@@ -135,6 +138,12 @@ function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepositor
     },
     async updateSnapshotDefaults(_userId, _spaceId, data) {
       return data;
+    },
+    async getContentEgressSetting(_userId, spaceId) {
+      return { space_id: spaceId, member_copy_out_enabled: false };
+    },
+    async updateContentEgressSetting(_userId, spaceId, enabled) {
+      return { space_id: spaceId, member_copy_out_enabled: enabled };
     },
     async getRetrievalSettings(_userId, spaceId) {
       return {
@@ -259,6 +268,7 @@ describe("native server auth routes", () => {
         role: "owner",
         oversight_mode: "none",
         egress_notifications_enabled: false,
+        member_count: 1,
         created_at: "2026-06-15T12:00:00.000Z",
         updated_at: "2026-06-15T12:00:00.000Z",
       },
@@ -404,6 +414,7 @@ describe("native server auth routes", () => {
             role: "admin",
             oversight_mode: "none",
             egress_notifications_enabled: true,
+            member_count: 1,
             created_by_user_id: "user-1",
             created_at: "2026-06-15T12:00:00.000Z",
             updated_at: "2026-06-15T12:00:00.000Z",
