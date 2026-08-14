@@ -138,6 +138,7 @@ vi.mock('../../../api/client', () => ({
   },
   providersApi: {
     list: vi.fn().mockResolvedValue([]),
+    vendors: vi.fn().mockResolvedValue([]),
   },
   inquiryApi: {
     listOpenSteps: vi.fn().mockResolvedValue([]),

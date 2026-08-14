@@ -3177,11 +3177,23 @@ export interface ProviderTaskPolicyPutRequest {
   enabled?: boolean
 }
 
-export interface CatalogInfo {
-  id: string
-  name: string
-  description: string
-  model_hint: string
+/**
+ * The server-owned vendor registry. The client reads these facts rather than
+ * keeping its own copy of them — the two used to be maintained by hand on both
+ * sides, and had already drifted.
+ */
+export interface ProviderVendorOut {
+  id: ProviderType
+  display_name: string
+  protocol: string
+  supports_chat: boolean
+  supports_runtime_tools: boolean
+  supports_structured_output: boolean
+  supports_embedding: boolean
+  supports_rerank: boolean
+  default_base_url: string | null
+  api_key_required: boolean
+  subscription_only: boolean
 }
 
 export interface TestConnectionOut {
@@ -3214,8 +3226,6 @@ export const providersApi = {
   list: () => get<ModelProviderOut[]>('/providers'),
 
   presets: () => get<ProviderPresetOut[]>('/providers/presets'),
-
-  litellmProviders: () => get<string[]>('/providers/litellm-providers'),
 
   create: (data: {
     name: string
@@ -3303,7 +3313,7 @@ export const providersApi = {
     network_profile_id?: string | null
   }) => put(`/providers/${encodeURIComponent(id)}/grants`, data),
 
-  catalog: () => get<CatalogInfo>('/providers/catalog'),
+  vendors: () => get<ProviderVendorOut[]>('/providers/vendors'),
 
 }
 

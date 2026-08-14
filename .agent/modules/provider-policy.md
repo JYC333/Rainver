@@ -43,7 +43,12 @@ policies. Embedding and rerank creation do not expose the chat provider
 `API protocol` selector; the selected preset owns the backend adapter type.
 Provider presets are server-owned under `server/src/modules/providers/presets/`
 and exposed through `GET /api/v1/providers/presets`. Frontend code consumes
-this catalog but does not hardcode vendor preset facts. Creating a provider
+this catalog but does not hardcode vendor preset facts. `GET
+/api/v1/providers/vendors` serves the vendor registry itself — identity,
+protocol, capability flags, published endpoint, and whether a credential is
+required — and is the single source the web client and `providerSupportsTask`
+both read. None of those facts is restated in the client or in a per-task
+table. Creating a provider
 from a preset goes through `POST /api/v1/providers/from-preset`; for embedding
 and rerank presets the server also configures the corresponding retrieval task
 policy and retrieval settings.
@@ -63,12 +68,22 @@ CredentialBroker profile channel instead.
 `openai_codex`, `anthropic`, `minimax`, `openrouter`, `deepseek`, `ollama`,
 `cohere`, `zeroentropy`, or the explicitly unknown `openai_compatible`), not a
 wire protocol. The server-owned
-vendor registry resolves that identity to the chat protocol, pi-ai catalog,
-and capability profile. Managed chat calls run through
+vendor registry resolves that identity to the chat protocol and the capability
+profile, and to nothing about a chat implementation: which pi-ai catalog
+describes a vendor's models is a fact about pi-ai and lives with the adapter.
+Managed chat calls run through
 `@earendil-works/pi-ai`; per-space `base_url`, NetworkProfile fetch routing,
 agent-space credential pools, egress authorization, usage recording, and
 structured-output validation remain outside pi-ai. MiniMax uses its
-Anthropic-compatible endpoint. `openai_compatible_base_url` and
+Anthropic-compatible endpoint. A requested model uses its pi-ai catalog entry
+when one exists. Completion-budget
+authority is ordered: an explicit caller `max_tokens` wins, then an
+agent-space `modelSpecs` recommendation when one is independently registered;
+otherwise the Pi Model's `maxTokens` governs (the pi-ai catalog value for a
+catalogued model, or the adapter's 16,384 fallback for an uncatalogued model).
+The catalog fallback is intentionally not copied into `modelSpecs`, whose
+limits also drive Runtime Context planning and therefore require their own
+vendor provenance. `openai_compatible_base_url` and
 `claude_compatible_base_url` remain CLI bridge configuration and do not select
 the managed chat protocol.
 

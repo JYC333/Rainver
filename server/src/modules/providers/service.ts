@@ -1,18 +1,18 @@
 /**
  * Provider read handlers.
  *
- * Providers/credentials are server-owned. Reads resolve identity through the native
- * auth module, then serve list/detail from the provider DB read port and static
- * catalogs from the protocol package.
+ * Providers/credentials are server-owned. Reads resolve identity through the
+ * native auth module, then serve list/detail from the provider DB read port,
+ * and the vendor registry and preset catalog from server-owned constants.
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { listProviderVendors } from "./vendors";
 import type { ServerConfig } from "../../config";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
 import { resolveProvidersDbPort } from "./dbReader";
 import { introspectIdentity } from "../auth/identity";
-import { loadProtocol } from "./protocolRuntime";
 import { listProviderPresets as listProviderPresetCatalog } from "./presets";
 
 function configIdFromRequest(request: FastifyRequest): string | undefined {
@@ -124,17 +124,6 @@ export function getProviderConfig(
   );
 }
 
-export function getProviderCatalogInfo(
-  config: ServerConfig,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<FastifyReply> {
-  return serveProviderRead(config, request, reply, async () => {
-    const { PROVIDER_CATALOG_INFO } = await loadProtocol();
-    return PROVIDER_CATALOG_INFO;
-  });
-}
-
 export function listProviderPresets(
   config: ServerConfig,
   request: FastifyRequest,
@@ -143,19 +132,25 @@ export function listProviderPresets(
   return serveProviderRead(config, request, reply, async () => listProviderPresetCatalog());
 }
 
-/** Supported-provider catalog served by the server. */
-export async function listLitellmProviders(
+/** The server-owned vendor registry, served so the client stops keeping a copy. */
+export async function listProviderVendorCatalog(
   config: ServerConfig,
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<FastifyReply> {
-  return serveProviderRead(config, request, reply, async () => [
-    "openai",
-    "anthropic",
-    "minimax",
-    "openrouter",
-    "deepseek",
-    "ollama",
-    "openai_compatible",
-  ]);
+  return serveProviderRead(config, request, reply, async () =>
+    listProviderVendors().map((vendor) => ({
+      id: vendor.id,
+      display_name: vendor.displayName,
+      protocol: vendor.protocol,
+      supports_chat: vendor.supportsChat,
+      supports_runtime_tools: vendor.supportsRuntimeTools,
+      supports_structured_output: vendor.supportsStructuredOutput,
+      supports_embedding: vendor.supportsEmbedding,
+      supports_rerank: vendor.supportsRerank,
+      default_base_url: vendor.defaultBaseUrl,
+      api_key_required: vendor.apiKeyRequired,
+      subscription_only: vendor.subscriptionOnly,
+    })),
+  );
 }

@@ -204,7 +204,7 @@ async function execute(
 }
 
 export function registerRetrievalMaintenanceAutomationTarget(): void {
-  automationTargetHandlerRegistry.register(TARGET_TYPE, { preflight, execute });
+  automationTargetHandlerRegistry.register(TARGET_TYPE, { preflight, execute }, "retrieval");
 }
 
 function shouldCreatePacket(configJson: Record<string, unknown> | null | undefined): boolean {

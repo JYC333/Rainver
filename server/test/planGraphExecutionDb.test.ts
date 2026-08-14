@@ -774,15 +774,15 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     const now = new Date().toISOString();
     actionNodeHandlerRegistry.register("test.echo_action", async (context) => ({
       output: { echoed: context.inputs.value },
-    }));
+    }), "plan_graph_test");
     actionNodeHandlerRegistry.register("test.failing_action", async () => {
       throw new ActionNodeHandlerError("deliberate test failure", { partial: true });
-    });
+    }, "plan_graph_test");
     actionNodeHandlerRegistry.register("test.sql_failing_action", async (context) => {
       await context.db.query(`UPDATE automations SET name='must roll back' WHERE id=$1`, [AUTOMATION]);
       await context.db.query(`SELECT 1/0`);
       return { output: {} };
-    });
+    }, "plan_graph_test");
     await pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
@@ -927,13 +927,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
         instruction: "Return a deterministic test value.",
       });
       return { output: { queued: true }, delegatedRunId: delegated.id };
-    });
+    }, "plan_graph_test");
     actionNodeHandlerRegistry.register("test.consume_delegated", async (context) => ({
       output: {
         source_run_id: context.bindings.find((binding) => binding.name === "value")?.source_run_id,
         value: context.inputs.value,
       },
-    }));
+    }), "plan_graph_test");
     await pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,

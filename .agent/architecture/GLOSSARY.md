@@ -10,17 +10,18 @@ workflow layers. It is a naming boundary, not a code-renaming plan.
 | **RuntimeAdapterSpec** | The declarative catalog entry describing an adapter's executor family, invocation, credentials, sandbox, model, permissions, output, limits, and conservative runtime capability claims. The catalog is the source for adapter capabilities and dispatch selection. |
 | **RuntimeExtension** | A future, separately governed extension point that augments a runtime with tools or protocol support. It is not synonymous with a runtime adapter or a product plugin. |
 | **RuntimeToolBinding** | A binding that exposes a server-owned tool/action to a runtime under policy and capability checks. A binding grants exposure; it does not grant authorization by itself. |
-| **RuntimeSkillBinding** | A binding that maps a canonical agent-space capability or imported skill to runtime-specific generated instructions or files. Generated files are adapter inputs, not source of truth. |
+| **RuntimeSkillBinding** | Currently maps a capability version to runtime-specific rendering or invocation settings. This implementation is transitional. Its target responsibility is to select an approved, pinned external Skill package for a scope/Agent and record runtime compatibility; runtime artifacts and the binding itself must not become a second content authority. |
 | **ProductPlugin** | An optional product module with its own module lifecycle and UI/backend surface. It is distinct from a runtime extension, skill package, or CLI binary. |
-| **Open Skill** | Untrusted external skill source material that can be imported, normalized, reviewed, and converted into a capability candidate. It is never an implicit runtime permission grant. |
+| **Agent Skill / Open Skill** | An untrusted external package that is the source of truth for its own procedural content. Agent-space records its immutable snapshot, provenance, risk, approval, binding and Delivery audit; it does not canonically re-represent the content. Package declarations are requests only and never grant tools, hooks, scripts, MCP authority, or runtime permissions. |
 
 ## Deliberate non-equivalences
 
 - A RuntimeBinary is installed infrastructure; a RuntimeAdapter is server
   execution policy and lifecycle; a RuntimeAdapterSpec is its declaration.
 - A RuntimeToolBinding and RuntimeSkillBinding are different: the former
-  concerns callable tool exposure, while the latter concerns generated
-  runtime instructions.
+  concerns callable System Action exposure. The latter currently maps a
+  capability version to runtime rendering settings and will move to selecting
+  approved procedural content for governed Runtime Context Delivery.
 - A ProductPlugin is a product module. It must not be used as a catch-all name
   for a runtime, skill, tool, or adapter.
 

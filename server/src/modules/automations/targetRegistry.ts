@@ -62,14 +62,19 @@ export interface AutomationTargetHandler {
 }
 
 class AutomationTargetHandlerRegistry {
-  private readonly handlers = new Map<AutomationTargetType, AutomationTargetHandler>();
+  private readonly handlers = new Map<AutomationTargetType, { handler: AutomationTargetHandler; owner: string }>();
 
-  register(targetType: AutomationTargetType, handler: AutomationTargetHandler): void {
-    this.handlers.set(targetType, handler);
+  register(targetType: AutomationTargetType, handler: AutomationTargetHandler, owner: string): void {
+    if (!owner.trim()) throw new Error("owner must be non-empty");
+    const existing = this.handlers.get(targetType);
+    if (existing && existing.owner !== owner) {
+      throw new Error(`${targetType} is already registered by ${existing.owner}`);
+    }
+    this.handlers.set(targetType, { handler, owner });
   }
 
   get(targetType: AutomationTargetType): AutomationTargetHandler | null {
-    return this.handlers.get(targetType) ?? null;
+    return this.handlers.get(targetType)?.handler ?? null;
   }
 
   registeredTypes(): ReadonlySet<AutomationTargetType> {

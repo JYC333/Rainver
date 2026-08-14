@@ -9,6 +9,7 @@ import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
 import { advanceOperation } from "../src/modules/projectResearch/operationProjection";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
@@ -28,6 +29,7 @@ let pool: Pool | undefined;
 let available = false;
 
 beforeAll(async () => {
+  registerProjectResearchExecutionHandlers();
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });

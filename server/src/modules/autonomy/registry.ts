@@ -69,18 +69,23 @@ export interface AutonomyCandidateReportSpec {
 }
 
 class AutonomyDiscovererRegistry {
-  private readonly discoverers = new Map<AutonomyCandidateKind, AutonomyDiscoverer>();
+  private readonly discoverers = new Map<AutonomyCandidateKind, { discoverer: AutonomyDiscoverer; owner: string }>();
 
-  register(kind: AutonomyCandidateKind, discoverer: AutonomyDiscoverer): void {
-    this.discoverers.set(kind, discoverer);
+  register(kind: AutonomyCandidateKind, discoverer: AutonomyDiscoverer, owner: string): void {
+    if (!owner.trim()) throw new Error("owner must be non-empty");
+    const existing = this.discoverers.get(kind);
+    if (existing && existing.owner !== owner) {
+      throw new Error(`${kind} is already registered by ${existing.owner}`);
+    }
+    this.discoverers.set(kind, { discoverer, owner });
   }
 
   entries(): Array<[AutonomyCandidateKind, AutonomyDiscoverer]> {
-    return [...this.discoverers.entries()];
+    return [...this.discoverers.entries()].map(([kind, registration]) => [kind, registration.discoverer]);
   }
 
   get(kind: AutonomyCandidateKind): AutonomyDiscoverer | null {
-    return this.discoverers.get(kind) ?? null;
+    return this.discoverers.get(kind)?.discoverer ?? null;
   }
 
   assertComplete(expected: Iterable<AutonomyCandidateKind>): void {

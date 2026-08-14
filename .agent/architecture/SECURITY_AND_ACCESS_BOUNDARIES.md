@@ -28,7 +28,7 @@ All other routes, including system-metadata endpoints, are auth-gated:
 - `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
 - `GET /jobs/handlers`
 - `GET /runtime-tools...`, `POST /runtime-tools/{runtime}/install`, `POST /runtime-tools/{runtime}/activate`
-- `GET /providers/litellm-providers`, `/providers/catalog`
+- `GET /providers/vendors`, `/providers/presets`
 
 ---
 

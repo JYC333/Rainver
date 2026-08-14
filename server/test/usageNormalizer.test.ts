@@ -82,6 +82,7 @@ describe("usage normalizer", () => {
     expect(event.total_tokens).toBe(140);
     expect(event.total_tokens_source).toBe("provider_total");
     expect(event.usage_accuracy).toBe("provider_reported");
+    expect(event.cost_accuracy).toBe("unknown");
     expect(event.dedupe_confidence).toBe("high");
     expect(event.provider_usage_json).toMatchObject({
       prompt_tokens: 100,
@@ -91,6 +92,50 @@ describe("usage normalizer", () => {
     expect(event.provider_usage_json.prompt_tokens_details).not.toHaveProperty("content");
     expect(event.metadata_json).toEqual({ retry_count: 1 });
     expect(event.dimensions_json).toEqual({ workflow: "daily", tags: ["a", "b"] });
+  });
+
+  it("preserves catalog provenance for a genuine zero cost", () => {
+    const event = normalizeUsageObservation(
+      {
+        space_id: "space-1",
+        event_type: "llm.generation",
+        source_type: "local_run",
+        execution_channel: "managed_api",
+        estimated_cost_usd: 0,
+        cost_accuracy: "catalog",
+        cost_details: { source: "pi_ai_catalog", total: 0 },
+      },
+      "instance-1",
+      privateAttribution,
+      new Date("2026-07-09T12:00:00.000Z"),
+    );
+
+    expect(event.estimated_cost_usd).toBe(0);
+    expect(event.cost_accuracy).toBe("catalog");
+    expect(event.cost_details_json).toEqual({ source: "pi_ai_catalog", total: 0 });
+  });
+
+  it("removes duplicate accuracy from catalog cost details", () => {
+    const event = normalizeUsageObservation(
+      {
+        space_id: "space-1",
+        event_type: "llm.generation",
+        source_type: "local_run",
+        execution_channel: "managed_api",
+        estimated_cost_usd: 1,
+        cost_accuracy: "catalog",
+        cost_details: {
+          source: "pi_ai_catalog",
+          accuracy: "catalog_estimated",
+          total: 1,
+        },
+      },
+      "instance-1",
+      privateAttribution,
+      new Date("2026-07-09T12:00:00.000Z"),
+    );
+
+    expect(event.cost_details_json).toEqual({ source: "pi_ai_catalog", total: 1 });
   });
 
   it("normalizes Anthropic cache buckets and lower-bound transcript usage", () => {

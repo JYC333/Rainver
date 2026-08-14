@@ -88,6 +88,6 @@ const decisionAttentionAdapter: ProjectAttentionAdapter = {
 };
 
 export function registerDecisionsProjectIntegration(): void {
-  projectEntitySummaryRegistry.register(decisionEntitySummaryAdapter);
-  projectAttentionRegistry.register(decisionAttentionAdapter);
+  projectEntitySummaryRegistry.register(decisionEntitySummaryAdapter, "decisions");
+  projectAttentionRegistry.replace(decisionAttentionAdapter);
 }

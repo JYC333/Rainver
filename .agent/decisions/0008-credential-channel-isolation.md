@@ -105,3 +105,21 @@ and has no credential-profile field.
   provider proxy.
 - `model_api` is that layer's projection into the run domain, not a competitor to the CLI
   runtimes.
+
+## Amended — 2026-08-14
+
+The in-process API channel no longer passes the key to litellm. Managed chat
+runs through `@earendil-works/pi-ai` behind a single adapter, and the key is
+resolved by `resolveProviderApiKey` and handed to that adapter as a parameter.
+
+**The decision is unchanged.** What this ADR forbids is a credential reaching a
+provider through ambient environment or a CLI subprocess env, and what it
+requires is that the server resolve it in process and pass it explicitly. Both
+still hold; only the callee's name has changed. Read every "litellm parameter"
+above as "a parameter to the managed chat adapter" — the isolation property was
+never a property of litellm, and naming the library in the invariant is what
+made the wording go stale when the library did.
+
+Managed subscription OAuth, added after this ADR, follows the same rule: the
+refresh token is DB-encrypted, the access token is decrypted in process and
+passed as a parameter, and it never reaches a subprocess environment.

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Check, Search } from 'lucide-react'
-import type { ModelProviderOut } from '../../api/client'
+import type { ModelProviderOut, ProviderVendorOut } from '../../api/client'
 import type {
   CustomSourceCredentialDTO,
   ProjectResearchInitialIntakeInput,
@@ -28,6 +28,7 @@ import {
 } from './researchSetupDraft'
 import { defaultModelProvider } from '../providers/defaultProvider'
 import { errMsg } from '../../lib/utils'
+import { supportsStructuredOutput } from '../providers/providerMetadata'
 
 interface ResearchSetupDialogProps {
   projectId?: string
@@ -41,6 +42,7 @@ interface ResearchSetupDialogProps {
   draft: ResearchSetupDraft
   busyAction: string | null
   modelProviders: ModelProviderOut[]
+  providerVendors?: ProviderVendorOut[]
   canAct: boolean
   onOpenChange: (open: boolean) => void
   // `workflowId` here is this session's *effective* target — when the dialog
@@ -70,7 +72,6 @@ function historyLabel(draft: ResearchSetupDraft): string {
       : 'Date range not set'
 }
 
-const structuredOutputProviderTypes = new Set(['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'])
 const researchDiscoveryProviders: Array<{ key: ResearchProviderKey; label: string; note: string }> = [
   { key: 'arxiv', label: 'arXiv', note: 'Public academic API' },
   { key: 'openalex', label: 'OpenAlex', note: 'Public academic API' },
@@ -137,6 +138,7 @@ export function ResearchSetupDialog({
   draft: initialDraft,
   busyAction,
   modelProviders,
+  providerVendors = [],
   canAct,
   onOpenChange,
   onSave,
@@ -172,7 +174,7 @@ export function ResearchSetupDialog({
   // Progress is cumulative: a later step only ticks once every earlier step is
   // also satisfied, so a green check never appears ahead of unfinished work.
   const stepTicked = stepComplete.map((_, index) => stepComplete.slice(0, index + 1).every(Boolean))
-  const selectableProviders = modelProviders.filter(provider => provider.enabled && structuredOutputProviderTypes.has(provider.provider_type))
+  const selectableProviders = modelProviders.filter(provider => provider.enabled && supportsStructuredOutput(provider.provider_type, providerVendors))
 
   useEffect(() => {
     if (!open) return
@@ -205,12 +207,12 @@ export function ResearchSetupDialog({
     if (!open) return
     // The space default provider (and its default model) is preselected so a
     // configured space needs no manual provider picking in this dialog.
-    const fallback = defaultModelProvider(modelProviders, provider => structuredOutputProviderTypes.has(provider.provider_type))
+    const fallback = defaultModelProvider(modelProviders, provider => supportsStructuredOutput(provider.provider_type, providerVendors))
     if (!fallback) return
     setDraft(current => current.execution.model_provider_id
       ? current
       : { ...current, execution: { model_provider_id: fallback.id, model_name: current.execution.model_name || (fallback.default_model ?? '') } })
-  }, [modelProviders, open])
+  }, [modelProviders, providerVendors, open])
 
   useEffect(() => {
     if (!open) return

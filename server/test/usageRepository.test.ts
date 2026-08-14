@@ -97,7 +97,7 @@ describe("usage repository", () => {
     const insert = db.calls[0]!;
     expect(insert.sql).toContain("inserted_grants AS");
     expect(insert.sql).toContain("'token_usage_event'");
-    expect(insert.params).toHaveLength(63);
+    expect(insert.params).toHaveLength(64);
     expect(insert.params?.slice(5, 13)).toEqual([
       event.owner_user_id,
       event.visibility,
@@ -108,8 +108,8 @@ describe("usage repository", () => {
       event.source_resource_type,
       event.source_resource_id,
     ]);
-    expect(insert.params?.[61]).toBe(0);
-    expect(JSON.parse(String(insert.params?.[62]))).toEqual([grant]);
+    expect(insert.params?.[62]).toBe(0);
+    expect(JSON.parse(String(insert.params?.[63]))).toEqual([grant]);
   });
 
   it("returns the existing event when append is deduped by idempotency key", async () => {
@@ -293,9 +293,9 @@ describe("usage repository", () => {
           input_cache_creation_1h: 40,
         },
         estimated_cost_usd: 5,
+        cost_accuracy: "catalog",
         cost_details: {
           source: "pi_ai_catalog",
-          accuracy: "catalog_estimated",
           input: 2,
           output: 3,
           cacheRead: 0,
@@ -314,6 +314,7 @@ describe("usage repository", () => {
           rows: [{
             ...eventRow(event, "priced-event"),
             estimated_cost_usd: params?.[47] as number,
+            cost_accuracy: params?.[48] as string,
           }],
           rowCount: 1,
         };
@@ -325,8 +326,10 @@ describe("usage repository", () => {
 
     const insert = db.calls.find((call) => call.sql.includes("INSERT INTO token_usage_events"));
     expect(insert?.params?.[47]).toBe(5);
-    expect(insert?.params?.[50]).toContain('"pi_ai_catalog"');
-    expect(insert?.params?.[61]).toBe(40);
+    expect(insert?.params?.[48]).toBe("catalog");
+    expect(insert?.params?.[51]).toContain('"pi_ai_catalog"');
+    expect(insert?.params?.[51]).not.toContain('"accuracy"');
+    expect(insert?.params?.[62]).toBe(40);
     expect(insert?.sql).toContain("cache_creation_1h_input_tokens");
     expect(db.calls).toHaveLength(1);
   });
@@ -460,6 +463,7 @@ function eventRow(event: ReturnType<typeof normalizeUsageObservation>, id: strin
     reasoning_tokens: event.reasoning_tokens,
     request_count: event.request_count,
     estimated_cost_usd: event.estimated_cost_usd,
+    cost_accuracy: event.cost_accuracy,
     usage_details_json: event.usage_details_json,
     total_tokens_source: event.total_tokens_source,
     usage_accuracy: event.usage_accuracy,

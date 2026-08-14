@@ -7,6 +7,7 @@ import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
 import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope";
@@ -31,6 +32,7 @@ let pool: Pool | undefined;
 let available = false;
 
 beforeAll(async () => {
+  registerProjectResearchExecutionHandlers();
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });

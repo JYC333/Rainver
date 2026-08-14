@@ -50,6 +50,7 @@ export interface UsageEventRecord {
   reasoning_tokens: number | string;
   request_count: number | string;
   estimated_cost_usd: number | string | null;
+  cost_accuracy: string;
   usage_details_json: Record<string, unknown>;
   total_tokens_source: string;
   usage_accuracy: string;
@@ -215,7 +216,7 @@ export class PgUsageRepository {
         session_path, session_name, agent_id, project_id, project_folder_id, trigger_origin,
         occurred_at, recorded_at, input_tokens, output_tokens, total_tokens,
         cache_creation_input_tokens, cache_read_input_tokens, reasoning_tokens,
-        request_count, estimated_cost_usd, usage_schema, usage_details_json,
+        request_count, estimated_cost_usd, cost_accuracy, usage_schema, usage_details_json,
         cost_details_json, provider_usage_json, usage_normalization_version,
         total_tokens_source, dimensions_json, usage_accuracy, dedupe_confidence,
         import_batch_id,
@@ -232,11 +233,11 @@ export class PgUsageRepository {
         $33, $34, $35, $36, $37, $38,
         $39, $40, $41, $42, $43,
         $44, $45, $46,
-        $47, $48, $49, $50::jsonb,
-        $51::jsonb, $52::jsonb, $53,
-        $54, $55::jsonb, $56, $57,
-        $58, $59, $60::jsonb, $61,
-        $62, $61
+        $47, $48, $49, $50, $51::jsonb,
+        $52::jsonb, $53::jsonb, $54,
+        $55, $56::jsonb, $57, $58,
+        $59, $60, $61::jsonb, $62,
+        $63, $62
       )
       ON CONFLICT ON CONSTRAINT uq_token_usage_events_space_idempotency
       DO NOTHING
@@ -249,7 +250,7 @@ export class PgUsageRepository {
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
         cache_creation_1h_input_tokens, cache_read_input_tokens, reasoning_tokens,
-        request_count, estimated_cost_usd,
+        request_count, estimated_cost_usd, cost_accuracy,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
         metadata_json, created_at
       ), inserted_grants AS (
@@ -262,7 +263,7 @@ export class PgUsageRepository {
                grant_row.user_id, grant_row.granted_by_user_id, grant_row.access_level,
                grant_row.created_at, grant_row.created_at, NULL, NULL
           FROM inserted_event
-          CROSS JOIN jsonb_to_recordset($63::jsonb) AS grant_row(
+          CROSS JOIN jsonb_to_recordset($64::jsonb) AS grant_row(
             id text,
             user_id text,
             granted_by_user_id text,
@@ -321,6 +322,7 @@ export class PgUsageRepository {
         event.reasoning_tokens,
         event.request_count,
         event.estimated_cost_usd,
+        event.cost_accuracy,
         event.usage_schema,
         JSON.stringify(event.usage_details_json),
         JSON.stringify(event.cost_details_json),
@@ -453,7 +455,7 @@ export class PgUsageRepository {
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
         cache_creation_1h_input_tokens, cache_read_input_tokens, reasoning_tokens,
-        request_count, estimated_cost_usd,
+        request_count, estimated_cost_usd, cost_accuracy,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
         metadata_json, created_at
        FROM token_usage_events
@@ -674,7 +676,7 @@ export class PgUsageRepository {
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
         cache_creation_1h_input_tokens, cache_read_input_tokens, reasoning_tokens,
-        request_count, estimated_cost_usd,
+        request_count, estimated_cost_usd, cost_accuracy,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
         metadata_json, created_at
        FROM token_usage_events e
@@ -1183,6 +1185,7 @@ export function eventToOut(row: UsageEventRecord): Record<string, unknown> {
     reasoning_tokens: intValue(row.reasoning_tokens),
     request_count: intValue(row.request_count),
     estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
+    cost_accuracy: row.cost_accuracy,
     usage_accuracy: row.usage_accuracy,
     total_tokens_source: row.total_tokens_source,
     dimensions: row.dimensions_json ?? {},

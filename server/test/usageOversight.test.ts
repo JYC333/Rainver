@@ -93,6 +93,61 @@ async function seed(mode: OversightMode): Promise<PgUsageRepository> {
 }
 
 describe("usage oversight visibility", () => {
+  it("persists catalog zero separately from an unknown cost", async () => {
+    if (!available || !pool) return;
+    const repository = await seed("none");
+    await repository.appendEvent(normalizeUsageObservation(
+      {
+        space_id: SPACE,
+        event_type: "llm.generation",
+        source_type: "local_run",
+        execution_channel: "managed_api",
+        provider_type: "openai",
+        estimated_cost_usd: 0,
+        cost_accuracy: "catalog",
+        cost_details: { source: "pi_ai_catalog", total: 0 },
+        idempotency_key: "catalog-zero",
+      },
+      "instance-1",
+      {
+        owner_user_id: MEMBER,
+        visibility: "private",
+        access_level: "full",
+        source_resource_type: null,
+        source_resource_id: null,
+        project_folder_id: null,
+        project_id: null,
+        grant_snapshots: [],
+      },
+      OCCURRED_AT,
+    ));
+
+    const rows = await pool.query<{
+      idempotency_key: string;
+      estimated_cost_usd: string | null;
+      cost_accuracy: string;
+      cost_details_json: Record<string, unknown>;
+    }>(
+      `SELECT idempotency_key, estimated_cost_usd, cost_accuracy, cost_details_json
+         FROM token_usage_events
+        ORDER BY idempotency_key`,
+    );
+    expect(rows.rows).toEqual([
+      expect.objectContaining({
+        idempotency_key: "catalog-zero",
+        estimated_cost_usd: "0.00000000",
+        cost_accuracy: "catalog",
+        cost_details_json: { source: "pi_ai_catalog", total: 0 },
+      }),
+      expect.objectContaining({
+        idempotency_key: "oversight-none",
+        estimated_cost_usd: null,
+        cost_accuracy: "unknown",
+        cost_details_json: {},
+      }),
+    ]);
+  });
+
   it.each<[OversightMode, number, number]>([
     ["none", 0, 0],
     ["summary", 1, 0],

@@ -38,10 +38,9 @@ export interface ProjectAttentionAdapter {
 class ProjectAttentionRegistry {
   private readonly adapters: ProjectAttentionAdapter[] = [];
 
-  // Upsert by areaKind: registration must be safe to call repeatedly
-  // (module init order is not guaranteed, and tests reset+re-register within
-  // one process) without silently ending up with zero adapters after a reset.
-  register(adapter: ProjectAttentionAdapter): void {
+  // Deliberate replacement by areaKind: module init may re-run for each app
+  // build, and tests may install a purpose-specific adapter for the same area.
+  replace(adapter: ProjectAttentionAdapter): void {
     const index = this.adapters.findIndex((existing) => existing.areaKind === adapter.areaKind);
     if (index >= 0) {
       this.adapters[index] = adapter;

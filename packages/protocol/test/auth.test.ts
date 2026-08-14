@@ -3,8 +3,6 @@ import {
   IdentityIntrospectionResponseSchema,
   MODEL_PROVIDERS_READ_COLUMNS,
   MODEL_PROVIDERS_TABLE,
-  PROVIDER_CATALOG_INFO,
-  ProviderCatalogInfoSchema,
 } from "../src/index";
 
 describe("identity introspection contract", () => {
@@ -54,18 +52,5 @@ describe("provider DB read allowlist", () => {
         "updated_at",
       ].sort(),
     );
-  });
-});
-
-describe("provider catalog constant", () => {
-  it("is a valid catalog payload with the documented catalog values", () => {
-    expect(ProviderCatalogInfoSchema.parse(PROVIDER_CATALOG_INFO)).toEqual({
-      id: "litellm",
-      name: "LiteLLM (Open Format)",
-      description:
-        "Configure OpenAI-compatible, Anthropic-compatible, OpenRouter, Ollama, or other endpoints.",
-      model_hint: "Set default_model and/or available_models on the provider",
-      supported_params: ["model", "temperature", "max_tokens", "system"],
-    });
   });
 });

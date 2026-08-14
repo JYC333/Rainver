@@ -6,17 +6,19 @@ import {
   runAgentRoomToolCall,
   type AgentDelegationToolBinding,
 } from "../src/modules/runs/managedAgentDelegationTools";
+import type { RuntimeHostExecutor } from "../src/modules/runs/managedRetrievalTools";
 import {
-  executeWithRetrievalTools,
-  type ResolvedRetrievalToolBinding,
-  type RuntimeHostExecutor,
-} from "../src/modules/runs/managedRetrievalTools";
+  executeManagedToolLoop,
+  mergeManagedToolContributions,
+} from "../src/modules/runs/managedToolLoop";
 import { AgentToolGateway } from "../src/modules/systemActions/agentToolGateway";
 import type { RunRecord } from "../src/modules/runs/repository";
 import type {
+  CanonicalToolCall,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ManagedToolDispatchResult } from "../src/modules/runs/managedAgentLoopPort";
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -124,31 +126,19 @@ function request(): RuntimeHostExecuteRequest {
 }
 
 /**
- * The carrier binding a delegation-only run enters the loop through. The
- * gateway builds its own; this one lets the tool-behaviour tests below drive
- * the loop without standing up policy and its database.
- *
- * That the gateway really produces one for a delegation-only run is asserted
- * separately, against `AgentToolGateway` itself.
+ * A delegation-only run contributes delegation and nothing else. There is no
+ * retrieval carrier: constructing one was the shape this loop ownership move
+ * removed, and its absence is what makes these cases delegation tests rather
+ * than retrieval tests wearing a delegation hat.
  */
-function carrierBinding(): ResolvedRetrievalToolBinding {
-  return {
-    service: {} as never,
-    services: {},
-    toolMode: "manual_tool_only",
-    toolDefinitions: [],
-    toolBindings: [],
-    policyDatabaseUrl: undefined,
-    egressPolicySnapshot: { external_egress_enabled: false },
-    settingsSnapshot: { source: "test" },
-  } as unknown as ResolvedRetrievalToolBinding;
-}
-
-function delegationExtensions(binding: AgentDelegationToolBinding) {
-  return {
-    toolDefinitions: binding.toolDefinitions,
-    toolBindings: binding.toolBindings,
-  };
+function delegationOnlyToolSet(
+  binding: AgentDelegationToolBinding,
+  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
+) {
+  return mergeManagedToolContributions(
+    [null, { definitions: binding.toolDefinitions, bindings: binding.toolBindings }, null],
+    dispatch,
+  );
 }
 
 describe("managed agent delegation tools", () => {
@@ -247,16 +237,11 @@ describe("managed agent delegation tools", () => {
       });
     };
 
-    const result = await executeWithRetrievalTools(
+    const result = await executeManagedToolLoop(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
-      managerRun,
       request(),
       execute,
-      carrierBinding(),
-      {
-        ...delegationExtensions(binding!),
-        dispatch: (call) => runAgentRoomToolCall(call, binding!, managerRun, request()),
-      },
+      delegationOnlyToolSet(binding!, (call) => runAgentRoomToolCall(call, binding!, managerRun, request())),
     );
 
     expect(spawnCalls).toHaveLength(2);
@@ -275,7 +260,7 @@ describe("managed agent delegation tools", () => {
     });
     expect(hostRequests[1].messages?.filter((message) => message.role === "tool")).toHaveLength(2);
     expect(result.output_json).toMatchObject({
-      retrieval_tool_calls: [
+      managed_tool_calls: [
         expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a" }),
         expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-b", child_run_id: "run-child-b" }),
       ],
@@ -352,16 +337,11 @@ describe("managed agent delegation tools", () => {
       });
     };
 
-    const result = await executeWithRetrievalTools(
+    const result = await executeManagedToolLoop(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
-      managerRun,
       request(),
       execute,
-      carrierBinding(),
-      {
-        ...delegationExtensions(binding!),
-        dispatch: (call) => runAgentRoomToolCall(call, binding!, managerRun, request()),
-      },
+      delegationOnlyToolSet(binding!, (call) => runAgentRoomToolCall(call, binding!, managerRun, request())),
     );
 
     expect(hostRequests).toHaveLength(1);
@@ -372,7 +352,7 @@ describe("managed agent delegation tools", () => {
         depends_on_run_ids: ["run-reviewer"],
         pending_run_ids: ["run-reviewer"],
       },
-      retrieval_tool_calls: [
+      managed_tool_calls: [
         expect.objectContaining({
           tool_name: "agent.wait_for_results",
           ok: true,
@@ -383,11 +363,11 @@ describe("managed agent delegation tools", () => {
     expect(result.output_text).toBe("");
   });
   it("routes a delegation-only run through the general tool loop and offers it the delegation tools", async () => {
-    // The phase's load-bearing change: a run with delegation and no
-    // retrieval-domain tool used to take a second, private loop. It now reaches
-    // the general one through a synthesised carrier binding. Driving
-    // `AgentToolGateway` rather than the loop is the point — reverting the
-    // widened condition must fail here.
+    // Gate 5. A run with delegation and no retrieval-domain tool reaches the
+    // general loop as a delegation contribution — no carrier binding is
+    // fabricated for it, and none exists to fabricate. Driving
+    // `AgentToolGateway` rather than the loop directly is the point: it is the
+    // gateway's assembly that must offer the tools.
     const managerRun = run({
       // The gateway offers only granted actions, so the grants are part of what
       // makes this case reachable at all.
@@ -400,9 +380,9 @@ describe("managed agent delegation tools", () => {
     } as Partial<RunRecord>);
     const offered: string[][] = [];
     const gateway = new AgentToolGateway(
-      // No database URL: the synthetic carrier is built without reading space
-      // retrieval settings, and the model turn below produces no tool call, so
-      // policy and dispatch are never reached.
+      // No database URL: a delegation-only run reads no space retrieval
+      // settings, and the model turn below produces no tool call, so policy and
+      // dispatch are never reached.
       loadConfig({}),
     );
 

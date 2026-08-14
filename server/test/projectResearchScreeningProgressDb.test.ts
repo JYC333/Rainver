@@ -7,6 +7,7 @@ import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatab
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
@@ -39,6 +40,7 @@ let pool: Pool | undefined;
 let available = false;
 
 beforeAll(async () => {
+  registerProjectResearchExecutionHandlers();
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });

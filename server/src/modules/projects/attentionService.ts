@@ -53,10 +53,10 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
   },
 };
 
-// `register` is an upsert, so calling this repeatedly (route module init,
-// or a test that resets the registry between cases) is safe.
+// `replace` is deliberate, so calling this repeatedly (route module init, or a
+// test that resets the registry between cases) is safe.
 export function registerBuiltInAttentionAdapters(): void {
-  projectAttentionRegistry.register(projectOperationsAttentionAdapter);
+  projectAttentionRegistry.replace(projectOperationsAttentionAdapter);
 }
 
 export class ProjectAttentionService {

@@ -29,6 +29,8 @@ export type UsageAccuracy =
   | "quota_snapshot"
   | "unknown";
 
+export type CostAccuracy = "catalog" | "unknown";
+
 export type UsageDedupeConfidence = "high" | "medium" | "low";
 
 export type TotalTokensSource =
@@ -88,6 +90,7 @@ export interface UsageObservation {
   occurred_at?: string | Date | null;
   request_count?: number | null;
   estimated_cost_usd?: number | null;
+  cost_accuracy?: CostAccuracy | null;
   usage_schema?: string | null;
   usage_details?: Record<string, unknown> | null;
   cost_details?: Record<string, unknown> | null;
@@ -153,6 +156,7 @@ export interface NormalizedUsageObservation {
   reasoning_tokens: number;
   request_count: number;
   estimated_cost_usd: number | null;
+  cost_accuracy: CostAccuracy;
   usage_schema: string;
   usage_details_json: UsageDetails;
   cost_details_json: Record<string, unknown>;

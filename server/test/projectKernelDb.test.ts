@@ -70,7 +70,7 @@ beforeEach(async () => {
     async getOverviewProjection() {
       return { mode: "research", current_state_summary: "Research ready.", progress_indicators: [], focus_set: [], next_actions: [] };
     },
-  });
+  }, "project_kernel_test");
 });
 
 afterEach(() => {
@@ -721,7 +721,7 @@ describe("Project Kernel (real Postgres)", () => {
       async getOverviewProjection() {
         return { mode: "delivery", current_state_summary: "Delivery ready.", progress_indicators: [], focus_set: [], next_actions: [] };
       },
-    });
+    }, "project_kernel_test");
     const project = await repo.create(ownerIdentity, { name: "Mode Project" });
     const now = new Date().toISOString();
     await pool.query(

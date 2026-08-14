@@ -244,10 +244,8 @@ function synthesisOnlyDefinition(input: {
   };
 }
 
-registerSynthesisOnlyHandlers();
-
-function registerSynthesisOnlyHandlers(): void {
-  actionNodeHandlerRegistry.register(MATERIALIZE_REPORT_ACTION_KEY, materializeReport);
+export function registerSynthesisOnlyHandlers(): void {
+  actionNodeHandlerRegistry.register(MATERIALIZE_REPORT_ACTION_KEY, materializeReport, "project_research");
   workflowExecutionOutcomeHandlerRegistry.register(
     SYNTHESIS_ONLY_WORKFLOW_ID,
     async ({ db, spaceId, executionId, researchOperationId, status }) => {
@@ -256,6 +254,7 @@ function registerSynthesisOnlyHandlers(): void {
         failure_reason: "Workflow Execution failed after exhausting its node attempts",
       }, true);
     },
+    "project_research",
   );
 }
 

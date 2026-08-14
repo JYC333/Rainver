@@ -26,7 +26,7 @@ import {
   loadOrCreateModelProviderApiKeyMasterKey,
 } from "../secretRefCrypto";
 import { mapProviderRowToDto } from "../dbReader";
-import { canonicalProviderVendorId } from "../vendors";
+import { providerVendor, type VendorDescriptor } from "../vendors";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth";
 import { resolveNetworkProfileRepository } from "../../networkProfiles";
 import { isSpaceOwnerOrAdmin } from "../../access/roles";
@@ -123,16 +123,34 @@ function grantOut(row: {
   };
 }
 
-const TASK_PROVIDER_TYPES: Record<string, ReadonlySet<string>> = {
-  retrieval_embedding: new Set(["openai", "openrouter", "ollama", "zeroentropy", "cohere", "openai_compatible"]),
-  retrieval_rerank: new Set(["zeroentropy", "cohere"]),
-  retrieval_query_rewrite: new Set(["openai", "anthropic", "minimax", "openrouter", "deepseek", "ollama", "openai_compatible"]),
-  retrieval_synthesis: new Set(["openai", "anthropic", "minimax", "openrouter", "deepseek", "ollama", "openai_compatible"]),
+/**
+ * Which vendor capability each retrieval task needs. The capability itself is
+ * the vendor registry's, read here rather than restated: this table used to
+ * repeat the per-vendor lists, which made it a second answer to a question
+ * `VendorDescriptor` already answers — and a silently divergent one the moment
+ * a vendor changed.
+ *
+ * Query rewrite and synthesis are chat calls, and exclude a vendor reachable
+ * only through a managed subscription. That exclusion is about the credential
+ * channel, not about ownership: every provider of such a vendor is created by
+ * the subscription flow and carries an owner, so a space-wide task chain built
+ * from one would be spending an individual's subscription on the whole Space's
+ * background work. Note this is not a general owner-scoping rule — an
+ * API-key Anthropic provider and a managed Claude subscription share the
+ * `anthropic` vendor, and only the credential distinguishes them.
+ */
+const TASK_REQUIRED_CAPABILITY: Record<string, (vendor: VendorDescriptor) => boolean> = {
+  retrieval_embedding: (vendor) => vendor.supportsEmbedding,
+  retrieval_rerank: (vendor) => vendor.supportsRerank,
+  retrieval_query_rewrite: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
+  retrieval_synthesis: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
 };
 
 export function providerSupportsTask(task: string, providerType: string): boolean {
-  const allowed = TASK_PROVIDER_TYPES[task];
-  return !allowed || allowed.has(providerType);
+  const required = TASK_REQUIRED_CAPABILITY[task];
+  if (!required) return true;
+  const vendor = providerVendor(providerType);
+  return vendor ? required(vendor) : false;
 }
 
 function validateTaskProviderCompatibility(
@@ -450,14 +468,14 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const currentConfig = configRecord(current);
     const isManagedSubscription = currentConfig.credential_channel === "managed_subscription_oauth";
     if (isManagedSubscription && (input.api_key !== undefined || (
-      input.provider_type !== undefined && canonicalProviderVendorId(input.provider_type) !== current.provider_type
+      input.provider_type !== undefined && input.provider_type !== current.provider_type
     ))) {
       throw new ProviderCommandValidationError(
         "Managed subscription providers cannot replace credentials or change provider type",
       );
     }
 
-    const providerType = canonicalProviderVendorId(input.provider_type ?? current.provider_type);
+    const providerType = input.provider_type ?? current.provider_type;
     validateProviderType(providerType);
     if (!isManagedSubscription && providerType === "openai_codex") {
       throw new ProviderCommandValidationError(

@@ -1,12 +1,12 @@
 import { describe, it, expect, expectTypeOf } from "vitest";
 import {
   CredentialChannelMetadataSchema,
-  LitellmProvidersResponseSchema,
   ModelProviderCreateRequestSchema,
   ModelProviderDTOSchema,
   ModelProviderModelsResponseSchema,
   ModelProviderUpdateRequestSchema,
-  ProviderCatalogInfoSchema,
+  ProviderVendorDTOSchema,
+  ProviderVendorListResponseSchema,
   ProviderConnectionTestResultSchema,
   ProviderFromPresetCreateRequestSchema,
   ProviderPresetDTOSchema,
@@ -120,20 +120,24 @@ describe("provider contracts", () => {
     ).toBe(true);
   });
 
-  it("parses the static catalog and litellm-providers read shapes", () => {
-    const catalogInfo = {
-      id: "litellm",
-      name: "LiteLLM (Open Format)",
-      description: "Configure endpoints.",
-      model_hint: "Set default_model",
-      supported_params: ["model", "temperature"],
+  it("parses the vendor registry read shape and refuses a leaked secret", () => {
+    const vendor = {
+      id: "deepseek",
+      display_name: "DeepSeek",
+      protocol: "openai_completions",
+      supports_chat: true,
+      supports_runtime_tools: true,
+      supports_structured_output: true,
+      supports_embedding: false,
+      supports_rerank: false,
+      default_base_url: "https://api.deepseek.com",
+      api_key_required: true,
+      subscription_only: false,
     };
-    expect(ProviderCatalogInfoSchema.parse(catalogInfo).id).toBe("litellm");
-    expect(
-      ProviderCatalogInfoSchema.safeParse({ ...catalogInfo, api_key: "sk-leak" }).success,
-    ).toBe(false);
-    expect(LitellmProvidersResponseSchema.parse(["openai", "anthropic"])).toHaveLength(2);
-    expect(LitellmProvidersResponseSchema.safeParse([{ id: "openai" }]).success).toBe(false);
+    expect(ProviderVendorDTOSchema.parse(vendor).id).toBe("deepseek");
+    expect(ProviderVendorDTOSchema.safeParse({ ...vendor, api_key: "sk-leak" }).success).toBe(false);
+    expect(ProviderVendorListResponseSchema.parse([vendor])).toHaveLength(1);
+    expect(ProviderVendorListResponseSchema.safeParse(["deepseek"]).success).toBe(false);
   });
 
   it("parses provider preset catalog entries and create-from-preset requests", () => {

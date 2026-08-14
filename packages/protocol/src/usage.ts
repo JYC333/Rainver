@@ -48,6 +48,9 @@ export const UsageAccuracySchema = z.enum([
 ]);
 export type UsageAccuracy = z.infer<typeof UsageAccuracySchema>;
 
+export const CostAccuracySchema = z.enum(["catalog", "unknown"]);
+export type CostAccuracy = z.infer<typeof CostAccuracySchema>;
+
 export const UsageDedupeConfidenceSchema = z.enum(["high", "medium", "low"]);
 export type UsageDedupeConfidence = z.infer<typeof UsageDedupeConfidenceSchema>;
 
@@ -205,6 +208,7 @@ export const UsageEventDTOSchema = z.object({
   reasoning_tokens: z.number().int().nonnegative(),
   request_count: z.number().int().nonnegative(),
   estimated_cost_usd: z.number().nullable(),
+  cost_accuracy: CostAccuracySchema,
   usage_accuracy: UsageAccuracySchema,
   total_tokens_source: z.string(),
   dimensions: JsonObjectSchema,

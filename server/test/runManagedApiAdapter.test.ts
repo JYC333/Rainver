@@ -642,7 +642,7 @@ describe("executeManagedApiNoToolAdapter", () => {
       success: true,
       output_text: "final with brief",
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "retrieval.brief",
             ok: true,
@@ -660,6 +660,110 @@ describe("executeManagedApiNoToolAdapter", () => {
         ],
       },
     });
+  });
+
+  it("keeps delegation tools on a run whose retrieval mode is preflight", async () => {
+    // Before the tool loop moved out of Retrieval, a preflight mode
+    // short-circuited the entire run after injecting its result. Delegation and
+    // generic proposal tools rode on that skipped path, so a run holding both a
+    // preflight retrieval mode and an agent.delegate grant lost the delegation
+    // tool without any summary recording the loss.
+    const offeredTools: string[][] = [];
+    let turn = 0;
+    const executor: RuntimeHostExecutor = async (_config, request) => {
+      offeredTools.push(((request.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name));
+      turn += 1;
+      const first = turn === 1;
+      return {
+        success: true,
+        stdout: "",
+        stderr: "",
+        output_text: first ? "" : "delegated and answered",
+        output_json: first
+          ? {
+              adapter_type: "ts_agent_host",
+              tool_calls: [{ id: "call-1", name: "agent.delegate", arguments_json: JSON.stringify({ target_agent_id: "agent-reviewer-a", instruction: "Review it." }) }],
+            }
+          : { adapter_type: "ts_agent_host" },
+        exit_code: 0,
+        error_text: null,
+        error_code: null,
+        started_at: "2026-06-12T10:00:02.000Z",
+        completed_at: "2026-06-12T10:00:03.000Z",
+        model: "gpt-4o-mini",
+        usage: null,
+        events: [],
+        adapter_metadata: { adapter_type: "ts_agent_host" },
+        adapter_log_json: null,
+      };
+    };
+    const briefCalls: unknown[] = [];
+    const retrievalToolService = {
+      async toolBrief(actor: unknown, params: unknown) {
+        briefCalls.push({ actor, params });
+        return {
+          brief: {
+            answer: "Preflight says use the staged widget plan.",
+            synthesized: true,
+            citations: [],
+            gap_analysis: { stale: [], thin: [], low_coverage: false, uncited_claims: [], contradictions: [], missing_topics: [] },
+          },
+          items: [],
+          total: 0,
+        };
+      },
+    } as unknown as RetrievalToolService;
+    const spawned: unknown[] = [];
+
+    const result = await executeManagedApiNoToolAdapter(
+      config(),
+      {
+        run: run({
+          prompt: "What should we do with the widget plan?",
+          instructed_by_user_id: "user-1",
+          runtime_config_json: { retrieval_tool_mode: "preflight_brief" },
+          // Delegation is only offered inside a collaboration group.
+          run_group_id: "group-1",
+          root_run_id: "run-root",
+        }),
+        model: "gpt-4o-mini",
+      },
+      {
+        executeRuntimeHost: executor,
+        retrievalToolService,
+        agentDelegationTools: {
+          targets: [{
+            agent_id: "agent-reviewer-a",
+            name: "Reviewer A",
+            role: "worker",
+            capabilities_json: { capabilities: ["code_review"], description: "Reviews code changes." },
+          }],
+          service: {
+            // The gateway performs the fail-closed policy decision through the
+            // delegation service before dispatching, exactly as it does for a
+            // run with no retrieval preflight.
+            async preflightSpawnChildRunPolicy() {
+              return { status: "allow", policy_decision_record_id: "policy-a" };
+            },
+            async spawnChildRun(identity: unknown, input: { target_agent_id: string }) {
+              spawned.push({ identity, input });
+              return { delegation: { id: "delegation-a", child_run_id: "run-child-a", target_agent_id: input.target_agent_id, status: "queued" } };
+            },
+          },
+        },
+      } as never,
+    );
+
+    // The preflight still ran and still reached the model as content.
+    expect(briefCalls).toHaveLength(1);
+    // The delegation tool was offered rather than dropped, and the run looped.
+    expect(offeredTools[0]).toContain("agent.delegate");
+    expect(turn).toBeGreaterThan(1);
+    expect(spawned).toHaveLength(1);
+    // Retrieval contributed no tool of its own in a preflight mode.
+    expect(offeredTools[0]).not.toContain("retrieval.brief");
+    const summaries = (result.output_json as { managed_tool_calls: Array<Record<string, unknown>> }).managed_tool_calls;
+    expect(summaries.map((summary) => summary.tool_name)).toEqual(["retrieval.brief", "agent.delegate"]);
   });
 
   it("runs a governed retrieval brief preflight before the model turn", async () => {
@@ -765,7 +869,7 @@ describe("executeManagedApiNoToolAdapter", () => {
       success: true,
       output_text: "final after preflight",
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "retrieval.brief",
             ok: true,
@@ -916,7 +1020,7 @@ describe("executeManagedApiNoToolAdapter", () => {
       success: true,
       output_text: "final after search preflight",
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "retrieval.search",
             ok: true,
@@ -1129,7 +1233,7 @@ describe("executeManagedApiNoToolAdapter", () => {
       success: true,
       output_text: "final memory answer",
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "memory.retrieval.search",
             domain: "memory",
@@ -1312,7 +1416,7 @@ describe("executeManagedApiNoToolAdapter", () => {
     expect(pool.auditWrites[0]?.[14]).toBe("retrieval_tool_domain_not_enabled");
     expect(result).toMatchObject({
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "memory.retrieval.search",
             domain: "memory",
@@ -1374,7 +1478,7 @@ describe("executeManagedApiNoToolAdapter", () => {
     expect(pool.auditWrites).toHaveLength(0);
     expect(result).toMatchObject({
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "memory.retrieval.search",
             ok: false,
@@ -1461,7 +1565,7 @@ describe("executeManagedApiNoToolAdapter", () => {
     expect(artifact.content).not.toContain('"snippet"');
     expect(result).toMatchObject({
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "project.summary.brief",
             domain: "project_public_summary",
@@ -1533,7 +1637,7 @@ describe("executeManagedApiNoToolAdapter", () => {
     expect(artifact.content).not.toContain('"snippet"');
     expect(result).toMatchObject({
       output_json: {
-        retrieval_tool_calls: [
+        managed_tool_calls: [
           {
             tool_name: "memory.retrieval.brief",
             domain: "memory",
@@ -1659,8 +1763,8 @@ describe("executeManagedApiNoToolAdapter", () => {
       success: true,
       output_text: "plain answer",
       output_json: {
-        retrieval_tool_calls: [
-          { tool_name: "retrieval", ok: false, error_code: "retrieval_tool_provider_unsupported" },
+        managed_tool_calls: [
+          { tool_name: "managed_tools", ok: false, error_code: "managed_tool_provider_unsupported" },
         ],
       },
     });

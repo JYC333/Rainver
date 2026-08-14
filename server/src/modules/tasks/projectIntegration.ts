@@ -116,7 +116,7 @@ const deliveryTaskSummaryAdapter: ProjectEntitySummaryAdapter = {
 };
 
 export function registerTasksProjectIntegration(): void {
-  projectModeProjectionRegistry.register(deliveryModeAdapter);
-  projectEntitySummaryRegistry.register(deliveryTaskSummaryAdapter);
-  projectAttentionRegistry.register(deliveryAttentionAdapter);
+  projectModeProjectionRegistry.register(deliveryModeAdapter, "tasks");
+  projectEntitySummaryRegistry.register(deliveryTaskSummaryAdapter, "tasks");
+  projectAttentionRegistry.replace(deliveryAttentionAdapter);
 }

@@ -53,6 +53,55 @@ and each needs a real second member before its shape is knowable.
 | **Retention and pruning design.** Append-only Run/Event/Evolution/usage data and Artifact storage need explicit retention semantics that preserve audit obligations, Proposal/Artifact provenance, and per-type policy. It cannot be a generic age-based delete job. | The database reaches a few GB, backups exceed 15 minutes, or real Run logs make growth materially visible |
 | **Operations runbook consolidation.** One operator page covering service placement and health, backup/restore and host-loss recovery, runtime-tool and credential recovery, retry/alert/scheduler diagnosis, and safe stop and escalation boundaries. | Unattended hardening completes |
 
+## Runtime composition and generated code
+
+Two architectural boundaries were recorded during the 2026-08-14 runtime
+boundary audit. The non-trigger-gated registry work is complete; these remain
+triggered boundaries, not backlog items. Nothing about them is "not yet built",
+and pulling either in early costs an architecture, not a week. Current runtime
+composition is recorded in
+[runtime-adapters.md](../modules/runtime-adapters.md).
+
+### Cordis / live runtime composition
+
+**Trigger.** At least two real stateful runtime components need in-process
+replacement, **and** switching only on the next Attempt or on process restart
+causes a demonstrated product limitation. Or: generated runtime extensions
+become a real, evaluated product capability.
+
+Neither half is close. The registry inventory in the plan above found seventeen
+contribution registries, all populated at boot from a static composition, none
+registering in response to a user action, and nothing anywhere unregistering.
+The one lifecycle that exists — `scheduler/registry.ts` — belongs to the task
+loop, not to the registration.
+
+Until the trigger fires: no Cordis dependency, no `RuntimeCompositionEngine`, no
+Everything-is-a-Plugin migration, no live generated code in the main server
+process, and no `Registration`/`dispose()` primitive added for architectural
+symmetry.
+
+**Record explicitly, because this is the expensive mistake:** a Cordis runtime
+scope is not a Space, Project, or Domain scope. Runtime composition answers
+"which code is loaded"; Space answers "who may read this". If the trigger ever
+fires, the two must not be allowed to become one enum, one id, or one predicate.
+
+### Generated executable lifecycle
+
+**Trigger.** A real Automation or Workflow requires generated deterministic code
+that cannot be expressed through the existing ActionNode, SystemAction, or
+Workflow mechanisms, **and** there is observed reuse value — the same generated
+thing wanted a second time.
+
+The future lifecycle is conceptual only: Ephemeral → Candidate → Promoted
+Executable Asset. Do not implement schema or runtime for it now, and do not
+create the states in anticipation.
+
+Until the trigger fires: generated one-off code stays Run/Attempt-scoped,
+execution stays sandbox or subprocess based, promotion is never automatic, there
+is no in-process `eval`, and none of it requires Cordis. The parked
+**native capability executor** item below is the adjacent decision and stays
+disabled on its own terms.
+
 ## Watch items
 
 | Item | Trigger |

@@ -6,6 +6,7 @@ import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatab
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
@@ -39,6 +40,7 @@ let available = false;
 let threadScope: Array<{ thread_id: string; version: number; kind: "question"; statement: string }> = [];
 
 beforeAll(async () => {
+  registerProjectResearchExecutionHandlers();
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });

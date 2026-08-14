@@ -192,10 +192,10 @@ describe("providers and credentials server authority", () => {
 
     const supported = await app.inject({
       method: "GET",
-      url: "/api/v1/providers/litellm-providers?space_id=space-1",
+      url: "/api/v1/providers/vendors?space_id=space-1",
     });
     expect(supported.statusCode).toBe(200);
-    expect(supported.json()).toContain("anthropic");
+    expect((supported.json() as Array<{ id: string }>).map((vendor) => vendor.id)).toContain("anthropic");
 
     const presetCreate = await app.inject({
       method: "POST",

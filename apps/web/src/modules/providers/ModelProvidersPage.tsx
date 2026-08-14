@@ -1,7 +1,7 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { KeyRound, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { authApi, providersApi, type ModelProviderOut, type ProviderPresetOut } from '../../api/client'
+import { authApi, providersApi, type ModelProviderOut, type ProviderPresetOut, type ProviderVendorOut } from '../../api/client'
 import { Card } from '../../components/ui/card'
 import { useSpace } from '../../contexts/SpaceContext'
 import { useAuth } from '../../contexts/AuthContext'
@@ -18,35 +18,56 @@ export default function ModelProvidersPage() {
   const [configs, setConfigs] = useState<ModelProviderOut[]>([])
   const [spaces, setSpaces] = useState<SpaceWithMembership[]>([])
   const [presets, setPresets] = useState<ProviderPresetOut[]>([])
+  const [vendors, setVendors] = useState<ProviderVendorOut[]>([])
   const [loading, setLoading] = useState(true)
   const [addingMode, setAddingMode] = useState<AddProviderMode | null>(null)
+  const loadRequestId = useRef(0)
   const headingId = useId()
   const ownedConfigs = configs.filter(config => config.manageable !== false)
   const grantedConfigs = configs.filter(config => config.manageable === false)
 
-  useEffect(() => { loadAll() }, [activeSpaceId])
+  useEffect(() => {
+    const requestId = ++loadRequestId.current
+    void loadAll(requestId)
+    return () => {
+      if (loadRequestId.current === requestId) loadRequestId.current += 1
+    }
+  }, [activeSpaceId])
 
-  async function loadAll() {
+  async function loadAll(requestId: number) {
     setLoading(true)
+    setConfigs([])
+    setSpaces([])
+    setPresets([])
+    setVendors([])
     try {
       if (!activeSpaceId) {
         setConfigs([])
         setSpaces([])
         setPresets([])
+        setVendors([])
         return
       }
-      const [providers, nextSpaces, nextPresets] = await Promise.all([
+      const [providers, nextSpaces, nextPresets, nextVendors] = await Promise.all([
         providersApi.list(),
         authApi.mySpaces().catch(() => [] as SpaceWithMembership[]),
         providersApi.presets().catch(() => [] as ProviderPresetOut[]),
+        providersApi.vendors().catch(error => {
+          if (loadRequestId.current === requestId) {
+            toast.error(`Provider catalog unavailable: ${errMsg(error)}`)
+          }
+          return [] as ProviderVendorOut[]
+        }),
       ])
+      if (loadRequestId.current !== requestId) return
       setConfigs(providers)
       setSpaces(nextSpaces)
       setPresets(nextPresets)
+      setVendors(nextVendors)
     } catch (error) {
-      toast.error(errMsg(error))
+      if (loadRequestId.current === requestId) toast.error(errMsg(error))
     } finally {
-      setLoading(false)
+      if (loadRequestId.current === requestId) setLoading(false)
     }
   }
 
@@ -97,10 +118,11 @@ export default function ModelProvidersPage() {
         <div className="space-y-4">
           <AddProviderForm
             onAdded={addProvider}
-            canCreate={Boolean(activeSpaceId)}
+            canCreate={Boolean(activeSpaceId && vendors.length)}
             mode={addingMode}
             setMode={setAddingMode}
             presets={presets}
+            vendors={vendors}
           />
           {!addingMode && (
             <ManagedSubscriptionsPanel
@@ -131,6 +153,7 @@ export default function ModelProvidersPage() {
                       onTest={id => providersApi.test(id)}
                       onPatched={patchProvider}
                       spaces={spaces}
+                      vendors={vendors}
                     />
                   ))}
                 </section>
@@ -146,6 +169,7 @@ export default function ModelProvidersPage() {
                       onTest={id => providersApi.test(id)}
                       onPatched={patchProvider}
                       spaces={spaces}
+                      vendors={vendors}
                     />
                   ))}
                 </section>

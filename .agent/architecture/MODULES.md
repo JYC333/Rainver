@@ -42,6 +42,16 @@ Current server ownership is summarized in
 
 The `plugins` module (Kind: `kernel`) is the control plane for official optional modules. Built-in official plugin code is activated through `PluginHost` and gated by the plugin guard in route handlers or host-wrapped contribution points.
 
+Server-owned contribution registries are static boot composition, not dynamic
+plugin lifecycles. Action-node, Automation-target, Workflow-outcome, autonomy,
+Project overview, and Run-finalization registrations carry a stable owning
+module id. Re-registering the same key from the same owner is allowed because a
+test process may build multiple Fastify apps; a different owner claiming an
+occupied key fails immediately and names the existing owner. Project Attention
+is the deliberate exception: its `replace()` API makes replacement by
+`areaKind` explicit. Cross-module contributions are registered from the owning
+module's `registerRoutes` path, not as import side effects.
+
 ## Registered HTTP Modules
 
 Core modules are `always_on=True`. Optional product routes are still mounted by PluginHost, but respond with `plugin_disabled` when the plugin is disabled for the space/user.

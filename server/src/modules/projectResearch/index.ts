@@ -1,12 +1,14 @@
 import type { ServerModule } from "../../gateway/routeRegistry";
 import { registerRoutes as registerProjectResearchRoutes } from "./routes";
 import { registerProjectResearchProjectIntegration } from "./projectIntegration";
+import { registerProjectResearchExecutionHandlers } from "./executionRegistration";
 
 function registerRoutes(
   app: Parameters<typeof registerProjectResearchRoutes>[0],
   context: Parameters<typeof registerProjectResearchRoutes>[1],
 ): void {
   registerProjectResearchProjectIntegration();
+  registerProjectResearchExecutionHandlers();
   registerProjectResearchRoutes(app, context);
 }
 
@@ -16,6 +18,7 @@ export const projectResearchModule: ServerModule = {
 };
 
 export { registerProjectResearchProjectIntegration } from "./projectIntegration";
+export { registerProjectResearchExecutionHandlers } from "./executionRegistration";
 
 export { __setProjectResearchRepositoryFactoryForTests, __setProjectResearchOrchestratorFactoryForTests } from "./routes";
 export { ProjectResearchRepository } from "./repository";

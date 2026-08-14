@@ -7,7 +7,7 @@ import {
   type AgentDelegationToolDeps,
 } from "../runs/managedAgentDelegationTools";
 import {
-  executeWithRetrievalTools,
+  retrievalToolContribution,
   resolveRetrievalToolBinding,
   type ManagedApiRetrievalToolDeps,
   type RuntimeHostExecutor,
@@ -18,6 +18,11 @@ import {
 import type { RunRecord } from "../runs/repository";
 import { PgRunRepository } from "../runs/repository";
 import { getDbPool } from "../../db/pool";
+import {
+  executeManagedToolLoop,
+  mergeManagedToolContributions,
+  type ManagedToolContribution,
+} from "../runs/managedToolLoop";
 import type { CanonicalToolCall } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { loadSystemActionRegistry } from "./registry";
 import { SystemActionGateway, type SystemActionExecutor } from "./gateway";
@@ -25,7 +30,6 @@ import type { SystemActionId } from "@agent-space/protocol" with { "resolution-m
 import { enforceRetrievalToolCallPolicy, type RetrievalToolPolicyAction } from "../retrieval/tool/policy";
 import { loadActionRegistry } from "../policy/actionRegistry";
 import { enforce } from "../policy/service";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
 import { SourceChannelService } from "../sources/channels/sourceChannelService";
 import { ProjectSourceProposalService } from "../projects/projectSourceProposalService";
 import { SourceBackfillPlanningService } from "../sources/sourceBackfillService";
@@ -54,7 +58,7 @@ export class AgentToolGateway {
     execute: RuntimeHostExecutor,
     deps: AgentToolGatewayDeps = {},
   ): Promise<RuntimeHostExecuteResponse> {
-    let [retrieval, delegation] = await Promise.all([
+    const [retrieval, delegation] = await Promise.all([
       resolveRetrievalToolBinding(this.config, run, deps),
       resolveAgentDelegationToolBinding(this.config, run, deps.agentDelegationTools),
     ]);
@@ -72,29 +76,18 @@ export class AgentToolGateway {
       )
       .map((definition) => ({ name: definition.id, description: definition.description, input_schema: proposalActionJsonSchema(definition.id) }));
 
-    // The synthetic binding is the carrier that lets a run reach the tool loop
-    // without owning any retrieval-domain tool. Delegation needs it for the
-    // same reason the generic transport actions do.
-    if (!retrieval && (genericDefinitions.length > 0 || delegation)) {
-      retrieval = await this.syntheticRetrievalBinding(run);
-    }
-    if (retrieval && genericDefinitions.length) {
-      retrieval.toolDefinitions.push(...genericDefinitions);
-      retrieval.toolBindings.push(
-        ...genericDefinitions.map((tool) => ({
-          id: tool.name,
-          external_type: "internal",
-          external_ref: tool.name,
-          display_name: tool.name,
-          required_scopes: [tool.name],
-          credential_ref: null,
-          data_exposure_level: "model_provider",
-          observability_level: "structured_events",
-          side_effect_level: "proposal",
-          approval_required: true,
-        })),
-      );
-    }
+    const genericBindings = genericDefinitions.map((tool) => ({
+      id: tool.name,
+      external_type: "internal",
+      external_ref: tool.name,
+      display_name: tool.name,
+      required_scopes: [tool.name],
+      credential_ref: null,
+      data_exposure_level: "model_provider",
+      observability_level: "structured_events",
+      side_effect_level: "proposal",
+      approval_required: true,
+    }));
 
     const permitted = new Set(
       [...registry.values()]
@@ -114,6 +107,8 @@ export class AgentToolGateway {
       delegation.toolDefinitions = delegation.toolDefinitions.filter((tool) => permitted.has(tool.name));
       delegation.toolBindings = delegation.toolBindings.filter((tool) => permitted.has(tool.id));
     }
+    const permittedGenericDefinitions = genericDefinitions.filter((tool) => permitted.has(tool.name));
+    const permittedGenericBindings = genericBindings.filter((tool) => permitted.has(tool.id));
 
     if (genericDefinitions.length && this.config.databaseUrl && run.instructed_by_user_id) {
       this.registerGenericProposalExecutors(executors, run);
@@ -228,43 +223,29 @@ export class AgentToolGateway {
       }
     };
 
-    // One loop for every managed tool family. Delegation used to carry its own
-    // copy of the turn loop; the only thing that copy did differently was
-    // rewrite `system_prompt`, which `managedApiAdapter` overwrites from the
-    // InvocationDelivery before dispatch — so it never reached a model.
-    if (retrieval) {
-      return executeWithRetrievalTools(this.config, run, request, execute, retrieval, {
-        ...(delegation
-          ? { toolDefinitions: delegation.toolDefinitions, toolBindings: delegation.toolBindings }
-          : {}),
-        dispatch,
-        signal: deps.abortSignal,
-      });
-    }
-    return execute(this.config, request);
-  }
-
-  /**
-   * A run with no other retrieval-domain tools enabled still needs a
-   * `ResolvedRetrievalToolBinding` carrier for the generic proposal tools
-   * (they're transported alongside retrieval tool definitions/bindings). Its
-   * egress snapshot is read from the real space setting so it stays honest
-   * even though no retrieval domain call goes through it in this branch.
-   */
-  private async syntheticRetrievalBinding(run: RunRecord): Promise<ResolvedRetrievalToolBinding> {
-    const externalEgressEnabled = this.config.databaseUrl
-      ? (await readSpaceRetrievalSettings(getDbPool(this.config.databaseUrl), run.space_id)).externalEgressEnabled
-      : false;
-    return {
-      service: {} as never,
-      services: {},
-      toolMode: "manual_tool_only",
-      toolDefinitions: [],
-      toolBindings: [],
-      policyDatabaseUrl: this.config.databaseUrl,
-      egressPolicySnapshot: { external_egress_enabled: externalEgressEnabled },
-      settingsSnapshot: { source: "system_action_gateway" },
-    } satisfies ResolvedRetrievalToolBinding;
+    // One loop for every managed tool family, assembled from three named
+    // contributions. A family with nothing to offer contributes nothing; there
+    // is no placeholder carrier, and no family owns the loop on behalf of the
+    // others. Retrieval resolves last because a preflight mode performs a
+    // governed call through the dispatch built above.
+    const contributions: (ManagedToolContribution | null)[] = [
+      retrieval
+        ? await retrievalToolContribution(retrieval, run, request, request.messages ?? [], dispatch)
+        : null,
+      delegation
+        ? { definitions: delegation.toolDefinitions, bindings: delegation.toolBindings }
+        : null,
+      permittedGenericDefinitions.length
+        ? { definitions: permittedGenericDefinitions, bindings: permittedGenericBindings }
+        : null,
+    ];
+    return executeManagedToolLoop(
+      this.config,
+      request,
+      execute,
+      mergeManagedToolContributions(contributions, dispatch),
+      { signal: deps.abortSignal },
+    );
   }
 
   private registerGenericProposalExecutors(executors: Map<SystemActionId, SystemActionExecutor>, run: RunRecord): void {
@@ -405,7 +386,13 @@ export class AgentToolGateway {
             ? "source"
             : "knowledge";
       const decision = await enforceRetrievalToolCallPolicy({
-        databaseUrl: retrieval?.policyDatabaseUrl,
+        // `policyDatabaseUrl` is not a copy of the server's URL: a
+        // test-injected retrieval service deliberately sets it to null to mean
+        // "no policy database". Honour that when a binding exists, and use the
+        // server's own URL when there is none — a model-invented retrieval call
+        // on a run that owns no retrieval tool is denied before any executor
+        // runs, and that denial is still a decision worth recording.
+        databaseUrl: retrieval ? retrieval.policyDatabaseUrl : this.config.databaseUrl,
         actor,
         action: definition.id as RetrievalToolPolicyAction,
         domain,

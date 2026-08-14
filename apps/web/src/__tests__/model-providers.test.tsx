@@ -1,20 +1,26 @@
+import type { ProviderVendorOut } from '../api/client'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { toast } from 'sonner'
 
-const { listMock, presetsMock, createMock, createFromPresetMock } = vi.hoisted(() => ({
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+
+const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, activeSpace } = vi.hoisted(() => ({
   listMock: vi.fn(),
   presetsMock: vi.fn(),
+  vendorsMock: vi.fn(),
   createMock: vi.fn(),
   createFromPresetMock: vi.fn(),
+  activeSpace: { id: 'personal-1', name: 'My Personal' },
 }))
 
 vi.mock('../api/client', () => ({
   authApi: { mySpaces: vi.fn().mockResolvedValue([]) },
-  providersApi: { list: listMock, presets: presetsMock, create: createMock, createFromPreset: createFromPresetMock, delete: vi.fn(), test: vi.fn(), patch: vi.fn(), grant: vi.fn() },
+  providersApi: { list: listMock, presets: presetsMock, vendors: vendorsMock, create: createMock, createFromPreset: createFromPresetMock, delete: vi.fn(), test: vi.fn(), patch: vi.fn(), grant: vi.fn() },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
-  useSpace: () => ({ activeSpaceId: 'personal-1', activeSpaceName: 'My Personal' }),
+  useSpace: () => ({ activeSpaceId: activeSpace.id, activeSpaceName: activeSpace.name }),
 }))
 
 vi.mock('../contexts/AuthContext', () => ({
@@ -87,13 +93,31 @@ const providerPresets = [
   },
 ]
 
+const providerVendors = [
+  { id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1', api_key_required: true, subscription_only: false },
+  { id: 'openai_codex', display_name: 'OpenAI Codex (ChatGPT subscription)', protocol: 'openai_codex_responses', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api', api_key_required: false, subscription_only: true },
+  { id: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.deepseek.com', api_key_required: true, subscription_only: false },
+  { id: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic_messages', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.anthropic.com', api_key_required: true, subscription_only: false },
+  { id: 'minimax', display_name: 'MiniMax', protocol: 'anthropic_messages', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.minimaxi.com/anthropic', api_key_required: true, subscription_only: false },
+  { id: 'ollama', display_name: 'Ollama', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: false, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'http://localhost:11434', api_key_required: false, subscription_only: false },
+  { id: 'openai_compatible', display_name: 'OpenAI-compatible endpoint', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: null, api_key_required: false, subscription_only: false },
+  { id: 'cohere', display_name: 'Cohere', protocol: 'cohere_v2', supports_chat: false, supports_runtime_tools: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.cohere.com', api_key_required: true, subscription_only: false },
+  { id: 'zeroentropy', display_name: 'ZeroEntropy', protocol: 'zeroentropy', supports_chat: false, supports_runtime_tools: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.zeroentropy.dev/v1', api_key_required: true, subscription_only: false },
+] satisfies ProviderVendorOut[]
+
 describe('ModelProvidersPage — open add form takes over the view', () => {
   beforeEach(() => {
+    activeSpace.id = 'personal-1'
+    activeSpace.name = 'My Personal'
     listMock.mockReset()
     presetsMock.mockReset()
+    vendorsMock.mockReset()
     createMock.mockReset()
     createFromPresetMock.mockReset()
     presetsMock.mockResolvedValue(providerPresets)
+    // The vendor registry is the server's; the page reads it rather than
+    // holding its own copy of which vendors can chat, embed, or rerank.
+    vendorsMock.mockResolvedValue(providerVendors)
   })
 
   it('shows the empty-state when there are no providers and the form is closed', async () => {
@@ -203,5 +227,77 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
     expect(createMock).not.toHaveBeenCalled()
     expect(await screen.findByText('Cohere Embeddings')).toBeInTheDocument()
     expect(listMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers only vendors the server says can chat, and never a subscription-only one', async () => {
+    // Gate 18. A Codex provider is connected in the subscriptions panel, not by
+    // pasting an API key, so it must not appear in this picker — and gate 17:
+    // a vendor the registry publishes an endpoint for pre-fills that endpoint,
+    // which the hardcoded list could not do for DeepSeek.
+    listMock.mockResolvedValue([])
+    render(<ModelProvidersPage />)
+    await screen.findByText(EMPTY)
+    fireEvent.click(screen.getByRole('button', { name: /add chat provider/i }))
+
+    const selects = await screen.findAllByRole('combobox')
+    const vendorSelect = selects.find(select =>
+      Array.from(select.querySelectorAll('option')).some(option => option.getAttribute('value') === 'deepseek'),
+    )
+    expect(vendorSelect, 'the vendor picker should be rendered for a custom chat provider').toBeTruthy()
+    const values = Array.from(vendorSelect!.querySelectorAll('option')).map(option => option.getAttribute('value'))
+    expect(values).toContain('deepseek')
+    expect(values).not.toContain('openai_codex')
+    // Retrieval-only vendors are not chat vendors.
+    expect(values).not.toContain('cohere')
+
+    fireEvent.change(vendorSelect!, { target: { value: 'deepseek' } })
+    const baseUrlInput = await screen.findByPlaceholderText('https://api.deepseek.com')
+    expect(baseUrlInput).toHaveValue('https://api.deepseek.com')
+
+    createMock.mockResolvedValue({
+      ...provider,
+      id: 'deepseek-1',
+      name: 'deepseek',
+      provider_type: 'deepseek',
+      base_url: 'https://api.deepseek.com',
+    })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'deepseek-key' } })
+    fireEvent.submit(screen.getByRole('button', { name: /add provider/i }).closest('form') as HTMLFormElement)
+    await waitFor(() => expect(createMock).toHaveBeenCalledWith(expect.objectContaining({
+      provider_type: 'deepseek',
+      base_url: 'https://api.deepseek.com',
+    })))
+  })
+
+  it('refuses to configure a provider when the vendor registry did not load', async () => {
+    // Without the registry the form cannot say which vendors exist or which
+    // need a key, so an empty picker would silently drop the key requirement.
+    listMock.mockResolvedValue([])
+    vendorsMock.mockRejectedValue(new Error('registry offline'))
+    render(<ModelProvidersPage />)
+    await screen.findByText(EMPTY)
+    expect(screen.getByRole('button', { name: /add chat provider/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /add embedding provider/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /add rerank provider/i })).toBeDisabled()
+    expect(toast.error).toHaveBeenCalledWith('Provider catalog unavailable: registry offline')
+  })
+
+  it('ignores a provider load that completes after the active space changes', async () => {
+    let resolveFirstLoad!: (providers: typeof provider[]) => void
+    listMock
+      .mockImplementationOnce(() => new Promise<typeof provider[]>(resolve => { resolveFirstLoad = resolve }))
+      .mockResolvedValueOnce([{ ...provider, id: 'p2', space_id: 'team-2', name: 'Team Provider' }])
+
+    const view = render(<ModelProvidersPage />)
+    activeSpace.id = 'team-2'
+    activeSpace.name = 'Team'
+    view.rerender(<ModelProvidersPage />)
+
+    expect(await screen.findByText('Team Provider')).toBeInTheDocument()
+    resolveFirstLoad([{ ...provider, name: 'Stale Personal Provider' }])
+
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText('Stale Personal Provider')).toBeNull()
+    expect(screen.getByText('Team Provider')).toBeInTheDocument()
   })
 })

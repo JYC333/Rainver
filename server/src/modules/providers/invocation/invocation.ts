@@ -84,6 +84,7 @@ export interface ProviderChatResponseBody {
   model: string;
   usage: Record<string, unknown>;
   cost?: ProviderUsageCost;
+  cost_accuracy: "catalog" | "unknown";
   tool_calls?: CanonicalToolCall[];
   structured_output?: Record<string, unknown> | null;
   finish_reason?: string | null;
@@ -667,12 +668,17 @@ async function recordProviderUsage(
     model: string | null | undefined;
     usage: Record<string, unknown>;
     cost?: ProviderUsageCost;
+    costAccuracy?: "catalog" | "unknown";
     metering?: ProviderMeteringContext | null;
     attribution: UsageAttribution;
   },
 ): Promise<void> {
   const context = input.metering ?? {};
   const provider = target.provider;
+  const costAccuracy = input.costAccuracy ?? context.cost_accuracy ?? "unknown";
+  const catalogCost = costAccuracy === "catalog"
+    ? nonNegativeFiniteNumber(input.cost?.total)
+    : null;
   const observation: UsageObservation = {
     ...context,
     space_id: input.spaceId,
@@ -685,11 +691,13 @@ async function recordProviderUsage(
     vendor: context.vendor ?? provider.provider_type,
     model: input.model ?? context.model ?? provider.default_model,
     provider_usage: input.usage,
-    estimated_cost_usd: positiveFiniteNumber(input.cost?.total) ?? context.estimated_cost_usd ?? null,
-    cost_details: input.cost && positiveFiniteNumber(input.cost.total) !== null
+    estimated_cost_usd: input.costAccuracy !== undefined
+      ? catalogCost
+      : context.estimated_cost_usd ?? null,
+    cost_accuracy: costAccuracy,
+    cost_details: input.cost && catalogCost !== null
       ? {
           source: "pi_ai_catalog",
-          accuracy: "catalog_estimated",
           input: input.cost.input,
           output: input.cost.output,
           cacheRead: input.cost.cacheRead,
@@ -711,8 +719,8 @@ async function recordProviderUsage(
   }
 }
 
-function positiveFiniteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+function nonNegativeFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function isUsageMeteringFailure(error: unknown): boolean {
@@ -1083,6 +1091,7 @@ async function invokeProviderWithPool(
           model: result.model,
           usage: result.usage,
           cost: result.cost,
+          costAccuracy: result.cost_accuracy,
           metering: meteringWithProviderTaskRefs(body.metering, providerTask),
           attribution,
         });
@@ -1734,7 +1743,8 @@ async function embedOnce(
   }
 
   if (["openai", "openrouter", "openai_compatible"].includes(provider.provider_type)) {
-    if (!apiKey) {
+    const vendor = providerVendor(provider.provider_type);
+    if (!apiKey && vendor?.apiKeyRequired !== false) {
       throw new ProviderInvocationError(400, `ModelProvider '${provider.id}' has no API key credential`);
     }
     const body: Record<string, unknown> = { model: resolvedModel, input: inputs };
@@ -1743,7 +1753,10 @@ async function embedOnce(
     }
     const response = await fetchProviderResponse(target.network_profile, `${openAiBase(provider)}/embeddings`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
       body: JSON.stringify(body),
     });
     const data = (await parseJsonResponse(response)) as {

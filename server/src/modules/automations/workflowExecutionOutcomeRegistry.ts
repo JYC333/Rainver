@@ -18,15 +18,24 @@ export type WorkflowExecutionOutcomeHandler =
  * domain tables directly.
  */
 class WorkflowExecutionOutcomeHandlerRegistry {
-  private readonly handlers = new Map<string, WorkflowExecutionOutcomeHandler>();
+  private readonly handlers = new Map<string, { handler: WorkflowExecutionOutcomeHandler; owner: string }>();
 
-  register(workflowId: string, handler: WorkflowExecutionOutcomeHandler): void {
+  register(workflowId: string, handler: WorkflowExecutionOutcomeHandler, owner: string): void {
     if (!workflowId.trim()) throw new Error("workflowId must be non-empty");
-    this.handlers.set(workflowId, handler);
+    if (!owner.trim()) throw new Error("owner must be non-empty");
+    const existing = this.handlers.get(workflowId);
+    if (existing && existing.owner !== owner) {
+      throw new Error(`${workflowId} is already registered by ${existing.owner}`);
+    }
+    this.handlers.set(workflowId, { handler, owner });
   }
 
   get(workflowId: string): WorkflowExecutionOutcomeHandler | null {
-    return this.handlers.get(workflowId) ?? null;
+    return this.handlers.get(workflowId)?.handler ?? null;
+  }
+
+  registeredKeys(): ReadonlySet<string> {
+    return new Set(this.handlers.keys());
   }
 
   __resetForTests(): void {

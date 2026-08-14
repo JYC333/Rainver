@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AlertCircle, CheckCircle, Loader2, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { providersApi, type ModelProviderOut } from '../../../api/client'
+import { providersApi, type ModelProviderOut, type ProviderVendorOut } from '../../../api/client'
 import type { SpaceWithMembership } from '../../../types/api'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
@@ -12,7 +12,7 @@ import NetworkProfileSelector from '../../network_profiles/NetworkProfileSelecto
 import {
   inferProviderModelMode,
   modelFieldCopy,
-  RETRIEVAL_ONLY_PROVIDER_TYPES,
+  isRetrievalOnlyVendor,
 } from '../providerMetadata'
 import { ProviderCapabilityBadges, ProviderCapabilityNotice } from './ProviderCapability'
 
@@ -22,12 +22,14 @@ export default function ProviderCard({
   onTest,
   onPatched,
   spaces,
+  vendors,
 }: {
   config: ModelProviderOut
   onDelete: (id: string) => void
   onTest: (id: string) => Promise<{ success: boolean; message: string }>
   onPatched: (updated: ModelProviderOut) => void
   spaces: SpaceWithMembership[]
+  vendors: readonly ProviderVendorOut[]
 }) {
   const [deleting, setDeleting] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -47,7 +49,7 @@ export default function ProviderCard({
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const inferredMode = inferProviderModelMode(config)
   const modelCopy = modelFieldCopy(config.provider_type, inferredMode)
-  const showBridgeUrls = !RETRIEVAL_ONLY_PROVIDER_TYPES.has(config.provider_type)
+  const showBridgeUrls = !isRetrievalOnlyVendor(config.provider_type, vendors)
 
   async function handleSave() {
     if (!editBaseUrl.trim()) {
@@ -95,7 +97,7 @@ export default function ProviderCard({
     return (
       <Card>
         <div className="space-y-3 p-4">
-          <ProviderCapabilityNotice providerType={config.provider_type} mode={inferredMode} />
+          <ProviderCapabilityNotice providerType={config.provider_type} vendors={vendors} mode={inferredMode} />
           <Input value={editName} onChange={event => setEditName(event.target.value)} placeholder="Name" />
           <Input value={editBaseUrl} onChange={event => setEditBaseUrl(event.target.value)} placeholder="Base URL" className="font-mono text-sm" />
           {showBridgeUrls && (
@@ -150,7 +152,7 @@ export default function ProviderCard({
         <span className="text-[10px] font-mono text-muted-foreground">{config.provider_type}</span>
       </div>
       <div className="mb-3">
-        <ProviderCapabilityBadges providerType={config.provider_type} />
+        <ProviderCapabilityBadges providerType={config.provider_type} vendors={vendors} />
       </div>
       {config.base_url && (
         <p className="text-xs font-mono text-muted-foreground mb-2 truncate">{config.base_url}</p>
@@ -172,7 +174,7 @@ export default function ProviderCard({
           <Badge key={model} variant="muted" className="text-[10px] font-mono">{model}</Badge>
         ))}
       </div>
-      {(config.provider_type === 'zeroentropy' || config.provider_type === 'cohere') && (
+      {isRetrievalOnlyVendor(config.provider_type, vendors) && (
         <p className="text-xs text-muted-foreground mb-3">{modelCopy.help}</p>
       )}
       {testResult && (

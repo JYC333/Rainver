@@ -120,7 +120,7 @@ serializers).
 - Routing rule: when a module claims a parametric route (`/:id`) under a prefix,
   it must claim every static sibling path under that prefix too. Parametric
   routes beat the catch-all, so an unclaimed static sibling (e.g.
-  `/providers/catalog`) would be swallowed by the parametric handler and
+  `/providers/presets`) would be swallowed by the parametric handler and
   mis-validated.
 - Capability framework rule: `catalog` reads bundled/local manifests;
   `capabilities` owns canonical capability definitions, packs, workflow

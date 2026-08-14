@@ -281,6 +281,7 @@ async function findOrCreateResearchPassTemplateVersion(
   return raced.rows[0]!.id;
 }
 
+export function registerResearchPassExecutionHandlers(): void {
 actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => {
   const operationId = optionalString(context.metadata.operation_id);
   if (!operationId) {
@@ -358,7 +359,7 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
     },
     ...(delegatedRunId ? { delegatedRunId } : {}),
   };
-});
+}, "project_research");
 
 actionNodeHandlerRegistry.register(RESEARCH_APPLY_RUN_ACTION_KEY, async (context) => {
   const operationId = optionalString(context.metadata.operation_id);
@@ -391,7 +392,7 @@ actionNodeHandlerRegistry.register(RESEARCH_APPLY_RUN_ACTION_KEY, async (context
     output: { operation_id: operationId, applied: true, source_run_id: sourceRunId },
     ...(delegatedRunId && delegatedRunId !== sourceRunId ? { delegatedRunId } : {}),
   };
-});
+}, "project_research");
 
 workflowExecutionOutcomeHandlerRegistry.register(
   RESEARCH_PASS_WORKFLOW_ID,
@@ -455,7 +456,9 @@ workflowExecutionOutcomeHandlerRegistry.register(
       ],
     );
   },
+  "project_research",
 );
+}
 
 async function latestExecutionRunFailure(
   db: Queryable,

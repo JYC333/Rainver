@@ -12,7 +12,6 @@
 import { getDbPool, type Pool } from "./db";
 import type { ServerConfig } from "../../config";
 import { loadProtocol } from "./protocolRuntime";
-import { canonicalProviderVendorId } from "./vendors";
 import { defaultBaseUrlFor } from "./commands/helpers";
 
 export interface ProvidersDbPort {
@@ -78,7 +77,7 @@ function stringConfig(config: unknown, key: string): string | null {
 }
 
 export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
-  const providerType = canonicalProviderVendorId(row.provider_type);
+  const providerType = row.provider_type;
   const metadata = row.credential_metadata_json !== null
     && typeof row.credential_metadata_json === "object"
     && !Array.isArray(row.credential_metadata_json)

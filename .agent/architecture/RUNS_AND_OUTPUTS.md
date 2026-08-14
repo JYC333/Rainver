@@ -200,12 +200,13 @@ possible. If the adapter succeeds but artifact/proposal/finalization
 materialization partially fails, the run is marked `degraded`.
 
 A successful adapter result is also `degraded` when any server-owned managed
-tool call failed — a `retrieval_tool_calls` summary entry with `ok: false`. One
-tool loop serves every managed tool family, including Agent room delegation, so
-that is the single summary key; there is no second per-family key. Those Runs
-still produce an answer, but they produced it without the tool, and a terminal
-`succeeded` would make an answer written without retrieval indistinguishable
-from one written with it. The Run
+tool call failed — a `managed_tool_calls` summary entry with `ok: false`. One
+tool loop serves every managed tool family — Retrieval, Agent room delegation,
+and the generic proposal transports — so that is the single summary key, and it
+is deliberately named for none of them; there is no second per-family key. Those
+Runs still produce an answer, but they produced it without the tool, and a
+terminal `succeeded` would make an answer written without a granted tool
+indistinguishable from one written with it. The Run
 additionally carries a `warning` event with `error_code`
 `managed_tool_degraded` naming the tools and their error codes. A managed
 invocation that falls back to a different Provider likewise emits a `warning`

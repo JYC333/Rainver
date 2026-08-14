@@ -124,7 +124,7 @@ const operationsSummaryAdapter: ProjectEntitySummaryAdapter = {
 };
 
 export function registerAutomationsProjectIntegration(): void {
-  projectModeProjectionRegistry.register(operationsModeAdapter);
-  projectEntitySummaryRegistry.register(operationsSummaryAdapter);
-  projectAttentionRegistry.register(operationsAttentionAdapter);
+  projectModeProjectionRegistry.register(operationsModeAdapter, "automations");
+  projectEntitySummaryRegistry.register(operationsSummaryAdapter, "automations");
+  projectAttentionRegistry.replace(operationsAttentionAdapter);
 }

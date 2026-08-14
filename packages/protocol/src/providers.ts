@@ -138,21 +138,33 @@ export const ModelProviderModelsResponseSchema = z.object({
   source: z.union([z.literal("configured"), z.literal("live")]),
 });
 
-/** `GET /providers/catalog` response; static, secret-free. */
-export const ProviderCatalogInfoSchema = z
+/**
+ * `GET /providers/vendors`: the server-owned vendor registry, secret-free.
+ *
+ * These are facts agent-space owns about a vendor — identity, wire protocol,
+ * what it can be asked to do, where it publishes its API, and how it is
+ * credentialed. The client reads them rather than keeping its own copy, which
+ * is how the two drifted before.
+ */
+export const ProviderVendorDTOSchema = z
   .object({
-    id: z.string(),
-    name: z.string(),
-    description: z.string(),
-    model_hint: z.string(),
-    supported_params: z.array(z.string()),
+    id: z.string().min(1),
+    display_name: z.string().min(1),
+    protocol: z.string().min(1),
+    supports_chat: z.boolean(),
+    supports_runtime_tools: z.boolean(),
+    supports_structured_output: z.boolean(),
+    supports_embedding: z.boolean(),
+    supports_rerank: z.boolean(),
+    default_base_url: z.string().nullable(),
+    api_key_required: z.boolean(),
+    subscription_only: z.boolean(),
     ...SecretResponseGuards,
   })
-  .passthrough();
-export type ProviderCatalogInfo = z.infer<typeof ProviderCatalogInfoSchema>;
+  .strict();
+export type ProviderVendorDTO = z.infer<typeof ProviderVendorDTOSchema>;
 
-/** `GET /providers/litellm-providers`: litellm chat provider ids. */
-export const LitellmProvidersResponseSchema = z.array(z.string());
+export const ProviderVendorListResponseSchema = z.array(ProviderVendorDTOSchema);
 
 export const ProviderPresetModeSchema = z.enum(["chat", "embedding", "rerank"]);
 export type ProviderPresetMode = z.infer<typeof ProviderPresetModeSchema>;
@@ -201,20 +213,6 @@ export const ProviderFromPresetCreateResponseSchema = z.object({
 export type ProviderFromPresetCreateResponse = z.infer<
   typeof ProviderFromPresetCreateResponseSchema
 >;
-
-/**
- * The catalog payload itself. Pinned by exact value on
- * both sides. The provider authority serves this constant for the public
- * catalog route.
- */
-export const PROVIDER_CATALOG_INFO: ProviderCatalogInfo = {
-  id: "litellm",
-  name: "LiteLLM (Open Format)",
-  description:
-    "Configure OpenAI-compatible, Anthropic-compatible, OpenRouter, Ollama, or other endpoints.",
-  model_hint: "Set default_model and/or available_models on the provider",
-  supported_params: ["model", "temperature", "max_tokens", "system"],
-};
 
 export const ProviderConnectionTestResultSchema = z.object({
   success: z.boolean(),

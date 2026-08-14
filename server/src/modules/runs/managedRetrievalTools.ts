@@ -7,7 +7,6 @@ import type {
   RetrievalSearchResponse,
   RetrievalToolMode,
   RuntimeHostExecuteRequest,
-  RuntimeHostExecuteResponse,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
@@ -31,10 +30,8 @@ import {
   type RetrievalToolPolicyAction,
 } from "../retrieval/tool/policy";
 import type { RunRecord } from "./repository";
-import {
-  runManagedAgentLoop,
-  type ManagedModelRequest,
-} from "./managedAgentLoop";
+import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort";
+import type { ManagedToolContribution } from "./managedToolLoop";
 
 export type RuntimeHostExecutor = ManagedModelRequest;
 
@@ -60,7 +57,6 @@ const MEMORY_RETRIEVAL_TOOL_OBJECT_TYPES = ["memory_entry"] as const;
 const PROJECT_RETRIEVAL_TOOL_OBJECT_TYPES = ["project_public_summary"] as const;
 const SOURCE_RETRIEVAL_TOOL_OBJECT_TYPES = ["source_item", "extracted_evidence"] as const;
 const RETRIEVAL_TOOL_MODES = ["exact", "lexical", "hybrid", "hybrid_rerank"] as const;
-const MAX_TOOL_TURNS = 4;
 const MAX_MODEL_RESULT_ITEMS = 8;
 const MAX_MODEL_SNIPPET_CHARS = 500;
 
@@ -240,87 +236,55 @@ export async function resolveRetrievalToolBinding(
   };
 }
 
-export async function executeWithRetrievalTools(
-  config: ServerConfig,
+/**
+ * What Retrieval offers a run.
+ *
+ * In `manual_tool_only` the model receives the governed retrieval tools. In a
+ * preflight mode it receives none: the system performs one governed retrieval
+ * step itself and contributes the result as model-visible content. That is a
+ * statement about what Retrieval provides, not about whether the run may loop —
+ * a preflight run that also holds delegation or proposal grants keeps them, and
+ * a preflight run holding nothing else is a single bounded call exactly as
+ * before.
+ */
+export async function retrievalToolContribution(
+  binding: ResolvedRetrievalToolBinding,
   run: RunRecord,
   request: RuntimeHostExecuteRequest,
-  execute: RuntimeHostExecutor,
+  baseMessages: readonly CanonicalMessage[],
+  dispatch?: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
+): Promise<ManagedToolContribution> {
+  if (!isRetrievalPreflightMode(binding.toolMode)) {
+    return { definitions: binding.toolDefinitions, bindings: binding.toolBindings };
+  }
+  const preface = await runRetrievalPreflight(binding, run, request, baseMessages, dispatch);
+  return { definitions: [], bindings: [], ...preface };
+}
+
+async function runRetrievalPreflight(
   binding: ResolvedRetrievalToolBinding,
-  extensions: {
-    toolDefinitions?: CanonicalToolDefinition[];
-    toolBindings?: RuntimeHostExecuteRequest["tool_bindings"];
-    dispatch?: (call: CanonicalToolCall) => Promise<{ modelResult: unknown; summary: Record<string, unknown>; artifact?: unknown; suspend?: RuntimeHostExecuteResponse }>;
-    signal?: AbortSignal;
-  } = {},
-): Promise<RuntimeHostExecuteResponse> {
+  run: RunRecord,
+  request: RuntimeHostExecuteRequest,
+  baseMessages: readonly CanonicalMessage[],
+  dispatch?: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
+): Promise<{
+  prefaceMessages: CanonicalMessage[];
+  prefaceSummaries: Array<Record<string, unknown>>;
+  prefaceArtifacts: unknown[];
+}> {
+  const empty = { prefaceMessages: [], prefaceSummaries: [], prefaceArtifacts: [] };
+  // Delivery-backed execution has already completed governed acquisition and
+  // planning. Adapter-side preflight would inject model-visible content that
+  // is absent from the immutable Delivery/Snapshot.
+  if (request.invocation_audit_refs) return empty;
+  const query = preflightQuery(request, baseMessages);
+  if (!query) return empty;
   const actor = {
     spaceId: run.space_id,
     instructedByUserId: run.instructed_by_user_id!,
     agentId: run.agent_id,
     runId: run.id,
   };
-  const messages = initialMessagesForToolLoop(request);
-  const artifacts: unknown[] = [];
-  const toolSummaries: Array<Record<string, unknown>> = [];
-
-  await applyRetrievalPreflight(binding, actor, run, request, messages, toolSummaries, artifacts, extensions.dispatch);
-
-  if (isRetrievalPreflightMode(binding.toolMode)) {
-    const response = await execute(config, {
-      ...request,
-      messages: cloneMessages(messages),
-      tool_mode: "disabled",
-      tool_bindings: [],
-    });
-    return responseWithRetrievalToolMetadata(response, toolSummaries, artifacts);
-  }
-
-  const loop = await runManagedAgentLoop({
-    config,
-    request: { ...request, messages: cloneMessages(messages) },
-    executeModel: execute,
-    tools: [...binding.toolDefinitions, ...(extensions.toolDefinitions ?? [])],
-    toolBindings: [...binding.toolBindings, ...(extensions.toolBindings ?? [])],
-    dispatch: extensions.dispatch
-      ? extensions.dispatch
-      : (call) => runRetrievalToolCall(call, binding, actor, run),
-    maxTurns: MAX_TOOL_TURNS,
-    signal: extensions.signal,
-  });
-  return responseWithRetrievalToolMetadata(
-    loop.turnLimitReached ? withoutPendingToolCalls(loop.response) : loop.response,
-    loop.turnLimitReached
-      ? [
-          ...loop.toolSummaries,
-          { tool_name: "retrieval", ok: false, error_code: "retrieval_tool_turn_limit" },
-        ]
-      : loop.toolSummaries,
-    loop.artifacts,
-  );
-}
-
-async function applyRetrievalPreflight(
-  binding: ResolvedRetrievalToolBinding,
-  actor: {
-    spaceId: string;
-    instructedByUserId: string;
-    agentId?: string | null;
-    runId?: string | null;
-  },
-  run: RunRecord,
-  request: RuntimeHostExecuteRequest,
-  messages: CanonicalMessage[],
-  toolSummaries: Array<Record<string, unknown>>,
-  artifacts: unknown[],
-  dispatch?: (call: CanonicalToolCall) => Promise<{ modelResult: unknown; summary: Record<string, unknown>; artifact?: unknown; suspend?: RuntimeHostExecuteResponse }>,
-): Promise<void> {
-  if (!isRetrievalPreflightMode(binding.toolMode)) return;
-  // Delivery-backed execution has already completed governed acquisition and
-  // planning. Adapter-side preflight would inject model-visible content that
-  // is absent from the immutable Delivery/Snapshot.
-  if (request.invocation_audit_refs) return;
-  const query = preflightQuery(request, messages);
-  if (!query) return;
   const mode = retrievalSearchModeFromSettings(binding.settingsSnapshot.default_search_mode) ?? "hybrid";
   const maxResults = numberFromSettings(binding.settingsSnapshot.max_results_default) ?? 10;
   const call: CanonicalToolCall = {
@@ -334,12 +298,14 @@ async function applyRetrievalPreflight(
     }),
   };
   const result = dispatch ? await dispatch(call) : await runRetrievalToolCall(call, binding, actor, run);
-  toolSummaries.push({ ...result.summary, preflight: true });
-  if (result.artifact) artifacts.push(result.artifact);
-  messages.push({
-    role: "user",
-    content: `Retrieval preflight (${call.name}) result:\n${JSON.stringify(result.modelResult)}`,
-  });
+  return {
+    prefaceMessages: [{
+      role: "user",
+      content: `Retrieval preflight (${call.name}) result:\n${JSON.stringify(result.modelResult)}`,
+    }],
+    prefaceSummaries: [{ ...result.summary, preflight: true }],
+    prefaceArtifacts: result.artifact ? [result.artifact] : [],
+  };
 }
 
 function retrievalToolInputSchema(
@@ -366,18 +332,6 @@ function retrievalToolInputSchema(
       include_trace: { type: "boolean", default: includeTraceDefault },
     },
   };
-}
-
-function initialMessagesForToolLoop(request: RuntimeHostExecuteRequest): CanonicalMessage[] {
-  if (request.messages?.length) return cloneMessages(request.messages);
-  return [{ role: "user", content: request.prompt }];
-}
-
-function cloneMessages(messages: readonly CanonicalMessage[]): CanonicalMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    tool_calls: message.tool_calls?.map((call) => ({ ...call })),
-  }));
 }
 
 function toolDefinitionsForSpecs(specs: readonly RetrievalToolDomainSpec[]): CanonicalToolDefinition[] {
@@ -622,42 +576,6 @@ function parseRetrievalToolArguments(
   }
   if (typeof record.include_trace === "boolean") params.includeTrace = record.include_trace;
   return params;
-}
-
-function responseWithRetrievalToolMetadata(
-  response: RuntimeHostExecuteResponse,
-  toolSummaries: Array<Record<string, unknown>>,
-  artifacts: unknown[],
-): RuntimeHostExecuteResponse {
-  if (toolSummaries.length === 0 && artifacts.length === 0) return response;
-  const output = {
-    ...recordOrEmpty(response.output_json),
-    ...(toolSummaries.length ? { retrieval_tool_calls: toolSummaries } : {}),
-    ...(artifacts.length ? { artifacts } : {}),
-  };
-  const metadata = {
-    ...recordOrEmpty(response.adapter_metadata),
-    retrieval_tool_calls: toolSummaries.map((summary) => ({
-      tool_name: summary.tool_name,
-      ok: summary.ok,
-      result_count: summary.result_count ?? null,
-      synthesized: summary.synthesized ?? null,
-      error_code: summary.error_code ?? null,
-    })),
-  };
-  return {
-    ...response,
-    output_json: output,
-    adapter_metadata: metadata,
-  };
-}
-
-function withoutPendingToolCalls(response: RuntimeHostExecuteResponse): RuntimeHostExecuteResponse {
-  const output = recordOrEmpty(response.output_json);
-  if (!("tool_calls" in output)) return response;
-  const rest = { ...output };
-  delete rest.tool_calls;
-  return { ...response, output_json: rest };
 }
 
 function preflightQuery(

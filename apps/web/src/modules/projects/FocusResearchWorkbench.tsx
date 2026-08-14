@@ -11,7 +11,7 @@ import type {
   ProjectResearchScanSummary,
   InquiryThread,
 } from '../../types/api'
-import type { ModelProviderOut } from '../../api/client'
+import type { ModelProviderOut, ProviderVendorOut } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { DatePicker } from '../../components/ui/date-picker'
@@ -372,6 +372,7 @@ export interface FocusResearchWorkbenchProps {
   researchOperations: ProjectOperation[]
   researchDataLoading: boolean
   modelProviders: ModelProviderOut[]
+  providerVendors?: ProviderVendorOut[]
   questionThreads?: InquiryThread[]
   researchActionBusy: string | null
   onSaveInitialIntake: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
@@ -400,6 +401,7 @@ export function FocusResearchWorkbench({
   researchOperations,
   researchDataLoading,
   modelProviders,
+  providerVendors = [],
   questionThreads = [],
   researchActionBusy,
   onSaveInitialIntake,
@@ -636,6 +638,7 @@ export function FocusResearchWorkbench({
         draft={researchSetupDraft}
         busyAction={researchActionBusy}
         modelProviders={modelProviders}
+        providerVendors={providerVendors}
         canAct={canAct}
         onOpenChange={setResearchSetupOpen}
         onSave={onSaveInitialIntake}

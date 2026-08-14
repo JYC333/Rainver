@@ -138,11 +138,29 @@ Prerequisite: a CLI runtime must exist in the sandbox image before any probe —
 existing or new — can produce an observation. See the instance reality section of
 [../tasks/current-focus.md](../tasks/current-focus.md).
 
+### G1.3 — Chat provider presets cover one vendor
+
+Found 2026-08-14 during the runtime-boundary audit. `server/src/modules/providers/presets/`
+holds five presets: four retrieval-side (OpenAI embeddings, Cohere, ZeroEntropy,
+Ollama) and exactly one chat preset, MiniMax. Anthropic, OpenAI chat, OpenRouter
+and DeepSeek have none, so adding one means typing a base URL and model names by
+hand.
+
+- [ ] Decide which chat vendors deserve a preset and add them, or state that
+  presets are deliberately retrieval-only and stop implying otherwise in the
+  add-provider form.
+
+Constraint: a preset pre-fills configuration; it must not carry a credential,
+and `api_key_required` stays a server-declared fact. The server-owned vendor
+registry and its API are current-state authority; see
+[provider-policy.md](../modules/provider-policy.md).
+
 ## 7. Harness And Scope Convergence
 
-Three remaining specifications, written 2026-08-13, cover routing, capability
-shrink, and the two-Scope user model. Each is a separate convergence with its
-own prerequisites; pointers only here, detail there.
+Three remaining specifications cover routing, capability shrink, and the
+two-Scope user model. Each is a separate convergence with its own prerequisites;
+pointers only here, detail there. Runtime-boundary and registry-lifecycle work
+completed on 2026-08-14 and is recorded in current-state architecture.
 
 None is currently active — see
 [../tasks/current-focus.md](../tasks/current-focus.md). The completed managed
@@ -189,9 +207,9 @@ part of what the delivery renders, not a mutation applied after it.
 - [ ] [scope-model-plan.md](scope-model-plan.md) — raise Domain to a first-class
   Scope beside Project and generalize the project-only content governance
   interface. Needs an ADR first.
-- [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — collapse the
-  capability model to `SkillPackage + SkillBinding + SkillPolicy`, and amend
-  ADR 0009 in place rather than superseding it.
+- [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — Item 1 amended
+  ADR 0009 and the authority documents on 2026-08-14. Items 2–7 still collapse
+  the implementation to `SkillPackage + SkillBinding + SkillPolicy`.
 
 ## Completion and retirement
 

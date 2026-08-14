@@ -12,14 +12,14 @@ import { probeClaudeOAuthQuotaWithAccessToken } from "./cli/claudeOAuthUsageProb
 import { parseCodexManagedUsageResponse } from "./cli/codexUsageProbe";
 import type { QuotaResult } from "./cli/usageProbe";
 import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types";
-import {
-  loadManagedOAuthFlow,
-  type ManagedAuthEvent,
-  type ManagedAuthInteraction,
-  type ManagedAuthPrompt,
-  type ManagedOAuthCredential,
-  type ManagedOAuthFlow,
-} from "./invocation/piAiChat";
+import { loadManagedOAuthFlow } from "./invocation/piAiChat";
+import type {
+  ManagedAuthEvent,
+  ManagedAuthInteraction,
+  ManagedAuthPrompt,
+  ManagedOAuthCredential,
+  ManagedOAuthFlow,
+} from "./managedOAuth";
 
 export type ManagedSubscriptionType = "anthropic" | "openai_codex";
 let flowOverride: ((type: ManagedSubscriptionType) => Promise<ManagedOAuthFlow>) | null = null;

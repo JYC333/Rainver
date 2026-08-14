@@ -61,18 +61,23 @@ export interface ProjectEntitySummaryAdapter {
 }
 
 class ProjectModeProjectionRegistry {
-  private readonly adapters = new Map<ProjectPrimaryMode, ProjectModeProjectionAdapter>();
+  private readonly adapters = new Map<ProjectPrimaryMode, { adapter: ProjectModeProjectionAdapter; owner: string }>();
 
-  register(adapter: ProjectModeProjectionAdapter): void {
-    this.adapters.set(adapter.mode, adapter);
+  register(adapter: ProjectModeProjectionAdapter, owner: string): void {
+    if (!owner.trim()) throw new Error("owner must be non-empty");
+    const existing = this.adapters.get(adapter.mode);
+    if (existing && existing.owner !== owner) {
+      throw new Error(`${adapter.mode} is already registered by ${existing.owner}`);
+    }
+    this.adapters.set(adapter.mode, { adapter, owner });
   }
 
   get(mode: ProjectPrimaryMode): ProjectModeProjectionAdapter | null {
-    return this.adapters.get(mode) ?? null;
+    return this.adapters.get(mode)?.adapter ?? null;
   }
 
   list(): ProjectModeProjectionAdapter[] {
-    return [...this.adapters.values()];
+    return [...this.adapters.values()].map(({ adapter }) => adapter);
   }
 
   /** Test-only: reset registrations between test files. */
@@ -82,18 +87,23 @@ class ProjectModeProjectionRegistry {
 }
 
 class ProjectEntitySummaryRegistry {
-  private readonly adapters = new Map<string, ProjectEntitySummaryAdapter>();
+  private readonly adapters = new Map<string, { adapter: ProjectEntitySummaryAdapter; owner: string }>();
 
-  register(adapter: ProjectEntitySummaryAdapter): void {
-    this.adapters.set(adapter.entityType, adapter);
+  register(adapter: ProjectEntitySummaryAdapter, owner: string): void {
+    if (!owner.trim()) throw new Error("owner must be non-empty");
+    const existing = this.adapters.get(adapter.entityType);
+    if (existing && existing.owner !== owner) {
+      throw new Error(`${adapter.entityType} is already registered by ${existing.owner}`);
+    }
+    this.adapters.set(adapter.entityType, { adapter, owner });
   }
 
   get(entityType: string): ProjectEntitySummaryAdapter | null {
-    return this.adapters.get(entityType) ?? null;
+    return this.adapters.get(entityType)?.adapter ?? null;
   }
 
   list(): ProjectEntitySummaryAdapter[] {
-    return [...this.adapters.values()];
+    return [...this.adapters.values()].map(({ adapter }) => adapter);
   }
 
   /** Test-only: reset registrations between test files. */

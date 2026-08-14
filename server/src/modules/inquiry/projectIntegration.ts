@@ -121,6 +121,6 @@ const inquiryAttentionAdapter: ProjectAttentionAdapter = {
 // See `registerBuiltInAttentionAdapters` for why a "registered
 // once" guard flag is the wrong pattern here.
 export function registerInquiryProjectIntegration(): void {
-  projectEntitySummaryRegistry.register(inquiryEntitySummaryAdapter);
-  projectAttentionRegistry.register(inquiryAttentionAdapter);
+  projectEntitySummaryRegistry.register(inquiryEntitySummaryAdapter, "inquiry");
+  projectAttentionRegistry.replace(inquiryAttentionAdapter);
 }

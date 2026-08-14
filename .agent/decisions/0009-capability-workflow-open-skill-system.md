@@ -4,7 +4,7 @@ Date: 2026-06-20
 
 ## Status
 
-Accepted
+Accepted; amended 2026-08-14
 
 ## Context
 
@@ -42,6 +42,49 @@ Claude Code, Codex, `model_api`, and future runtimes are rendering/invocation
 targets. Runtime skill files are generated artifacts and do not become
 agent-space source of truth.
 
+## Amendment — Skill Content Authority (2026-08-14)
+
+The original decision made imported skill content source material for a second,
+canonical agent-space representation. That part is amended.
+
+An external Agent Skill package is the source of truth for its own procedural
+content. Agent-space does not own or produce a canonical re-representation of
+that content and does not convert an imported skill into a
+`CapabilityDefinition`. Agent-space owns the surrounding control plane:
+
+- source, version or commit, content hash, package-root-relative file inventory,
+  license and import provenance;
+- deterministic risk scanning, requested permissions, trust and approval state;
+- scope and Agent binding, pinned package version, runtime compatibility and
+  enablement policy;
+- the exact package/version selected for a Run, its Runtime Context Delivery
+  authorization references, and safe content hashes used for audit.
+
+Runtime-specific layouts or prompt blocks are adapter artifacts generated from
+the approved package snapshot. They never become a second content authority.
+Skill content remains model-visible durable context and therefore reaches every
+runtime through Runtime Context Delivery; this amendment does not create a
+side channel around Delivery or its per-turn authorization binding.
+
+A skill is a procedure, not callable authority. Package declarations of tools,
+hooks, scripts, dependencies, or MCP servers remain untrusted requests. They do
+not install dependencies, execute scripts, register a System Action, expose an
+MCP server, or grant any permission. System Actions and their policy-enforced
+gateway remain agent-space-owned and separate from Skills. Workflows likewise
+remain enforced process definitions rather than soft skill instructions.
+
+The existing `NormalizedSkill`, imported-skill conversion, capability binding,
+pack, and renderer paths are transitional implementation state. The amendment
+sets their replacement direction; it does not claim their removal in this
+documentation-only change. Until that work lands, existing import, proposal,
+policy, Delivery, and audit checks remain mandatory and must not be bypassed.
+
+Where the original Decision or Consequences describe normalized imported skills
+or conversion into capability candidates as the intended authority model, this
+amendment supersedes those statements. The original untrusted-import posture
+and all proposal, policy, Runtime Context, and execution-safety boundaries remain
+in force.
+
 ## Consequences
 
 - Capability lifecycle remains reviewable and can later use proposal types such
@@ -61,4 +104,3 @@ agent-space source of truth.
 - Native web search provider.
 - Research product UI.
 - Capability executor rewrite.
-

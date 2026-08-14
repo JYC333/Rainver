@@ -21,6 +21,12 @@ export function recommendedMaxOutputTokens(model: string | null | undefined): nu
 /**
  * Effective completion budget for a request. Explicit caller limits always
  * win; model guidance is used only when the caller leaves the budget unset.
+ * A null result is deliberate: it means agent-space supplies no stream-level
+ * override, so the Pi adapter's resolved Model remains authoritative. For a
+ * catalog match that is pi-ai's catalog `maxTokens`; for an uncatalogued model
+ * it is the adapter fallback stored on that Model. Do not copy catalog limits
+ * into modelSpecs merely to avoid this fallback — modelSpecs owns only limits
+ * agent-space has independently sourced and uses for Runtime Context planning.
  */
 export function effectiveMaxOutputTokens(model: string | null | undefined, requested: number | null | undefined): number | null {
   if (requested !== null && requested !== undefined) return requested;

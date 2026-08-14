@@ -1,11 +1,29 @@
+/**
+ * `ManagedAgentLoopPort` implemented over @earendil-works/pi-agent-core.
+ *
+ * This is the only module in the server allowed to reach that package, which
+ * `boundaries.test.ts` enforces. Pi owns transcript accumulation, sequential
+ * batch execution, truncated-batch failure and turn stopping. It owns nothing
+ * else: every model turn goes back out through the agent-space executor, and
+ * every tool call goes back out through the caller's dispatch into
+ * `SystemActionGateway`.
+ *
+ * The dynamic `import()` below is a requirement rather than a lazy-loading
+ * optimisation — the server compiles to CJS (`module: "node16"`, no
+ * `"type": "module"`) and pi-agent-core is ESM-only, so a static import would
+ * not resolve at runtime.
+ */
 import type {
   CanonicalMessage,
   CanonicalToolCall,
-  CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+import type {
+  ManagedAgentLoopInput,
+  ManagedAgentLoopPort,
+  ManagedAgentLoopResult,
+} from "./managedAgentLoopPort";
 
 type PiCoreModule = typeof import("@earendil-works/pi-agent-core", { with: { "resolution-mode": "import" } });
 type PiAgentMessage = import("@earendil-works/pi-agent-core", { with: { "resolution-mode": "import" } }).AgentMessage;
@@ -19,35 +37,14 @@ function loadPiCore(): Promise<PiCoreModule> {
   return piCorePromise;
 }
 
-export type ManagedModelRequest = (
-  config: ServerConfig,
-  request: RuntimeHostExecuteRequest,
-) => Promise<RuntimeHostExecuteResponse>;
-
-export interface ManagedToolDispatchResult {
-  modelResult: unknown;
-  summary: Record<string, unknown>;
-  artifact?: unknown;
-  suspend?: RuntimeHostExecuteResponse;
-}
-
-export interface ManagedAgentLoopResult {
-  response: RuntimeHostExecuteResponse;
-  toolSummaries: Array<Record<string, unknown>>;
-  artifacts: unknown[];
-  turnLimitReached: boolean;
-}
-
-export async function runManagedAgentLoop(input: {
-  config: ServerConfig;
-  request: RuntimeHostExecuteRequest;
-  executeModel: ManagedModelRequest;
-  tools: CanonicalToolDefinition[];
-  toolBindings: RuntimeHostExecuteRequest["tool_bindings"];
-  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>;
-  maxTurns: number;
-  signal?: AbortSignal;
-}): Promise<ManagedAgentLoopResult> {
+/**
+ * The loop holds substantial state for the duration of one call — the raw tool
+ * arguments map, accumulated summaries, the turn counter, and pi's own `Agent`
+ * with its transient transcript — and none of it survives the returned promise.
+ * Nothing is held across calls, so the port is satisfied by a plain object
+ * rather than an instantiated class.
+ */
+async function runManagedAgentLoop(input: ManagedAgentLoopInput): Promise<ManagedAgentLoopResult> {
   const { Agent } = await loadPiCore();
   const toolSummaries: Array<Record<string, unknown>> = [];
   const artifacts: unknown[] = [];
@@ -156,10 +153,14 @@ export async function runManagedAgentLoop(input: {
           tool_bindings: [],
           tools: [],
         });
+        // The fallback belongs here: the effective provider is only known
+        // inside the executor, because a Delivery may remap the provider id.
+        // The summary must not name a tool family — every family is affected
+        // when the provider cannot take tools at all.
         toolSummaries.push({
-          tool_name: "retrieval",
+          tool_name: "managed_tools",
           ok: false,
-          error_code: "retrieval_tool_provider_unsupported",
+          error_code: "managed_tool_provider_unsupported",
         });
       }
       lastResponse = response;
@@ -514,3 +515,5 @@ function recordOrEmpty(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown>
     : {};
 }
+
+export const piManagedAgentLoop: ManagedAgentLoopPort = { run: runManagedAgentLoop };

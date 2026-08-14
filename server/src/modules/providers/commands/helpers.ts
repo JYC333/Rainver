@@ -1,5 +1,5 @@
 import type { mapProviderRowToDto } from "../dbReader";
-import { canonicalProviderVendorId } from "../vendors";
+import { listProviderVendors, providerVendor } from "../vendors";
 import {
   ProviderCommandValidationError,
   type ModelProviderCreateInput,
@@ -7,19 +7,16 @@ import {
   type RotationStrategy,
 } from "./types";
 
-export const PROVIDER_TYPES = new Set([
-  "openai",
-  "openai_codex",
-  "anthropic",
-  "minimax",
-  "openrouter",
-  "deepseek",
-  "ollama",
-  "zeroentropy",
-  "cohere",
-  "openai_compatible",
-]);
-export const CLOUD_PROVIDER_TYPES = new Set(["openai", "anthropic", "minimax", "openrouter", "deepseek", "zeroentropy", "cohere"]);
+/**
+ * Vendor identity, credentialing, and published endpoints all come from the
+ * registry. These used to be three hand-maintained lists here, next to a fourth
+ * in the web client and a fifth in the provider-task table — which is how the
+ * copies drifted.
+ */
+export const PROVIDER_TYPES = new Set(listProviderVendors().map((vendor) => vendor.id));
+export const CLOUD_PROVIDER_TYPES = new Set(
+  listProviderVendors().filter((vendor) => vendor.apiKeyRequired).map((vendor) => vendor.id),
+);
 export const ROTATION_STRATEGIES = new Set(["fill_first", "round_robin", "least_used", "random"]);
 
 export type ProviderRow = Parameters<typeof mapProviderRowToDto>[0];
@@ -119,16 +116,18 @@ export function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null 
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/**
+ * Ollama and a custom OpenAI-compatible endpoint publish no single address — a
+ * local server may be anywhere, and a gateway is whatever the operator points
+ * it at. Their registry entry still offers a starting point for the form, but
+ * the server will not silently apply one: an omitted base URL for those two is
+ * a validation error rather than a guess.
+ */
+const BASE_URL_MUST_BE_EXPLICIT = new Set(["ollama", "openai_compatible"]);
+
 export function defaultBaseUrlFor(providerType: string): string | null {
-  if (providerType === "openai") return "https://api.openai.com/v1";
-  if (providerType === "openai_codex") return "https://chatgpt.com/backend-api";
-  if (providerType === "anthropic") return "https://api.anthropic.com";
-  if (providerType === "minimax") return "https://api.minimaxi.com/anthropic";
-  if (providerType === "openrouter") return "https://openrouter.ai/api/v1";
-  if (providerType === "deepseek") return "https://api.deepseek.com";
-  if (providerType === "zeroentropy") return "https://api.zeroentropy.dev/v1";
-  if (providerType === "cohere") return "https://api.cohere.com";
-  return null;
+  if (BASE_URL_MUST_BE_EXPLICIT.has(providerType)) return null;
+  return providerVendor(providerType)?.defaultBaseUrl ?? null;
 }
 
 export function normalizeBaseUrl(providerType: string, baseUrl: string | null | undefined): string {
@@ -142,7 +141,7 @@ export function normalizeBaseUrl(providerType: string, baseUrl: string | null | 
 }
 
 export function providerInfoFromRow(row: ProviderRow): ProviderInfo {
-  const providerType = canonicalProviderVendorId(row.provider_type);
+  const providerType = row.provider_type;
   return {
     id: row.id,
     space_id: row.space_id,

@@ -859,6 +859,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
         run_id: runId,
         agent_id: AGENT,
         estimated_cost_usd: 1.25,
+        cost_accuracy: "catalog",
         usage_details: { input: 10, output: 10 },
         usage_accuracy: "estimated",
         idempotency_key: `supervisor-cost:${runId}`,

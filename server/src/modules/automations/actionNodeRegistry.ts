@@ -50,15 +50,20 @@ export type ActionNodeHandler = (context: ActionNodeContext) => Promise<ActionNo
  * wrong pattern here).
  */
 class ActionNodeHandlerRegistry {
-  private readonly handlers = new Map<string, ActionNodeHandler>();
+  private readonly handlers = new Map<string, { handler: ActionNodeHandler; owner: string }>();
 
-  register(actionKey: string, handler: ActionNodeHandler): void {
+  register(actionKey: string, handler: ActionNodeHandler, owner: string): void {
     if (!actionKey) throw new Error("actionKey must be non-empty");
-    this.handlers.set(actionKey, handler);
+    if (!owner.trim()) throw new Error("owner must be non-empty");
+    const existing = this.handlers.get(actionKey);
+    if (existing && existing.owner !== owner) {
+      throw new Error(`${actionKey} is already registered by ${existing.owner}`);
+    }
+    this.handlers.set(actionKey, { handler, owner });
   }
 
   get(actionKey: string): ActionNodeHandler | null {
-    return this.handlers.get(actionKey) ?? null;
+    return this.handlers.get(actionKey)?.handler ?? null;
   }
 
   registeredKeys(): ReadonlySet<string> {

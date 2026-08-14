@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/client'
+import type { ProviderVendorOut } from '../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('../../core/spaceNav', () => ({
@@ -31,6 +32,21 @@ const initialDraft = {
   execution: { model_provider_id: 'provider-1', model_name: '' },
 }
 
+const providerVendors = [
+  {
+    id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions',
+    supports_chat: true, supports_runtime_tools: true, supports_structured_output: true,
+    supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1',
+    api_key_required: true, subscription_only: false,
+  },
+  {
+    id: 'openai_codex', display_name: 'OpenAI Codex', protocol: 'openai_codex_responses',
+    supports_chat: true, supports_runtime_tools: true, supports_structured_output: true,
+    supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api',
+    api_key_required: false, subscription_only: true,
+  },
+] satisfies ProviderVendorOut[]
+
 describe('ResearchSetupDialog', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -46,6 +62,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={{ ...initialDraft, question_refine_skipped: true }}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
         onOpenChange={vi.fn()}
@@ -71,6 +88,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={{ ...initialDraft, execution: { model_provider_id: '', model_name: '' } }}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[
           { id: 'provider-1', name: 'First provider', provider_type: 'openai', enabled: true } as never,
           { id: 'provider-2', name: 'Default provider', provider_type: 'openai', enabled: true, is_default: true, default_model: 'MiniMax-M3' } as never,
@@ -94,6 +112,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={{ ...initialDraft, execution: { model_provider_id: '', model_name: '' } }}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[
           {
             id: 'codex-provider',
@@ -124,6 +143,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={initialDraft}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}
@@ -152,6 +172,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={initialDraft}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}
@@ -188,6 +209,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={{ ...initialDraft, query_strategy_id: '' }}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]}
         canAct
         onOpenChange={vi.fn()}
@@ -230,6 +252,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={initialDraft}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}
@@ -246,6 +269,7 @@ describe('ResearchSetupDialog', () => {
         threadId="thread-1"
         draft={{ ...initialDraft, execution: { ...initialDraft.execution } }}
         busyAction={null}
+        providerVendors={providerVendors}
         modelProviders={[]}
         canAct
         onOpenChange={vi.fn()}

@@ -54,9 +54,10 @@ capture / trigger
 ### ModelProvider and RuntimeAdapter are separate
 
 - `ModelProvider` = vendor identity, model catalog, API endpoint, credential pool,
-  and Space grant. Managed chat protocol and catalog behavior are resolved by
-  the server vendor registry and executed through pi-ai; configurable endpoint
-  and NetworkProfile routing remain agent-space authority.
+  and Space grant. Managed chat protocol and capability profile are resolved by
+  the server vendor registry and executed through pi-ai; which pi-ai catalog
+  describes a vendor's models is the adapter's own fact, not the registry's.
+  Configurable endpoint and NetworkProfile routing remain agent-space authority.
 - Configured per space via `GET/POST/PATCH /api/v1/providers`. API keys are encrypted server-side; responses expose `has_api_key` only.
 - `RuntimeAdapter` = execution loop/tool environment (capability, model_api, claude_code, codex_cli, etc.).
 - Agents select a default provider/model on `AgentVersion` (`model_provider_id`, `model_name`); runs resolve provider at creation time.

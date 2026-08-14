@@ -491,7 +491,9 @@ describe("runtime host internal route", () => {
       cache_creation_input_tokens: 40,
       cache_creation_1h_input_tokens: 30,
     });
-    expect(bodies[0]?.max_tokens).toBe(1_024);
+    // No request or independent model-spec cap is present, so the resolved Pi
+    // model (or its fallback) is the sole output-token authority.
+    expect(bodies[0]?.max_tokens).toBe(16_384);
     expect(bodies[0]?.system).toEqual([{
       type: "text",
       text: "Be direct.",
@@ -941,7 +943,9 @@ describe("runtime host internal route", () => {
 
     expect(res.statusCode).toBe(200);
     expect(bodies[0]).toMatchObject({
-      max_tokens: 2_048,
+      // Structured output no longer installs an Anthropic-only cap; it follows
+      // the same request -> modelSpecs -> Pi model authority order.
+      max_tokens: 16_384,
       tool_choice: { type: "tool", name: "research_test_v1" },
       tools: [{ name: "research_test_v1" }],
     });

@@ -1,38 +1,70 @@
-import type { ModelProviderOut, ProviderType } from '../../api/client'
+import type { ModelProviderOut, ProviderType, ProviderVendorOut } from '../../api/client'
 import type { AddProviderMode, ModelFieldCopy, ProviderCapability } from './types'
 
-export const PROVIDER_TYPES: { value: ProviderType; label: string }[] = [
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'minimax', label: 'MiniMax' },
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'deepseek', label: 'DeepSeek' },
-  { value: 'ollama', label: 'Ollama' },
-  { value: 'zeroentropy', label: 'ZeroEntropy' },
-  { value: 'cohere', label: 'Cohere' },
-  { value: 'openai_compatible', label: 'Other OpenAI-compatible' },
-]
-
-const CHAT_PROVIDER_TYPES = new Set<ProviderType>(['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'])
-const EMBEDDING_PROVIDER_TYPES = new Set<ProviderType>(['cohere', 'zeroentropy', 'openai', 'openrouter', 'ollama', 'openai_compatible'])
-const RERANK_PROVIDER_TYPES = new Set<ProviderType>(['cohere', 'zeroentropy'])
-
-export const API_KEY_REQUIRED = new Set(['openai', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'zeroentropy', 'cohere'])
-export const RETRIEVAL_ONLY_PROVIDER_TYPES = new Set(['zeroentropy', 'cohere'])
-
-export function providerTypeOptionsForMode(mode: AddProviderMode): { value: ProviderType; label: string }[] {
-  return PROVIDER_TYPES.filter(option => (
-    mode === 'chat'
-      ? CHAT_PROVIDER_TYPES.has(option.value)
-      : mode === 'embedding'
-        ? EMBEDDING_PROVIDER_TYPES.has(option.value)
-        : RERANK_PROVIDER_TYPES.has(option.value)
-  ))
+/**
+ * Vendor facts come from the server's registry, read through
+ * `providersApi.vendors()` and threaded down from the providers page. Only
+ * presentation lives here — copy, placeholders, and embedding dimension
+ * options. The lists this file used to hardcode were a second, hand-maintained
+ * answer to questions `VendorDescriptor` already answers, and had drifted:
+ * DeepSeek was offered with no base URL to pre-fill, and a branch existed for
+ * a vendor the form never showed.
+ */
+export function providerTypeOptionsForMode(
+  mode: AddProviderMode,
+  vendors: readonly ProviderVendorOut[],
+): { value: ProviderType; label: string }[] {
+  return vendors
+    .filter(vendor => (
+      mode === 'chat'
+        // A vendor reachable only through a managed subscription is connected
+        // in the subscriptions panel, never by pasting an API key here.
+        ? vendor.supports_chat && !vendor.subscription_only
+        : mode === 'embedding'
+          ? vendor.supports_embedding
+          : vendor.supports_rerank
+    ))
+    .map(vendor => ({ value: vendor.id, label: vendor.display_name }))
 }
 
-export function providerCapabilities(providerType: ProviderType | string, mode?: AddProviderMode): ProviderCapability[] {
+export function apiKeyRequiredForVendor(
+  providerType: ProviderType | string,
+  vendors: readonly ProviderVendorOut[],
+): boolean {
+  return vendors.find(vendor => vendor.id === providerType)?.api_key_required ?? false
+}
+
+export function isRetrievalOnlyVendor(
+  providerType: ProviderType | string,
+  vendors: readonly ProviderVendorOut[],
+): boolean {
+  const vendor = vendors.find(candidate => candidate.id === providerType)
+  return vendor ? !vendor.supports_chat : false
+}
+
+export function supportsStructuredOutput(
+  providerType: ProviderType | string,
+  vendors: readonly ProviderVendorOut[],
+): boolean {
+  return vendors.find(candidate => candidate.id === providerType)?.supports_structured_output ?? false
+}
+
+export function defaultBaseUrl(
+  providerType: ProviderType | string,
+  vendors: readonly ProviderVendorOut[],
+): string {
+  return vendors.find(vendor => vendor.id === providerType)?.default_base_url ?? ''
+}
+
+export function providerCapabilities(
+  providerType: ProviderType | string,
+  vendors: readonly ProviderVendorOut[],
+  mode?: AddProviderMode,
+): ProviderCapability[] {
+  const vendor = vendors.find(candidate => candidate.id === providerType)
+  if (!vendor) return []
   const capabilities: ProviderCapability[] = []
-  if (mode !== 'embedding' && mode !== 'rerank' && ['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'].includes(providerType)) {
+  if (mode !== 'embedding' && mode !== 'rerank' && vendor.supports_chat) {
     capabilities.push({
       key: 'chat',
       label: 'Chat',
@@ -40,7 +72,7 @@ export function providerCapabilities(providerType: ProviderType | string, mode?:
       variant: 'default',
     })
   }
-  if (mode !== 'chat' && mode !== 'rerank' && ['openai', 'openrouter', 'ollama', 'zeroentropy', 'cohere', 'openai_compatible'].includes(providerType)) {
+  if (mode !== 'chat' && mode !== 'rerank' && vendor.supports_embedding) {
     capabilities.push({
       key: 'embeddings',
       label: 'Embeddings',
@@ -48,7 +80,7 @@ export function providerCapabilities(providerType: ProviderType | string, mode?:
       variant: 'secondary',
     })
   }
-  if (mode !== 'chat' && mode !== 'embedding' && (providerType === 'zeroentropy' || providerType === 'cohere')) {
+  if (mode !== 'chat' && mode !== 'embedding' && vendor.supports_rerank) {
     capabilities.push({
       key: 'native_rerank',
       label: 'Native rerank',
@@ -134,17 +166,6 @@ export function modelFieldCopy(providerType: ProviderType | string, mode?: AddPr
       : 'gpt-4o, gpt-4o-mini',
     help: 'Comma-separated model names shown in provider and task selectors.',
   }
-}
-
-export function defaultBaseUrl(providerType: ProviderType): string {
-  if (providerType === 'openai') return 'https://api.openai.com/v1'
-  if (providerType === 'openai_codex') return 'https://chatgpt.com/backend-api'
-  if (providerType === 'anthropic') return 'https://api.anthropic.com'
-  if (providerType === 'openrouter') return 'https://openrouter.ai/api/v1'
-  if (providerType === 'ollama') return 'http://localhost:11434'
-  if (providerType === 'zeroentropy') return 'https://api.zeroentropy.dev/v1'
-  if (providerType === 'cohere') return 'https://api.cohere.com'
-  return ''
 }
 
 export function embeddingDimensionOptions(providerType: ProviderType | string): number[] {

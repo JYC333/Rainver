@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Check, Clock3, Loader2, Pencil, Plus, Send, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
-import type { ModelProviderOut } from '../../api/client'
+import type { ModelProviderOut, ProviderVendorOut } from '../../api/client'
 import type {
   InquiryThread,
   InquiryThreadRevision,
@@ -25,6 +25,7 @@ import {
 } from './researchSetupDraft'
 import { defaultModelProvider } from '../providers/defaultProvider'
 import { errMsg } from '../../lib/utils'
+import { supportsStructuredOutput } from '../providers/providerMetadata'
 
 type ProcessingEvent = NonNullable<ProjectResearchQuestionAssessmentSession['messages'][number]['processing_events']>[number]
 type ConversationMessage = {
@@ -35,8 +36,6 @@ type ConversationMessage = {
 }
 type ClarifyingAnswer = { selected: string[]; other: string }
 type ClarifyingQuestion = ProjectResearchQuestionRefinement['clarifying_questions'][number]
-
-const structuredOutputProviderTypes = new Set(['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'])
 
 /** Sessions saved before clarifying questions gained structured options may still contain strings. */
 function clarifyingQuestionItems(refinement: ProjectResearchQuestionRefinement): ClarifyingQuestion[] {
@@ -146,6 +145,7 @@ interface QuestionRefinementPanelProps {
   thread: InquiryThread
   linkedDraftWorkflow: ProjectResearchWorkflow | null
   modelProviders: ModelProviderOut[]
+  providerVendors?: ProviderVendorOut[]
   assessmentSession: ProjectResearchQuestionAssessmentSession | null
   canAct: boolean
   onChanged: () => Promise<void>
@@ -155,7 +155,7 @@ interface QuestionRefinementPanelProps {
  * A dedicated two-pane workspace: the conversation is continuous on one side,
  * while every model turn replaces the live structured framework on the other.
  */
-export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow, modelProviders, assessmentSession, canAct, onChanged }: QuestionRefinementPanelProps) {
+export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow, modelProviders, providerVendors = [], assessmentSession, canAct, onChanged }: QuestionRefinementPanelProps) {
   const isHypothesis = thread.kind === 'hypothesis'
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(researchSetupDraftFromWorkflow(linkedDraftWorkflow, thread.statement)))
   const [sessionWorkflowId, setSessionWorkflowId] = useState<string | null>(linkedDraftWorkflow?.id ?? null)
@@ -235,12 +235,12 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
   }, [assessmentSession?.id, projectId, thread.id])
 
   useEffect(() => {
-    const fallback = defaultModelProvider(modelProviders, provider => structuredOutputProviderTypes.has(provider.provider_type))
+    const fallback = defaultModelProvider(modelProviders, provider => supportsStructuredOutput(provider.provider_type, providerVendors))
     if (!fallback) return
     setDraft(current => current.execution.model_provider_id
       ? current
       : { ...current, execution: { model_provider_id: fallback.id, model_name: current.execution.model_name || (fallback.default_model ?? '') } })
-  }, [modelProviders])
+  }, [modelProviders, providerVendors])
 
   useEffect(() => {
     const container = conversationScrollRef.current

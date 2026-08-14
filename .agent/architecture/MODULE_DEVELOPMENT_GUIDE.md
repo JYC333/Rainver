@@ -110,6 +110,22 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 | Model API runtime | Use `model_api` for no-tools provider-backed execution; it calls server providers and does not use CLI credentials, terminal, local-host, or sandbox capabilities. |
 | Capability/workflow/open-skill control plane | Add or change `server/src/modules/capabilities`; do not widen `catalog` into remote import, marketplace, or execution ownership. |
 
+### Static contribution registries
+
+Registration performed from a core module's `registerRoutes` path can run more
+than once in a process because tests build multiple Fastify applications.
+Registries for static module contributions therefore require a stable owner id:
+same-owner registration is an idempotent replacement, while a different owner
+claiming the same key throws and identifies the existing owner. Register a
+cross-module contribution explicitly from the contributing module's init path;
+do not rely on importing an implementation file for its side effect.
+
+Use a named `replace()` only where runtime replacement is the documented
+contract, currently Project Attention by `areaKind`. A registry and fixed
+built-in handlers declared in the same file may self-register once at import
+when importing the registry necessarily imports the complete handler set. Do
+not add disposal handles until a genuinely runtime-dynamic contribution exists.
+
 ## Shared Settings And Scheduler State
 
 New modules must reuse the shared infrastructure for sparse settings and

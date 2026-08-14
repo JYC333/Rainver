@@ -157,7 +157,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
 }
 
 export function registerInformationDigestAutomationTarget(): void {
-  automationTargetHandlerRegistry.register(TARGET_TYPE, { preflight, execute });
+  automationTargetHandlerRegistry.register(TARGET_TYPE, { preflight, execute }, "informationDigest");
 }
 
 function requestFromConfig(configJson: Record<string, unknown> | null | undefined, boundProjectId?: string | null) {

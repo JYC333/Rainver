@@ -7,7 +7,7 @@ import { autonomyDiscovererRegistry, type AutonomyCandidateKind } from "./regist
 export function registerAutonomyRunFinalizationReconciler(): void {
   runFinalizationReconcilerRegistry.register("autonomy", {
     reconcile: (db, run) => reconcileAutonomyRun(db, run),
-  });
+  }, "autonomy");
 }
 
 export async function reconcileAutonomyRun(db: Queryable, run: RunRecord): Promise<void> {

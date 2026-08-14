@@ -88,7 +88,7 @@ const learningSummaryAdapter: ProjectEntitySummaryAdapter = {
 };
 
 export function registerLearningProjectIntegration(): void {
-  projectModeProjectionRegistry.register(learningModeAdapter);
-  projectEntitySummaryRegistry.register(learningSummaryAdapter);
-  projectAttentionRegistry.register(learningAttentionAdapter);
+  projectModeProjectionRegistry.register(learningModeAdapter, "learning");
+  projectEntitySummaryRegistry.register(learningSummaryAdapter, "learning");
+  projectAttentionRegistry.replace(learningAttentionAdapter);
 }

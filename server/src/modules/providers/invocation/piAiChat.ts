@@ -24,6 +24,7 @@ import type {
   ProviderStructuredOutput,
 } from "./invocation";
 import { ProviderInvocationError, structuredOutputFromText } from "./invocation";
+import type { ManagedAuthEvent, ManagedAuthPrompt, ManagedOAuthFlow } from "../managedOAuth";
 import { classifyProviderFailure } from "./resilience";
 
 type PiModule = typeof import("@earendil-works/pi-ai", { with: { "resolution-mode": "import" } });
@@ -32,41 +33,11 @@ type PiCatalogModule = typeof import("@earendil-works/pi-ai/providers/all", { wi
 let piModulePromise: Promise<PiModule> | null = null;
 let catalogModulePromise: Promise<PiCatalogModule> | null = null;
 
-export interface ManagedOAuthCredential {
-  type: "oauth";
-  refresh: string;
-  access: string;
-  expires: number;
-  [key: string]: unknown;
-}
-
-export type ManagedAuthPrompt = {
-  signal?: AbortSignal;
-  message: string;
-  placeholder?: string;
-} & (
-  | { type: "text" | "secret" | "manual_code" }
-  | { type: "select"; options: readonly { id: string; label: string; description?: string }[] }
-);
-
-export type ManagedAuthEvent =
-  | { type: "info"; message: string; links?: readonly { url: string; label?: string }[] }
-  | { type: "auth_url"; url: string; instructions?: string }
-  | { type: "device_code"; userCode: string; verificationUri: string; intervalSeconds?: number; expiresInSeconds?: number }
-  | { type: "progress"; message: string };
-
-export interface ManagedAuthInteraction {
-  signal?: AbortSignal;
-  prompt(prompt: ManagedAuthPrompt): Promise<string>;
-  notify(event: ManagedAuthEvent): void;
-}
-
-export interface ManagedOAuthFlow {
-  login(interaction: ManagedAuthInteraction): Promise<ManagedOAuthCredential>;
-  refresh(credential: ManagedOAuthCredential, signal: AbortSignal): Promise<ManagedOAuthCredential>;
-}
-
-/** Keep every pi-ai import and provider-auth implementation behind one adapter boundary. */
+/**
+ * Keep every pi-ai import and provider-auth implementation behind one adapter
+ * boundary. The returned flow satisfies the agent-space `ManagedOAuthFlow`
+ * contract; no caller sees a pi type.
+ */
 export async function loadManagedOAuthFlow(
   type: "anthropic" | "openai_codex",
 ): Promise<ManagedOAuthFlow> {
@@ -151,17 +122,55 @@ function piBaseUrl(provider: ProviderInfo): string {
   return base;
 }
 
-async function piModel(provider: ProviderInfo, modelId: string): Promise<Model<Api>> {
+/**
+ * Which pi-ai catalog describes a vendor's models, when one does.
+ *
+ * This is a fact about pi-ai, not about the vendor, so it lives with the
+ * adapter rather than in the server's vendor registry.
+ *
+ * A vendor absent from this map has no per-model rates available here, and a
+ * call to it is therefore recorded as having no known price rather than as
+ * costing nothing. Three kinds of vendor are absent deliberately: the embedding
+ * and rerank vendors, which pi-ai does not cover at all; custom endpoints,
+ * whose models are whatever the operator points them at; and Ollama, whose
+ * models are locally served and genuinely unpriced. Ollama's marginal cost to
+ * the operator may well be zero, but that is a funding fact the router owns,
+ * not something this ledger can observe — from here it is a gap.
+ */
+const PI_CATALOG_BY_VENDOR: Readonly<Partial<Record<string, string>>> = {
+  openai: "openai",
+  openai_codex: "openai-codex",
+  anthropic: "anthropic",
+  minimax: "minimax",
+  openrouter: "openrouter",
+  deepseek: "deepseek",
+};
+
+/** Exposed so a test can assert the map still covers every vendor whose models pi-ai describes. */
+export function piCatalogForVendor(vendorId: string): string | null {
+  return PI_CATALOG_BY_VENDOR[vendorId] ?? null;
+}
+
+/** Exposed so a test can catch a key that names no vendor. */
+export function piCatalogVendorIds(): readonly string[] {
+  return Object.keys(PI_CATALOG_BY_VENDOR);
+}
+
+async function piModel(
+  provider: ProviderInfo,
+  modelId: string,
+): Promise<{ model: Model<Api>; costAccuracy: "catalog" | "unknown" }> {
   const vendor = requireProviderVendor(provider.provider_type);
+  const piCatalog = piCatalogForVendor(vendor.id);
   const api = vendor.protocol === "anthropic_messages"
     ? "anthropic-messages"
     : vendor.protocol === "openai_codex_responses"
       ? "openai-codex-responses"
       : "openai-completions";
   let catalogModel: Model<Api> | undefined;
-  if (vendor.piCatalog) {
+  if (piCatalog) {
     const { getBuiltinModels } = await loadPiCatalog();
-    catalogModel = getBuiltinModels(vendor.piCatalog as Parameters<typeof getBuiltinModels>[0])
+    catalogModel = getBuiltinModels(piCatalog as Parameters<typeof getBuiltinModels>[0])
       .find((candidate) => candidate.id === modelId) as Model<Api> | undefined;
   }
   const fallback: Model<Api> = {
@@ -190,14 +199,14 @@ async function piModel(provider: ProviderInfo, modelId: string): Promise<Model<A
         }
       : {}),
   };
-  return {
+  return { model: {
     ...(catalogModel ?? fallback),
     id: modelId,
     name: catalogModel?.name ?? modelId,
     api,
     provider: provider.provider_type,
     baseUrl: piBaseUrl(provider),
-  } as Model<Api>;
+  } as Model<Api>, costAccuracy: catalogModel ? "catalog" : "unknown" };
 }
 
 function toolCall(call: CanonicalToolCall) {
@@ -382,10 +391,10 @@ export async function completePiAiChat(
   apiKey: string | null,
   body: ProviderChatRequestBody,
 ): Promise<ProviderChatResponseBody> {
-  if (!apiKey && provider.provider_type !== "ollama") {
+  const vendor = requireProviderVendor(provider.provider_type);
+  if (!apiKey && vendor.apiKeyRequired) {
     throw new ProviderInvocationError(400, `ModelProvider '${provider.id}' has no API key credential`);
   }
-  const vendor = requireProviderVendor(provider.provider_type);
   if (!vendor.supportsChat) {
     throw new ProviderInvocationError(400, `provider_type '${provider.provider_type}' does not support chat`);
   }
@@ -400,7 +409,7 @@ export async function completePiAiChat(
 
   await loadPi();
   const modelId = resolveModelName(provider, body.model);
-  const model = await piModel(provider, modelId);
+  const { model, costAccuracy } = await piModel(provider, modelId);
   const outputTool = body.output_format && !body.tools?.length ? structuredTool(body.output_format) : null;
   const tools = outputTool ? [outputTool] : (body.tools ?? []).map(piTool);
   const context: Context = {
@@ -409,20 +418,25 @@ export async function completePiAiChat(
     ...(tools.length ? { tools } : {}),
   };
   const api = await loadApi(vendor.protocol);
-  const configuredMaxTokens = effectiveMaxOutputTokens(modelId, body.max_tokens);
-  const maxTokens = configuredMaxTokens ??
-    (vendor.protocol === "anthropic_messages" ? (tools.length ? 2_048 : 1_024) : undefined);
+  const maxTokens = effectiveMaxOutputTokens(modelId, body.max_tokens) ?? undefined;
   let responseStatus: number | null = null;
   const trackedFetch: typeof globalThis.fetch = async (input, init) => {
+    const headers = new Headers(init?.headers);
+    if (!apiKey) headers.delete("authorization");
     const response = await networkFetch(input, {
       ...(init ?? {}),
+      headers,
       signal: init?.signal ?? body.abort_signal,
     });
     responseStatus = response.status;
     return response;
   };
   const stream = api.stream(model, context, {
-    apiKey: apiKey ?? (provider.provider_type === "ollama" ? "ollama" : undefined),
+    // pi-ai requires a non-empty option before constructing an OpenAI stream,
+    // even for registries that explicitly allow keyless endpoints. The value
+    // never crosses the adapter boundary: trackedFetch strips Authorization
+    // whenever agent-space supplied no credential.
+    apiKey: apiKey ?? "agent-space-keyless",
     fetch: trackedFetch,
     signal: body.abort_signal,
     temperature: body.temperature,
@@ -534,6 +548,7 @@ export async function completePiAiChat(
     model: finalMessage.responseModel ?? finalMessage.model,
     usage: responseUsage(finalMessage),
     cost: responseCost(finalMessage),
+    cost_accuracy: costAccuracy,
     tool_calls: responseToolCalls(finalMessage, body.tools),
     structured_output: structuredOutput,
     finish_reason: finishReason,

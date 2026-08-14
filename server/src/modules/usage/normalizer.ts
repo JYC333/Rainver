@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  CostAccuracy,
   NormalizedUsageObservation,
   TotalTokensSource,
   UsageAccuracy,
@@ -60,6 +61,10 @@ export function normalizeUsageObservation(
   const usageAccuracy = normalizeUsageAccuracy(
     input.usage_accuracy ?? inferAccuracy(providerUsage, explicit),
   );
+  const catalogCost = normalizeCostAccuracy(input.cost_accuracy) === "catalog"
+    ? nonNegativeFiniteNumber(input.estimated_cost_usd)
+    : null;
+  const costAccuracy: CostAccuracy = catalogCost === null ? "unknown" : "catalog";
   const totalTokensSource = normalized.totalTokensSource;
   const totalTokens = normalized.totalTokens;
   const id = randomUUID();
@@ -116,10 +121,11 @@ export function normalizeUsageObservation(
     cache_read_input_tokens: normalized.usageDetails.input_cache_read ?? 0,
     reasoning_tokens: normalized.usageDetails.output_reasoning ?? 0,
     request_count: nonNegativeInt(input.request_count) ?? 1,
-    estimated_cost_usd: finiteNumber(input.estimated_cost_usd),
+    estimated_cost_usd: catalogCost,
+    cost_accuracy: costAccuracy,
     usage_schema: trimOrNull(input.usage_schema) ?? "agent_space_v1",
     usage_details_json: normalized.usageDetails,
-    cost_details_json: safeTraceObject(input.cost_details),
+    cost_details_json: costAccuracy === "catalog" ? normalizeCostDetails(input.cost_details) : {},
     provider_usage_json: providerUsage,
     usage_normalization_version: USAGE_NORMALIZATION_VERSION,
     total_tokens_source: totalTokensSource,
@@ -132,6 +138,20 @@ export function normalizeUsageObservation(
     grant_snapshots: attribution.grant_snapshots,
     created_at: recordedAt,
   };
+}
+
+function normalizeCostAccuracy(value: CostAccuracy | null | undefined): CostAccuracy {
+  return value === "catalog" ? "catalog" : "unknown";
+}
+
+function nonNegativeFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function normalizeCostDetails(value: unknown): Record<string, unknown> {
+  const details = safeTraceObject(value);
+  delete details.accuracy;
+  return details;
 }
 
 /**
@@ -456,14 +476,6 @@ function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-function finiteNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
-    return Number(value);
-  }
-  return null;
 }
 
 function intFrom(value: unknown): number | undefined {

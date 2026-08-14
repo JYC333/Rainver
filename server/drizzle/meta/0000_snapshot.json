@@ -1,5 +1,5 @@
 {
-  "id": "e5f29e28-1326-4c05-baad-c7d2be520b5f",
+  "id": "d93e6c2f-2199-4edc-a7c0-0cac5e58d757",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -64435,6 +64435,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "cost_accuracy": {
+          "name": "cost_accuracy",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
         "usage_schema": {
           "name": "usage_schema",
           "type": "varchar(64)",
@@ -64997,6 +65004,14 @@
         "ck_token_usage_events_usage_accuracy": {
           "name": "ck_token_usage_events_usage_accuracy",
           "value": "(usage_accuracy)::text = ANY (ARRAY[('provider_reported'::character varying)::text, ('proxy_observed'::character varying)::text, ('transcript_lower_bound'::character varying)::text, ('estimated'::character varying)::text, ('quota_snapshot'::character varying)::text, ('unknown'::character varying)::text])"
+        },
+        "ck_token_usage_events_cost_accuracy": {
+          "name": "ck_token_usage_events_cost_accuracy",
+          "value": "(cost_accuracy)::text = ANY (ARRAY[('catalog'::character varying)::text, ('unknown'::character varying)::text])"
+        },
+        "ck_token_usage_events_cost_provenance": {
+          "name": "ck_token_usage_events_cost_provenance",
+          "value": "(cost_accuracy = 'catalog' AND estimated_cost_usd IS NOT NULL AND estimated_cost_usd >= 0) OR (cost_accuracy = 'unknown' AND estimated_cost_usd IS NULL)"
         },
         "ck_token_usage_events_dedupe_confidence": {
           "name": "ck_token_usage_events_dedupe_confidence",

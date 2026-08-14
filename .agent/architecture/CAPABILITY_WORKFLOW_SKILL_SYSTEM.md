@@ -7,16 +7,30 @@ It describes the framework, not a fully active capability executor.
 
 ## Position
 
-Agent-space owns capability lifecycle, memory, context, policy, proposals,
-activity, artifacts, audit, Project Folder governance, and sandbox governance.
-Claude Code, Codex, Cursor, OpenCode, Gemini CLI, `model_api`, and future
-runtimes are adapters. They are not the source of truth for agent-space
-capabilities.
+An external Agent Skill package is the source of truth for its own procedural
+content. Agent-space owns the immutable import snapshot and provenance, risk and
+trust review, requested and granted policy, scope/Agent binding, pinned version,
+runtime compatibility, Runtime Context Delivery authorization, and audit. It
+does not own a canonical re-representation of imported skill content.
 
-The current implementation adds a framework for canonical definitions, packs,
-workflow templates, imported skill packages, project workflow profiles, governed
-skill lifecycle proposals, runtime skill rendering, and workflow run draft
-creation. It does not make the native `capability` runtime executable.
+Claude Code, Codex, Cursor, OpenCode, Gemini CLI, `model_api`, and future
+runtimes are adapters. Runtime-specific files or prompt blocks are generated
+adapter artifacts, not content authorities. Skill content is model-visible
+durable context and reaches a Run only through Runtime Context Delivery.
+
+A Skill is a procedure for a model. A System Action / Tool is an
+agent-space-owned callable operation exposed through the policy-enforced
+gateway. A package's tool, hook, script, dependency, or MCP declaration is a
+request only and grants no callable or execution authority. A Workflow is a
+third concept: an enforced process definition, not a soft instruction package.
+
+The current implementation is transitional: it still contains canonical
+capability definitions, packs, workflow templates, `NormalizedSkill`, imported
+skill conversion, capability runtime bindings, and renderers built from the
+normalized representation. Those paths remain subject to all existing proposal,
+policy, Delivery, and audit checks until capability-shrink items 2–7 replace
+them; this document does not treat them as the target authority model or invite
+new callers to extend them. The native `capability` runtime remains disabled.
 
 Terminology for runtime binaries, adapters, extensions, tool bindings, skill
 bindings, and product plugins is defined in
@@ -33,14 +47,16 @@ GitHub, future registries, a local workspace, an upload, or an official catalog.
 It usually contains `SKILL.md` plus optional references, assets, scripts, and
 vendor metadata.
 
-An Open Skill is not trusted by default. It is not agent-space source of truth
-after import. It is source material that can be previewed, risk-scanned,
-normalized, stored disabled, and later converted into a capability candidate.
+An Open Skill is not trusted by default, but its approved package snapshot
+remains the content of record. Agent-space may preview, inventory, hash,
+risk-scan, review, approve, bind, pin, and deliver that snapshot; it does not
+rewrite it into a canonical agent-space skill definition. Approval governs
+whether and where the content may be delivered, not whether agent-space owns it.
 
 ### NormalizedSkill
 
-`NormalizedSkill` is the internal intermediate representation for imported
-skills. It captures:
+`NormalizedSkill` is a transitional internal intermediate representation still
+used by the current importer and conversion path. It captures:
 
 - instructions
 - package-root-relative resource inventory
@@ -50,9 +66,10 @@ skills. It captures:
 - vendor extensions
 - deterministic risk analysis
 
-The normalized representation is the conversion boundary between external skill
-formats and agent-space capability candidates. Vendor declarations such as
-`allowed-tools` are permission requests, not permission grants.
+It is not a content authority and must not gain new consumers. Capability-shrink
+item 4 removes it so policy metadata is extracted alongside the immutable
+package snapshot without regenerating the skill's instructions. Vendor
+declarations such as `allowed-tools` remain permission requests, not grants.
 
 ### SkillPackageFile
 
@@ -91,14 +108,16 @@ API:
 
 ### CapabilityDefinition
 
-`CapabilityDefinition` is the canonical agent-space ability object. It defines
+`CapabilityDefinition` is the current agent-space ability object. It defines
 the semantic ability, input/output contracts, permissions, artifact types,
 proposal policy, supported execution modes, runtime support, and lifecycle
 status.
 
-Definitions may be built in, official, generated, or converted from an imported
-skill. Users configure profiles; they do not directly mutate canonical
-definitions.
+Definitions may currently be built in, official, generated, or converted from
+an imported skill. Imported-skill conversion is transitional and must not be
+extended: an external Skill remains a `SkillPackage`, while agent-space-owned
+System Actions retain their own registry and gateway. Users do not directly
+mutate definitions.
 
 ### CapabilityProfile
 
@@ -161,8 +180,11 @@ they do not execute research by themselves.
 
 ### RuntimeSkillBinding
 
-`RuntimeSkillBinding` maps an agent-space capability to a runtime-specific
-rendering or invocation:
+`RuntimeSkillBinding` is the transitional implementation name for the governed
+selection of skill content for a runtime. Its target responsibility is to bind
+an approved, pinned `SkillPackage` to an allowed scope/Agent and record runtime
+compatibility, not to own or regenerate that package's content. Current rows
+still map capability versions to these runtime-specific forms:
 
 - Claude Code skill layout
 - Codex skill layout
@@ -184,9 +206,11 @@ bindings; imported conversion also rejects ids that collide with built-in keys.
 
 ### RuntimeSkillRenderer
 
-`RuntimeSkillRenderer` renders canonical capability data, normalized skill data,
-and profile configuration into runtime target content. The MVP renderers are
-pure functions that produce deterministic:
+`RuntimeSkillRenderer` currently renders canonical capability data, normalized
+skill data, and profile configuration into runtime target content. This is
+transitional adapter glue. Its target input is the approved package snapshot
+plus binding/policy metadata, without a canonical content representation. The
+MVP renderers are pure functions that produce deterministic:
 
 - Claude Code generated skill directory suggestions with `SKILL.md`
 - Codex generated skill directory suggestions with `SKILL.md` and optional

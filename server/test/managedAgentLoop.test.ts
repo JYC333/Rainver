@@ -4,7 +4,8 @@ import type {
   RuntimeHostExecuteResponse,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { loadConfig } from "../src/config";
-import { runManagedAgentLoop } from "../src/modules/runs/managedAgentLoop";
+import { managedAgentLoop } from "../src/modules/runs/managedAgentLoopBinding";
+import { piManagedAgentLoop } from "../src/modules/runs/piManagedAgentLoop";
 import { validToolLoopSuffix } from "../src/modules/runtimeHost/deliveryAuthorizer";
 
 const config = loadConfig({});
@@ -108,13 +109,22 @@ function toolResponse(turn: number, finishReason: "toolUse" | "length" | "max_to
 }
 
 describe("managed pi agent loop port", () => {
+  it("exercises the pi implementation, which the pi upgrade gate depends on", () => {
+    // The cases below assert pi's own loop behaviour — raw-argument fidelity,
+    // truncated batches, abort, suspend, the turn limit. They run through the
+    // binding because that is the production path, so if the binding ever names
+    // another implementation this suite would silently stop covering pi while
+    // staying green.
+    expect(managedAgentLoop).toBe(piManagedAgentLoop);
+  });
+
   it("keeps raw model arguments at the canonical dispatch boundary", async () => {
     const calls: RuntimeHostExecuteRequest[] = [];
     const dispatch = vi.fn(async (call) => ({
       modelResult: { ok: true, raw: JSON.parse(call.arguments_json) },
       summary: { tool_name: call.name, ok: true },
     }));
-    const result = await runManagedAgentLoop({
+    const result = await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],
@@ -146,7 +156,7 @@ describe("managed pi agent loop port", () => {
       summary: { tool_name: call.name, ok: false },
     }));
     let turn = 0;
-    await runManagedAgentLoop({
+    await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],
@@ -174,7 +184,7 @@ describe("managed pi agent loop port", () => {
   it("fails an entire length-truncated tool batch without dispatching it", async () => {
     const calls: RuntimeHostExecuteRequest[] = [];
     const dispatch = vi.fn();
-    const result = await runManagedAgentLoop({
+    const result = await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],
@@ -196,7 +206,7 @@ describe("managed pi agent loop port", () => {
   it("treats Anthropic max_tokens as a truncated tool batch", async () => {
     const dispatch = vi.fn();
     let turn = 0;
-    await runManagedAgentLoop({
+    await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],
@@ -227,7 +237,7 @@ describe("managed pi agent loop port", () => {
       return { modelResult: { ok: true }, summary: { tool_name: "sample.tool", ok: true } };
     });
 
-    const result = await runManagedAgentLoop({
+    const result = await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],
@@ -265,7 +275,7 @@ describe("managed pi agent loop port", () => {
     };
     const executeModel = vi.fn(async () => twoCalls);
 
-    const result = await runManagedAgentLoop({
+    const result = await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],
@@ -287,7 +297,7 @@ describe("managed pi agent loop port", () => {
       summary: { tool_name: call.name, ok: true },
     }));
 
-    const result = await runManagedAgentLoop({
+    const result = await managedAgentLoop.run({
       config,
       request: request(),
       tools: request().tools ?? [],

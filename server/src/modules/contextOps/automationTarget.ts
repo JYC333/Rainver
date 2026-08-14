@@ -203,7 +203,7 @@ async function execute(
 }
 
 export function registerContextOpsReviewCycleAutomationTarget(): void {
-  automationTargetHandlerRegistry.register(TARGET_TYPE, { preflight, execute });
+  automationTargetHandlerRegistry.register(TARGET_TYPE, { preflight, execute }, "contextOps");
 }
 
 function requestFromConfig(configJson: Record<string, unknown> | null | undefined): {

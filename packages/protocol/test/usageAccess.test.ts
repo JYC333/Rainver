@@ -54,6 +54,7 @@ describe("usage access contracts", () => {
       reasoning_tokens: 0,
       request_count: 1,
       estimated_cost_usd: null,
+      cost_accuracy: "unknown",
       usage_accuracy: "provider_reported",
       total_tokens_source: "provider_total",
       dimensions: {},

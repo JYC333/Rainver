@@ -1,7 +1,49 @@
 # Capability Shrink Plan
 
 Date: 2026-08-13
-Status: READY, NOT SCHEDULED — managed-execution prerequisite satisfied
+Status: IN PROGRESS — item 1 completed; items 2–7 remain unscheduled
+
+## Execution status
+
+This run schedules item 1 only. Items 2–7 retain their existing triggers,
+dependencies, and phase boundary. Overall base: `14d32114`.
+
+| Item | State | Reviewers | Findings | Commit |
+|---|---|---|---|---|
+| 1 — authority documents | completed | 2 completed | 2 major, 2 minor | `a0c1e5c4` |
+| 2–7 | not scheduled in this run | | | |
+
+External-review consent is run-scoped to item 1's four authority documents and
+its execution ledger, the runtime-boundary Phase 5 implementation, and the final
+combined range plus relevant repository context. The user's explicit invocation
+of `$phase-gated-implementation` authorizes the required discovery, closure, and
+integration review transmissions. No push, PR, deployment, destructive cleanup,
+or capability-shrink item 2–7 implementation is authorized.
+
+Item 1 base: `14d32114`. Its owned paths are ADR 0009,
+`CAPABILITY_WORKFLOW_SKILL_SYSTEM.md`, this glossary, the higher-precedence
+capability clauses in `BOUNDARIES.md`, and this compact execution ledger.
+Acceptance is that these authorities agree: the imported package is the source
+of truth for skill content; agent-space owns provenance, trust,
+policy, binding, pinned delivery, and audit; package declarations never grant a
+tool, hook, or MCP authority; Runtime Context Delivery remains mandatory; and
+the still-present normalization/conversion code is named as transitional rather
+than falsely described as removed. Intended commit title:
+`docs: amend skill content authority`.
+
+Item 1 readiness: the authorities now agree on package content authority,
+agent-space control-plane ownership, the Skill/System Action/Workflow split,
+mandatory Runtime Context Delivery, and untrusted package declarations. The
+architecture document explicitly names `NormalizedSkill`, conversion, current
+capability bindings, and normalized renderers as transitional implementation so
+this documentation-only item does not claim items 2–7 have landed. No code,
+schema, protocol, route, or runtime behavior changes. Verification: complete
+scoped diff inspected; terminology search inspected; `git diff --check` passes.
+
+| Invocation ID | Role | State | Remote session | Result |
+|---|---|---|---|---|
+| CS-ITEM1-DISCOVERY | discovery | completed | `01a001db-6317-7432-a75a-a66b97f0ad9c` | 2 major: B21 contradicted the amended authority; glossary stated target binding semantics as current |
+| CS-ITEM1-CLOSURE | closure | completed | `01a001df-77e2-73a0-b627-73eb6ac962ab` | both major findings closed; 2 minor ledger inconsistencies repaired before commit |
 
 ## Purpose
 

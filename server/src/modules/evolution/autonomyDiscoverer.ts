@@ -203,7 +203,7 @@ export function registerEvolutionReviewAutonomyDiscoverer(): void {
         ],
       );
     },
-  });
+  }, "evolution");
 }
 
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {

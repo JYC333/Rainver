@@ -20,8 +20,8 @@ describe("AutomationTargetHandlerRegistry", () => {
   it("upserts handlers by target type and validates exact protocol coverage", async () => {
     const targetTypes = [...(await loadAutomationTargetDefinitions()).keys()];
     for (const targetType of targetTypes) {
-      automationTargetHandlerRegistry.register(targetType, handler);
-      automationTargetHandlerRegistry.register(targetType, handler);
+      automationTargetHandlerRegistry.register(targetType, handler, "test");
+      automationTargetHandlerRegistry.register(targetType, handler, "test");
     }
     expect(() => automationTargetHandlerRegistry.assertComplete(targetTypes)).not.toThrow();
     expect(automationTargetHandlerRegistry.registeredTypes()).toEqual(
@@ -32,7 +32,7 @@ describe("AutomationTargetHandlerRegistry", () => {
   it("fails startup completeness when a declared target has no handler", async () => {
     const targetTypes = [...(await loadAutomationTargetDefinitions()).keys()];
     for (const targetType of targetTypes.slice(1)) {
-      automationTargetHandlerRegistry.register(targetType, handler);
+      automationTargetHandlerRegistry.register(targetType, handler, "test");
     }
     expect(() => automationTargetHandlerRegistry.assertComplete(targetTypes)).toThrow(
       /missing=\[agent_run\]/,

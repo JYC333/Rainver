@@ -223,13 +223,16 @@ expose the source contract fields.
 
 Managed chat usage records cost at the same per-provider-call boundary as its
 provider-reported token counts. The amount is pi-ai's catalog-derived total,
-rounded to the ledger's eight-decimal USD precision; `cost_details_json` keeps
-the input/output/cache breakdown with `pi_ai_catalog` / `catalog_estimated`
-provenance. Anthropic's `cache_creation_1h_input_tokens` is retained as a
+rounded to the ledger's eight-decimal USD precision. `cost_accuracy` records
+`catalog` for a successful catalog lookup (including a genuine zero) and
+`unknown` when no price is known; `cost_details_json` retains the
+input/output/cache breakdown plus `source: "pi_ai_catalog"`, but does not
+duplicate the accuracy classification. Anthropic's
+`cache_creation_1h_input_tokens` is retained as a
 priced subset of `cache_creation_input_tokens`; it is never added a second time
-when deriving total tokens. `usage_accuracy` describes token evidence only. Unknown custom
-models and CLI, embedding, or rerank paths remain uncosted rather than falling
-back to a second local pricing engine.
+when deriving total tokens. `usage_accuracy` describes token evidence only.
+Unknown custom models and CLI, embedding, or rerank paths remain uncosted rather
+than falling back to a second local pricing engine.
 
 After acquiring the execution lock and before resolving credentials, context,
 or a sandbox, dispatch revalidates the instructing user's active Space,

@@ -74,7 +74,7 @@ export function registerAutonomousTickAutomationTarget(): void {
         trigger_origin: "automation",
       };
     },
-  });
+  }, "autonomy");
 }
 
 async function launchTick(

@@ -127,6 +127,6 @@ const researchWorkflowSummaryAdapter: ProjectEntitySummaryAdapter = {
 // Both registries upsert by key, so calling this repeatedly (module init, or a
 // test resetting a registry between cases) is always safe.
 export function registerProjectResearchProjectIntegration(): void {
-  projectModeProjectionRegistry.register(researchModeAdapter);
-  projectEntitySummaryRegistry.register(researchWorkflowSummaryAdapter);
+  projectModeProjectionRegistry.register(researchModeAdapter, "project_research");
+  projectEntitySummaryRegistry.register(researchWorkflowSummaryAdapter, "project_research");
 }

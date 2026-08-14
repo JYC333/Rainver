@@ -1,13 +1,13 @@
 import { useState, type FormEvent } from 'react'
 import { Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { providersApi, type ModelProviderOut, type ProviderPresetOut, type ProviderType } from '../../../api/client'
+import { providersApi, type ModelProviderOut, type ProviderPresetOut, type ProviderType, type ProviderVendorOut } from '../../../api/client'
 import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
 import { errMsg } from '../../../lib/utils'
 import NetworkProfileSelector from '../../network_profiles/NetworkProfileSelector'
 import {
-  API_KEY_REQUIRED,
+  apiKeyRequiredForVendor,
   defaultBaseUrl,
   defaultEmbeddingDimensions,
   embeddingDimensionOptions,
@@ -25,12 +25,14 @@ export default function AddProviderForm({
   mode,
   setMode,
   presets,
+  vendors,
 }: {
   onAdded: (provider: ModelProviderOut) => void
   canCreate: boolean
   mode: AddProviderMode | null
   setMode: (v: AddProviderMode | null) => void
   presets: ProviderPresetOut[]
+  vendors: readonly ProviderVendorOut[]
 }) {
   const [presetId, setPresetId] = useState(CUSTOM_PRESET_ID)
   const [name, setName] = useState('')
@@ -116,7 +118,7 @@ export default function AddProviderForm({
       return
     }
     const selectedPreset = presetId === CUSTOM_PRESET_ID ? null : presetById(presetId)
-    const keyRequired = selectedPreset?.api_key_required ?? API_KEY_REQUIRED.has(providerType)
+    const keyRequired = selectedPreset?.api_key_required ?? apiKeyRequiredForVendor(providerType, vendors)
     if (keyRequired && !apiKey.trim()) {
       toast.error('API key is required for this provider type')
       return
@@ -180,7 +182,7 @@ export default function AddProviderForm({
 
   const selectedPreset = presetId === CUSTOM_PRESET_ID ? null : presetById(presetId)
   const modelCopy = modelFieldCopy(providerType, mode ?? undefined)
-  const keyRequired = selectedPreset?.api_key_required ?? API_KEY_REQUIRED.has(providerType)
+  const keyRequired = selectedPreset?.api_key_required ?? apiKeyRequiredForVendor(providerType, vendors)
 
   if (!mode) {
     return (
@@ -212,6 +214,17 @@ export default function AddProviderForm({
     ? selectedPreset.embedding_dimension_options
     : embeddingDimensionOptions(providerType)
 
+  if (vendors.length === 0) {
+    // Reached only when the registry failed to load. Offering a picker with no
+    // options would also drop the API-key requirement, since that fact is the
+    // registry's too.
+    return (
+      <div className="rounded-md border border-border bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+        Provider vendors could not be loaded, so a new provider cannot be configured right now. Reload to try again.
+      </div>
+    )
+  }
+
   return (
     <form onSubmit={handleSubmit} className="space-y-3 p-4 border border-border rounded-lg bg-accent/30">
       <div>
@@ -240,13 +253,14 @@ export default function AddProviderForm({
       {mode === 'chat' && !selectedPreset && (
         <div className="space-y-1.5">
           <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">API protocol</label>
-          <ProviderTypeSelect value={providerType} mode={mode} onChange={value => {
+          <ProviderTypeSelect value={providerType} mode={mode} vendors={vendors} onChange={value => {
             setPresetId(CUSTOM_PRESET_ID)
             setProviderType(value)
+            setBaseUrl(defaultBaseUrl(value, vendors))
           }} />
         </div>
       )}
-      <ProviderCapabilityNotice providerType={providerType} mode={mode} />
+      <ProviderCapabilityNotice providerType={providerType} vendors={vendors} mode={mode} />
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Display name</label>
         <Input value={name} onChange={event => setName(event.target.value)} placeholder="My OpenAI" className="text-sm" />
@@ -256,7 +270,7 @@ export default function AddProviderForm({
         <Input
           value={baseUrl}
           onChange={event => setBaseUrl(event.target.value)}
-          placeholder={defaultBaseUrl(providerType) || 'https://gateway.example/v1'}
+          placeholder={defaultBaseUrl(providerType, vendors) || 'https://gateway.example/v1'}
           className="font-mono text-sm"
           required={!selectedPreset}
           disabled={Boolean(selectedPreset)}

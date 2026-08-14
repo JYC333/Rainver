@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Database, FileCode2, Search, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
-import { artifactsApi, providersApi, spacesApi, type ModelProviderOut, type ProviderTaskPolicyOut } from '../../api/client'
+import { artifactsApi, providersApi, spacesApi, type ModelProviderOut, type ProviderTaskPolicyOut, type ProviderVendorOut } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { errMsg } from '../../lib/utils'
@@ -121,27 +121,36 @@ type TaskSelection = { provider_id: string; model: string } | null
 type TaskSelections = Partial<Record<RetrievalTask, TaskSelection>>
 type TaskPolicyMap = Partial<Record<RetrievalTask, ProviderTaskPolicyOut>>
 
-function embeddingProviderFilter(provider: ModelProviderOut): string | null {
-  return ['openai', 'openrouter', 'ollama', 'zeroentropy', 'cohere', 'openai_compatible'].includes(provider.provider_type)
-    ? null
-    : 'no embeddings endpoint'
-}
-
-function rerankProviderFilter(provider: ModelProviderOut): string | null {
-  return provider.provider_type === 'zeroentropy' || provider.provider_type === 'cohere' ? null : 'no native rerank endpoint'
-}
-
-function chatProviderFilter(provider: ModelProviderOut): string | null {
-  return ['openai', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'].includes(provider.provider_type)
-    ? null
-    : 'not a chat provider'
-}
-
-function providerFilterFor(kind: RetrievalTaskKind): ((provider: ModelProviderOut) => string | null) | undefined {
-  if (kind === 'embedding') return embeddingProviderFilter
-  if (kind === 'rerank') return rerankProviderFilter
-  if (kind === 'chat') return chatProviderFilter
-  return undefined
+/**
+ * Which providers may serve a retrieval task. The capability is the server's —
+ * `providerSupportsTask` derives the same answer from the same registry — so
+ * this reads it rather than restating it. These three predicates used to be
+ * hardcoded lists identical to the server's, which meant a vendor change had to
+ * be made in both places or the page would offer a provider the PUT rejects,
+ * or hide one it would have accepted.
+ */
+function providerFilterFor(
+  kind: RetrievalTaskKind,
+  vendors: readonly ProviderVendorOut[],
+): ((provider: ModelProviderOut) => string | null) | undefined {
+  const capability = kind === 'embedding'
+    ? { supported: (vendor: ProviderVendorOut) => vendor.supports_embedding, reason: 'no embeddings endpoint' }
+    : kind === 'rerank'
+      ? { supported: (vendor: ProviderVendorOut) => vendor.supports_rerank, reason: 'no native rerank endpoint' }
+      : kind === 'chat'
+        ? { supported: (vendor: ProviderVendorOut) => vendor.supports_chat && !vendor.subscription_only, reason: 'not a chat provider' }
+        : null
+  if (!capability) return undefined
+  // With no registry there is nothing to filter on. Return no filter rather
+  // than rejecting everything: a filter that disables every option also clears
+  // the caller's saved selection, and saving that empty state deletes the task
+  // policy. Offering an unsupported provider is recoverable — the server
+  // rejects it on write — while silently deleting a policy is not.
+  if (vendors.length === 0) return undefined
+  return (provider: ModelProviderOut) => {
+    const vendor = vendors.find(candidate => candidate.id === provider.provider_type)
+    return vendor && capability.supported(vendor) ? null : capability.reason
+  }
 }
 
 function defaultModelForTask(kind: RetrievalTaskKind, provider: ModelProviderOut): string | null | undefined {
@@ -207,6 +216,7 @@ function TaskPolicyEditor({
   readOnly,
   onChange,
   onSave,
+  vendors,
 }: {
   task: RetrievalTask
   label: string
@@ -218,6 +228,7 @@ function TaskPolicyEditor({
   readOnly: boolean
   onChange: (task: RetrievalTask, value: TaskSelection) => void
   onSave: (task: RetrievalTask) => void
+  vendors: readonly ProviderVendorOut[]
 }) {
   return (
     <div className="rounded-md border border-border p-4 space-y-3">
@@ -234,7 +245,7 @@ function TaskPolicyEditor({
         value={value}
         onChange={next => onChange(task, next)}
         emptyLabel="Use space default"
-        providerFilter={providerFilterFor(kind)}
+        providerFilter={providerFilterFor(kind, vendors)}
         defaultModelForProvider={provider => defaultModelForTask(kind, provider)}
         disabled={readOnly}
       />
@@ -285,6 +296,7 @@ export default function RetrievalSettingsPage() {
 
   const [settings, setSettings] = useState<SpaceRetrievalSettings | null>(null)
   const [taskPolicies, setTaskPolicies] = useState<TaskPolicyMap>({})
+  const [vendors, setVendors] = useState<ProviderVendorOut[]>([])
   const [taskSelections, setTaskSelections] = useState<TaskSelections>({})
   const [taskSaving, setTaskSaving] = useState<Partial<Record<RetrievalTask, boolean>>>({})
   const [maxResults, setMaxResults] = useState('50')
@@ -302,14 +314,19 @@ export default function RetrievalSettingsPage() {
     }
     setLoading(true)
     try {
-      const [next, policies, artifacts] = await Promise.all([
+      const [next, nextVendors, policies, artifacts] = await Promise.all([
         spacesApi.getRetrievalSettings(activeSpaceId),
+        providersApi.vendors().catch(error => {
+          toast.error(errMsg(error))
+          return []
+        }),
         providersApi.taskPolicies().catch(error => {
           toast.error(errMsg(error))
           return []
         }),
         artifactsApi.list({ limit: 200 }).then(page => page.items).catch(() => []),
       ])
+      setVendors(nextVendors)
       const policyMap = Object.fromEntries(
         RETRIEVAL_TASKS
           .map(({ task }) => [task, policies.find(policy => policy.task === task)] as const)
@@ -504,10 +521,20 @@ export default function RetrievalSettingsPage() {
           <CardTitle>Select a space</CardTitle>
           <p className="text-sm text-muted-foreground">Retrieval settings are space-scoped.</p>
         </Card>
-      ) : loading || !settings ? (
+      ) : loading ? (
         <Card>
           <CardTitle>Loading</CardTitle>
           <p className="text-sm text-muted-foreground">Loading retrieval settings...</p>
+        </Card>
+      ) : !settings ? (
+        // `loading` is already false here: the load finished and failed. Saying
+        // "Loading" would leave the user waiting for something that is not
+        // coming, and the toast that fired has since gone.
+        <Card>
+          <CardTitle>Retrieval settings unavailable</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Retrieval settings could not be loaded. Reload to try again.
+          </p>
         </Card>
       ) : (
         <>
@@ -645,6 +672,7 @@ export default function RetrievalSettingsPage() {
             <div className="space-y-3">
               {RETRIEVAL_TASKS.map(item => (
                 <TaskPolicyEditor
+                  vendors={vendors}
                   key={item.task}
                   task={item.task}
                   label={item.label}

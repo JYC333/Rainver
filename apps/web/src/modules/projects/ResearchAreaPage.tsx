@@ -186,6 +186,7 @@ export default function ResearchAreaPage() {
           draft={research.newSearch.draft}
           busyAction={research.actionBusy}
           modelProviders={research.focusProps?.modelProviders ?? []}
+          providerVendors={research.focusProps?.providerVendors ?? []}
           canAct={research.project?.status === 'active'}
           onOpenChange={research.newSearch.setOpen}
           onSave={(config, dialogWorkflowId) => research.saveInitialIntake(config, dialogWorkflowId ?? null)}

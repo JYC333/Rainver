@@ -74,7 +74,7 @@ export function registerPeriodicDigestAutonomyDiscoverer(): void {
       title: `Periodic Project Digest — ${now.toISOString().slice(0, 10)}`,
       fallbackContent: "The autonomous digest completed without a textual summary.",
     }),
-  });
+  }, "projects");
 }
 
 function stringArray(value: unknown): string[] {

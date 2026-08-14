@@ -122,6 +122,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
   const [evidenceMatrix, setEvidenceMatrix] = useState<ProjectResearchEvidenceMatrixItem[]>([])
   const [researchReports, setResearchReports] = useState<ProjectResearchReport[]>([])
   const [modelProviders, setModelProviders] = useState<Awaited<ReturnType<typeof providersApi.list>>>([])
+  const [providerVendors, setProviderVendors] = useState<Awaited<ReturnType<typeof providersApi.vendors>>>([])
   const [inquiryThreads, setInquiryThreads] = useState<InquiryThread[]>([])
   const [actionBusy, setActionBusy] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -162,6 +163,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         projectResearchApi.reports(projectId).then(setResearchReports),
         projectResearchApi.scanSummaries(projectId).then(setResearchScanSummaries),
         providersApi.list().catch(() => []).then(setModelProviders),
+        providersApi.vendors().catch(() => []).then(setProviderVendors),
         inquiryApi.listThreads(projectId).then(setInquiryThreads),
       ])
       const storedWorkflowId = window.localStorage.getItem(`project:${projectId}:research-workflow`)
@@ -584,6 +586,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
     researchOperations: operations,
     researchDataLoading: loading,
     modelProviders,
+    providerVendors,
     questionThreads: inquiryThreads,
     researchActionBusy: actionBusy,
     onSaveInitialIntake: saveInitialIntake,

@@ -10,7 +10,6 @@ import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
 import {
   __setProvidersDbPortForTests,
-  mapProviderRowToDto,
   type ProvidersDbPort,
 } from "../src/modules/providers/dbReader";
 import {
@@ -96,27 +95,6 @@ function providerRoutesConfig() {
 }
 
 describe("providers read authority", () => {
-  it("maps legacy custom-provider rows onto the vendor vocabulary", () => {
-    expect(mapProviderRowToDto({
-      id: "legacy-custom",
-      space_id: "space-1",
-      name: "Legacy custom endpoint",
-      provider_type: "other",
-      base_url: "https://gateway.example.test/v1",
-      network_profile_id: null,
-      default_model: "custom-model",
-      enabled: true,
-      credential_id: "credential-1",
-      capabilities_json: { models: ["custom-model"] },
-      config_json: {},
-      created_at: new Date("2026-01-01T00:00:00.000Z"),
-      updated_at: new Date("2026-01-01T00:00:00.000Z"),
-    })).toMatchObject({
-      provider_type: "openai_compatible",
-      base_url: "https://gateway.example.test/v1",
-    });
-  });
-
   it("serves list and detail from the DB port scoped by native server identity", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(
@@ -160,38 +138,51 @@ describe("providers read authority", () => {
     expect(res.json()).toEqual({ detail: "Authentication required" });
   });
 
-  it("serves the catalog constant and litellm-providers from static catalogs", async () => {
+  it("serves the vendor registry, and no longer serves the retired catalog routes", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(fakeDb({}));
     app = buildServer(providerRoutesConfig(), { logger: false });
 
-    // Dynamic import: the typecheck runs this CJS test against the ESM package.
-    const { PROVIDER_CATALOG_INFO } = await import("@agent-space/protocol");
-    const catalog = await app.inject({ method: "GET", url: "/api/v1/providers/catalog" });
-    expect(catalog.statusCode).toBe(200);
-    expect(catalog.json()).toEqual(PROVIDER_CATALOG_INFO);
-
-    const litellm = await app.inject({
-      method: "GET",
-      url: "/api/v1/providers/litellm-providers",
+    const vendors = await app.inject({ method: "GET", url: "/api/v1/providers/vendors" });
+    expect(vendors.statusCode).toBe(200);
+    expect(vendors.headers["x-upstream"]).toBeUndefined();
+    // Bind the response to the published contract, not to a literal here.
+    const { ProviderVendorListResponseSchema } = await import("@agent-space/protocol");
+    const body = ProviderVendorListResponseSchema.parse(vendors.json());
+    // The client reads these facts instead of keeping its own copy.
+    expect(body).toContainEqual({
+      id: "deepseek",
+      display_name: "DeepSeek",
+      protocol: "openai_completions",
+      supports_chat: true,
+      supports_runtime_tools: true,
+      supports_structured_output: true,
+      supports_embedding: false,
+      supports_rerank: false,
+      default_base_url: "https://api.deepseek.com",
+      api_key_required: true,
+      subscription_only: false,
     });
-    expect(litellm.statusCode).toBe(200);
-    expect(litellm.headers["x-upstream"]).toBeUndefined();
-    expect(litellm.json()).toEqual([
-      "openai",
-      "anthropic",
-      "minimax",
-      "openrouter",
-      "deepseek",
-      "ollama",
-      "openai_compatible",
-    ]);
+    expect(body.some((vendor) => vendor.id === "openai_codex" && vendor.subscription_only === true)).toBe(true);
+    expect(body.every((vendor) => !("api_key" in vendor) && !("secret_ref" in vendor))).toBe(true);
 
+    // `/presets` is the surviving static sibling and must stay claimed.
     const presets = await app.inject({ method: "GET", url: "/api/v1/providers/presets" });
     expect(presets.statusCode).toBe(200);
-    expect(presets.json().map((preset: { id: string }) => preset.id)).toEqual(
+    expect((presets.json() as Array<{ id: string }>).map((preset) => preset.id)).toEqual(
       expect.arrayContaining(["cohere_embedding", "cohere_rerank", "minimax"]),
     );
+
+    // The retired names are no longer claimed as static siblings, so they now
+    // match the provider-detail parametric route and 404 as unknown provider
+    // ids. That is the same answer any unknown id gets — deliberately not a
+    // special case for two deleted names, which would be a compatibility alias
+    // wearing a different hat.
+    for (const url of ["/api/v1/providers/catalog", "/api/v1/providers/litellm-providers"]) {
+      const retired = await app.inject({ method: "GET", url });
+      expect(retired.statusCode, url).toBe(404);
+      expect(retired.json(), url).toMatchObject({ detail: expect.stringContaining("not found") });
+    }
   });
 
   it("answers 503 when the DB read fails, without leaking the error", async () => {

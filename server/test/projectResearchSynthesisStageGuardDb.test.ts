@@ -6,6 +6,7 @@ import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatab
 import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 // Real-Postgres coverage for a regression where reconcileOperation's
@@ -37,6 +38,7 @@ let pool: Pool | undefined;
 let available = false;
 
 beforeAll(async () => {
+  registerProjectResearchExecutionHandlers();
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });

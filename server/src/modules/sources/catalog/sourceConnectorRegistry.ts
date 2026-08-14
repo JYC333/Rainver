@@ -242,6 +242,9 @@ class WebPageConnectorHandler implements SourceConnectorHandler {
 }
 
 export const sourceConnectorRegistry = new SourceConnectorRegistry();
+// Deliberately self-register at import: these handlers and their registry share
+// this file, so importing the registry cannot omit them and registration occurs
+// exactly once per process rather than once per Fastify app build.
 sourceConnectorRegistry.register(new ArxivConnectorHandler());
 sourceConnectorRegistry.register(new OpenAlexConnectorHandler());
 sourceConnectorRegistry.register(new SemanticScholarConnectorHandler());

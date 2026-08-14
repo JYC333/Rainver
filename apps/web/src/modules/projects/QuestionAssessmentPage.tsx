@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { useParams } from 'react-router-dom'
-import { inquiryApi, projectResearchApi, providersApi, type ModelProviderOut } from '../../api/client'
+import { inquiryApi, projectResearchApi, providersApi, type ModelProviderOut, type ProviderVendorOut } from '../../api/client'
 import type { InquiryThreadDetail, ProjectResearchQuestionAssessmentSession, ProjectResearchWorkflow } from '../../types/api'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Badge } from '../../components/ui/badge'
@@ -15,6 +15,7 @@ export default function QuestionAssessmentPage() {
   const [thread, setThread] = useState<InquiryThreadDetail | null>(null)
   const [workflows, setWorkflows] = useState<ProjectResearchWorkflow[]>([])
   const [providers, setProviders] = useState<ModelProviderOut[]>([])
+  const [providerVendors, setProviderVendors] = useState<ProviderVendorOut[]>([])
   const [assessmentSession, setAssessmentSession] = useState<ProjectResearchQuestionAssessmentSession | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -24,15 +25,17 @@ export default function QuestionAssessmentPage() {
     setLoading(true)
     setError(null)
     try {
-      const [nextThread, nextWorkflows, nextProviders, nextAssessmentSession] = await Promise.all([
+      const [nextThread, nextWorkflows, nextProviders, nextProviderVendors, nextAssessmentSession] = await Promise.all([
         inquiryApi.getThread(projectId, threadId),
         projectResearchApi.workflows(projectId),
         providersApi.list(),
+        providersApi.vendors().catch(() => [] as ProviderVendorOut[]),
         projectResearchApi.questionAssessment(projectId, threadId),
       ])
       setThread(nextThread)
       setWorkflows(nextWorkflows)
       setProviders(nextProviders)
+      setProviderVendors(nextProviderVendors)
       setAssessmentSession(nextAssessmentSession)
     } catch (loadError) {
       setError(errMsg(loadError))
@@ -97,6 +100,7 @@ export default function QuestionAssessmentPage() {
         thread={thread}
         linkedDraftWorkflow={linkedDraftWorkflow}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={assessmentSession}
         canAct={thread.lifecycle_status === 'active'}
         onChanged={refreshAfterChange}

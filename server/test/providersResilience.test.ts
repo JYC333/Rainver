@@ -30,7 +30,7 @@ afterEach(() => {
 
 function target(
   providerId: string,
-  keys: Array<{ member: string; key: string }>,
+  keys: Array<{ member: string; key: string | null }>,
   overrides: Partial<InvocationTarget["provider"]> & {
     fallback_provider_ids?: string[];
   } = {},
@@ -464,6 +464,38 @@ describe("provider invocation resilience", () => {
     expect(outcomes).toEqual([{ member: "m1", outcome: { kind: "success" } }]);
   });
 
+  it("lets Pi's catalog maxTokens govern Anthropic requests without a local recommendation", async () => {
+    const store = makeStore({
+      minimax: target("minimax", [{ member: "m1", key: "k1" }], {
+        provider_type: "minimax",
+        base_url: "https://api.minimaxi.com/anthropic",
+        default_model: "MiniMax-M2.7",
+      }),
+    }, []);
+    const attempts: Attempt[] = [];
+    __setProviderHttpClientForTests({
+      async fetch(url, init) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        attempts.push({ url: String(url), key: null, model: body.model ?? null, body });
+        return anthropicChatResponse({
+          content: [{ type: "text", text: "ok" }],
+          model: body.model,
+          usage: {},
+          stop_reason: "end_turn",
+        });
+      },
+    });
+    const { max_tokens: _unused, ...chatWithoutMaxTokens } = CHAT;
+
+    await completeProviderChat(store, "space-1", {
+      ...chatWithoutMaxTokens,
+      provider_id: "minimax",
+      model: "MiniMax-M2.7",
+    });
+
+    expect(attempts[0]?.body.max_tokens).toBe(131_072);
+  });
+
   it("does not rotate keys on permanent request errors", async () => {
     const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
     const store = makeStore(
@@ -596,9 +628,9 @@ describe("provider invocation resilience", () => {
           reasoning_tokens: 0,
         },
         estimated_cost_usd: 0.0000975,
+        cost_accuracy: "catalog",
         cost_details: {
           source: "pi_ai_catalog",
-          accuracy: "catalog_estimated",
           input: 0.0000275,
           output: 0.00007,
           cacheRead: 0,
@@ -644,9 +676,69 @@ describe("provider invocation resilience", () => {
       expect.objectContaining({
         usage_accuracy: "provider_reported",
         estimated_cost_usd: null,
+        cost_accuracy: "unknown",
         cost_details: null,
       }),
     ]);
+  });
+
+  it("allows a keyless OpenAI-compatible chat endpoint without inventing authorization", async () => {
+    const store = makeStore(
+      {
+        p1: target("p1", [{ member: "none", key: null }], {
+          provider_type: "openai_compatible",
+          default_model: "local-chat",
+        }),
+      },
+      [],
+    );
+    const attempts = scriptedHttp([{ status: 200 }]);
+
+    const result = await completeProviderText(store, "space-1", {
+      provider_id: "p1",
+      system: "",
+      user: "hello",
+      metering: { subject_user_id: "user-1" },
+    });
+
+    expect(result).toMatchObject({ text: "ok", provider: "openai_compatible" });
+    expect(attempts).toEqual([
+      expect.objectContaining({ key: null, model: "local-chat" }),
+    ]);
+  });
+
+  it("keeps a catalog-priced zero distinct from an unknown cost", async () => {
+    const usageObservations: UsageObservation[] = [];
+    const store = makeStore(
+      { p1: target("p1", [{ member: "m1", key: "k1" }], { default_model: "gpt-4o" }) },
+      [],
+      {},
+      usageObservations,
+    );
+    scriptedHttp([{
+      status: 200,
+      body: {
+        choices: [{ message: { content: "zero" } }],
+        model: "gpt-4o",
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      },
+    }]);
+
+    await completeProviderText(store, "space-1", {
+      provider_id: "p1",
+      system: "",
+      user: "hello",
+      metering: { subject_user_id: "user-1" },
+    });
+
+    expect(usageObservations).toEqual([
+      expect.objectContaining({
+        estimated_cost_usd: 0,
+        cost_accuracy: "catalog",
+        cost_details: expect.objectContaining({ source: "pi_ai_catalog", total: 0 }),
+      }),
+    ]);
+    expect(usageObservations[0]?.cost_details).not.toHaveProperty("accuracy");
   });
 
   it("does not call a fallback chat provider when usage metering fails", async () => {
@@ -709,6 +801,30 @@ describe("provider invocation resilience", () => {
       },
     });
     expect(outcomes[1]).toEqual({ member: "m2", outcome: { kind: "success" } });
+  });
+
+  it("allows a keyless OpenAI-compatible embedding endpoint without authorization", async () => {
+    const store = makeStore(
+      {
+        p1: target("p1", [{ member: "none", key: null }], {
+          provider_type: "openai_compatible",
+          default_model: "local-embed",
+        }),
+      },
+      [],
+    );
+    const attempts = scriptedHttp([{ status: 200 }]);
+
+    const result = await completeProviderEmbedding(store, "space-1", {
+      provider_id: "p1",
+      inputs: ["alpha"],
+      metering: { subject_user_id: "user-1" },
+    });
+
+    expect(result.vectors).toEqual([[1]]);
+    expect(attempts).toEqual([
+      expect.objectContaining({ key: null, model: "local-embed" }),
+    ]);
   });
 
   it("meters embedding usage from provider responses", async () => {

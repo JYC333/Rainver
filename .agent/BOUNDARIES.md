@@ -252,15 +252,22 @@ context outputs or sources of truth.
 
 **B21** — Capabilities are code-defined (manifest + code + prompts + tests), not only prompt-defined. A capability without tests or a manifest is incomplete.
 
-**B21A** — Open Skill imports are untrusted source material. Import may fetch and
-normalize package metadata, `SKILL.md`, and bounded same-repository package
-file inventory, but it must not execute scripts, install dependencies, load
-server/plugin code, write active memory, or auto-enable a capability. Vendor
-runtime declarations such as `allowed-tools` are permission requests only.
+**B21A** — Open Skill imports are untrusted external packages whose approved,
+immutable snapshot remains the source of truth for that package's procedural
+content. Agent-space may fetch, inventory, hash, risk-scan, review, bind, pin,
+and deliver package files, but it must not canonically re-represent their
+instructions, execute scripts, install dependencies, load server/plugin code,
+write active memory, or auto-enable a capability. Vendor declarations of tools,
+hooks, scripts, dependencies, or MCP servers are requests only and grant no
+callable or execution authority.
 
 **B21B** — Runtime skill files for Claude Code, Codex, `model_api`, and future
-runtimes are generated adapter artifacts. Agent-space CapabilityDefinition and
-profile records remain the source of truth.
+runtimes are generated adapter artifacts, not a second content authority.
+Agent-space owns package provenance and snapshot identity, trust and policy,
+scope/Agent binding, pinned-version selection, runtime compatibility, Runtime
+Context Delivery authorization, and audit. The current normalized conversion,
+CapabilityDefinition, profile, binding, and rendering paths are transitional
+implementation state and must not be extended as the target skill model.
 
 ---
 

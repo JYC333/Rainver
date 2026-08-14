@@ -12,13 +12,13 @@ New work is pulled on demand from
 [../plans/backlog.md](../plans/backlog.md); everything trigger-gated lives in
 [deferred-register.md](deferred-register.md).
 
-Three follow-on specifications were written alongside it on 2026-08-13 —
+Three follow-on specifications remain —
 [runtime-routing-plan.md](../plans/runtime-routing-plan.md),
 [scope-model-plan.md](../plans/scope-model-plan.md), and
-[capability-shrink-plan.md](../plans/capability-shrink-plan.md). They are
-specifications, not schedule. Each states its own entry trigger and none is
-started. Writing related plans is not declaring a sequence; that
-distinction is the whole lesson of the paragraph below.
+[capability-shrink-plan.md](../plans/capability-shrink-plan.md) (2026-08-13).
+They are specifications, not schedule. Capability-shrink Item 1 amended the
+authority documents on 2026-08-14; Items 2–7 remain unscheduled. The routing
+and Scope plans are not started.
 
 This file previously declared a three-step sequence — acceptance-readiness
 corrections, controlled product acceptance, then unattended hardening. That
@@ -31,13 +31,19 @@ recorded gate below rather than pretended to be imminent.
 
 ## Most recent delivered work
 
-The managed-execution replatform landed on 2026-08-14. Managed chat now uses
-the server vendor registry plus pi-ai, the multi-turn tool loop is behind the
-agent-space-owned `managedAgentLoop` port backed by pi-agent-core, managed
-Claude/Codex subscription OAuth remains owner-only and DB-encrypted, and the
-usage ledger records pi-ai catalog cost plus Anthropic's 1h cache-write subtype.
-The completed phase/review ledger was retired after consolidation into the
-current-state architecture and module docs linked above.
+The managed-execution replatform and runtime-boundary phases 1–5 landed on
+2026-08-14. Managed chat now uses one server-owned vendor registry plus a narrow
+pi-ai adapter, the generic multi-turn tool loop is behind the agent-space-owned
+`managedAgentLoop` port backed by pi-agent-core, and managed Claude/Codex
+subscription OAuth remains owner-only and DB-encrypted. The usage ledger stores
+catalog-derived cost separately from explicit `catalog | unknown` cost
+provenance, including genuine catalog zeroes, and retains Anthropic's 1h
+cache-write subtype without double counting it. Contribution registries now
+declare owner-aware duplicate semantics, and Project Research registers its
+execution contributions explicitly during app construction. Capability-shrink
+Item 1 also made the imported SkillPackage authoritative for skill content while
+retaining agent-space ownership of provenance, trust, policy, binding, pinned
+delivery, and audit; its remaining implementation items are still only planned.
 
 The Inquiry stage workspace landed on 2026-08-13
 (`07f0376e` and `a6ef4efd`). Its current behavior is recorded in

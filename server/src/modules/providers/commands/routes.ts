@@ -39,6 +39,7 @@ import {
   refreshManagedSubscriptionQuota,
   type ManagedSubscriptionLoginSession,
 } from "../subscriptionOAuth";
+import { requireProviderVendor } from "../vendors";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -55,10 +56,6 @@ function bodyText(request: FastifyRequest): string {
 function jsonBody(request: FastifyRequest): unknown {
   const text = bodyText(request);
   return text ? JSON.parse(text) : {};
-}
-
-function isRetrievalOnlyProvider(providerType: string): boolean {
-  return providerType === "zeroentropy" || providerType === "cohere";
 }
 
 function defaultRerankModelForProvider(providerType: string): string | null {
@@ -89,7 +86,9 @@ function retrievalProviderTestScope(provider: { provider_type: string; default_m
   if (hasEmbedding && !hasRerank) return "embedding";
   if (hasRerank && !hasEmbedding) return "rerank";
   if (hasEmbedding && hasRerank) return "both";
-  return "embedding";
+  const vendor = requireProviderVendor(provider.provider_type);
+  if (vendor.supportsEmbedding && vendor.supportsRerank) return "both";
+  return vendor.supportsRerank ? "rerank" : "embedding";
 }
 
 function firstModelMatching(
@@ -404,7 +403,8 @@ export function registerProviderCommandRoutes(
         params(request).configId ?? "",
         identity.userId,
       );
-      if (isRetrievalOnlyProvider(target.provider.provider_type)) {
+      const vendor = requireProviderVendor(target.provider.provider_type);
+      if (!vendor.supportsChat && (vendor.supportsEmbedding || vendor.supportsRerank)) {
         const scope = retrievalProviderTestScope(target.provider);
         const embedding = scope === "rerank" ? null : await completeProviderEmbedding(store, identity.spaceId, {
           provider_id: target.provider.id,

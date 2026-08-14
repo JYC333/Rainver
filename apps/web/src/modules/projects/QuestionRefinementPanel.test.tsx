@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { QuestionRefinementPanel } from './QuestionRefinementPanel'
 import { inquiryApi, projectResearchApi } from '../../api/client'
+import type { ProviderVendorOut } from '../../api/client'
 import type { InquiryThread, ProjectResearchQuestionRefinementResponse } from '../../types/api'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
@@ -19,6 +20,12 @@ function makeThread(overrides: Partial<InquiryThread> = {}): InquiryThread {
 }
 
 const providers = [{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]
+const providerVendors = [{
+  id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions',
+  supports_chat: true, supports_runtime_tools: true, supports_structured_output: true,
+  supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1',
+  api_key_required: true, subscription_only: false,
+}] satisfies ProviderVendorOut[]
 
 function result(overrides: Partial<ProjectResearchQuestionRefinementResponse> = {}): ProjectResearchQuestionRefinementResponse {
   const base = {
@@ -84,6 +91,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={null}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -141,6 +149,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={null}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -239,6 +248,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={null}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -268,6 +278,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={null}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -335,6 +346,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: persisted.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -371,6 +383,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: latest.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{
           ...latest.assessment_session,
           latest_refinement: latestRefinement,
@@ -395,6 +408,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{
           ...persisted.assessment_session,
           recommended_question: persisted.recommended_question ?? null,
@@ -431,6 +445,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{
           ...persisted.assessment_session,
           latest_refinement: latestRefinement,
@@ -477,6 +492,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -509,6 +525,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={null}
         canAct
         onChanged={onChanged}
@@ -544,6 +561,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: persisted.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -586,6 +604,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: persisted.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -615,6 +634,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: persisted.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -653,6 +673,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: persisted.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -673,6 +694,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread({ statement: persisted.recommended_question })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
@@ -720,6 +742,7 @@ describe('QuestionRefinementPanel', () => {
         thread={makeThread()}
         linkedDraftWorkflow={null}
         modelProviders={providers}
+        providerVendors={providerVendors}
         assessmentSession={{ ...persisted.assessment_session, latest_refinement: latestRefinement }}
         canAct
         onChanged={vi.fn().mockResolvedValue(undefined)}
