@@ -1,15 +1,18 @@
 # Credential Storage
 
-The system stores secrets in **three distinct channels**. Do not conflate them.
+The system stores secrets in **four distinct channels**. Do not conflate them.
 
 | Channel | What | Where stored | Doc |
 |---|---|---|---|
 | **ModelProvider API key** | API keys for in-process LLM calls (OpenAI, Anthropic, …) | AES-256-GCM ciphertext in a DB `Credential` row | this doc |
+| **Managed subscription OAuth** | Instance-admin Claude Pro/Max and OpenAI Codex subscription credentials for in-process calls | AES-256-GCM OAuth envelope in a DB `Credential` row | this doc |
 | **CLI login state** | Claude Code / Codex CLI login profiles for sandboxed runs | files under `instance/secrets/cli-credentials/…`, brokered per run | [modules/credentials.md](../modules/credentials.md) |
 | **Custom Source fetch credential** | Header-based credential (API key / bearer token) for an Sources Custom Source's outbound fetches | AES-256-GCM ciphertext in the same DB `credentials` table, distinct `credential_type` and `secret_ref` prefix | [modules/sources.md](../modules/sources.md), [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](SOURCE_CUSTOM_SOURCE_HANDLERS.md) |
 
-This doc covers the **ModelProvider API key** channel — the keys a user configures on the
-Providers page, used by the `model_api` runtime adapter and bounded server-owned Provider tasks. There is no public Provider Chat execution route; agent-facing model calls enter through Runtime Context Delivery.
+This doc covers the **ModelProvider API key** and **managed subscription OAuth**
+channels used by the `model_api` runtime adapter and bounded server-owned
+Provider tasks. There is no public Provider Chat execution route; agent-facing
+model calls enter through Runtime Context Delivery.
 The **Custom Source fetch credential** channel reuses this channel's DB table and master key
 (`server/src/modules/sources/customSources/customSourceCredentialCrypto.ts`,
 `server/src/modules/sources/customSources/customSourceCredentialService.ts`) but is functionally distinct: it
@@ -32,7 +35,7 @@ The plaintext API key is **never** stored. The encrypted material lives in:
 | Table | Field | Holds |
 |---|---|---|
 | `model_providers` | `owner_user_id`, `credential_id` (FK) | user-owned provider resource and pointer to the **primary** Credential row. `config_json` does **not** contain the key (any `encrypted_key` is popped before persist). |
-| `credentials` | `owner_user_id`, `secret_ref` | user-owned encrypted key material: `model_provider_api_key:v1:<ciphertext_b64>:<nonce_b64>`; `credential_type="api_key"`. |
+| `credentials` | `owner_user_id`, `secret_ref`, `metadata_json` | user-owned encrypted material. API keys use `model_provider_api_key:v1:…` with `credential_type="api_key"`. Managed subscriptions use `model_provider_oauth:v1:…` with `credential_type="subscription_oauth"`; only secret-free quota snapshots live in metadata. |
 | `model_provider_space_grants` | grant metadata | explicit provider-to-space grants. Grant rows carry active-space `enabled`, `is_default`, and `network_profile_id` semantics. |
 | `model_provider_credentials` | pool membership | 1→N credential **pool** per provider: position, enabled, rotation health (`healthy`, `cooldown_until`, `last_failure_class`, request/failure counters). Holds **no secret material** — only FKs to `credentials`. The primary credential is lazily enrolled as the position-0 member. |
 | `provider_task_policies` | per-task chains | one ordered provider/model chain per (space, task) for auxiliary tasks (reflector, checkpoint extractor, …). No secret material. |
@@ -55,6 +58,13 @@ not share CLI sessions, transcripts, databases, or general configuration.
 Quota probe homes are unique and short-lived, and their cache is keyed by both
 runtime and credential profile id.
 
+Managed subscription OAuth is also never pooled or rotated. Only the configured
+instance admin may connect, refresh quota, or disconnect it. The resulting
+provider remains owner-bound: another space member cannot list it, receive its
+access token, trigger token refresh, or invoke through it. Refresh is performed
+under a database row lock so concurrent server processes cannot race refresh-token
+rotation. It never reads or mutates Claude Code or Codex CLI profile files.
+
 ## Save flow
 
 Providers page → `POST /api/v1/providers` with `api_key` →
@@ -62,6 +72,12 @@ Providers page → `POST /api/v1/providers` with `api_key` →
 → encode `secret_ref` → create/replace a `Credential` row → set
 `ModelProvider.credential_id` → create an enabled grant to the active space.
 Only the provider owner can edit provider metadata or API-key material.
+
+Managed subscription flow → `GET /api/v1/providers/subscriptions/login/stream`
+→ pi-ai OAuth for Claude or OpenAI Codex → encrypt the returned access/refresh
+credential → create an owner-bound ModelProvider and active-space grant. Quota
+refresh and disconnect use the provider-specific subscription endpoints; public
+DTOs expose only connection state and quota percentages/reset timestamps.
 
 ## Runtime resolution
 
@@ -74,6 +90,12 @@ written to `process.env` — per [ADR 0008](../decisions/0008-credential-channel
 it cannot leak into a CLI subprocess environment. The server store draws keys
 from the credential pool with rotation/cooldown state and the same master-key
 file. Exactly one side decides credential release: the server.
+
+For a managed subscription provider, the same resolver verifies the invoking
+subject is the provider owner, decrypts the OAuth envelope in-process, refreshes
+it under `SELECT … FOR UPDATE` when near expiry, and passes the access token only
+to pi-ai's Anthropic Messages or OpenAI Codex Responses transport. Subscription
+credentials never enter API-key pools or subprocess environments.
 
 Claude-compatible CLI provider bindings use the same invariant. The Claude
 subprocess receives only a short-lived local provider-proxy lease token through
@@ -99,6 +121,8 @@ request to the configured `openai_compatible_base_url`.
   supports *replacing* the key, not reading it.
 - A provider or credential that lacks an enabled active-space grant fails closed
   before secret resolution.
+- Managed OAuth credentials are instance-admin connected, owner-only at use time,
+  and isolated from CLI login profiles and API-key rotation pools.
 - Guarded by server provider/runtime adapter tests (adapters must not read ambient `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
   and runtime governance redaction tests.
 

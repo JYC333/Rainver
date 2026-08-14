@@ -68,50 +68,6 @@ export const usageImportBatches = pgTable("usage_import_batches", {
 	check("ck_usage_import_batches_status", sql`(status)::text = ANY (ARRAY[('previewed'::character varying)::text, ('importing'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text])`),
 ]);
 
-export const modelPricingRules = pgTable("model_pricing_rules", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	scopeType: varchar("scope_type", { length: 32 }).notNull(),
-	spaceId: varchar("space_id", { length: 36 }),
-	providerType: varchar("provider_type", { length: 64 }),
-	providerId: varchar("provider_id", { length: 36 }),
-	modelPattern: varchar("model_pattern", { length: 256 }).notNull(),
-	inputUsdPerMillion: numeric("input_usd_per_million", { precision: 18, scale: 8 }),
-	outputUsdPerMillion: numeric("output_usd_per_million", { precision: 18, scale: 8 }),
-	cacheWriteUsdPerMillion: numeric("cache_write_usd_per_million", { precision: 18, scale: 8 }),
-	cacheReadUsdPerMillion: numeric("cache_read_usd_per_million", { precision: 18, scale: 8 }),
-	reasoningUsdPerMillion: numeric("reasoning_usd_per_million", { precision: 18, scale: 8 }),
-	usageTypePricesJson: jsonb("usage_type_prices_json").default({}).notNull(),
-	tierConditionsJson: jsonb("tier_conditions_json").default({}).notNull(),
-	priority: integer().default(0).notNull(),
-	pricingNormalizationVersion: integer("pricing_normalization_version").default(1).notNull(),
-	currency: varchar({ length: 8 }).default("USD").notNull(),
-	effectiveFrom: timestamp("effective_from", { withTimezone: true, mode: "string" }).notNull(),
-	effectiveUntil: timestamp("effective_until", { withTimezone: true, mode: "string" }),
-	source: varchar({ length: 32 }).notNull(),
-	metadataJson: jsonb("metadata_json").default({}).notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_model_pricing_rules_effective").using("btree", table.effectiveFrom.asc().nullsLast(), table.effectiveUntil.asc().nullsLast()),
-	index("ix_model_pricing_rules_scope").using("btree", table.scopeType.asc().nullsLast(), table.spaceId.asc().nullsLast()),
-	index("ix_model_pricing_rules_provider_model").using("btree", table.providerId.asc().nullsLast(), table.providerType.asc().nullsLast(), table.modelPattern.asc().nullsLast(), table.priority.asc().nullsLast()),
-	foreignKey({
-		columns: [table.spaceId],
-		foreignColumns: [spaces.id],
-		name: "model_pricing_rules_space_id_fkey",
-	}).onDelete("cascade"),
-	foreignKey({
-		columns: [table.providerId],
-		foreignColumns: [modelProviders.id],
-		name: "model_pricing_rules_provider_id_fkey",
-	}).onDelete("set null"),
-	check("ck_model_pricing_rules_scope_type", sql`(scope_type)::text = ANY (ARRAY[('system'::character varying)::text, ('instance'::character varying)::text, ('space'::character varying)::text])`),
-	check("ck_model_pricing_rules_scope_space", sql`((scope_type)::text = 'space'::text AND space_id IS NOT NULL) OR ((scope_type)::text <> 'space'::text AND space_id IS NULL)`),
-	check("ck_model_pricing_rules_source", sql`(source)::text = ANY (ARRAY[('built_in'::character varying)::text, ('instance_admin'::character varying)::text, ('space_admin'::character varying)::text, ('imported'::character varying)::text])`),
-	check("ck_model_pricing_rules_effective_window", sql`effective_until IS NULL OR effective_until > effective_from`),
-	check("ck_model_pricing_rules_nonnegative_prices", sql`(input_usd_per_million IS NULL OR input_usd_per_million >= 0) AND (output_usd_per_million IS NULL OR output_usd_per_million >= 0) AND (cache_write_usd_per_million IS NULL OR cache_write_usd_per_million >= 0) AND (cache_read_usd_per_million IS NULL OR cache_read_usd_per_million >= 0) AND (reasoning_usd_per_million IS NULL OR reasoning_usd_per_million >= 0)`),
-]);
-
 export const tokenUsageEvents = pgTable("token_usage_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	instanceId: varchar("instance_id", { length: 36 }).notNull(),
@@ -157,6 +113,7 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 	outputTokens: integer("output_tokens").default(0).notNull(),
 	totalTokens: integer("total_tokens"),
 	cacheCreationInputTokens: integer("cache_creation_input_tokens").default(0).notNull(),
+	cacheCreation1hInputTokens: integer("cache_creation_1h_input_tokens").default(0).notNull(),
 	cacheReadInputTokens: integer("cache_read_input_tokens").default(0).notNull(),
 	reasoningTokens: integer("reasoning_tokens").default(0).notNull(),
 	requestCount: integer("request_count").default(1).notNull(),
@@ -167,9 +124,6 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 	providerUsageJson: jsonb("provider_usage_json").default({}).notNull(),
 	usageNormalizationVersion: integer("usage_normalization_version").default(1).notNull(),
 	totalTokensSource: varchar("total_tokens_source", { length: 32 }).notNull(),
-	currency: varchar({ length: 8 }).default("USD").notNull(),
-	pricingRuleId: varchar("pricing_rule_id", { length: 36 }),
-	pricingTierName: varchar("pricing_tier_name", { length: 128 }),
 	dimensionsJson: jsonb("dimensions_json").default({}).notNull(),
 	usageAccuracy: varchar("usage_accuracy", { length: 32 }).notNull(),
 	dedupeConfidence: varchar("dedupe_confidence", { length: 32 }).notNull(),
@@ -251,11 +205,6 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 		foreignColumns: [usageImportBatches.id],
 		name: "token_usage_events_import_batch_id_fkey",
 	}).onDelete("set null"),
-	foreignKey({
-		columns: [table.pricingRuleId],
-		foreignColumns: [modelPricingRules.id],
-		name: "token_usage_events_pricing_rule_id_fkey",
-	}).onDelete("set null"),
 	check("ck_token_usage_events_source_type", sql`(source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])`),
 	check("ck_token_usage_events_event_type", sql`(event_type)::text = ANY (ARRAY[('llm.generation'::character varying)::text, ('llm.embedding'::character varying)::text, ('llm.rerank'::character varying)::text, ('cli.history_usage'::character varying)::text, ('usage.adjustment'::character varying)::text])`),
 	check("ck_token_usage_events_execution_channel", sql`(execution_channel)::text = ANY (ARRAY[('managed_api'::character varying)::text, ('provider_proxy'::character varying)::text, ('local_cli'::character varying)::text, ('local_cli_transcript'::character varying)::text, ('manual_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('unknown'::character varying)::text])`),
@@ -266,7 +215,7 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 	check("ck_token_usage_events_access_level", sql`access_level IN ('full', 'summary')`),
 	check("ck_token_usage_events_source_resource", sql`(source_resource_type IS NULL) = (source_resource_id IS NULL)`),
 	check("ck_token_usage_events_private_owner", sql`visibility <> 'private' OR owner_user_id IS NOT NULL`),
-	check("ck_token_usage_events_nonnegative_counts", sql`input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0)`),
+	check("ck_token_usage_events_nonnegative_counts", sql`input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_creation_1h_input_tokens >= 0 AND cache_creation_1h_input_tokens <= cache_creation_input_tokens AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0)`),
 ]);
 
 export const cliUsageImportCursors = pgTable("cli_usage_import_cursors", {

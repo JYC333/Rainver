@@ -41,6 +41,7 @@ export type UsageBucketName =
   | "input"
   | "output"
   | "input_cache_creation"
+  | "input_cache_creation_1h"
   | "input_cache_read"
   | "output_reasoning"
   | "input_audio"
@@ -100,9 +101,6 @@ export interface UsageObservation {
   origin_space_id?: string | null;
   origin_instance_id?: string | null;
   reporting_instance_id?: string | null;
-  pricing_rule_id?: string | null;
-  pricing_tier_name?: string | null;
-  currency?: string | null;
 }
 
 export interface NormalizedUsageObservation {
@@ -150,6 +148,7 @@ export interface NormalizedUsageObservation {
   output_tokens: number;
   total_tokens: number | null;
   cache_creation_input_tokens: number;
+  cache_creation_1h_input_tokens: number;
   cache_read_input_tokens: number;
   reasoning_tokens: number;
   request_count: number;
@@ -160,9 +159,6 @@ export interface NormalizedUsageObservation {
   provider_usage_json: Record<string, unknown>;
   usage_normalization_version: number;
   total_tokens_source: TotalTokensSource;
-  currency: string;
-  pricing_rule_id: string | null;
-  pricing_tier_name: string | null;
   dimensions_json: Record<string, unknown>;
   usage_accuracy: UsageAccuracy;
   dedupe_confidence: UsageDedupeConfidence;

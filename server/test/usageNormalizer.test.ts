@@ -105,6 +105,7 @@ describe("usage normalizer", () => {
         provider_usage: {
           input_tokens: 300,
           cache_creation_input_tokens: 50,
+          cache_creation_1h_input_tokens: 40,
           cache_read_input_tokens: 25,
           output_tokens: 60,
         },
@@ -119,9 +120,11 @@ describe("usage normalizer", () => {
     expect(event.meter_subject_id).toBe("claude-session-1");
     expect(event.input_tokens).toBe(300);
     expect(event.cache_creation_input_tokens).toBe(50);
+    expect(event.cache_creation_1h_input_tokens).toBe(40);
     expect(event.cache_read_input_tokens).toBe(25);
     expect(event.output_tokens).toBe(60);
     expect(event.total_tokens).toBe(435);
+    expect(event.usage_details_json.input_cache_creation_1h).toBe(40);
     expect(event.total_tokens_source).toBe("sum_of_buckets");
     expect(event.usage_accuracy).toBe("transcript_lower_bound");
   });

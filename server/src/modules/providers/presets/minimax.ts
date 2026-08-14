@@ -7,7 +7,7 @@ export const MINIMAX_PRESETS: ProviderPreset[] = [
     label: "MiniMax",
     description: "MiniMax Anthropic-compatible chat endpoint with optional CLI bridge URLs.",
     name: "MiniMax",
-    provider_type: "anthropic",
+    provider_type: "minimax",
     base_url: "https://api.minimaxi.com/anthropic",
     claude_compatible_base_url: "https://api.minimaxi.com/anthropic",
     openai_compatible_base_url: "https://api.minimaxi.com/v1",
@@ -28,4 +28,3 @@ export const MINIMAX_PRESETS: ProviderPreset[] = [
     task: null,
   },
 ];
-

@@ -80,7 +80,7 @@ describe("provider contracts", () => {
     expect(
       ModelProviderCreateRequestSchema.parse({
         name: "Claude Gateway",
-        provider_type: "other",
+        provider_type: "openai_compatible",
         base_url: "https://api.example.test/v1",
         claude_compatible_base_url: "https://api.example.test/anthropic",
       }).claude_compatible_base_url,
@@ -222,6 +222,17 @@ describe("provider contracts", () => {
         rotated: false,
       }).success,
     ).toBe(true);
+    expect(CredentialChannelMetadataSchema.parse({
+      channel: "managed_subscription_oauth",
+      pooled: false,
+      rotated: false,
+      owner_bound: true,
+    })).toEqual({
+      channel: "managed_subscription_oauth",
+      pooled: false,
+      rotated: false,
+      owner_bound: true,
+    });
   });
 });
 

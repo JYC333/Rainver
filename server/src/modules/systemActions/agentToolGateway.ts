@@ -1,7 +1,6 @@
 import type { CanonicalToolDefinition, RuntimeHostExecuteRequest, RuntimeHostExecuteResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import {
-  executeWithAgentDelegationTools,
   resolveAgentDelegationToolBinding,
   runAgentRoomToolCall,
   agentDelegatePolicyInput,
@@ -39,6 +38,7 @@ import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService
 export interface AgentToolGatewayDeps extends ManagedApiRetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
   actionEventSink?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
+  abortSignal?: AbortSignal;
 }
 
 const GENERIC_TRANSPORT_ACTION_IDS = ["authorization.request", "source.channel.propose_activation", "project.source.propose_bind", "source.backfill.propose_start", "task.plan.propose"];
@@ -72,7 +72,10 @@ export class AgentToolGateway {
       )
       .map((definition) => ({ name: definition.id, description: definition.description, input_schema: proposalActionJsonSchema(definition.id) }));
 
-    if (genericDefinitions.length && !retrieval) {
+    // The synthetic binding is the carrier that lets a run reach the tool loop
+    // without owning any retrieval-domain tool. Delegation needs it for the
+    // same reason the generic transport actions do.
+    if (!retrieval && (genericDefinitions.length > 0 || delegation)) {
       retrieval = await this.syntheticRetrievalBinding(run);
     }
     if (retrieval && genericDefinitions.length) {
@@ -225,16 +228,19 @@ export class AgentToolGateway {
       }
     };
 
-    if (retrieval && delegation) {
+    // One loop for every managed tool family. Delegation used to carry its own
+    // copy of the turn loop; the only thing that copy did differently was
+    // rewrite `system_prompt`, which `managedApiAdapter` overwrites from the
+    // InvocationDelivery before dispatch — so it never reached a model.
+    if (retrieval) {
       return executeWithRetrievalTools(this.config, run, request, execute, retrieval, {
-        toolDefinitions: delegation.toolDefinitions,
-        toolBindings: delegation.toolBindings,
+        ...(delegation
+          ? { toolDefinitions: delegation.toolDefinitions, toolBindings: delegation.toolBindings }
+          : {}),
         dispatch,
-        onActionEvent: actionEvents,
+        signal: deps.abortSignal,
       });
     }
-    if (retrieval) return executeWithRetrievalTools(this.config, run, request, execute, retrieval, { onActionEvent: actionEvents, dispatch });
-    if (delegation) return executeWithAgentDelegationTools(this.config, run, request, execute, delegation, actionEvents, dispatch);
     return execute(this.config, request);
   }
 

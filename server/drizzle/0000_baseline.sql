@@ -3864,6 +3864,7 @@ CREATE TABLE "credentials" (
 	"credential_type" varchar(64) NOT NULL,
 	"secret_ref" text NOT NULL,
 	"scopes_json" jsonb NOT NULL,
+	"metadata_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL
 );
@@ -5408,36 +5409,6 @@ CREATE TABLE "instance_identity" (
 	CONSTRAINT "ck_instance_identity_singleton" CHECK ((id)::text = 'local'::text)
 );
 --> statement-breakpoint
-CREATE TABLE "model_pricing_rules" (
-	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"scope_type" varchar(32) NOT NULL,
-	"space_id" varchar(36),
-	"provider_type" varchar(64),
-	"provider_id" varchar(36),
-	"model_pattern" varchar(256) NOT NULL,
-	"input_usd_per_million" numeric(18, 8),
-	"output_usd_per_million" numeric(18, 8),
-	"cache_write_usd_per_million" numeric(18, 8),
-	"cache_read_usd_per_million" numeric(18, 8),
-	"reasoning_usd_per_million" numeric(18, 8),
-	"usage_type_prices_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"tier_conditions_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"priority" integer DEFAULT 0 NOT NULL,
-	"pricing_normalization_version" integer DEFAULT 1 NOT NULL,
-	"currency" varchar(8) DEFAULT 'USD' NOT NULL,
-	"effective_from" timestamp with time zone NOT NULL,
-	"effective_until" timestamp with time zone,
-	"source" varchar(32) NOT NULL,
-	"metadata_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"created_at" timestamp with time zone NOT NULL,
-	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "ck_model_pricing_rules_scope_type" CHECK ((scope_type)::text = ANY (ARRAY[('system'::character varying)::text, ('instance'::character varying)::text, ('space'::character varying)::text])),
-	CONSTRAINT "ck_model_pricing_rules_scope_space" CHECK (((scope_type)::text = 'space'::text AND space_id IS NOT NULL) OR ((scope_type)::text <> 'space'::text AND space_id IS NULL)),
-	CONSTRAINT "ck_model_pricing_rules_source" CHECK ((source)::text = ANY (ARRAY[('built_in'::character varying)::text, ('instance_admin'::character varying)::text, ('space_admin'::character varying)::text, ('imported'::character varying)::text])),
-	CONSTRAINT "ck_model_pricing_rules_effective_window" CHECK (effective_until IS NULL OR effective_until > effective_from),
-	CONSTRAINT "ck_model_pricing_rules_nonnegative_prices" CHECK ((input_usd_per_million IS NULL OR input_usd_per_million >= 0) AND (output_usd_per_million IS NULL OR output_usd_per_million >= 0) AND (cache_write_usd_per_million IS NULL OR cache_write_usd_per_million >= 0) AND (cache_read_usd_per_million IS NULL OR cache_read_usd_per_million >= 0) AND (reasoning_usd_per_million IS NULL OR reasoning_usd_per_million >= 0))
-);
---> statement-breakpoint
 CREATE TABLE "token_usage_events" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"instance_id" varchar(36) NOT NULL,
@@ -5483,6 +5454,7 @@ CREATE TABLE "token_usage_events" (
 	"output_tokens" integer DEFAULT 0 NOT NULL,
 	"total_tokens" integer,
 	"cache_creation_input_tokens" integer DEFAULT 0 NOT NULL,
+	"cache_creation_1h_input_tokens" integer DEFAULT 0 NOT NULL,
 	"cache_read_input_tokens" integer DEFAULT 0 NOT NULL,
 	"reasoning_tokens" integer DEFAULT 0 NOT NULL,
 	"request_count" integer DEFAULT 1 NOT NULL,
@@ -5493,9 +5465,6 @@ CREATE TABLE "token_usage_events" (
 	"provider_usage_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"usage_normalization_version" integer DEFAULT 1 NOT NULL,
 	"total_tokens_source" varchar(32) NOT NULL,
-	"currency" varchar(8) DEFAULT 'USD' NOT NULL,
-	"pricing_rule_id" varchar(36),
-	"pricing_tier_name" varchar(128),
 	"dimensions_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"usage_accuracy" varchar(32) NOT NULL,
 	"dedupe_confidence" varchar(32) NOT NULL,
@@ -5515,7 +5484,7 @@ CREATE TABLE "token_usage_events" (
 	CONSTRAINT "ck_token_usage_events_access_level" CHECK (access_level IN ('full', 'summary')),
 	CONSTRAINT "ck_token_usage_events_source_resource" CHECK ((source_resource_type IS NULL) = (source_resource_id IS NULL)),
 	CONSTRAINT "ck_token_usage_events_private_owner" CHECK (visibility <> 'private' OR owner_user_id IS NOT NULL),
-	CONSTRAINT "ck_token_usage_events_nonnegative_counts" CHECK (input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0))
+	CONSTRAINT "ck_token_usage_events_nonnegative_counts" CHECK (input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_creation_1h_input_tokens >= 0 AND cache_creation_1h_input_tokens <= cache_creation_input_tokens AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0))
 );
 --> statement-breakpoint
 CREATE TABLE "usage_import_batches" (
@@ -5963,7 +5932,8 @@ ALTER TABLE "inquiry_thread_statement_revisions" ADD CONSTRAINT "inquiry_thread_
 ALTER TABLE "inquiry_thread_steps" ADD CONSTRAINT "inquiry_thread_steps_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("object_id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_thread_steps" ADD CONSTRAINT "inquiry_thread_steps_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_thread_steps" ADD CONSTRAINT "inquiry_thread_steps_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "inquiry_thread_steps" ADD CONSTRAINT "inquiry_thread_steps_iteration_fkey" FOREIGN KEY ("iteration_id","project_id","space_id") REFERENCES "public"."inquiry_iterations"("id","project_id","space_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_steps" ADD CONSTRAINT "inquiry_thread_steps_iteration_delete_fkey" FOREIGN KEY ("iteration_id") REFERENCES "public"."inquiry_iterations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inquiry_thread_steps" ADD CONSTRAINT "inquiry_thread_steps_iteration_fkey" FOREIGN KEY ("iteration_id","project_id","space_id") REFERENCES "public"."inquiry_iterations"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_thread_structure_events" ADD CONSTRAINT "inquiry_thread_structure_events_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("object_id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_thread_structure_events" ADD CONSTRAINT "inquiry_thread_structure_events_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_thread_work_events" ADD CONSTRAINT "inquiry_thread_work_events_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("object_id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -6650,8 +6620,6 @@ ALTER TABLE "validation_recipes" ADD CONSTRAINT "validation_recipes_project_fold
 ALTER TABLE "cli_usage_import_cursors" ADD CONSTRAINT "cli_usage_import_cursors_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cli_usage_import_cursors" ADD CONSTRAINT "cli_usage_import_cursors_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cli_usage_import_cursors" ADD CONSTRAINT "cli_usage_import_cursors_credential_profile_id_fkey" FOREIGN KEY ("credential_profile_id") REFERENCES "public"."cli_credential_profiles"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "model_pricing_rules" ADD CONSTRAINT "model_pricing_rules_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "model_pricing_rules" ADD CONSTRAINT "model_pricing_rules_provider_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "public"."model_providers"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_subject_user_id_fkey" FOREIGN KEY ("subject_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -6664,7 +6632,6 @@ ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_agent_id_fke
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_project_folder_id_fkey" FOREIGN KEY ("project_folder_id") REFERENCES "public"."project_folders"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_import_batch_id_fkey" FOREIGN KEY ("import_batch_id") REFERENCES "public"."usage_import_batches"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_pricing_rule_id_fkey" FOREIGN KEY ("pricing_rule_id") REFERENCES "public"."model_pricing_rules"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_target_space_id_fkey" FOREIGN KEY ("target_space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7639,9 +7606,6 @@ CREATE INDEX "ix_validation_recipes_project_folder_id" ON "validation_recipes" U
 CREATE UNIQUE INDEX "uq_cli_usage_import_cursors_scope" ON "cli_usage_import_cursors" USING btree ("instance_id","space_id",COALESCE(user_id, '__none__'::character varying),"runtime",COALESCE(credential_profile_id, '__none__'::character varying),"source_fingerprint");--> statement-breakpoint
 CREATE INDEX "ix_cli_usage_import_cursors_space_runtime" ON "cli_usage_import_cursors" USING btree ("space_id","runtime");--> statement-breakpoint
 CREATE INDEX "ix_cli_usage_import_cursors_credential_profile" ON "cli_usage_import_cursors" USING btree ("credential_profile_id");--> statement-breakpoint
-CREATE INDEX "ix_model_pricing_rules_effective" ON "model_pricing_rules" USING btree ("effective_from","effective_until");--> statement-breakpoint
-CREATE INDEX "ix_model_pricing_rules_scope" ON "model_pricing_rules" USING btree ("scope_type","space_id");--> statement-breakpoint
-CREATE INDEX "ix_model_pricing_rules_provider_model" ON "model_pricing_rules" USING btree ("provider_id","provider_type","model_pattern","priority");--> statement-breakpoint
 CREATE INDEX "ix_token_usage_events_space_occurred" ON "token_usage_events" USING btree ("space_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "ix_token_usage_events_instance_occurred" ON "token_usage_events" USING btree ("instance_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "ix_token_usage_events_provider_model" ON "token_usage_events" USING btree ("space_id","provider_id","model","occurred_at");--> statement-breakpoint

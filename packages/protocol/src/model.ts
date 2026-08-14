@@ -61,6 +61,7 @@ export const CanonicalUsageSchema = z.object({
   output_tokens: z.number().int().nonnegative().optional(),
   total_tokens: z.number().int().nonnegative().optional(),
   cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+  cache_creation_1h_input_tokens: z.number().int().nonnegative().optional(),
   cache_read_input_tokens: z.number().int().nonnegative().optional(),
   reasoning_tokens: z.number().int().nonnegative().optional(),
 });

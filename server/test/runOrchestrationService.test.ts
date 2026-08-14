@@ -1553,11 +1553,11 @@ describe("RunOrchestrationService", () => {
           events: [],
           adapter_metadata: {
             adapter_type: "ts_agent_host",
+            // One tool loop means one summary key: delegation calls report
+            // here alongside retrieval ones rather than under a second key.
             retrieval_tool_calls: [
               { tool_name: "retrieval.search", ok: true, result_count: 3 },
               { tool_name: "memory.retrieval.search", ok: false, error_code: "retrieval_tool_domain_not_enabled" },
-            ],
-            agent_room_tool_calls: [
               { tool_name: "agent.delegate", ok: false, error_code: "delegation_policy_denied" },
             ],
           },

@@ -48,6 +48,7 @@ export const RuntimeHostExecuteRequestSchema = z.object({
   run_input: RunInputEnvelopeSchema,
   run_id: IdSchema,
   space_id: IdSchema,
+  subject_user_id: IdSchema.nullish(),
   model_provider_id: IdSchema,
   model: z.string().nullish(),
   system_prompt: z.string().nullish(),

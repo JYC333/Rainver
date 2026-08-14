@@ -36,6 +36,7 @@ const SAFE_PROVIDER_USAGE_KEYS = new Set([
   "image_tokens",
   "reasoning_tokens",
   "cache_creation_input_tokens",
+  "cache_creation_1h_input_tokens",
   "cache_read_input_tokens",
   "billed_units",
   "search_units",
@@ -111,6 +112,7 @@ export function normalizeUsageObservation(
     output_tokens: normalized.usageDetails.output ?? 0,
     total_tokens: totalTokens,
     cache_creation_input_tokens: normalized.usageDetails.input_cache_creation ?? 0,
+    cache_creation_1h_input_tokens: normalized.usageDetails.input_cache_creation_1h ?? 0,
     cache_read_input_tokens: normalized.usageDetails.input_cache_read ?? 0,
     reasoning_tokens: normalized.usageDetails.output_reasoning ?? 0,
     request_count: nonNegativeInt(input.request_count) ?? 1,
@@ -121,9 +123,6 @@ export function normalizeUsageObservation(
     provider_usage_json: providerUsage,
     usage_normalization_version: USAGE_NORMALIZATION_VERSION,
     total_tokens_source: totalTokensSource,
-    currency: trimOrNull(input.currency) ?? "USD",
-    pricing_rule_id: trimOrNull(input.pricing_rule_id),
-    pricing_tier_name: trimOrNull(input.pricing_tier_name),
     dimensions_json: sanitizeDimensions(input.dimensions),
     usage_accuracy: usageAccuracy,
     dedupe_confidence: normalizeDedupeConfidence(input.dedupe_confidence),
@@ -135,7 +134,12 @@ export function normalizeUsageObservation(
   };
 }
 
-function normalizeUsageDetails(
+/**
+ * The single provider-usage extraction. Exported because the Runtime Host
+ * envelope needs the same buckets the ledger records — a second extraction
+ * would drift, and the two would then disagree about the same generation.
+ */
+export function normalizeUsageDetails(
   explicit: UsageDetails,
   providerUsage: Record<string, unknown>,
   eventType: UsageObservation["event_type"],
@@ -201,6 +205,7 @@ function addKnownBuckets(target: UsageDetails, source: Record<string, unknown>):
     ["input", ["input", "input_tokens"]],
     ["output", ["output", "output_tokens"]],
     ["input_cache_creation", ["input_cache_creation", "cache_creation_input_tokens"]],
+    ["input_cache_creation_1h", ["input_cache_creation_1h", "cache_creation_1h_input_tokens"]],
     ["input_cache_read", ["input_cache_read", "cache_read_input_tokens", "cached_input_tokens"]],
     ["output_reasoning", ["output_reasoning", "reasoning_tokens", "output_reasoning_tokens"]],
     ["input_audio", ["input_audio"]],
@@ -246,10 +251,12 @@ function addOpenAiDetails(target: UsageDetails, usage: Record<string, unknown>):
 
 function addAnthropicDetails(target: UsageDetails, usage: Record<string, unknown>): void {
   const cacheCreation = intFrom(usage.cache_creation_input_tokens);
+  const cacheCreation1h = intFrom(usage.cache_creation_1h_input_tokens);
   const cacheRead = intFrom(usage.cache_read_input_tokens);
   const input = intFrom(usage.input_tokens);
   const output = intFrom(usage.output_tokens);
   if (cacheCreation !== undefined) target.input_cache_creation = cacheCreation;
+  if (cacheCreation1h !== undefined) target.input_cache_creation_1h = cacheCreation1h;
   if (cacheRead !== undefined) target.input_cache_read = cacheRead;
   if (input !== undefined) target.input = input;
   if (output !== undefined) target.output = output;
@@ -281,7 +288,9 @@ function normalizeDetails(details: UsageDetails): UsageDetails {
 export function sumUsageBuckets(details: UsageDetails): number {
   let total = 0;
   for (const [key, value] of Object.entries(details)) {
-    if (key === "total") continue;
+    // The 1h bucket is a priced subtype of cache creation, not an additional
+    // token bucket. Keep it for pricing/audit without double-counting totals.
+    if (key === "total" || key === "input_cache_creation_1h") continue;
     total += nonNegativeInt(value) ?? 0;
   }
   return total;
@@ -431,7 +440,7 @@ function safeSessionPath(value: string | null | undefined): string | null {
 function vendorFromProviderType(value: string | null | undefined): string | null {
   const providerType = trimOrNull(value);
   if (!providerType) return null;
-  if (["openai", "anthropic", "openrouter", "ollama", "zeroentropy", "cohere"].includes(providerType)) {
+  if (["openai", "anthropic", "minimax", "openrouter", "deepseek", "ollama", "zeroentropy", "cohere"].includes(providerType)) {
     return providerType;
   }
   return "other";

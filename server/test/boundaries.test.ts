@@ -33,6 +33,8 @@ const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "z
  */
 const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   ["pg", join("src", "db")],
+  ["@earendil-works/pi-ai", join("src", "modules", "providers", "invocation", "piAiChat.ts")],
+  ["@earendil-works/pi-agent-core", join("src", "modules", "runs", "managedAgentLoop.ts")],
   ["node-pty", join("src", "modules", "providers", "cli", "loginEngine.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],
   // drizzle-orm is schema-declaration only (server/src/db/schema/), never a

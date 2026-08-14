@@ -3084,12 +3084,15 @@ export const spacesApi = {
 // ── Providers ─────────────────────────────────────────────────────────────
 export type ProviderType =
   | 'openai'
+  | 'openai_codex'
   | 'anthropic'
+  | 'minimax'
   | 'openrouter'
+  | 'deepseek'
   | 'ollama'
   | 'zeroentropy'
   | 'cohere'
-  | 'other'
+  | 'openai_compatible'
 
 export interface ModelProviderOut {
   id: string
@@ -3108,6 +3111,9 @@ export interface ModelProviderOut {
   enabled: boolean
   is_default: boolean
   has_api_key: boolean
+  has_subscription?: boolean
+  subscription_type?: 'anthropic' | 'openai_codex' | null
+  subscription_quota?: ManagedSubscriptionQuota | null
   manageable?: boolean
   grant_enabled?: boolean
   created_at: string
@@ -3184,6 +3190,26 @@ export interface TestConnectionOut {
   model?: string
 }
 
+export interface ManagedSubscriptionQuota {
+  available: boolean
+  session_pct: number | null
+  session_resets: string | null
+  week_pct: number | null
+  week_resets: string | null
+  checked_at: string | null
+  error: string | null
+}
+
+export type ManagedSubscriptionType = 'anthropic' | 'openai_codex'
+
+export type ManagedSubscriptionLoginEvent =
+  | { type: 'auth_url'; url: string; instructions?: string }
+  | { type: 'device_code'; userCode: string; verificationUri: string; intervalSeconds?: number; expiresInSeconds?: number }
+  | { type: 'prompt'; promptType: string; message: string; placeholder?: string }
+  | { type: 'progress' | 'info'; message: string }
+  | { type: 'connected'; provider: ModelProviderOut }
+  | { type: 'error'; message: string }
+
 export const providersApi = {
   list: () => get<ModelProviderOut[]>('/providers'),
 
@@ -3227,6 +3253,40 @@ export const providersApi = {
   models: (id: string) => get<ModelProviderModelsOut>(`/providers/${id}/models`),
 
   test: (id: string) => post<TestConnectionOut>(`/providers/${id}/test`, {}),
+
+  refreshSubscriptionQuota: (id: string) =>
+    post<ModelProviderOut>(`/providers/${id}/subscription/quota`, {}),
+
+  disconnectSubscription: (id: string) =>
+    del<ModelProviderOut>(`/providers/${id}/subscription`),
+
+  sendSubscriptionLoginInput: (type: ManagedSubscriptionType, input: string) =>
+    post<{ status: string }>(`/providers/subscriptions/login/input?type=${encodeURIComponent(type)}`, { input }),
+
+  async *subscriptionLoginStream(type: ManagedSubscriptionType): AsyncGenerator<ManagedSubscriptionLoginEvent> {
+    const url = `${BASE}/providers/subscriptions/login/stream?type=${encodeURIComponent(type)}`
+    const headers: Record<string, string> = {}
+    if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
+    headers['X-Agent-Space-Id'] = _spaceId
+    const response = await fetch(url, { headers })
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+    if (!response.body) throw new Error('No response body')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() ?? ''
+      for (const block of blocks) {
+        const line = block.trim()
+        if (!line.startsWith('data: ')) continue
+        try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+      }
+    }
+  },
 
   taskPolicies: () => get<ProviderTaskPolicyOut[]>('/providers/task-policies'),
 

@@ -70,7 +70,7 @@ function historyLabel(draft: ResearchSetupDraft): string {
       : 'Date range not set'
 }
 
-const structuredOutputProviderTypes = new Set(['openai', 'openrouter', 'other', 'anthropic', 'ollama'])
+const structuredOutputProviderTypes = new Set(['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'])
 const researchDiscoveryProviders: Array<{ key: ResearchProviderKey; label: string; note: string }> = [
   { key: 'arxiv', label: 'arXiv', note: 'Public academic API' },
   { key: 'openalex', label: 'OpenAlex', note: 'Public academic API' },

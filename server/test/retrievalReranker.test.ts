@@ -13,11 +13,16 @@ import {
 import type { ScoredCandidate } from "../src/modules/retrieval/types";
 import { buildRerankPrompt, parseRerankScores } from "../src/modules/retrieval/rerankProvider/prompt";
 import { ProviderReranker } from "../src/modules/retrieval/rerankProvider/providerReranker";
-import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
+import { __setProviderHttpClientForTests as setRawProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
 import type { RerankCandidate } from "../src/modules/retrieval";
 import { writePolicyAudit } from "../src/modules/policy/auditWriter";
 import { resolveTestUsageAttribution } from "./support/usageAttribution";
+import { piAiHttpClient } from "./support/piAiHttp";
+
+function __setProviderHttpClientForTests(client: Parameters<typeof setRawProviderHttpClientForTests>[0]): void {
+  setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);
+}
 
 function cand(over: Partial<ScoredCandidate> & { objectId: string }): ScoredCandidate {
   return {

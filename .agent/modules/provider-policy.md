@@ -24,8 +24,8 @@ is a normalized space setting; provider adapters map it to request parameters
 where supported and validate the returned vector length.
 
 Retrieval task policies are capability-filtered. `retrieval_embedding` accepts
-embedding-capable providers (OpenAI-compatible, Ollama, ZeroEntropy, Cohere, or local
-`other`), `retrieval_rerank` is reserved for native rerank providers
+embedding-capable providers (OpenAI, OpenRouter, OpenAI-compatible endpoints,
+Ollama, ZeroEntropy, or Cohere), `retrieval_rerank` is reserved for native rerank providers
 (ZeroEntropy or Cohere), and `retrieval_query_rewrite` uses ordinary chat providers.
 The provider task-policy route enforces the same compatibility rules as the UI.
 Query rewrite prompt text is not stored in the provider policy; it is resolved
@@ -59,13 +59,26 @@ Managed API runtimes resolve credentials through `server/src/modules/providers/`
 after the `runtime.use_credential` policy gate passes. CLI runtimes use the CLI
 CredentialBroker profile channel instead.
 
-For managed API chat calls, an explicitly configured
-`openai_compatible_base_url` is the preferred transport, including when the
-vendor catalogues the provider as `anthropic`. The native Anthropic Messages
-transport is used only when no OpenAI-compatible endpoint is configured. This
-keeps structured-output Research runs on the OpenAI JSON Schema contract by
-default while retaining native Anthropic support for providers that do not
-offer an OpenAI-compatible endpoint.
+`model_providers.provider_type` records vendor identity (`openai`,
+`openai_codex`, `anthropic`, `minimax`, `openrouter`, `deepseek`, `ollama`,
+`cohere`, `zeroentropy`, or the explicitly unknown `openai_compatible`), not a
+wire protocol. The server-owned
+vendor registry resolves that identity to the chat protocol, pi-ai catalog,
+and capability profile. Managed chat calls run through
+`@earendil-works/pi-ai`; per-space `base_url`, NetworkProfile fetch routing,
+agent-space credential pools, egress authorization, usage recording, and
+structured-output validation remain outside pi-ai. MiniMax uses its
+Anthropic-compatible endpoint. `openai_compatible_base_url` and
+`claude_compatible_base_url` remain CLI bridge configuration and do not select
+the managed chat protocol.
+
+Managed Claude and OpenAI Codex subscription Providers are owner-only. They may
+be selected for that owner's direct managed work, including Project Research
+and Question Refinement, but cannot back a space-wide `provider_task_policy`.
+Codex structured output is implemented as a single constrained tool over the
+Responses transport and uses the protocol-native `tool_choice: "required"`;
+ordinary OpenAI-compatible chat retains the Chat Completions function-choice
+shape.
 
 Source post-processing and Project Research synthesis are server-managed runs;
 Project Research uses only the managed `model_api` provider path and never a CLI
@@ -114,10 +127,11 @@ proxy URLs with embedded usernames or passwords are rejected. `NO_PROXY` values
 are applied to both server-side provider fetches and CLI subprocess proxy env.
 
 Provider calls emit best-effort observations to the append-only `usage` module.
-Managed API invocations and provider-proxy responses are normalized into
-mutually exclusive token buckets; pricing rules may add auditable cost
-estimates. Prompts, completions, request/response bodies, credentials, and raw
-CLI transcripts are excluded. See `docs/TOKEN_USAGE_METERING.md`.
+Managed API invocations record pi-ai's per-call token detail once at the
+agent-space provider boundary; provider-proxy responses use their existing
+path. Both normalize into mutually exclusive token buckets. Prompts,
+completions, request/response bodies, credentials, and raw CLI transcripts are
+excluded. See `docs/TOKEN_USAGE_METERING.md`.
 
 ## Per-Space Model Config (Lightweight Future-Proofing)
 

@@ -1,5 +1,4 @@
 import type {
-  CanonicalMessage,
   CanonicalToolCall,
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
@@ -17,13 +16,6 @@ import { PgRunRepository, type RunRecord } from "./repository";
 
 const AGENT_DELEGATE_TOOL = "agent.delegate";
 const AGENT_WAIT_FOR_RESULTS_TOOL = "agent.wait_for_results";
-const MAX_AGENT_DELEGATION_TOOL_TURNS = 4;
-const RUNTIME_TOOL_PROVIDER_UNSUPPORTED = "runtime_tool_provider_unsupported";
-
-export type RuntimeHostExecutor = (
-  config: ServerConfig,
-  request: RuntimeHostExecuteRequest,
-) => Promise<RuntimeHostExecuteResponse>;
 
 export interface AgentDelegationTarget {
   agent_id: string;
@@ -180,82 +172,6 @@ function agentWaitForResultsToolDefinition(targets: readonly AgentDelegationTarg
       },
     },
   };
-}
-
-export async function executeWithAgentDelegationTools(
-  config: ServerConfig,
-  run: RunRecord,
-  request: RuntimeHostExecuteRequest,
-  execute: RuntimeHostExecutor,
-  binding: AgentDelegationToolBinding,
-  _onActionEvent?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>,
-  dispatch?: (call: CanonicalToolCall) => Promise<{ modelResult: unknown; summary: Record<string, unknown>; suspend?: RuntimeHostExecuteResponse }>,
-): Promise<RuntimeHostExecuteResponse> {
-  const messages = initialMessagesForToolLoop(request);
-  const summaries: Array<Record<string, unknown>> = [];
-  let lastResponse: RuntimeHostExecuteResponse | null = null;
-
-  for (let turn = 0; turn < MAX_AGENT_DELEGATION_TOOL_TURNS; turn += 1) {
-    const response = await execute(config, {
-      ...request,
-      system_prompt: delegationSystemPrompt(request.system_prompt, binding.targets),
-      messages: cloneMessages(messages),
-      tool_mode: "authorized_bindings",
-      tool_bindings: binding.toolBindings,
-      tools: binding.toolDefinitions,
-    });
-    lastResponse = response;
-    if (
-      turn === 0 &&
-      !response.success &&
-      response.error_code === RUNTIME_TOOL_PROVIDER_UNSUPPORTED
-    ) {
-      const plain = await execute(config, {
-        ...request,
-        messages: cloneMessages(messages),
-        tool_mode: "disabled",
-        tool_bindings: [],
-        tools: [],
-      });
-      return responseWithAgentDelegationMetadata(plain, [
-        { tool_name: "agent.room_tools", ok: false, error_code: "agent_room_tool_provider_unsupported" },
-      ]);
-    }
-
-    const toolCalls = toolCallsFromResponse(response);
-    if (!response.success || toolCalls.length === 0) {
-      return responseWithAgentDelegationMetadata(response, summaries);
-    }
-
-    messages.push({
-      role: "assistant",
-      content: response.output_text || null,
-      tool_calls: toolCalls,
-    });
-    for (const call of toolCalls) {
-      const result = dispatch ? await dispatch(call) : await runAgentRoomToolCall(call, binding, run, request);
-      summaries.push(result.summary);
-      if (result.suspend) {
-        return responseWithAgentDelegationMetadata(result.suspend, summaries);
-      }
-      messages.push({
-        role: "tool",
-        content: JSON.stringify(result.modelResult),
-        tool_call_id: call.id,
-        name: call.name,
-      });
-    }
-  }
-
-  return responseWithAgentDelegationMetadata(
-    withoutPendingToolCalls(
-      lastResponse ?? toolLoopFailure(request, "agent_room_tool_loop_empty", "No model response was produced."),
-    ),
-    [
-      ...summaries,
-      { tool_name: "agent.room_tools", ok: false, error_code: "agent_room_tool_turn_limit" },
-    ],
-  );
 }
 
 async function loadDelegationTargets(
@@ -657,23 +573,6 @@ function waitForResultsResponse(
   };
 }
 
-function delegationSystemPrompt(
-  current: string | null | undefined,
-  targets: readonly AgentDelegationTarget[],
-): string {
-  const lines = [
-    current?.trim() ?? "",
-    "Agent room delegation is available through the agent.delegate tool.",
-    "This is available to every active room agent, not only the manager.",
-    "Use agent.delegate when work is outside your role, when another member has more relevant capability, when the task should be split into sub-tasks, or when the user asks you to ask, call, consult, assign work to, or get independent results from another room member.",
-    "You may make multiple agent.delegate calls in one turn to start parallel child runs for different target agents.",
-    "Each tool call creates an auditable child run. After delegation is queued, do not invent the delegated agent's answer.",
-    "If your answer depends on other agent runs, call agent.wait_for_results instead of guessing. Use scope=own_delegations for child runs you delegated, and scope=current_turn for sibling agents addressed by the same user message.",
-    `Available room members and capabilities:\n${targets.map((target) => `- ${targetLabel(target)}`).join("\n")}`,
-  ].filter((line) => line.length > 0);
-  return lines.join("\n\n");
-}
-
 function targetLabel(target: AgentDelegationTarget): string {
   const capabilityText = capabilitySummary(target.capabilities_json);
   return `${target.name} (${target.role}, id: ${target.agent_id})${capabilityText ? ` — ${capabilityText}` : ""}`;
@@ -701,92 +600,6 @@ function capabilitySummary(value: unknown): string {
   if (rendered.length > 0) parts.push(`capabilities: ${rendered.slice(0, 8).join(", ")}`);
   const summary = parts.join("; ");
   return summary.length <= 600 ? summary : `${summary.slice(0, 597)}...`;
-}
-
-function initialMessagesForToolLoop(request: RuntimeHostExecuteRequest): CanonicalMessage[] {
-  if (request.messages?.length) return cloneMessages(request.messages);
-  return [{ role: "user", content: request.prompt }];
-}
-
-function cloneMessages(messages: readonly CanonicalMessage[]): CanonicalMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    tool_calls: message.tool_calls?.map((call) => ({ ...call })),
-  }));
-}
-
-function toolCallsFromResponse(response: RuntimeHostExecuteResponse): CanonicalToolCall[] {
-  const output = recordValue(response.output_json);
-  const calls = Array.isArray(output.tool_calls) ? output.tool_calls : [];
-  return calls.filter((call): call is CanonicalToolCall => {
-    const record = recordValue(call);
-    return (
-      typeof record.id === "string" &&
-      typeof record.name === "string" &&
-      typeof record.arguments_json === "string"
-    );
-  });
-}
-
-function responseWithAgentDelegationMetadata(
-  response: RuntimeHostExecuteResponse,
-  summaries: Array<Record<string, unknown>>,
-): RuntimeHostExecuteResponse {
-  if (summaries.length === 0) return response;
-  return {
-    ...response,
-    output_json: {
-      ...recordValue(response.output_json),
-      agent_room_tool_calls: summaries,
-    },
-    adapter_metadata: {
-      ...recordValue(response.adapter_metadata),
-      agent_room_tool_calls: summaries.map((summary) => ({
-        tool_name: summary.tool_name,
-        ok: summary.ok,
-        target_agent_id: summary.target_agent_id ?? null,
-        child_run_id: summary.child_run_id ?? null,
-        error_code: summary.error_code ?? null,
-      })),
-    },
-  };
-}
-
-function withoutPendingToolCalls(response: RuntimeHostExecuteResponse): RuntimeHostExecuteResponse {
-  const output = recordValue(response.output_json);
-  if (!("tool_calls" in output)) return response;
-  const rest = { ...output };
-  delete rest.tool_calls;
-  return { ...response, output_json: rest };
-}
-
-function toolLoopFailure(
-  request: RuntimeHostExecuteRequest,
-  errorCode: string,
-  errorText: string,
-): RuntimeHostExecuteResponse {
-  const now = new Date().toISOString();
-  return {
-    success: false,
-    stdout: "",
-    stderr: errorText,
-    output_text: "",
-    output_json: { adapter_type: "ts_agent_host", run_id: request.run_id },
-    exit_code: 1,
-    error_code: errorCode,
-    error_text: errorText,
-    started_at: now,
-    completed_at: now,
-    model: request.model ?? null,
-    usage: null,
-    events: [],
-    adapter_metadata: {
-      adapter_type: "ts_agent_host",
-      run_id: request.run_id,
-      tool_mode: "authorized_bindings",
-    },
-    adapter_log_json: null,
-  };
 }
 
 function requiredDatabaseUrl(config: ServerConfig): string {

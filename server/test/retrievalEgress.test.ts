@@ -6,13 +6,18 @@ import {
 } from "../src/modules/retrieval/egress/egressPolicy";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
 import {
-  __setProviderHttpClientForTests,
+  __setProviderHttpClientForTests as setRawProviderHttpClientForTests,
   completeProviderText,
   type ProviderHttpClient,
 } from "../src/modules/providers/invocation/invocation";
 import { ProviderReranker } from "../src/modules/retrieval/rerankProvider/providerReranker";
 import { ProviderSynthesizer } from "../src/modules/retrieval/synthesisProvider/providerSynthesizer";
 import { resolveTestUsageAttribution } from "./support/usageAttribution";
+import { piAiHttpClient } from "./support/piAiHttp";
+
+function __setProviderHttpClientForTests(client: ProviderHttpClient | null): void {
+  setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);
+}
 
 // W9 egress governance. The per-space switch is enforced at the shared seam:
 // when external egress is disabled, external model providers are blocked, while
@@ -79,7 +84,7 @@ describe("retrievalEgressAllowed", () => {
     expect(retrievalProviderEgressDestination({ provider_type: "ollama", base_url: null })).toBe("local_provider");
     expect(
       retrievalProviderEgressDestination({
-        provider_type: "other",
+        provider_type: "openai_compatible",
         base_url: "http://127.0.0.1:8080/v1",
       }),
     ).toBe("local_provider");
@@ -191,7 +196,7 @@ describe("egress-disabled provider stages", () => {
       metering: { subject_user_id: "user-1" },
     });
     expect(local.text).toBe("local ok");
-    expect(calls).toEqual(["http://localhost:11434/api/chat"]);
+    expect(calls).toEqual(["http://localhost:11434/v1/chat/completions"]);
   });
 });
 

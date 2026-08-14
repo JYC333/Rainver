@@ -153,7 +153,10 @@ export async function executeManagedApiNoToolAdapter(
     }
     return response;
   };
-  const response = await new AgentToolGateway(config).execute(input.run, request, execute, deps);
+  const response = await new AgentToolGateway(config).execute(input.run, request, execute, {
+    ...deps,
+    abortSignal: input.abort_signal,
+  });
   return envelopeFromRuntimeHost(input, adapterType, response, startedAt);
 }
 
@@ -196,6 +199,7 @@ function runtimeHostRequest(
     }),
     run_id: input.run.id,
     space_id: input.run.space_id,
+    subject_user_id: input.run.instructed_by_user_id ?? input.run.owner_user_id ?? null,
     model_provider_id: modelProviderId,
     // Routing persists the selected model on the run. Worker requests do not
     // repeat that value, so the adapter must honor the durable binding instead
@@ -434,11 +438,25 @@ function stringValue(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Copies through every token bucket the Runtime Host reported. Buckets carry
+ * distinct rates, so dropping one here would make the envelope's cost
+ * unrecomputable even though the ledger holds the detail.
+ */
 function normalizeUsage(value: CanonicalUsage | null | undefined): CanonicalUsage | null {
   if (!value) return null;
   const usage: CanonicalUsage = {};
-  if (typeof value.input_tokens === "number") usage.input_tokens = value.input_tokens;
-  if (typeof value.output_tokens === "number") usage.output_tokens = value.output_tokens;
-  if (typeof value.total_tokens === "number") usage.total_tokens = value.total_tokens;
+  const buckets = [
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_1h_input_tokens",
+    "cache_read_input_tokens",
+    "reasoning_tokens",
+  ] as const;
+  for (const bucket of buckets) {
+    if (typeof value[bucket] === "number") usage[bucket] = value[bucket];
+  }
   return Object.keys(usage).length > 0 ? usage : null;
 }

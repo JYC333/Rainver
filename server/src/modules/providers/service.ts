@@ -152,8 +152,10 @@ export async function listLitellmProviders(
   return serveProviderRead(config, request, reply, async () => [
     "openai",
     "anthropic",
+    "minimax",
     "openrouter",
+    "deepseek",
     "ollama",
-    "other",
+    "openai_compatible",
   ]);
 }

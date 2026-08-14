@@ -139,7 +139,9 @@ export default function ProviderCard({
           {config.is_default && <Badge variant="default" className="text-[10px]">Default</Badge>}
           {config.manageable === false && <Badge variant="muted" className="text-[10px]">Granted</Badge>}
           {!config.enabled && <Badge variant="muted" className="text-[10px]">Disabled</Badge>}
-          {config.has_api_key ? (
+          {config.has_subscription ? (
+            <Badge variant="muted" className="text-[10px]">Subscription OAuth</Badge>
+          ) : config.has_api_key ? (
             <Badge variant="muted" className="text-[10px]">API key set</Badge>
           ) : (
             <Badge variant="muted" className="text-[10px]">No API key</Badge>

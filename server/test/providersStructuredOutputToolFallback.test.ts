@@ -8,13 +8,11 @@ import {
   ProviderInvocationError,
 } from "../src/modules/providers";
 import type { UsageObservation } from "../src/modules/usage";
+import { openAiChatResponse } from "./support/piAiHttp";
 
-// `response_format: json_schema` requires provider-side constrained decoding;
-// OpenAI-compatible gateways without it silently ignore the field and answer
-// in prose (the 2026-07-16 MiniMax synthesis failures). Structured-output
-// requests therefore also offer the schema as a single forced tool when the
-// request carries no runtime tools — models that ignore response_format still
-// return the payload as tool-call arguments, which the response path prefers.
+// pi-ai expresses structured output as a constrained tool. Providers without
+// strict-tool support can still return text, which the agent-space scavenger
+// validates at the boundary.
 
 afterEach(() => {
   __setProviderHttpClientForTests(null);
@@ -26,7 +24,7 @@ function target(providerId: string): InvocationTarget {
       id: providerId,
       space_id: "space-1",
       name: providerId,
-      provider_type: "other",
+      provider_type: "openai_compatible",
       base_url: `https://api.${providerId}.test/v1`,
       network_profile_id: null,
       default_model: "test-model",
@@ -100,10 +98,7 @@ function scriptedHttp(script: Array<{ status: number; body: unknown }>): Attempt
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       attempts.push({ body });
       const step = script.shift() ?? { status: 500, body: { error: "script exhausted" } };
-      return new Response(JSON.stringify(step.body), {
-        status: step.status,
-        headers: { "content-type": "application/json" },
-      });
+      return openAiChatResponse(step.body, step.status);
     },
   });
   return attempts;
@@ -130,7 +125,7 @@ const CHAT = {
 };
 
 describe("openai-compatible structured output forced-tool fallback", () => {
-  it("offers the schema as a forced tool alongside response_format when the request has no runtime tools", async () => {
+  it("offers the schema as a forced constrained tool when the request has no runtime tools", async () => {
     const store = makeStore({ p1: target("p1") });
     const attempts = scriptedHttp([
       { status: 200, body: { choices: [{ message: { content: '{"answer":"ok"}' } }], model: "test-model", usage: {} } },
@@ -140,6 +135,9 @@ describe("openai-compatible structured output forced-tool fallback", () => {
 
     expect(result.structured_output).toEqual({ answer: "ok" });
     const request = attempts[0]!.body;
+    expect(request.max_tokens).toBe(5);
+    expect(request.max_completion_tokens).toBeUndefined();
+    expect(request.store).toBeUndefined();
     expect(request.tools).toEqual([
       {
         type: "function",
@@ -147,14 +145,15 @@ describe("openai-compatible structured output forced-tool fallback", () => {
           name: EXPECTED_TOOL_NAME,
           description: "Return the test.schema.v1 structured result.",
           parameters: OUTPUT_FORMAT.schema,
+          strict: true,
         },
       },
     ]);
     expect(request.tool_choice).toEqual({ type: "function", function: { name: EXPECTED_TOOL_NAME } });
-    expect((request.response_format as { type?: string }).type).toBe("json_schema");
+    expect(request.response_format).toBeUndefined();
   });
 
-  it("does not force a structured tool for models whose gateway corrupts tool arguments (MiniMax)", async () => {
+  it("does not infer transport quirks from the model name", async () => {
     const store = makeStore({ p1: target("p1") });
     const attempts = scriptedHttp([
       { status: 200, body: { choices: [{ message: { content: '<think>plan</think>\n```json\n{"answer":"ok"}\n```' } }], model: "MiniMax-M3", usage: {} } },
@@ -164,14 +163,8 @@ describe("openai-compatible structured output forced-tool fallback", () => {
 
     expect(result.structured_output).toEqual({ answer: "ok" });
     const request = attempts[0]!.body;
-    expect(request.tools).toBeUndefined();
-    expect(request.tool_choice).toBeUndefined();
-    expect((request.response_format as { type?: string }).type).toBe("json_schema");
-    // These models ignore response_format, so the contract must be visible in
-    // the instruction itself.
-    const system = (request.messages as Array<{ role: string; content: string }>).find((message) => message.role === "system");
-    expect(system?.content).toContain("validates against this JSON Schema");
-    expect(system?.content).toContain('"answer"');
+    expect((request.tools as Array<{ function: { name: string } }>)[0]?.function.name).toBe(EXPECTED_TOOL_NAME);
+    expect(request.tool_choice).toEqual({ type: "function", function: { name: EXPECTED_TOOL_NAME } });
   });
 
   it("parses the structured payload from forced tool-call arguments when the provider ignores response_format", async () => {
@@ -246,7 +239,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     });
 
     const request = attempts[0]!.body;
-    expect(request.tool_choice).toBe("auto");
+    expect(request.tool_choice).toBeUndefined();
     expect((request.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name)).toEqual(["runtime_tool"]);
   });
 
@@ -310,11 +303,11 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     await completeProviderChat(store, "space-1", { ...chatWithoutMaxTokens });
 
     // Known model without an explicit budget gets the recommendation.
-    expect(attempts[0]!.body.max_tokens).toBe(131_072);
+    expect(attempts[0]!.body.max_completion_tokens ?? attempts[0]!.body.max_tokens).toBe(131_072);
     // Explicit request budgets remain authoritative.
-    expect(attempts[1]!.body.max_tokens).toBe(5);
+    expect(attempts[1]!.body.max_completion_tokens ?? attempts[1]!.body.max_tokens).toBe(5);
     // A larger caller budget still wins.
-    expect(attempts[2]!.body.max_tokens).toBe(200_000);
+    expect(attempts[2]!.body.max_completion_tokens ?? attempts[2]!.body.max_tokens).toBe(200_000);
     // Unknown models keep the previous behavior (provider default).
     expect(attempts[3]!.body.max_tokens).toBeUndefined();
   });

@@ -2,20 +2,22 @@ import type { ModelProviderOut, ProviderType } from '../../api/client'
 import type { AddProviderMode, ModelFieldCopy, ProviderCapability } from './types'
 
 export const PROVIDER_TYPES: { value: ProviderType; label: string }[] = [
-  { value: 'openai', label: 'OpenAI-compatible' },
-  { value: 'anthropic', label: 'Anthropic-compatible' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'minimax', label: 'MiniMax' },
   { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'deepseek', label: 'DeepSeek' },
   { value: 'ollama', label: 'Ollama' },
   { value: 'zeroentropy', label: 'ZeroEntropy' },
   { value: 'cohere', label: 'Cohere' },
-  { value: 'other', label: 'Other OpenAI-compatible' },
+  { value: 'openai_compatible', label: 'Other OpenAI-compatible' },
 ]
 
-const CHAT_PROVIDER_TYPES = new Set<ProviderType>(['openai', 'anthropic', 'openrouter', 'ollama', 'other'])
-const EMBEDDING_PROVIDER_TYPES = new Set<ProviderType>(['cohere', 'zeroentropy', 'openai', 'openrouter', 'ollama', 'other'])
+const CHAT_PROVIDER_TYPES = new Set<ProviderType>(['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'])
+const EMBEDDING_PROVIDER_TYPES = new Set<ProviderType>(['cohere', 'zeroentropy', 'openai', 'openrouter', 'ollama', 'openai_compatible'])
 const RERANK_PROVIDER_TYPES = new Set<ProviderType>(['cohere', 'zeroentropy'])
 
-export const API_KEY_REQUIRED = new Set(['openai', 'anthropic', 'openrouter', 'zeroentropy', 'cohere'])
+export const API_KEY_REQUIRED = new Set(['openai', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'zeroentropy', 'cohere'])
 export const RETRIEVAL_ONLY_PROVIDER_TYPES = new Set(['zeroentropy', 'cohere'])
 
 export function providerTypeOptionsForMode(mode: AddProviderMode): { value: ProviderType; label: string }[] {
@@ -30,7 +32,7 @@ export function providerTypeOptionsForMode(mode: AddProviderMode): { value: Prov
 
 export function providerCapabilities(providerType: ProviderType | string, mode?: AddProviderMode): ProviderCapability[] {
   const capabilities: ProviderCapability[] = []
-  if (mode !== 'embedding' && mode !== 'rerank' && ['openai', 'anthropic', 'openrouter', 'ollama', 'other'].includes(providerType)) {
+  if (mode !== 'embedding' && mode !== 'rerank' && ['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'].includes(providerType)) {
     capabilities.push({
       key: 'chat',
       label: 'Chat',
@@ -38,7 +40,7 @@ export function providerCapabilities(providerType: ProviderType | string, mode?:
       variant: 'default',
     })
   }
-  if (mode !== 'chat' && mode !== 'rerank' && ['openai', 'openrouter', 'ollama', 'zeroentropy', 'cohere', 'other'].includes(providerType)) {
+  if (mode !== 'chat' && mode !== 'rerank' && ['openai', 'openrouter', 'ollama', 'zeroentropy', 'cohere', 'openai_compatible'].includes(providerType)) {
     capabilities.push({
       key: 'embeddings',
       label: 'Embeddings',
@@ -136,6 +138,7 @@ export function modelFieldCopy(providerType: ProviderType | string, mode?: AddPr
 
 export function defaultBaseUrl(providerType: ProviderType): string {
   if (providerType === 'openai') return 'https://api.openai.com/v1'
+  if (providerType === 'openai_codex') return 'https://chatgpt.com/backend-api'
   if (providerType === 'anthropic') return 'https://api.anthropic.com'
   if (providerType === 'openrouter') return 'https://openrouter.ai/api/v1'
   if (providerType === 'ollama') return 'http://localhost:11434'
@@ -147,7 +150,7 @@ export function defaultBaseUrl(providerType: ProviderType): string {
 export function embeddingDimensionOptions(providerType: ProviderType | string): number[] {
   if (providerType === 'cohere') return [1536, 1024, 512, 256]
   if (providerType === 'zeroentropy') return [2560]
-  if (providerType === 'openai' || providerType === 'openrouter' || providerType === 'other') return [3072, 2560, 1536, 1024, 512, 256]
+  if (providerType === 'openai' || providerType === 'openrouter' || providerType === 'openai_compatible') return [3072, 2560, 1536, 1024, 512, 256]
   if (providerType === 'ollama') return [768, 1024, 1536, 2560, 4096]
   return [1536, 1024, 512, 256]
 }

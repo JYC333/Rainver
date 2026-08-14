@@ -44,7 +44,7 @@ is retired. Do not reintroduce instance-level runtime adapter configuration.
 | adapter_type | kind | status | credentials | context | sandbox |
 |---|---|---|---|---|---|
 | `capability` | native | planned | none | none | none |
-| `model_api` | managed_api | implemented | `model_provider_api_key` | none | none |
+| `model_api` | managed_api | implemented | `model_provider_api_key` or owner-bound `managed_subscription_oauth` | none | none |
 | `ts_agent_host` | managed_api | implemented / disabled by default | `model_provider_api_key` (`server_runtime_host`) | canonical host request | none |
 | `claude_code` | local_cli | implemented | `cli_profile` | accepted Delivery | Sandbox Runner |
 | `codex_cli` | local_cli | implemented | `cli_profile` | accepted Delivery | Sandbox Runner |
@@ -183,6 +183,13 @@ the next accepted Delivery replaces the base semantic context. The HTTP Runtime
 Host boundary verifies the persisted provider/model and hashed base request,
 accepts only a structurally valid tool-loop suffix, and atomically records a
 full-request dispatch fingerprint so Delivery references cannot be replayed.
+The loop itself runs through the narrow `managedAgentLoop` port backed by
+pi-agent-core. That dependency sees canonical messages and tool results but has
+no provider, credential, policy, database, retrieval, or Runtime Context
+authority; its stream function calls the ordinary Runtime Host executor once
+per turn. `AgentToolGateway` remains the shared managed/CLI exposure and
+dispatch authority, and `SystemActionGateway` remains the call-time validation,
+grant, policy, idempotency and action-event boundary.
 Provider-proxy Usage keeps the shared Delivery audit refs but uses a unique
 per-response idempotency suffix. Retrieval-owned
 rewrite/rerank/synthesis and embedding calls do not recursively enter Runtime
@@ -361,6 +368,12 @@ schema failures remain ordinary failed Runs.
 Research never accepts CLI credential profiles, OpenCode, Claude Code, or Codex
 runtime values. Those runtimes remain available to generic Agent and Coding
 Agent flows and are not removed from the adapter registry.
+An instance-admin owner may select their managed Claude or OpenAI Codex
+subscription Provider for this in-process path. The ownership check is applied
+before OAuth decrypt/refresh. Codex schema-bound requests use one constrained
+tool with Responses `tool_choice: "required"`; the subscription is not eligible
+for space-wide retrieval task policies because other members cannot spend the
+owner's capacity.
 - Runs default to `tool_mode: disabled`. Managed runs can expose authorized
   internal retrieval tools through the runtime host when enabled per space
   (`retrieval.space.settings` `retrieval_tool_mode`) or per run. Knowledge tools
@@ -370,9 +383,9 @@ Agent flows and are not removed from the adapter registry.
   `project.summary.search`, and `project.summary.brief`. Each tool
   call passes a policy-gateway action before search/brief execution; preflight
   modes append explicit retrieval evidence before the model turn rather than
-  bypassing Runtime Context authority. The provider invocation layer maps the
-  canonical tool schema to OpenAI-compatible function calls or Anthropic Messages
-  `tool_use` / `tool_result` blocks. The runtime host reports an unsupported
+  bypassing Runtime Context authority. The provider invocation layer gives the
+  canonical tool schema to pi-ai, which maps it to OpenAI-compatible/Codex
+  function calls or Anthropic Messages `tool_use` / `tool_result` blocks. The runtime host reports an unsupported
   provider with the `runtime_tool_provider_unsupported` code, and the managed-run
   tool loop degrades to a single no-tool turn rather than failing the run.
 - Managed API and local CLI runs inside Agent Rooms expose room tools when the

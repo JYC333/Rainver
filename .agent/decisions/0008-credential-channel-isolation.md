@@ -13,7 +13,7 @@ specific operational failure: an Anthropic API key leaking into the environment 
 **Claude Code CLI** subprocess, which conflicts with Claude Code's own auth (OAuth /
 login state) and causes environment-conflict bugs.
 
-Two credential channels exist and are already architecturally separate:
+Three model-execution credential channels exist and are architecturally separate:
 
 - **CLI channel** — `claude_code` / `codex_cli` run as subprocesses. Their environment
   is rebuilt from an allowlist by `server/src/modules/runs/vendorCliAdapter.ts::buildSubprocessEnv`
@@ -26,12 +26,21 @@ Two credential channels exist and are already architecturally separate:
   from the encrypted `ModelProvider` Credential (`resolveProviderApiKey`) and pass it
   to litellm as a parameter. This channel never writes `os.environ`, so it is
   unreachable from any subprocess.
+- **In-process managed subscription channel** — Claude Pro/Max and OpenAI Codex
+  OAuth credentials are connected by the instance admin, encrypted in DB
+  `Credential` rows, refreshed under a cross-process row lock, and passed only
+  to pi-ai's in-process provider transport. This channel never borrows or
+  mutates CLI profiles and never participates in API-key pools or rotation.
 
 ## Decision
 
 The governing invariant is **credential channel isolation**, not "Anthropic is CLI-only":
 
 > An Anthropic API key must never enter the environment of a Claude Code CLI subprocess.
+
+The same isolation applies to managed OAuth material: no Claude or Codex OAuth
+access/refresh token may enter another user's request, a CLI profile, a pool, an
+ambient environment, or a persisted execution artifact.
 
 Consequences of this reframing:
 
@@ -43,6 +52,9 @@ Consequences of this reframing:
   sandbox, `credential_mode=model_provider_api_key`) is sanctioned and may select any
   configured `ModelProvider` + model, Anthropic included. It must obey the invariant:
   resolve via `resolveProviderApiKey`, pass as a litellm parameter, never via env.
+- The in-process subscription channel may serve only its credential owner. Login,
+  quota refresh, and disconnect additionally require the configured instance
+  admin; invocation checks ownership before decrypting or refreshing the token.
 
 ## Invariants
 
@@ -70,7 +82,7 @@ model they already pay for.
   capacity rather than API budget.
 - Conversation is therefore a supported CLI runtime surface, not an API-only surface.
 
-Anthropic is permitted on both channels, and the isolation invariant applies equally to both:
+Anthropic is permitted on all applicable channels, and the isolation invariant applies equally:
 a provider API key must never enter a CLI subprocess environment. When a CLI runs against a
 configured ModelProvider it receives only a local provider-proxy URL and a short-lived lease
 token; the upstream key is resolved inside the server proxy boundary.

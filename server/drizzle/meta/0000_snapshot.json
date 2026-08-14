@@ -1,5 +1,5 @@
 {
-  "id": "11f470e5-f8b0-44d0-88d5-e42fcd6f7b68",
+  "id": "e5f29e28-1326-4c05-baad-c7d2be520b5f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -21397,6 +21397,19 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "inquiry_thread_steps_iteration_delete_fkey": {
+          "name": "inquiry_thread_steps_iteration_delete_fkey",
+          "tableFrom": "inquiry_thread_steps",
+          "tableTo": "inquiry_iterations",
+          "columnsFrom": [
+            "iteration_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
         "inquiry_thread_steps_iteration_fkey": {
           "name": "inquiry_thread_steps_iteration_fkey",
           "tableFrom": "inquiry_thread_steps",
@@ -21411,7 +21424,7 @@
             "project_id",
             "space_id"
           ],
-          "onDelete": "set null",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -45238,6 +45251,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "metadata_json": {
+          "name": "metadata_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -64110,281 +64130,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.model_pricing_rules": {
-      "name": "model_pricing_rules",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "varchar(36)",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "scope_type": {
-          "name": "scope_type",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_type": {
-          "name": "provider_type",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_id": {
-          "name": "provider_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "model_pattern": {
-          "name": "model_pattern",
-          "type": "varchar(256)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "input_usd_per_million": {
-          "name": "input_usd_per_million",
-          "type": "numeric(18, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_usd_per_million": {
-          "name": "output_usd_per_million",
-          "type": "numeric(18, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cache_write_usd_per_million": {
-          "name": "cache_write_usd_per_million",
-          "type": "numeric(18, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cache_read_usd_per_million": {
-          "name": "cache_read_usd_per_million",
-          "type": "numeric(18, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reasoning_usd_per_million": {
-          "name": "reasoning_usd_per_million",
-          "type": "numeric(18, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "usage_type_prices_json": {
-          "name": "usage_type_prices_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "tier_conditions_json": {
-          "name": "tier_conditions_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "priority": {
-          "name": "priority",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "pricing_normalization_version": {
-          "name": "pricing_normalization_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "currency": {
-          "name": "currency",
-          "type": "varchar(8)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'USD'"
-        },
-        "effective_from": {
-          "name": "effective_from",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effective_until": {
-          "name": "effective_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source": {
-          "name": "source",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "metadata_json": {
-          "name": "metadata_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "ix_model_pricing_rules_effective": {
-          "name": "ix_model_pricing_rules_effective",
-          "columns": [
-            {
-              "expression": "effective_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "effective_until",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_model_pricing_rules_scope": {
-          "name": "ix_model_pricing_rules_scope",
-          "columns": [
-            {
-              "expression": "scope_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_model_pricing_rules_provider_model": {
-          "name": "ix_model_pricing_rules_provider_model",
-          "columns": [
-            {
-              "expression": "provider_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "model_pattern",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "priority",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "model_pricing_rules_space_id_fkey": {
-          "name": "model_pricing_rules_space_id_fkey",
-          "tableFrom": "model_pricing_rules",
-          "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "model_pricing_rules_provider_id_fkey": {
-          "name": "model_pricing_rules_provider_id_fkey",
-          "tableFrom": "model_pricing_rules",
-          "tableTo": "model_providers",
-          "columnsFrom": [
-            "provider_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "ck_model_pricing_rules_scope_type": {
-          "name": "ck_model_pricing_rules_scope_type",
-          "value": "(scope_type)::text = ANY (ARRAY[('system'::character varying)::text, ('instance'::character varying)::text, ('space'::character varying)::text])"
-        },
-        "ck_model_pricing_rules_scope_space": {
-          "name": "ck_model_pricing_rules_scope_space",
-          "value": "((scope_type)::text = 'space'::text AND space_id IS NOT NULL) OR ((scope_type)::text <> 'space'::text AND space_id IS NULL)"
-        },
-        "ck_model_pricing_rules_source": {
-          "name": "ck_model_pricing_rules_source",
-          "value": "(source)::text = ANY (ARRAY[('built_in'::character varying)::text, ('instance_admin'::character varying)::text, ('space_admin'::character varying)::text, ('imported'::character varying)::text])"
-        },
-        "ck_model_pricing_rules_effective_window": {
-          "name": "ck_model_pricing_rules_effective_window",
-          "value": "effective_until IS NULL OR effective_until > effective_from"
-        },
-        "ck_model_pricing_rules_nonnegative_prices": {
-          "name": "ck_model_pricing_rules_nonnegative_prices",
-          "value": "(input_usd_per_million IS NULL OR input_usd_per_million >= 0) AND (output_usd_per_million IS NULL OR output_usd_per_million >= 0) AND (cache_write_usd_per_million IS NULL OR cache_write_usd_per_million >= 0) AND (cache_read_usd_per_million IS NULL OR cache_read_usd_per_million >= 0) AND (reasoning_usd_per_million IS NULL OR reasoning_usd_per_million >= 0)"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.token_usage_events": {
       "name": "token_usage_events",
       "schema": "",
@@ -64656,6 +64401,13 @@
           "notNull": true,
           "default": 0
         },
+        "cache_creation_1h_input_tokens": {
+          "name": "cache_creation_1h_input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "cache_read_input_tokens": {
           "name": "cache_read_input_tokens",
           "type": "integer",
@@ -64722,25 +64474,6 @@
           "type": "varchar(32)",
           "primaryKey": false,
           "notNull": true
-        },
-        "currency": {
-          "name": "currency",
-          "type": "varchar(8)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'USD'"
-        },
-        "pricing_rule_id": {
-          "name": "pricing_rule_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pricing_tier_name": {
-          "name": "pricing_tier_name",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
         },
         "dimensions_json": {
           "name": "dimensions_json",
@@ -65230,19 +64963,6 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "token_usage_events_pricing_rule_id_fkey": {
-          "name": "token_usage_events_pricing_rule_id_fkey",
-          "tableFrom": "token_usage_events",
-          "tableTo": "model_pricing_rules",
-          "columnsFrom": [
-            "pricing_rule_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -65300,7 +65020,7 @@
         },
         "ck_token_usage_events_nonnegative_counts": {
           "name": "ck_token_usage_events_nonnegative_counts",
-          "value": "input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0)"
+          "value": "input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_creation_1h_input_tokens >= 0 AND cache_creation_1h_input_tokens <= cache_creation_input_tokens AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0)"
         }
       },
       "isRLSEnabled": false

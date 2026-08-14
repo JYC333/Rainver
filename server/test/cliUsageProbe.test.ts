@@ -8,7 +8,9 @@ import {
   __setProbeFactoryForTests,
   parseQuota,
   parseClaudeOAuthUsageResponse,
+  parseCodexManagedUsageResponse,
   probeClaudeOAuthQuota,
+  probeClaudeOAuthQuotaWithAccessToken,
   type ClaudeOAuthHttpClient,
   probeCodexQuota,
   type CodexRpcFactory,
@@ -223,6 +225,24 @@ describe("probeClaudeOAuthQuota", () => {
 
     await expect(probeClaudeOAuthQuota(profile)).rejects.toThrow(/expired/i);
   });
+
+  it("probes a managed token directly without reading a CLI profile", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    __setClaudeOAuthUsageHttpClientForTests({
+      async fetch(url, init) {
+        calls.push({ url, init });
+        return new Response(JSON.stringify({
+          five_hour: { utilization: 7, resets_at: "2026-06-14T13:00:00Z" },
+        }), { status: 200 });
+      },
+    });
+
+    const result = await probeClaudeOAuthQuotaWithAccessToken("managed-access-token");
+
+    expect(result).toMatchObject({ available: true, session_pct: 7 });
+    expect((calls[0]?.init.headers as Record<string, string>).Authorization)
+      .toBe("Bearer managed-access-token");
+  });
 });
 
 class FakeCodexRpc implements CodexRpcHandle {
@@ -272,6 +292,26 @@ class FakeCodexRpc implements CodexRpcHandle {
 }
 
 describe("probeCodexQuota", () => {
+  it("maps the managed ChatGPT usage response with the CLI quota semantics", () => {
+    const result = parseCodexManagedUsageResponse({
+      rate_limit: {
+        primary_window: {
+          used_percent: 23.6,
+          limit_window_seconds: 18_000,
+          reset_at: 1_766_000_000,
+        },
+        secondary_window: {
+          used_percent: 67.8,
+          limit_window_seconds: 604_800,
+          reset_at: 1_766_500_000,
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ available: true, session_pct: 24, week_pct: 68 });
+    expect(result.session_resets).toContain("2025");
+  });
+
   it("routes the production quota RPC through the scoped Runner executor", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "aspace-codex-runner-probe-"));
     const home = join(tempDir, "home");

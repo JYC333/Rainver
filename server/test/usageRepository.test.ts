@@ -97,7 +97,7 @@ describe("usage repository", () => {
     const insert = db.calls[0]!;
     expect(insert.sql).toContain("inserted_grants AS");
     expect(insert.sql).toContain("'token_usage_event'");
-    expect(insert.params).toHaveLength(65);
+    expect(insert.params).toHaveLength(63);
     expect(insert.params?.slice(5, 13)).toEqual([
       event.owner_user_id,
       event.visibility,
@@ -108,7 +108,8 @@ describe("usage repository", () => {
       event.source_resource_type,
       event.source_resource_id,
     ]);
-    expect(JSON.parse(String(insert.params?.[64]))).toEqual([grant]);
+    expect(insert.params?.[61]).toBe(0);
+    expect(JSON.parse(String(insert.params?.[62]))).toEqual([grant]);
   });
 
   it("returns the existing event when append is deduped by idempotency key", async () => {
@@ -276,7 +277,7 @@ describe("usage repository", () => {
     ]);
   });
 
-  it("applies a matching pricing rule before appending an event", async () => {
+  it("persists an upstream cost without querying a local pricing engine", async () => {
     const event = normalizeUsageObservation(
       {
         space_id: "space-1",
@@ -285,7 +286,22 @@ describe("usage repository", () => {
         execution_channel: "managed_api",
         provider_type: "openai",
         model: "gpt-4o",
-        usage_details: { input: 1_000_000, output: 500_000 },
+        usage_details: {
+          input: 1_000_000,
+          output: 500_000,
+          input_cache_creation: 50,
+          input_cache_creation_1h: 40,
+        },
+        estimated_cost_usd: 5,
+        cost_details: {
+          source: "pi_ai_catalog",
+          accuracy: "catalog_estimated",
+          input: 2,
+          output: 3,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 5,
+        },
         idempotency_key: "usage-key-priced",
       },
       "instance-1",
@@ -293,35 +309,6 @@ describe("usage repository", () => {
       new Date("2026-07-09T12:00:00.000Z"),
     );
     const db = new RecordingDb((sql, params) => {
-      if (sql.includes("FROM model_pricing_rules")) {
-        return {
-          rows: [{
-            id: "pricing-rule-1",
-            scope_type: "system",
-            space_id: null,
-            provider_type: "openai",
-            provider_id: null,
-            model_pattern: "gpt-*",
-            input_usd_per_million: "2",
-            output_usd_per_million: "6",
-            cache_write_usd_per_million: null,
-            cache_read_usd_per_million: null,
-            reasoning_usd_per_million: null,
-            usage_type_prices_json: {},
-            tier_conditions_json: {},
-            priority: 0,
-            pricing_normalization_version: 1,
-            currency: "USD",
-            effective_from: "2026-01-01T00:00:00.000Z",
-            effective_until: null,
-            source: "built_in",
-            metadata_json: {},
-            created_at: "2026-01-01T00:00:00.000Z",
-            updated_at: "2026-01-01T00:00:00.000Z",
-          }],
-          rowCount: 1,
-        };
-      }
       if (sql.includes("INSERT INTO token_usage_events")) {
         return {
           rows: [{
@@ -338,8 +325,10 @@ describe("usage repository", () => {
 
     const insert = db.calls.find((call) => call.sql.includes("INSERT INTO token_usage_events"));
     expect(insert?.params?.[47]).toBe(5);
-    expect(insert?.params?.[50]).toContain('"bucket_costs"');
-    expect(insert?.params?.[55]).toBe("pricing-rule-1");
+    expect(insert?.params?.[50]).toContain('"pi_ai_catalog"');
+    expect(insert?.params?.[61]).toBe(40);
+    expect(insert?.sql).toContain("cache_creation_1h_input_tokens");
+    expect(db.calls).toHaveLength(1);
   });
 
   it("projects read-only budget preview by subject", async () => {
@@ -466,6 +455,7 @@ function eventRow(event: ReturnType<typeof normalizeUsageObservation>, id: strin
     output_tokens: event.output_tokens,
     total_tokens: event.total_tokens,
     cache_creation_input_tokens: event.cache_creation_input_tokens,
+    cache_creation_1h_input_tokens: event.cache_creation_1h_input_tokens,
     cache_read_input_tokens: event.cache_read_input_tokens,
     reasoning_tokens: event.reasoning_tokens,
     request_count: event.request_count,

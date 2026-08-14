@@ -210,7 +210,7 @@ describe("providers and credentials server authority", () => {
     expect(presetCreate.statusCode).toBe(201);
     expect(presetCreate.json().provider).toMatchObject({
       name: "MiniMax Test",
-      provider_type: "anthropic",
+      provider_type: "minimax",
     });
     expect(presetCreate.payload).not.toContain("request-only-preset");
   });

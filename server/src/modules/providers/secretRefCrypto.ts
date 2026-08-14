@@ -11,6 +11,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX = "model_provider_api_key:v1:" as const;
+export const MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX = "model_provider_oauth:v1:" as const;
 export const MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES = 32;
 export const MODEL_PROVIDER_API_KEY_NONCE_BYTES = 12;
 export const MODEL_PROVIDER_API_KEY_AUTH_TAG_BYTES = 16;
@@ -144,4 +145,55 @@ export function encryptModelProviderApiKeySecretRefV1(
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const encryptedKeyWithTag = Buffer.concat([ciphertext, cipher.getAuthTag()]);
   return `${MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX}${encryptedKeyWithTag.toString("base64")}:${nonce.toString("base64")}`;
+}
+
+export interface ModelProviderOAuthSecretV1 {
+  type: "oauth";
+  refresh: string;
+  access: string;
+  expires: number;
+  [key: string]: unknown;
+}
+
+export function encryptModelProviderOAuthSecretRefV1(
+  credential: ModelProviderOAuthSecretV1,
+  masterKey: Buffer,
+  nonce: Buffer = randomBytes(MODEL_PROVIDER_API_KEY_NONCE_BYTES),
+): string {
+  const encoded = encryptModelProviderApiKeySecretRefV1(
+    JSON.stringify(credential),
+    masterKey,
+    nonce,
+  );
+  return `${MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX}${encoded.slice(MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX.length)}`;
+}
+
+export function decryptModelProviderOAuthSecretRefV1(
+  secretRef: string,
+  masterKey: Buffer,
+): ModelProviderOAuthSecretV1 {
+  if (!secretRef.startsWith(MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX)) {
+    throw new SecretRefCompatibilityError("malformed_secret_ref");
+  }
+  const apiKeyRef = `${MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX}${secretRef.slice(MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX.length)}`;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decryptModelProviderApiKeySecretRefV1(apiKeyRef, masterKey));
+  } catch (error) {
+    if (error instanceof SecretRefCompatibilityError) throw error;
+    throw new SecretRefCompatibilityError("decryption_failed");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SecretRefCompatibilityError("decryption_failed");
+  }
+  const value = parsed as Record<string, unknown>;
+  if (
+    value.type !== "oauth"
+    || typeof value.refresh !== "string" || !value.refresh
+    || typeof value.access !== "string" || !value.access
+    || typeof value.expires !== "number" || !Number.isFinite(value.expires)
+  ) {
+    throw new SecretRefCompatibilityError("decryption_failed");
+  }
+  return parsed as ModelProviderOAuthSecretV1;
 }

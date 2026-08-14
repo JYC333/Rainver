@@ -26,6 +26,8 @@ import {
   loadOrCreateModelProviderApiKeyMasterKey,
 } from "../secretRefCrypto";
 import { mapProviderRowToDto } from "../dbReader";
+import { canonicalProviderVendorId } from "../vendors";
+import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth";
 import { resolveNetworkProfileRepository } from "../../networkProfiles";
 import { isSpaceOwnerOrAdmin } from "../../access/roles";
 import {
@@ -122,18 +124,22 @@ function grantOut(row: {
 }
 
 const TASK_PROVIDER_TYPES: Record<string, ReadonlySet<string>> = {
-  retrieval_embedding: new Set(["openai", "openrouter", "ollama", "zeroentropy", "cohere", "other"]),
+  retrieval_embedding: new Set(["openai", "openrouter", "ollama", "zeroentropy", "cohere", "openai_compatible"]),
   retrieval_rerank: new Set(["zeroentropy", "cohere"]),
-  retrieval_query_rewrite: new Set(["openai", "anthropic", "openrouter", "ollama", "other"]),
-  retrieval_synthesis: new Set(["openai", "anthropic", "openrouter", "ollama", "other"]),
+  retrieval_query_rewrite: new Set(["openai", "anthropic", "minimax", "openrouter", "deepseek", "ollama", "openai_compatible"]),
+  retrieval_synthesis: new Set(["openai", "anthropic", "minimax", "openrouter", "deepseek", "ollama", "openai_compatible"]),
 };
+
+export function providerSupportsTask(task: string, providerType: string): boolean {
+  const allowed = TASK_PROVIDER_TYPES[task];
+  return !allowed || allowed.has(providerType);
+}
 
 function validateTaskProviderCompatibility(
   task: string,
   provider: ProviderRow,
 ): void {
-  const allowed = TASK_PROVIDER_TYPES[task];
-  if (!allowed || allowed.has(provider.provider_type)) return;
+  if (providerSupportsTask(task, provider.provider_type)) return;
   throw new ProviderCommandValidationError(
     `Provider '${provider.id}' (${provider.provider_type}) is not compatible with task '${task}'`,
   );
@@ -243,6 +249,14 @@ class PgProviderCommandStore implements ProviderCommandStore {
     return row;
   }
 
+  private assertPoolSupported(row: ProviderRow): void {
+    if (configRecord(row).credential_channel === "managed_subscription_oauth") {
+      throw new ProviderCommandValidationError(
+        "Managed subscription providers do not support credential pools",
+      );
+    }
+  }
+
   private async clearDefault(spaceId: string, exceptId?: string): Promise<void> {
     await this.pool.query(
       `UPDATE model_provider_space_grants
@@ -305,7 +319,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
               m.cooldown_until, m.last_failure_class, m.request_count,
               m.failure_count, m.last_used_at, m.created_at, m.updated_at${secretColumn}
          FROM model_provider_credentials m
-         JOIN credentials c ON c.id = m.credential_id
+         JOIN credentials c ON c.id = m.credential_id AND c.credential_type = 'api_key'
         WHERE m.provider_id = $1
         ORDER BY m.position ASC, m.created_at ASC`,
       [providerId],
@@ -327,7 +341,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       const updated = await this.pool.query<{ id: string }>(
         `UPDATE credentials
             SET secret_ref = $3, owner_user_id = COALESCE(owner_user_id, $5), updated_at = $4
-          WHERE id = $1 AND space_id = $2
+          WHERE id = $1 AND space_id = $2 AND credential_type = 'api_key'
           RETURNING id`,
         [existingCredentialId, homeSpaceId, secretRef, now, ownerUserId],
       );
@@ -433,9 +447,23 @@ class PgProviderCommandStore implements ProviderCommandStore {
     input: ModelProviderUpdateInput,
   ): Promise<unknown> {
     const current = await this.requireOwnedProvider(userId, providerId);
+    const currentConfig = configRecord(current);
+    const isManagedSubscription = currentConfig.credential_channel === "managed_subscription_oauth";
+    if (isManagedSubscription && (input.api_key !== undefined || (
+      input.provider_type !== undefined && canonicalProviderVendorId(input.provider_type) !== current.provider_type
+    ))) {
+      throw new ProviderCommandValidationError(
+        "Managed subscription providers cannot replace credentials or change provider type",
+      );
+    }
 
-    const providerType = input.provider_type ?? current.provider_type;
+    const providerType = canonicalProviderVendorId(input.provider_type ?? current.provider_type);
     validateProviderType(providerType);
+    if (!isManagedSubscription && providerType === "openai_codex") {
+      throw new ProviderCommandValidationError(
+        "OpenAI Codex providers must be connected through managed subscription OAuth",
+      );
+    }
     const baseUrl =
       input.base_url === undefined
         ? normalizeBaseUrl(providerType, current.base_url)
@@ -469,7 +497,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
         : input.available_models;
     const defaultModel =
       input.default_model === undefined ? current.default_model : input.default_model || null;
-    const configJson = configRecord(current);
+    const configJson = currentConfig;
     delete configJson.is_default;
     if (input.claude_compatible_base_url !== undefined) {
       const claudeUrl = optionalTrimmedString(input.claude_compatible_base_url);
@@ -494,7 +522,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
               capabilities_json = $10::jsonb,
               config_json = $11::jsonb,
               updated_at = $12
-        WHERE id = $1 AND space_id = $2
+          WHERE id = $1 AND space_id = $2
         RETURNING id, space_id, name, provider_type, base_url, default_model,
                   network_profile_id, enabled, credential_id, capabilities_json, config_json,
                   created_at, updated_at`,
@@ -572,6 +600,28 @@ class PgProviderCommandStore implements ProviderCommandStore {
   ): Promise<unknown> {
     const provider = await this.requireOwnedProvider(userId, providerId);
     const targetSpaceId = input.space_id || activeSpaceId;
+    if (
+      configRecord(provider).credential_channel === "managed_subscription_oauth"
+      && targetSpaceId !== provider.space_id
+    ) {
+      throw new ProviderCommandForbiddenError(
+        "Managed subscription providers cannot be granted to another space",
+      );
+    }
+    if (provider.credential_id) {
+      const credential = await this.pool.query<{ credential_type: string }>(
+        `SELECT credential_type FROM credentials WHERE id=$1 LIMIT 1`,
+        [provider.credential_id],
+      );
+      if (
+        credential.rows[0]?.credential_type === "subscription_oauth"
+        && targetSpaceId !== provider.space_id
+      ) {
+        throw new ProviderCommandForbiddenError(
+          "Managed subscription providers cannot be granted to another space",
+        );
+      }
+    }
     await this.requireSpaceMembership(userId, targetSpaceId);
     const networkProfileId =
       input.network_profile_id === undefined
@@ -661,6 +711,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   async getInvocationTarget(
     spaceId: string,
     providerId?: string | null,
+    subjectUserId?: string | null,
   ): Promise<InvocationTarget> {
     const row = providerId
       ? await this.providerById(spaceId, providerId)
@@ -672,6 +723,41 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     if (!row.enabled) {
       throw new ProviderCommandNotFoundError(`ModelProvider '${row.id}' is disabled`);
+    }
+    if (row.credential_id) {
+      const credentialClass = await this.pool.query<{ credential_type: string }>(
+        `SELECT credential_type FROM credentials WHERE id=$1 LIMIT 1`,
+        [row.credential_id],
+      );
+      if (credentialClass.rows[0]?.credential_type === "subscription_oauth") {
+        if (!subjectUserId || subjectUserId !== row.owner_user_id) {
+          throw new ProviderCommandForbiddenError(
+            "Managed subscription credentials can only be used by their owner",
+          );
+        }
+        const resolved = await resolveManagedSubscriptionCredential(
+          this.config,
+          this.pool,
+          spaceId,
+          row.id,
+          subjectUserId,
+        );
+        return {
+          provider: providerInfoFromRow(row),
+          network_profile: await resolveNetworkProfileRepository(this.config).resolve(
+            spaceId,
+            row.network_profile_id,
+          ),
+          rotation_strategy: "fill_first",
+          fallback_provider_ids: fallbackProviderIdsFromRow(row),
+          candidates: [{
+            member_id: null,
+            credential_id: resolved.credentialId,
+            api_key: resolved.credential.access,
+            credential_kind: "subscription_oauth",
+          }],
+        };
+      }
     }
     await this.enrollPrimaryCredential(row);
 
@@ -688,10 +774,11 @@ class PgProviderCommandStore implements ProviderCommandStore {
       api_key: masterKey && m.secret_ref
         ? decryptModelProviderApiKeySecretRefV1(m.secret_ref, masterKey)
         : null,
+      credential_kind: "api_key",
     }));
     // Key-less providers (e.g. ollama) still get one attempt slot.
     if (candidates.length === 0 && members.length === 0) {
-      candidates.push({ member_id: null, credential_id: null, api_key: null });
+      candidates.push({ member_id: null, credential_id: null, api_key: null, credential_kind: "none" });
     }
     return {
       provider: providerInfoFromRow(row),
@@ -833,7 +920,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   async resolveProviderApiKey(spaceId: string, providerId: string): Promise<string> {
     const target = await this.getInvocationTarget(spaceId, providerId);
     const candidate = target.candidates.find((c) => c.api_key);
-    if (!candidate?.api_key) {
+    if (!candidate?.api_key || candidate.credential_kind === "subscription_oauth") {
       throw new ProviderCommandValidationError(
         `ModelProvider '${providerId}' has no available API key credential`,
       );
@@ -906,6 +993,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
 
   async listPool(spaceId: string, providerId: string): Promise<unknown> {
     const row = await this.requireProvider(spaceId, providerId);
+    this.assertPoolSupported(row);
     await this.enrollPrimaryCredential(row);
     const members = await this.poolMembers(spaceId, providerId, false);
     return {
@@ -923,6 +1011,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     input: ProviderPoolCredentialAddInput,
   ): Promise<unknown> {
     const row = await this.requireOwnedProvider(userId, providerId);
+    this.assertPoolSupported(row);
     if (!input.api_key.trim()) {
       throw new ProviderCommandValidationError("api_key must not be empty");
     }
@@ -977,6 +1066,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     memberId: string,
   ): Promise<void> {
     const row = await this.requireOwnedProvider(userId, providerId);
+    this.assertPoolSupported(row);
     const member = await this.pool.query<{ credential_id: string }>(
       `DELETE FROM model_provider_credentials
         WHERE id = $1 AND provider_id = $2
@@ -1021,6 +1111,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     input: ProviderPoolConfigUpdateInput,
   ): Promise<unknown> {
     const row = await this.requireOwnedProvider(userId, providerId);
+    this.assertPoolSupported(row);
     const cfg = configRecord(row);
     if (input.rotation_strategy !== undefined) {
       if (!ROTATION_STRATEGIES.has(input.rotation_strategy)) {

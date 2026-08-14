@@ -11,6 +11,7 @@ import {
   ProviderInvocationError,
 } from "../providers/invocation/invocation";
 import { redactSecretPatterns } from "../runs/evidenceRedaction";
+import { normalizeUsageDetails } from "../usage/normalizer";
 
 export interface RuntimeHostLogger {
   error(details: Record<string, unknown>, message: string): void;
@@ -25,21 +26,38 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.trunc(value)
-    : undefined;
-}
-
+/**
+ * Provider usage as it reaches the Run envelope.
+ *
+ * Extraction is the ledger's, not a second one: cache-creation, cache-read and
+ * reasoning tokens are billed at their own rates, so an envelope that reported
+ * only input/output/total could not be reconciled against the ledger for the
+ * same generation, and cost could not be recomputed from it later.
+ *
+ * This does not make the envelope a metering source. Managed runs are metered
+ * at the provider call and `RunOrchestrationService` skips envelope-based
+ * recording for anything that is not `local_cli`; that split is what keeps a
+ * single generation from being counted twice.
+ */
 function normalizeUsage(raw: Record<string, unknown> | null | undefined): CanonicalUsage | null {
   if (!raw) return null;
-  const inputTokens = numberValue(raw.input_tokens ?? raw.prompt_tokens);
-  const outputTokens = numberValue(raw.output_tokens ?? raw.completion_tokens);
-  const totalTokens = numberValue(raw.total_tokens ?? raw.total_tokens_used ?? raw.total);
+  const { usageDetails, totalTokens } = normalizeUsageDetails({}, raw, "llm.generation");
   const usage: CanonicalUsage = {};
-  if (inputTokens !== undefined) usage.input_tokens = inputTokens;
-  if (outputTokens !== undefined) usage.output_tokens = outputTokens;
-  if (totalTokens !== undefined) usage.total_tokens = totalTokens;
+  if (usageDetails.input !== undefined) usage.input_tokens = usageDetails.input;
+  if (usageDetails.output !== undefined) usage.output_tokens = usageDetails.output;
+  if (usageDetails.input_cache_creation !== undefined) {
+    usage.cache_creation_input_tokens = usageDetails.input_cache_creation;
+  }
+  if (usageDetails.input_cache_creation_1h !== undefined) {
+    usage.cache_creation_1h_input_tokens = usageDetails.input_cache_creation_1h;
+  }
+  if (usageDetails.input_cache_read !== undefined) {
+    usage.cache_read_input_tokens = usageDetails.input_cache_read;
+  }
+  if (usageDetails.output_reasoning !== undefined) {
+    usage.reasoning_tokens = usageDetails.output_reasoning;
+  }
+  if (totalTokens !== null) usage.total_tokens = totalTokens;
   return Object.keys(usage).length > 0 ? usage : null;
 }
 
@@ -199,6 +217,7 @@ export async function executeRuntimeHost(
           run_id: input.run_id,
           source_resource_type: "run",
           source_resource_id: input.run_id,
+          subject_user_id: input.subject_user_id ?? null,
           space_system_task: true,
           metadata: input.invocation_audit_refs
             ? { runtime_context_audit_refs: input.invocation_audit_refs }

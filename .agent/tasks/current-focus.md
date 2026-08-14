@@ -1,10 +1,24 @@
 # Current Focus
 
-Date: 2026-08-13
+Date: 2026-08-14
 
-**There is no declared active delivery sequence right now.** Work is pulled on
-demand from [../plans/backlog.md](../plans/backlog.md); everything trigger-gated
-lives in [deferred-register.md](deferred-register.md).
+**No implementation plan is currently active.** The managed-execution
+replatform completed on 2026-08-14; its current behavior is recorded in
+[EXECUTION_MODEL.md](../architecture/EXECUTION_MODEL.md),
+[runtime-adapters.md](../modules/runtime-adapters.md),
+[provider-policy.md](../modules/provider-policy.md), and
+[CREDENTIAL_STORAGE.md](../architecture/CREDENTIAL_STORAGE.md).
+New work is pulled on demand from
+[../plans/backlog.md](../plans/backlog.md); everything trigger-gated lives in
+[deferred-register.md](deferred-register.md).
+
+Three follow-on specifications were written alongside it on 2026-08-13 —
+[runtime-routing-plan.md](../plans/runtime-routing-plan.md),
+[scope-model-plan.md](../plans/scope-model-plan.md), and
+[capability-shrink-plan.md](../plans/capability-shrink-plan.md). They are
+specifications, not schedule. Each states its own entry trigger and none is
+started. Writing related plans is not declaring a sequence; that
+distinction is the whole lesson of the paragraph below.
 
 This file previously declared a three-step sequence — acceptance-readiness
 corrections, controlled product acceptance, then unattended hardening. That
@@ -16,6 +30,14 @@ nothing, because it makes the bypass look orderly. Acceptance is deferred to a
 recorded gate below rather than pretended to be imminent.
 
 ## Most recent delivered work
+
+The managed-execution replatform landed on 2026-08-14. Managed chat now uses
+the server vendor registry plus pi-ai, the multi-turn tool loop is behind the
+agent-space-owned `managedAgentLoop` port backed by pi-agent-core, managed
+Claude/Codex subscription OAuth remains owner-only and DB-encrypted, and the
+usage ledger records pi-ai catalog cost plus Anthropic's 1h cache-write subtype.
+The completed phase/review ledger was retired after consolidation into the
+current-state architecture and module docs linked above.
 
 The Inquiry stage workspace landed on 2026-08-13
 (`07f0376e` and `a6ef4efd`). Its current behavior is recorded in
@@ -58,7 +80,8 @@ before a capability may be turned on.
 | Gate | Requirement |
 |---|---|
 | Enabling `autonomous_tick` (Always-on) | Provider-fallback and tool-degradation evidence must be in place, because an autonomously launched Run has nobody reading its result. Satisfied: the `model_provider_mismatch` event already shipped in `bd22c749`, and `managed_tool_degraded` landed 2026-08-13. Keep it satisfied. |
-| Any CLI runtime use | Install the runtime into the sandbox image, then run the C3 conformance suite for that runtime×version. Codex additionally carries the cancellation-evidence item in the defer register. |
+| Any CLI runtime use | Install the runtime into the sandbox image, then run the C3 conformance suite for that runtime×version. Codex additionally carries the cancellation-evidence item in the defer register. Narrowed 2026-08-13: this gate covers spawning a vendor CLI and nothing else. It no longer gates access to subscription capacity, because managed Claude Pro/Max and ChatGPT Codex subscriptions are available through the isolated in-process OAuth channel described by [ADR 0008](../decisions/0008-credential-channel-isolation.md). |
+| Enabling retry or Always-on after cost becomes non-null | The Run retry cost cap (`runs/supervisor.ts`) and the autonomy daily cost limit have not yet been calibrated against real catalog-derived spend. Managed chat now writes pi-ai catalog cost to `estimated_cost_usd`; re-check both thresholds against observed values before enabling either feature, rather than discovering them by a run being refused. |
 | Controlled product acceptance | Follow [../architecture/PRODUCT_ACCEPTANCE.md](../architecture/PRODUCT_ACCEPTANCE.md). Its OpenCode smoke section cannot run until the CLI gate above is met; the managed-API and Source sections can. |
 | Unattended dogfooding | [../plans/unattended-execution-hardening-plan.md](../plans/unattended-execution-hardening-plan.md) must pass its completion gate first. |
 

@@ -22,6 +22,9 @@ export {
   MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES,
   MODEL_PROVIDER_API_KEY_NONCE_BYTES,
   MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX,
+  MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX,
+  decryptModelProviderOAuthSecretRefV1,
+  encryptModelProviderOAuthSecretRefV1,
   parseModelProviderApiKeySecretRefV1,
   SecretRefCompatibilityError,
 } from "./secretRefCrypto";
@@ -42,7 +45,6 @@ export {
 export {
   __setNetworkRetryDelayForTests,
   __setProviderHttpClientForTests,
-  buildProviderModelName,
   completeProviderChat,
   completeProviderEmbedding,
   completeProviderRerank,
@@ -88,10 +90,12 @@ export {
   __setClaudeOAuthUsageHttpClientForTests,
   parseClaudeOAuthUsageResponse,
   probeClaudeOAuthQuota,
+  probeClaudeOAuthQuotaWithAccessToken,
   type ClaudeOAuthHttpClient,
 } from "./cli/claudeOAuthUsageProbe";
 export {
   __setCodexRpcFactoryForTests,
+  parseCodexManagedUsageResponse,
   probeCodexQuota,
   type CodexRpcFactory,
   type CodexRpcHandle,

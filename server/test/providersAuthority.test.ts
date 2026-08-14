@@ -10,6 +10,7 @@ import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
 import {
   __setProvidersDbPortForTests,
+  mapProviderRowToDto,
   type ProvidersDbPort,
 } from "../src/modules/providers/dbReader";
 import {
@@ -95,6 +96,27 @@ function providerRoutesConfig() {
 }
 
 describe("providers read authority", () => {
+  it("maps legacy custom-provider rows onto the vendor vocabulary", () => {
+    expect(mapProviderRowToDto({
+      id: "legacy-custom",
+      space_id: "space-1",
+      name: "Legacy custom endpoint",
+      provider_type: "other",
+      base_url: "https://gateway.example.test/v1",
+      network_profile_id: null,
+      default_model: "custom-model",
+      enabled: true,
+      credential_id: "credential-1",
+      capabilities_json: { models: ["custom-model"] },
+      config_json: {},
+      created_at: new Date("2026-01-01T00:00:00.000Z"),
+      updated_at: new Date("2026-01-01T00:00:00.000Z"),
+    })).toMatchObject({
+      provider_type: "openai_compatible",
+      base_url: "https://gateway.example.test/v1",
+    });
+  });
+
   it("serves list and detail from the DB port scoped by native server identity", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(
@@ -158,9 +180,11 @@ describe("providers read authority", () => {
     expect(litellm.json()).toEqual([
       "openai",
       "anthropic",
+      "minimax",
       "openrouter",
+      "deepseek",
       "ollama",
-      "other",
+      "openai_compatible",
     ]);
 
     const presets = await app.inject({ method: "GET", url: "/api/v1/providers/presets" });

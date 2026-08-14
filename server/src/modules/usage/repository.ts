@@ -11,12 +11,6 @@ import {
 import { countFromRow, type Queryable } from "../routeUtils/common";
 import type { NormalizedUsageObservation } from "./types";
 import { accuracyMixZero } from "./normalizer";
-import {
-  estimateUsageCost,
-  modelPatternMatches,
-  modelPatternSpecificity,
-  type PricingRuleRecord,
-} from "./pricing";
 
 export interface UsageEventRecord {
   id: string;
@@ -51,6 +45,7 @@ export interface UsageEventRecord {
   output_tokens: number | string;
   total_tokens: number | string | null;
   cache_creation_input_tokens: number | string;
+  cache_creation_1h_input_tokens: number | string;
   cache_read_input_tokens: number | string;
   reasoning_tokens: number | string;
   request_count: number | string;
@@ -69,6 +64,7 @@ export interface UsageTotals {
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens: number;
+  cache_creation_1h_input_tokens: number;
   cache_read_input_tokens: number;
   reasoning_tokens: number;
   total_tokens: number;
@@ -158,6 +154,7 @@ interface AggregateRow {
   input_tokens: string | number | null;
   output_tokens: string | number | null;
   cache_creation_input_tokens: string | number | null;
+  cache_creation_1h_input_tokens: string | number | null;
   cache_read_input_tokens: string | number | null;
   reasoning_tokens: string | number | null;
   total_tokens: string | number | null;
@@ -205,7 +202,6 @@ export class PgUsageRepository {
   }
 
   async appendEvent(event: NormalizedUsageObservation): Promise<UsageEventRecord> {
-    event = await this.withEstimatedCost(event);
     const result = await this.db.query<UsageEventRecord>(
       `WITH inserted_event AS (
       INSERT INTO token_usage_events (
@@ -221,9 +217,10 @@ export class PgUsageRepository {
         cache_creation_input_tokens, cache_read_input_tokens, reasoning_tokens,
         request_count, estimated_cost_usd, usage_schema, usage_details_json,
         cost_details_json, provider_usage_json, usage_normalization_version,
-        total_tokens_source, currency, pricing_rule_id, pricing_tier_name,
-        dimensions_json, usage_accuracy, dedupe_confidence, import_batch_id,
-        idempotency_key, metadata_json, created_at, updated_at
+        total_tokens_source, dimensions_json, usage_accuracy, dedupe_confidence,
+        import_batch_id,
+        idempotency_key, metadata_json, created_at,
+        cache_creation_1h_input_tokens, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5,
         $6, $7, $8, $9,
@@ -237,9 +234,9 @@ export class PgUsageRepository {
         $44, $45, $46,
         $47, $48, $49, $50::jsonb,
         $51::jsonb, $52::jsonb, $53,
-        $54, $55, $56, $57,
-        $58::jsonb, $59, $60, $61,
-        $62, $63::jsonb, $64, $64
+        $54, $55::jsonb, $56, $57,
+        $58, $59, $60::jsonb, $61,
+        $62, $61
       )
       ON CONFLICT ON CONSTRAINT uq_token_usage_events_space_idempotency
       DO NOTHING
@@ -251,7 +248,8 @@ export class PgUsageRepository {
         model, task, run_id, session_id, external_session_id, session_path,
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
-        cache_read_input_tokens, reasoning_tokens, request_count, estimated_cost_usd,
+        cache_creation_1h_input_tokens, cache_read_input_tokens, reasoning_tokens,
+        request_count, estimated_cost_usd,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
         metadata_json, created_at
       ), inserted_grants AS (
@@ -264,7 +262,7 @@ export class PgUsageRepository {
                grant_row.user_id, grant_row.granted_by_user_id, grant_row.access_level,
                grant_row.created_at, grant_row.created_at, NULL, NULL
           FROM inserted_event
-          CROSS JOIN jsonb_to_recordset($65::jsonb) AS grant_row(
+          CROSS JOIN jsonb_to_recordset($63::jsonb) AS grant_row(
             id text,
             user_id text,
             granted_by_user_id text,
@@ -329,9 +327,6 @@ export class PgUsageRepository {
         JSON.stringify(event.provider_usage_json),
         event.usage_normalization_version,
         event.total_tokens_source,
-        event.currency,
-        event.pricing_rule_id,
-        event.pricing_tier_name,
         JSON.stringify(event.dimensions_json),
         event.usage_accuracy,
         event.dedupe_confidence,
@@ -339,6 +334,7 @@ export class PgUsageRepository {
         event.idempotency_key,
         JSON.stringify(event.metadata_json),
         event.created_at,
+        event.cache_creation_1h_input_tokens,
         JSON.stringify(event.grant_snapshots),
       ],
     );
@@ -346,60 +342,6 @@ export class PgUsageRepository {
     const existing = await this.getEventByIdempotencyKey(event.space_id, event.idempotency_key);
     if (!existing) throw new Error("usage event insert was deduped but existing row was not found");
     return existing;
-  }
-
-  private async withEstimatedCost(
-    event: NormalizedUsageObservation,
-  ): Promise<NormalizedUsageObservation> {
-    if (event.estimated_cost_usd !== null || event.pricing_rule_id || !event.model || !hasBillableUsage(event)) {
-      return event;
-    }
-    const rule = await this.findPricingRuleForEvent(event);
-    if (!rule) return event;
-    const estimate = estimateUsageCost(event, rule);
-    if (!estimate) return event;
-    return {
-      ...event,
-      estimated_cost_usd: estimate.estimatedCostUsd,
-      currency: estimate.currency,
-      pricing_rule_id: estimate.pricingRuleId,
-      pricing_tier_name: estimate.pricingTierName,
-      cost_details_json: estimate.costDetails,
-    };
-  }
-
-  private async findPricingRuleForEvent(
-    event: NormalizedUsageObservation,
-  ): Promise<PricingRuleRecord | null> {
-    const result = await this.db.query<PricingRuleRecord>(
-      `SELECT
-        id, scope_type, space_id, provider_type, provider_id, model_pattern,
-        input_usd_per_million, output_usd_per_million, cache_write_usd_per_million,
-        cache_read_usd_per_million, reasoning_usd_per_million, usage_type_prices_json,
-        tier_conditions_json, priority, pricing_normalization_version, currency,
-        effective_from, effective_until, source, metadata_json, created_at, updated_at
-       FROM model_pricing_rules
-       WHERE currency = $1
-         AND effective_from <= $2::timestamptz
-         AND (effective_until IS NULL OR effective_until > $2::timestamptz)
-         AND (scope_type IN ('system', 'instance') OR (scope_type = 'space' AND space_id = $3))
-         AND (space_id IS NULL OR space_id = $3)
-         AND (provider_id IS NULL OR provider_id = $4)
-         AND (provider_type IS NULL OR provider_type = $5)
-       ORDER BY priority DESC, effective_from DESC
-       LIMIT 100`,
-      [
-        event.currency || "USD",
-        event.occurred_at,
-        event.space_id,
-        event.provider_id,
-        event.provider_type,
-      ],
-    );
-    const matches = result.rows
-      .filter((rule) => modelPatternMatches(rule.model_pattern, event.model))
-      .sort((left, right) => pricingRuleScore(right, event) - pricingRuleScore(left, event));
-    return matches[0] ?? null;
   }
 
   async createImportBatch(input: UsageImportBatchCreateInput): Promise<UsageImportBatchRecord> {
@@ -510,7 +452,8 @@ export class PgUsageRepository {
         model, task, run_id, session_id, external_session_id, session_path,
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
-        cache_read_input_tokens, reasoning_tokens, request_count, estimated_cost_usd,
+        cache_creation_1h_input_tokens, cache_read_input_tokens, reasoning_tokens,
+        request_count, estimated_cost_usd,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
         metadata_json, created_at
        FROM token_usage_events
@@ -730,7 +673,8 @@ export class PgUsageRepository {
         model, task, run_id, session_id, external_session_id, session_path,
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
-        cache_read_input_tokens, reasoning_tokens, request_count, estimated_cost_usd,
+        cache_creation_1h_input_tokens, cache_read_input_tokens, reasoning_tokens,
+        request_count, estimated_cost_usd,
         usage_details_json, total_tokens_source, usage_accuracy, dimensions_json,
         metadata_json, created_at
        FROM token_usage_events e
@@ -972,28 +916,6 @@ export function usageRepositoryFromPool(pool: Pool): PgUsageRepository {
   return new PgUsageRepository(pool);
 }
 
-function hasBillableUsage(event: NormalizedUsageObservation): boolean {
-  return Object.entries(event.usage_details_json).some(([bucket, raw]) => {
-    if (bucket === "total" && Object.keys(event.usage_details_json).length > 1) return false;
-    const value = typeof raw === "number" ? raw : Number(raw);
-    return Number.isFinite(value) && value > 0;
-  });
-}
-
-function pricingRuleScore(rule: PricingRuleRecord, event: NormalizedUsageObservation): number {
-  const scopeScore = rule.scope_type === "space" ? 30 : rule.scope_type === "instance" ? 20 : 10;
-  const providerScore =
-    rule.provider_id && rule.provider_id === event.provider_id ? 8 :
-      rule.provider_type && rule.provider_type === event.provider_type ? 4 :
-        0;
-  return (
-    intValue(rule.priority) * 1000 +
-    scopeScore +
-    providerScore +
-    modelPatternSpecificity(rule.model_pattern)
-  );
-}
-
 function buildWhere(
   filters: UsageQueryFilters,
   options: { fullOnly?: boolean } = {},
@@ -1167,6 +1089,7 @@ function aggregateSelectSql(): string {
     COALESCE(sum(e.input_tokens), 0)::bigint AS input_tokens,
     COALESCE(sum(e.output_tokens), 0)::bigint AS output_tokens,
     COALESCE(sum(e.cache_creation_input_tokens), 0)::bigint AS cache_creation_input_tokens,
+    COALESCE(sum(e.cache_creation_1h_input_tokens), 0)::bigint AS cache_creation_1h_input_tokens,
     COALESCE(sum(e.cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
     COALESCE(sum(e.reasoning_tokens), 0)::bigint AS reasoning_tokens,
     COALESCE(sum(${totalExpr}), 0)::bigint AS total_tokens,
@@ -1208,6 +1131,7 @@ function aggregateRowToBreakdown(row: AggregateRow | undefined): UsageBreakdownR
       input_tokens: intValue(row?.input_tokens),
       output_tokens: intValue(row?.output_tokens),
       cache_creation_input_tokens: intValue(row?.cache_creation_input_tokens),
+      cache_creation_1h_input_tokens: intValue(row?.cache_creation_1h_input_tokens),
       cache_read_input_tokens: intValue(row?.cache_read_input_tokens),
       reasoning_tokens: intValue(row?.reasoning_tokens),
       total_tokens: intValue(row?.total_tokens),
@@ -1254,6 +1178,7 @@ export function eventToOut(row: UsageEventRecord): Record<string, unknown> {
     output_tokens: intValue(row.output_tokens),
     total_tokens: row.total_tokens === null ? null : intValue(row.total_tokens),
     cache_creation_input_tokens: intValue(row.cache_creation_input_tokens),
+    cache_creation_1h_input_tokens: intValue(row.cache_creation_1h_input_tokens),
     cache_read_input_tokens: intValue(row.cache_read_input_tokens),
     reasoning_tokens: intValue(row.reasoning_tokens),
     request_count: intValue(row.request_count),

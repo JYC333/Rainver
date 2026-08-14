@@ -137,13 +137,21 @@ export async function probeClaudeOAuthQuota(profileDir: string): Promise<QuotaRe
   const credentials = await loadCredentials(profileDir);
   validateCredentials(credentials);
 
+  return probeClaudeOAuthQuotaWithAccessToken(credentials.accessToken);
+}
+
+/** Managed subscription path: the caller owns refresh and supplies only the
+ * in-memory access token. This never reads a CLI profile. */
+export async function probeClaudeOAuthQuotaWithAccessToken(accessToken: string): Promise<QuotaResult> {
+  if (!accessToken.trim()) throw new Error("Claude OAuth access token is missing.");
+
   const client = httpClientOverride ?? defaultHttpClient();
   const response = await client.fetch(CLAUDE_OAUTH_USAGE_URL, {
     method: "GET",
     headers: {
       "Accept": "application/json",
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${credentials.accessToken}`,
+      "Authorization": `Bearer ${accessToken}`,
       "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
       "User-Agent": "claude-code/2.1.0",
     },

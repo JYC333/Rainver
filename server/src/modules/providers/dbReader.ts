@@ -5,13 +5,15 @@
  * `MODEL_PROVIDERS_READ_COLUMNS` allowlist and maps rows to the public
  * `ModelProviderDTO` wire shape:
  * `available_models` from `capabilities_json`, `is_default` from
- * `config_json`, `has_api_key` from `credential_id`. This reader does not
- * perform writes.
+ * `config_json`, and credential presence/type from the joined Credential row.
+ * This reader does not perform writes or return secret material.
  */
 
 import { getDbPool, type Pool } from "./db";
 import type { ServerConfig } from "../../config";
 import { loadProtocol } from "./protocolRuntime";
+import { canonicalProviderVendorId } from "./vendors";
+import { defaultBaseUrlFor } from "./commands/helpers";
 
 export interface ProvidersDbPort {
   listProviders(spaceId: string, userId: string): Promise<unknown[]>;
@@ -33,6 +35,8 @@ export interface ProviderRow {
   default_model: string | null;
   enabled: boolean;
   credential_id: string | null;
+  credential_type?: string | null;
+  credential_metadata_json?: unknown;
   capabilities_json: unknown;
   config_json: unknown;
   grant_is_default?: boolean | null;
@@ -73,16 +77,14 @@ function stringConfig(config: unknown, key: string): string | null {
   return null;
 }
 
-function defaultBaseUrlFor(providerType: string): string | null {
-  if (providerType === "openai") return "https://api.openai.com/v1";
-  if (providerType === "anthropic") return "https://api.anthropic.com";
-  if (providerType === "openrouter") return "https://openrouter.ai/api/v1";
-  if (providerType === "zeroentropy") return "https://api.zeroentropy.dev/v1";
-  if (providerType === "cohere") return "https://api.cohere.com";
-  return null;
-}
-
 export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
+  const providerType = canonicalProviderVendorId(row.provider_type);
+  const metadata = row.credential_metadata_json !== null
+    && typeof row.credential_metadata_json === "object"
+    && !Array.isArray(row.credential_metadata_json)
+    ? row.credential_metadata_json as Record<string, unknown>
+    : {};
+  const hasSubscription = row.credential_type === "subscription_oauth";
   return {
     id: row.id,
     space_id: row.space_id,
@@ -90,8 +92,8 @@ export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
     owner_user_id: row.owner_user_id ?? null,
     grant_id: row.grant_id ?? null,
     name: row.name,
-    provider_type: row.provider_type,
-    base_url: row.base_url ?? defaultBaseUrlFor(row.provider_type) ?? "",
+    provider_type: providerType,
+    base_url: row.base_url ?? defaultBaseUrlFor(providerType) ?? "",
     network_profile_id: row.network_profile_id ?? null,
     claude_compatible_base_url: stringConfig(row.config_json, "claude_compatible_base_url"),
     openai_compatible_base_url: stringConfig(row.config_json, "openai_compatible_base_url"),
@@ -99,7 +101,12 @@ export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
     available_models: availableModels(row.capabilities_json),
     enabled: Boolean(row.enabled),
     is_default: isDefaultForRow(row),
-    has_api_key: row.credential_id !== null && row.credential_id !== undefined,
+    has_api_key: row.credential_type === "api_key",
+    has_subscription: hasSubscription,
+    subscription_type: hasSubscription ? providerType : null,
+    subscription_quota: hasSubscription && metadata.quota && typeof metadata.quota === "object"
+      ? metadata.quota
+      : null,
     manageable: Boolean(row.manageable),
     grant_enabled: row.grant_enabled === undefined || row.grant_enabled === null
       ? undefined
@@ -136,6 +143,8 @@ class PgProvidersDbPort implements ProvidersDbPort {
               p.default_model,
               p.enabled,
               p.credential_id,
+              c.credential_type,
+              c.metadata_json AS credential_metadata_json,
               p.capabilities_json,
               p.created_at,
               p.updated_at`,
@@ -161,9 +170,11 @@ class PgProvidersDbPort implements ProvidersDbPort {
               COALESCE(g.network_profile_id, p.network_profile_id) AS network_profile_id
          FROM model_provider_space_grants g
          JOIN "${table}" p ON p.id = g.provider_id
+         LEFT JOIN credentials c ON c.id = p.credential_id
         WHERE g.space_id = $1
           AND g.enabled = true
           AND p.enabled = true
+          AND (c.credential_type IS DISTINCT FROM 'subscription_oauth' OR p.owner_user_id = $2)
         ORDER BY g.is_default DESC, p.created_at DESC`,
       [spaceId, userId],
     );
@@ -193,10 +204,12 @@ class PgProvidersDbPort implements ProvidersDbPort {
               COALESCE(g.network_profile_id, p.network_profile_id) AS network_profile_id
          FROM model_provider_space_grants g
          JOIN "${table}" p ON p.id = g.provider_id
+         LEFT JOIN credentials c ON c.id = p.credential_id
         WHERE g.space_id = $1
           AND g.provider_id = $2
           AND g.enabled = true
           AND p.enabled = true
+          AND (c.credential_type IS DISTINCT FROM 'subscription_oauth' OR p.owner_user_id = $3)
         LIMIT 1`,
       [spaceId, configId, userId],
     );

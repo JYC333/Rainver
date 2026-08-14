@@ -87,6 +87,35 @@ describe('ResearchSetupDialog', () => {
     expect(await screen.findByDisplayValue('MiniMax-M3')).toBeInTheDocument()
   })
 
+  it('allows an OpenAI Codex subscription for structured research execution', async () => {
+    render(
+      <ResearchSetupDialog
+        open
+        threadId="thread-1"
+        draft={{ ...initialDraft, execution: { model_provider_id: '', model_name: '' } }}
+        busyAction={null}
+        modelProviders={[
+          {
+            id: 'codex-provider',
+            name: 'Codex subscription',
+            provider_type: 'openai_codex',
+            enabled: true,
+            is_default: true,
+            default_model: 'gpt-5.6-sol',
+          } as never,
+        ]}
+        canAct
+        onOpenChange={vi.fn()}
+        onSave={vi.fn().mockResolvedValue(true)}
+        onStart={vi.fn()}
+      />,
+    )
+
+    await userEvent.setup().click(screen.getByRole('button', { name: /Execution/ }))
+    expect(await screen.findByText('Codex subscription (default)')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('gpt-5.6-sol')).toBeInTheDocument()
+  })
+
   it('saves the draft with a visible confirmation when stepping forward', async () => {
     const user = userEvent.setup()
     render(

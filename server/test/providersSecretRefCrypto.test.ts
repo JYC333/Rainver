@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   decryptModelProviderApiKeySecretRefV1,
+  decryptModelProviderOAuthSecretRefV1,
+  encryptModelProviderOAuthSecretRefV1,
   MODEL_PROVIDER_API_KEY_AUTH_TAG_BYTES,
   MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES,
   MODEL_PROVIDER_API_KEY_NONCE_BYTES,
   MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX,
+  MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX,
   parseModelProviderApiKeySecretRefV1,
   SecretRefCompatibilityError,
 } from "../src/modules/providers";
@@ -42,6 +45,27 @@ describe("model-provider secret_ref crypto compatibility", () => {
 
     const tampered = FIXTURE_SECRET_REF.replace("oVGL", "oVGM");
     expect(() => decryptModelProviderApiKeySecretRefV1(tampered, FIXTURE_MASTER_KEY))
+      .toThrow(SecretRefCompatibilityError);
+  });
+
+  it("round-trips a managed OAuth credential in a distinct encrypted envelope", () => {
+    const credential = {
+      type: "oauth" as const,
+      access: "oauth-access-secret",
+      refresh: "oauth-refresh-secret",
+      expires: 1_800_000_000_000,
+      accountId: "account-1",
+    };
+
+    const secretRef = encryptModelProviderOAuthSecretRefV1(credential, FIXTURE_MASTER_KEY);
+
+    expect(secretRef.startsWith(MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX)).toBe(true);
+    expect(secretRef).not.toContain(credential.access);
+    expect(secretRef).not.toContain(credential.refresh);
+    expect(decryptModelProviderOAuthSecretRefV1(secretRef, FIXTURE_MASTER_KEY)).toEqual(credential);
+
+    const tampered = `${secretRef.slice(0, -1)}${secretRef.endsWith("A") ? "B" : "A"}`;
+    expect(() => decryptModelProviderOAuthSecretRefV1(tampered, FIXTURE_MASTER_KEY))
       .toThrow(SecretRefCompatibilityError);
   });
 });

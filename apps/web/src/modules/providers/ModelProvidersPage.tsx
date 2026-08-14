@@ -4,14 +4,17 @@ import { toast } from 'sonner'
 import { authApi, providersApi, type ModelProviderOut, type ProviderPresetOut } from '../../api/client'
 import { Card } from '../../components/ui/card'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { errMsg } from '../../lib/utils'
 import type { SpaceWithMembership } from '../../types/api'
 import AddProviderForm from './components/AddProviderForm'
 import ProviderCard from './components/ProviderCard'
+import ManagedSubscriptionsPanel from './components/ManagedSubscriptionsPanel'
 import type { AddProviderMode } from './types'
 
 export default function ModelProvidersPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
+  const { currentUser } = useAuth()
   const [configs, setConfigs] = useState<ModelProviderOut[]>([])
   const [spaces, setSpaces] = useState<SpaceWithMembership[]>([])
   const [presets, setPresets] = useState<ProviderPresetOut[]>([])
@@ -99,6 +102,14 @@ export default function ModelProvidersPage() {
             setMode={setAddingMode}
             presets={presets}
           />
+          {!addingMode && (
+            <ManagedSubscriptionsPanel
+              providers={configs}
+              isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
+              onChanged={addProvider}
+              onDisconnected={id => setConfigs(previous => previous.filter(config => config.id !== id))}
+            />
+          )}
           {!addingMode && (configs.length === 0 ? (
             <Card>
               <p className="text-sm text-muted-foreground p-4">

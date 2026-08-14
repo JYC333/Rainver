@@ -6,6 +6,20 @@ CLI login state belongs to agent-space, not to individual sandboxes.
 
 Sandboxes receive short-lived, minimal, audited access to one approved CLI credential profile.
 
+Managed Claude Pro/Max and OpenAI Codex subscriptions are a separate
+in-process channel. The Providers page lets the configured instance admin run
+pi-ai OAuth, stores the returned access/refresh state as an encrypted DB
+credential, and exposes only connection/quota metadata. These credentials are
+owner-only, never pooled, never copied into CLI profiles, and refreshed under a
+database row lock.
+
+Managed subscription endpoints are:
+
+- `GET /api/v1/providers/subscriptions/login/stream?type=anthropic|openai_codex`
+- `POST /api/v1/providers/subscriptions/login/input?type=…`
+- `POST /api/v1/providers/{provider_id}/subscription/quota`
+- `DELETE /api/v1/providers/{provider_id}/subscription`
+
 ## Problem
 
 The backend runs inside Docker. CLI tools (Claude Code, Codex, OpenCode) need their login

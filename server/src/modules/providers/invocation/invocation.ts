@@ -43,21 +43,14 @@ import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience";
 import { fetchWithNetworkProfile, type ResolvedNetworkProfile } from "../../networkProfiles";
 import {
-  anthropicMessages,
-  anthropicToolCalls,
-  anthropicTools,
-  openAiMessages,
-  openAiToolCalls,
-  openAiTools,
-} from "./toolAdapters";
-import {
   retrievalEgressAllowed,
   retrievalProviderEgressDestination,
   type RetrievalEgressPolicy,
 } from "../../retrieval/egress/egressPolicy";
 import { normalizeGatewayShapes, normalizeNullableNearMisses, validateStructuredOutput } from "../../runs/structuredOutputValidation";
-import { providerSupportsStructuredOutput, structuredOutputToolStrategy } from "../structuredOutputCapabilities";
-import { effectiveMaxOutputTokens } from "../modelOutputLimits";
+import { providerSupportsStructuredOutput } from "../structuredOutputCapabilities";
+import { providerVendor } from "../vendors";
+import { completePiAiChat } from "./piAiChat";
 
 export interface ChatMessage {
   role: string;
@@ -90,9 +83,18 @@ export interface ProviderChatResponseBody {
   provider: string;
   model: string;
   usage: Record<string, unknown>;
+  cost?: ProviderUsageCost;
   tool_calls?: CanonicalToolCall[];
   structured_output?: Record<string, unknown> | null;
   finish_reason?: string | null;
+}
+
+export interface ProviderUsageCost {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
 }
 
 export type ProviderChatInvocationResult = ProviderChatResponseBody & {
@@ -239,14 +241,6 @@ function errorDetail(error: unknown): string {
   return error.message || "request failed before a provider response was received";
 }
 
-export function buildProviderModelName(providerType: string, model: string): string {
-  if (model.includes("/")) return model;
-  if (providerType === "anthropic") return `anthropic/${model}`;
-  if (providerType === "openrouter") return `openrouter/${model}`;
-  if (providerType === "ollama") return `ollama/${model}`;
-  return `openai/${model}`;
-}
-
 function bareModelName(providerType: string, model: string): string {
   if (providerType === "anthropic" && model.startsWith("anthropic/")) {
     return model.slice("anthropic/".length);
@@ -263,7 +257,7 @@ function bareModelName(providerType: string, model: string): string {
   if (providerType === "cohere" && model.startsWith("cohere/")) {
     return model.slice("cohere/".length);
   }
-  if (["openai", "other"].includes(providerType) && model.startsWith("openai/")) {
+  if (["openai", "openai_compatible", "deepseek"].includes(providerType) && model.startsWith("openai/")) {
     return model.slice("openai/".length);
   }
   return model;
@@ -308,76 +302,12 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
   }
 }
 
-async function assertStreamingResponseOk(response: Response): Promise<void> {
-  if (response.ok) return;
-  const text = await response.text();
-  const decision = classifyProviderFailure(response.status, text);
-  throw new ProviderInvocationError(
-    502,
-    `Provider request failed with status ${response.status}`,
-    decision,
-    decision.failure_class === "rate_limit" ? "provider_rate_limit" : undefined,
-  );
-}
-
-async function* responseLines(response: Response): AsyncGenerator<string> {
-  if (!response.body) {
-    throw new ProviderInvocationError(502, "Provider returned no response stream");
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) yield line;
-      if (done) break;
-    }
-    if (buffer) yield buffer;
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function jsonRecord(value: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringField(value: Record<string, unknown>, key: string): string | null {
-  const field = value[key];
-  return typeof field === "string" ? field : null;
-}
-
 function openAiBase(provider: ProviderInfo): string {
   if (provider.base_url) return provider.base_url.replace(/\/+$/, "");
   if (provider.provider_type === "openrouter") return "https://openrouter.ai/api/v1";
   return "https://api.openai.com/v1";
 }
 
-function openAiCompatibleBase(provider: ProviderInfo): string {
-  if (provider.provider_type === "anthropic" && provider.openai_compatible_base_url) {
-    return provider.openai_compatible_base_url.replace(/\/+$/, "");
-  }
-  return openAiBase(provider);
-}
-
-function anthropicMessagesUrl(provider: ProviderInfo): string {
-  const base = (provider.base_url || "https://api.anthropic.com").replace(/\/+$/, "");
-  const versioned = base.endsWith("/v1") ? base : `${base}/v1`;
-  return `${versioned}/messages`;
-}
 
 function cohereV2Base(provider: ProviderInfo): string {
   const base = (provider.base_url || "https://api.cohere.com").replace(/\/+$/, "");
@@ -385,12 +315,7 @@ function cohereV2Base(provider: ProviderInfo): string {
 }
 
 function providerSupportsRuntimeTools(providerType: string): boolean {
-  return (
-    providerType === "openai" ||
-    providerType === "openrouter" ||
-    providerType === "other" ||
-    providerType === "anthropic"
-  );
+  return providerVendor(providerType)?.supportsRuntimeTools ?? false;
 }
 
 function diagnosticSummary(diagnostics: StructuredOutputDiagnostics | undefined): string {
@@ -668,513 +593,9 @@ function invalidStructuredOutputError(
   );
 }
 
-function providerStructuredOutputName(schemaId: string): string {
-  return schemaId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "structured_output";
-}
-
 // ---------------------------------------------------------------------------
 // Single-attempt provider calls (one key, one request)
 // ---------------------------------------------------------------------------
-
-async function completeOpenAiCompatible(
-  provider: ProviderInfo,
-  networkProfile: ResolvedNetworkProfile | null,
-  apiKey: string | null,
-  body: ProviderChatRequestBody,
-): Promise<ProviderChatResponseBody> {
-  if (!apiKey) {
-    throw new ProviderInvocationError(
-      400,
-      `ModelProvider '${provider.id}' has no API key credential`,
-    );
-  }
-  const model = bareModelName(provider.provider_type, resolveModel(provider, body.model));
-  const tools = openAiTools(body.tools);
-  // `response_format: json_schema` needs provider-side constrained decoding;
-  // OpenAI-compatible gateways that lack it silently ignore the field and
-  // answer in prose. Models are far more reliably trained to emit valid JSON
-  // as tool-call arguments, so when the request has no runtime tools of its
-  // own, also offer the schema as a single forced tool. Providers honoring
-  // response_format still constrain the output; the ones ignoring it return
-  // the payload as tool arguments, which the response path already prefers
-  // (structuredOutputFromOpenAiChoice checks the schema-named tool first).
-  const structuredToolName = body.output_format ? providerStructuredOutputName(body.output_format.schema_id) : null;
-  const structuredStrategy = structuredOutputToolStrategy(model, body.output_format?.schema);
-  const forcedStructuredTool = body.output_format && !tools && structuredStrategy.forceTool
-    ? [{
-        type: "function",
-        function: {
-          name: structuredToolName!,
-          description: `Return the ${body.output_format.schema_id} structured result.`,
-          parameters: body.output_format.schema,
-        },
-      }]
-    : null;
-  // A model that neither honors response_format nor gets the forced tool
-  // otherwise NEVER sees the contract — it can only guess field shapes from
-  // prose. Embed the schema itself in the system instruction for those.
-  const schemaInstruction = structuredStrategy.schemaInstruction;
-  const messagesBody = schemaInstruction
-    ? { ...body, system: body.system ? `${body.system}\n\n${schemaInstruction}` : schemaInstruction }
-    : body;
-  const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
-  const response = await fetchProviderResponse(networkProfile, `${openAiCompatibleBase(provider)}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: openAiMessages(messagesBody),
-      temperature: body.temperature,
-      max_tokens: effectiveMaxOutputTokens(model, body.max_tokens) ?? undefined,
-      ...(tools ? { tools, tool_choice: "auto" } : {}),
-      ...(forcedStructuredTool ? {
-        tools: forcedStructuredTool,
-        tool_choice: { type: "function", function: { name: structuredToolName } },
-      } : {}),
-      ...(body.output_format ? {
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: providerStructuredOutputName(body.output_format.schema_id),
-            strict: body.output_format.strict ?? true,
-            schema: body.output_format.schema,
-          },
-        },
-      } : {}),
-      ...(streaming ? {
-        stream: true,
-        stream_options: { include_usage: true },
-      } : {}),
-    }),
-    signal: body.abort_signal,
-  });
-  if (streaming) {
-    return completeOpenAiStream(response, provider.provider_type, model, body.on_text_delta!);
-  }
-  const data = (await parseJsonResponse(response)) as {
-    choices?: Array<{
-      finish_reason?: string | null;
-      message?: {
-        content?: string | null;
-        tool_calls?: Array<{
-          id?: string;
-          type?: string;
-          function?: { name?: string; arguments?: string };
-        }>;
-      };
-    }>;
-    model?: string;
-    usage?: Record<string, unknown>;
-  };
-  const choice = data.choices?.[0];
-  const toolCalls = openAiToolCalls(choice?.message?.tool_calls, body.tools);
-  const content = choice?.message?.content ?? "";
-  const structuredDiagnostics = {
-    transport: "openai_compatible",
-    finish_reason: choice?.finish_reason ?? "unknown",
-    response_model: data.model ?? model,
-    choice_count: data.choices?.length ?? 0,
-    content_type: choice?.message?.content === null
-      ? "null"
-      : Array.isArray(choice?.message?.content)
-        ? "array"
-        : typeof choice?.message?.content,
-    tool_call_count: choice?.message?.tool_calls?.length ?? 0,
-    tool_names: (choice?.message?.tool_calls ?? [])
-      .map((call) => call.function?.name ?? "unnamed")
-      .slice(0, 8),
-    tool_argument_lengths: (choice?.message?.tool_calls ?? [])
-      .map((call) => typeof call.function?.arguments === "string" ? call.function.arguments.length : 0)
-      .slice(0, 8),
-  } satisfies StructuredOutputDiagnostics;
-  const structuredOutput = body.output_format
-    ? (() => {
-        try {
-          return structuredOutputFromOpenAiChoice(
-            choice,
-            body.output_format,
-            content,
-            !body.tools?.length,
-            structuredDiagnostics,
-          );
-        } catch (error) {
-          if (error instanceof ProviderInvocationError && error.code === "structured_output_invalid") {
-            // The schema failure usually lives in tool-call arguments, not the
-            // message text; carry both so the failure logger shows the actual
-            // offending payload instead of only the reasoning prose.
-            const rawToolCalls = (choice?.message?.tool_calls ?? [])
-              .filter((call) => typeof call.function?.arguments === "string" && call.function.arguments)
-              .map((call) => `tool_call ${call.function?.name ?? "unnamed"} arguments: ${call.function!.arguments}`);
-            throw new ProviderInvocationError(
-              error.statusCode,
-              error.message,
-              error.resilience,
-              error.code,
-              error.diagnostics,
-              [content, ...rawToolCalls].filter(Boolean).join("\n"),
-            );
-          }
-          throw error;
-        }
-      })()
-    : null;
-  return {
-    content,
-    provider: provider.provider_type,
-    model: data.model ?? model,
-    usage: data.usage ?? {},
-    tool_calls: toolCalls,
-    structured_output: structuredOutput,
-    finish_reason: choice?.finish_reason ?? null,
-  };
-}
-
-async function completeOpenAiStream(
-  response: Response,
-  providerType: string,
-  requestedModel: string,
-  onTextDelta: (delta: string) => void,
-): Promise<ProviderChatResponseBody> {
-  await assertStreamingResponseOk(response);
-  let content = "";
-  let model = requestedModel;
-  let usage: Record<string, unknown> = {};
-  let finishReason: string | null = null;
-  let terminated = false;
-  for await (const line of responseLines(response)) {
-    if (!line.startsWith("data:")) continue;
-    const payload = line.slice(5).trim();
-    if (!payload) continue;
-    if (payload === "[DONE]") {
-      terminated = true;
-      continue;
-    }
-    const event = jsonRecord(payload);
-    if (!event) continue;
-    const eventModel = stringField(event, "model");
-    if (eventModel) model = eventModel;
-    if (isRecord(event.usage)) usage = event.usage;
-    const choice = Array.isArray(event.choices) && isRecord(event.choices[0])
-      ? event.choices[0]
-      : null;
-    const delta = choice && isRecord(choice.delta)
-      ? stringField(choice.delta, "content")
-      : null;
-    if (delta) {
-      content += delta;
-      onTextDelta(delta);
-    }
-    const reason = choice ? stringField(choice, "finish_reason") : null;
-    if (reason) finishReason = reason;
-  }
-  if (!terminated) throw interruptedProviderStreamError();
-  return {
-    content,
-    provider: providerType,
-    model,
-    usage,
-    structured_output: null,
-    finish_reason: finishReason,
-  };
-}
-
-function structuredOutputFromOpenAiChoice(
-  choice: {
-    message?: {
-      content?: string | null;
-      tool_calls?: Array<{
-        id?: string;
-        type?: string;
-        function?: { name?: string; arguments?: string };
-      }>;
-    };
-  } | undefined,
-  outputFormat: ProviderStructuredOutput,
-  content: unknown,
-  allowUnlabelledToolCall: boolean,
-  diagnostics: StructuredOutputDiagnostics,
-): Record<string, unknown> {
-  const expectedName = providerStructuredOutputName(outputFormat.schema_id);
-  const toolCalls = choice?.message?.tool_calls ?? [];
-  const expectedTool = toolCalls.find((call) => call.function?.name === expectedName)
-    ?? (allowUnlabelledToolCall && toolCalls.length === 1 ? toolCalls[0] : undefined);
-  if (expectedTool?.function?.arguments) {
-    return structuredOutputFromText(expectedTool.function.arguments, outputFormat, {
-      ...diagnostics,
-      response_kind: "tool_call_arguments",
-    });
-  }
-  return structuredOutputFromText(content, outputFormat, {
-    ...diagnostics,
-    response_kind: "message_content",
-  });
-}
-
-async function completeAnthropic(
-  provider: ProviderInfo,
-  networkProfile: ResolvedNetworkProfile | null,
-  apiKey: string | null,
-  body: ProviderChatRequestBody,
-): Promise<ProviderChatResponseBody> {
-  if (!apiKey) {
-    throw new ProviderInvocationError(
-      400,
-      `ModelProvider '${provider.id}' has no API key credential`,
-    );
-  }
-  const model = bareModelName("anthropic", resolveModel(provider, body.model));
-  const structuredStrategy = structuredOutputToolStrategy(model, body.output_format?.schema);
-  const structuredDefinition: CanonicalToolDefinition[] = body.output_format && structuredStrategy.forceTool
-    ? [{
-        name: providerStructuredOutputName(body.output_format.schema_id),
-        description: `Return the ${body.output_format.schema_id} structured result.`,
-        input_schema: body.output_format.schema,
-      }]
-    : [];
-  const requestTools = [...structuredDefinition, ...(body.tools ?? [])];
-  const tools = anthropicTools(requestTools);
-  const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
-  // A model whose tool-call gateway corrupts forced arguments (see
-  // structuredOutputToolStrategy) never gets the forced tool; the schema is
-  // embedded in the system prompt instead, and the response is parsed from
-  // prose (see the text fallback below).
-  const effectiveSystem = structuredStrategy.schemaInstruction
-    ? (body.system ? `${body.system}\n\n${structuredStrategy.schemaInstruction}` : structuredStrategy.schemaInstruction)
-    : body.system;
-  const system = effectiveSystem
-    ? body.cache_strategy === "conversation"
-      ? [{ type: "text", text: effectiveSystem, cache_control: { type: "ephemeral" } }]
-      : effectiveSystem
-    : undefined;
-  const response = await fetchProviderResponse(networkProfile, anthropicMessagesUrl(provider), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      system,
-      messages: anthropicMessages(body),
-      temperature: body.temperature,
-      // Tool-use turns need headroom for the tool_use block plus a follow-up
-      // answer, so default higher when tools are offered.
-      max_tokens: effectiveMaxOutputTokens(model, body.max_tokens) ?? (tools ? 2048 : 1024),
-      ...(tools ? {
-        tools,
-        tool_choice: structuredStrategy.forceTool
-          ? { type: "tool", name: providerStructuredOutputName(body.output_format!.schema_id) }
-          : { type: "auto" },
-      } : {}),
-      ...(streaming ? { stream: true } : {}),
-    }),
-    signal: body.abort_signal,
-  });
-  if (streaming) {
-    return completeAnthropicStream(response, model, body.on_text_delta!);
-  }
-  const data = (await parseJsonResponse(response)) as {
-    content?: Array<{
-      type?: string;
-      text?: string;
-      id?: string;
-      name?: string;
-      input?: unknown;
-    }>;
-    model?: string;
-    usage?: Record<string, unknown>;
-    stop_reason?: string | null;
-  };
-  const structuredSchemaId = body.output_format?.schema_id ?? null;
-  const expectedToolName = structuredSchemaId ? providerStructuredOutputName(structuredSchemaId) : null;
-  const structuredBlock = structuredSchemaId
-    ? data.content?.find((block) => block.type === "tool_use" && block.name === expectedToolName)
-      // Some Anthropic-compatible gateways preserve the tool call but rewrite
-      // its name. Research runs have no runtime tools, so the only tool_use
-      // block is unambiguously the structured result in that case.
-      ?? (!body.tools?.length ? data.content?.find((block) => block.type === "tool_use") : undefined)
-    : undefined;
-  const textContent = data.content?.map((c) => c.text ?? "").join("") ?? "";
-  // Unreliable models never get the forced tool (structuredStrategy.forceTool
-  // is false), so they never produce a tool_use block; parse their answer
-  // from prose instead, mirroring the OpenAI-compatible path's fallback.
-  const structuredOutput = body.output_format
-    ? structuredBlock && isStructuredObject(structuredBlock.input)
-      ? structuredOutputFromValue(structuredBlock.input, body.output_format, {
-          transport: "anthropic",
-          finish_reason: data.stop_reason ?? "unknown",
-          response_model: data.model ?? model,
-          response_kind: "tool_use_input",
-        })
-      : structuredOutputFromText(textContent, body.output_format, {
-          transport: "anthropic",
-          finish_reason: data.stop_reason ?? "unknown",
-          response_model: data.model ?? model,
-          response_kind: "message_content",
-        })
-    : null;
-  return {
-    content: data.content?.map((c) => c.text ?? "").join("") ?? "",
-    provider: "anthropic",
-    model: data.model ?? model,
-    usage: data.usage ?? {},
-    tool_calls: anthropicToolCalls(data.content, body.tools),
-    structured_output: structuredOutput,
-    finish_reason: data.stop_reason ?? null,
-  };
-}
-
-async function completeAnthropicStream(
-  response: Response,
-  requestedModel: string,
-  onTextDelta: (delta: string) => void,
-): Promise<ProviderChatResponseBody> {
-  await assertStreamingResponseOk(response);
-  let content = "";
-  let model = requestedModel;
-  let usage: Record<string, unknown> = {};
-  let finishReason: string | null = null;
-  let terminated = false;
-  for await (const line of responseLines(response)) {
-    if (!line.startsWith("data:")) continue;
-    const event = jsonRecord(line.slice(5).trim());
-    if (!event) continue;
-    if (event.type === "message_stop") terminated = true;
-    if (isRecord(event.message)) {
-      model = stringField(event.message, "model") ?? model;
-      if (isRecord(event.message.usage)) usage = { ...usage, ...event.message.usage };
-    }
-    if (isRecord(event.usage)) usage = { ...usage, ...event.usage };
-    const deltaRecord = isRecord(event.delta) ? event.delta : null;
-    const delta = deltaRecord?.type === "text_delta"
-      ? stringField(deltaRecord, "text")
-      : null;
-    if (delta) {
-      content += delta;
-      onTextDelta(delta);
-    }
-    const stopReason = deltaRecord ? stringField(deltaRecord, "stop_reason") : null;
-    if (stopReason) finishReason = stopReason;
-  }
-  if (!terminated) throw interruptedProviderStreamError();
-  return {
-    content,
-    provider: "anthropic",
-    model,
-    usage,
-    structured_output: null,
-    finish_reason: finishReason,
-  };
-}
-
-function isStructuredObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-async function completeOllama(
-  provider: ProviderInfo,
-  networkProfile: ResolvedNetworkProfile | null,
-  body: ProviderChatRequestBody,
-): Promise<ProviderChatResponseBody> {
-  const base = provider.base_url?.replace(/\/+$/, "");
-  if (!base) {
-    throw new ProviderInvocationError(400, "base_url is required for provider_type 'ollama'");
-  }
-  const model = bareModelName("ollama", resolveModel(provider, body.model));
-  const streaming = Boolean(body.on_text_delta) && !body.output_format && !body.tools?.length;
-  const response = await fetchProviderResponse(networkProfile, `${base}/api/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model,
-      stream: streaming,
-      messages: body.system
-        ? [{ role: "system", content: body.system }, ...body.messages.map((m) => ({ role: m.role, content: m.content ?? "" }))]
-        : body.messages.map((m) => ({ role: m.role, content: m.content ?? "" })),
-      options: {
-        temperature: body.temperature,
-        num_predict: effectiveMaxOutputTokens(model, body.max_tokens) ?? undefined,
-      },
-      ...(body.output_format ? { format: body.output_format.schema } : {}),
-    }),
-    signal: body.abort_signal,
-  });
-  if (streaming) {
-    return completeOllamaStream(response, model, body.on_text_delta!);
-  }
-  const data = (await parseJsonResponse(response)) as {
-    message?: { content?: string };
-    model?: string;
-  };
-  const content = data.message?.content ?? "";
-  return {
-    content,
-    provider: "ollama",
-    model: data.model ?? model,
-    usage: {},
-    structured_output: body.output_format
-      ? structuredOutputFromText(content, body.output_format, {
-          transport: "ollama",
-          response_kind: "message_content",
-          response_model: data.model ?? model,
-        })
-      : null,
-  };
-}
-
-async function completeOllamaStream(
-  response: Response,
-  requestedModel: string,
-  onTextDelta: (delta: string) => void,
-): Promise<ProviderChatResponseBody> {
-  await assertStreamingResponseOk(response);
-  let content = "";
-  let model = requestedModel;
-  let finishReason: string | null = null;
-  let usage: Record<string, unknown> = {};
-  let terminated = false;
-  for await (const line of responseLines(response)) {
-    const event = jsonRecord(line.trim());
-    if (!event) continue;
-    model = stringField(event, "model") ?? model;
-    const message = isRecord(event.message) ? event.message : null;
-    const delta = message ? stringField(message, "content") : null;
-    if (delta) {
-      content += delta;
-      onTextDelta(delta);
-    }
-    if (event.done === true) {
-      terminated = true;
-      finishReason = stringField(event, "done_reason") ?? "stop";
-      usage = {
-        prompt_tokens: event.prompt_eval_count,
-        completion_tokens: event.eval_count,
-      };
-    }
-  }
-  if (!terminated) throw interruptedProviderStreamError();
-  return {
-    content,
-    provider: "ollama",
-    model,
-    usage,
-    structured_output: null,
-    finish_reason: finishReason,
-  };
-}
-
-function interruptedProviderStreamError(): ProviderInvocationError {
-  return new ProviderInvocationError(
-    502,
-    "Provider stream ended before its terminal marker",
-    { failure_class: "transient", actions: ["fallback_provider", "fail"] },
-    "provider_stream_interrupted",
-  );
-}
 
 function attemptOnce(
   target: InvocationTarget,
@@ -1193,19 +614,12 @@ function attemptOnce(
       "runtime_tool_provider_unsupported",
     );
   }
-  // A provider may be catalogued by vendor as Anthropic while exposing an
-  // OpenAI-compatible endpoint (for example, a gateway or a multi-protocol
-  // vendor). Managed API calls prefer that explicit OpenAI endpoint so JSON
-  // Schema output uses one consistent transport. Native Anthropic is used
-  // only when no OpenAI-compatible endpoint is configured.
-  if (provider.provider_type === "anthropic" && provider.openai_compatible_base_url) {
-    return completeOpenAiCompatible(provider, target.network_profile, apiKey, body);
-  }
-  if (provider.provider_type === "anthropic") {
-    return completeAnthropic(provider, target.network_profile, apiKey, body);
-  }
-  if (provider.provider_type === "ollama") return completeOllama(provider, target.network_profile, body);
-  return completeOpenAiCompatible(provider, target.network_profile, apiKey, body);
+  return completePiAiChat(
+    provider,
+    httpClient(target.network_profile).fetch as typeof globalThis.fetch,
+    apiKey,
+    body,
+  );
 }
 
 function structuredOutputUnsupportedError(providerType: string): ProviderInvocationError {
@@ -1252,6 +666,7 @@ async function recordProviderUsage(
     eventType: UsageObservation["event_type"];
     model: string | null | undefined;
     usage: Record<string, unknown>;
+    cost?: ProviderUsageCost;
     metering?: ProviderMeteringContext | null;
     attribution: UsageAttribution;
   },
@@ -1270,6 +685,18 @@ async function recordProviderUsage(
     vendor: context.vendor ?? provider.provider_type,
     model: input.model ?? context.model ?? provider.default_model,
     provider_usage: input.usage,
+    estimated_cost_usd: positiveFiniteNumber(input.cost?.total) ?? context.estimated_cost_usd ?? null,
+    cost_details: input.cost && positiveFiniteNumber(input.cost.total) !== null
+      ? {
+          source: "pi_ai_catalog",
+          accuracy: "catalog_estimated",
+          input: input.cost.input,
+          output: input.cost.output,
+          cacheRead: input.cost.cacheRead,
+          cacheWrite: input.cost.cacheWrite,
+          total: input.cost.total,
+        }
+      : context.cost_details ?? null,
     usage_accuracy: context.usage_accuracy ?? (hasUsage(input.usage) ? "provider_reported" : "unknown"),
   };
   try {
@@ -1282,6 +709,10 @@ async function recordProviderUsage(
       "usage_metering_failed",
     );
   }
+}
+
+function positiveFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function isUsageMeteringFailure(error: unknown): boolean {
@@ -1605,6 +1036,18 @@ async function invokeProviderWithPool(
   let lastError: unknown = null;
   let attempts = 0;
   for (const candidate of target.candidates) {
+    if (
+      candidate.credential_kind === "subscription_oauth"
+      && (!body.metering.subject_user_id
+        || body.metering.subject_user_id !== target.provider.owner_user_id)
+    ) {
+      throw new ProviderInvocationError(
+        403,
+        "Managed subscription capacity is restricted to its instance-admin owner",
+        { failure_class: "permanent", actions: ["fail"] },
+        "subscription_owner_required",
+      );
+    }
     let sameKeyRetries = 0;
     for (;;) {
       attempts += 1;
@@ -1639,6 +1082,7 @@ async function invokeProviderWithPool(
           eventType: "llm.generation",
           model: result.model,
           usage: result.usage,
+          cost: result.cost,
           metering: meteringWithProviderTaskRefs(body.metering, providerTask),
           attribution,
         });
@@ -1716,14 +1160,22 @@ export async function completeProviderChat(
     "llm.generation",
     body.metering,
   );
-  const primary = await store.getInvocationTarget(spaceId, body.provider_id);
+  const primary = await store.getInvocationTarget(
+    spaceId,
+    body.provider_id,
+    body.metering.subject_user_id,
+  );
   if (body.output_format && !providerSupportsStructuredOutput(primary.provider.provider_type)) {
     throw structuredOutputUnsupportedError(primary.provider.provider_type);
   }
   const chain: InvocationTarget[] = [primary];
   for (const fallbackId of body.allow_provider_fallback === false ? [] : primary.fallback_provider_ids) {
     try {
-      chain.push(await store.getInvocationTarget(spaceId, fallbackId));
+      chain.push(await store.getInvocationTarget(
+        spaceId,
+        fallbackId,
+        body.metering.subject_user_id,
+      ));
     } catch {
       // A missing/disabled fallback provider is skipped, not fatal.
     }
@@ -2055,11 +1507,11 @@ async function completeProviderEmbeddingWithFallback(
   metering?: ProviderMeteringContext | null,
   attribution?: UsageAttribution,
 ): Promise<ProviderEmbeddingResult> {
-  const target = await store.getInvocationTarget(spaceId, providerId);
+  const target = await store.getInvocationTarget(spaceId, providerId, metering?.subject_user_id);
   const chain: InvocationTarget[] = [target];
   for (const fallbackId of target.fallback_provider_ids) {
     try {
-      chain.push(await store.getInvocationTarget(spaceId, fallbackId));
+      chain.push(await store.getInvocationTarget(spaceId, fallbackId, metering?.subject_user_id));
     } catch {
       // A missing/disabled fallback provider is skipped, matching chat behavior.
     }
@@ -2281,7 +1733,7 @@ async function embedOnce(
     return { vectors, model: resolvedModel, usage };
   }
 
-  if (["openai", "openrouter", "other"].includes(provider.provider_type)) {
+  if (["openai", "openrouter", "openai_compatible"].includes(provider.provider_type)) {
     if (!apiKey) {
       throw new ProviderInvocationError(400, `ModelProvider '${provider.id}' has no API key credential`);
     }
@@ -2392,11 +1844,11 @@ async function completeProviderRerankWithFallback(
   metering?: ProviderMeteringContext | null,
   attribution?: UsageAttribution,
 ): Promise<ProviderRerankResult> {
-  const target = await store.getInvocationTarget(spaceId, providerId);
+  const target = await store.getInvocationTarget(spaceId, providerId, metering?.subject_user_id);
   const chain: InvocationTarget[] = [target];
   for (const fallbackId of target.fallback_provider_ids) {
     try {
-      chain.push(await store.getInvocationTarget(spaceId, fallbackId));
+      chain.push(await store.getInvocationTarget(spaceId, fallbackId, metering?.subject_user_id));
     } catch {
       // A missing/disabled fallback provider is skipped, matching chat behavior.
     }
@@ -2624,10 +2076,11 @@ export async function listProviderModels(
   store: ProviderCommandStore,
   spaceId: string,
   providerId: string,
+  subjectUserId?: string | null,
 ): Promise<{ models: string[]; source: "configured" | "live" }> {
   const configured = await store.listConfiguredModels(spaceId, providerId);
   if (configured.length > 0) return { models: configured, source: "configured" };
-  const target = await store.getInvocationTarget(spaceId, providerId);
+  const target = await store.getInvocationTarget(spaceId, providerId, subjectUserId);
   const provider = target.provider;
   const apiKey = target.candidates.find((c) => c.api_key)?.api_key ?? null;
   if (provider.provider_type === "ollama" && provider.base_url) {
@@ -2639,7 +2092,7 @@ export async function listProviderModels(
       source: "live",
     };
   }
-  if (["openai", "openrouter", "other"].includes(provider.provider_type)) {
+  if (["openai", "openrouter", "openai_compatible"].includes(provider.provider_type)) {
     const headers: Record<string, string> = {};
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     const data = (await parseJsonResponse(

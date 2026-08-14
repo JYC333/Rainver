@@ -1,4 +1,5 @@
 import type { mapProviderRowToDto } from "../dbReader";
+import { canonicalProviderVendorId } from "../vendors";
 import {
   ProviderCommandValidationError,
   type ModelProviderCreateInput,
@@ -8,14 +9,17 @@ import {
 
 export const PROVIDER_TYPES = new Set([
   "openai",
+  "openai_codex",
   "anthropic",
+  "minimax",
   "openrouter",
+  "deepseek",
   "ollama",
   "zeroentropy",
   "cohere",
-  "other",
+  "openai_compatible",
 ]);
-export const CLOUD_PROVIDER_TYPES = new Set(["openai", "anthropic", "openrouter", "zeroentropy", "cohere"]);
+export const CLOUD_PROVIDER_TYPES = new Set(["openai", "anthropic", "minimax", "openrouter", "deepseek", "zeroentropy", "cohere"]);
 export const ROTATION_STRATEGIES = new Set(["fill_first", "round_robin", "least_used", "random"]);
 
 export type ProviderRow = Parameters<typeof mapProviderRowToDto>[0];
@@ -49,6 +53,11 @@ export function validateProviderType(providerType: string): void {
 
 export function validateCreateFields(input: ModelProviderCreateInput): void {
   validateProviderType(input.provider_type);
+  if (input.provider_type === "openai_codex") {
+    throw new ProviderCommandValidationError(
+      "OpenAI Codex providers must be connected through managed subscription OAuth",
+    );
+  }
   normalizeBaseUrl(input.provider_type, input.base_url);
   if (
     CLOUD_PROVIDER_TYPES.has(input.provider_type) &&
@@ -112,8 +121,11 @@ export function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null 
 
 export function defaultBaseUrlFor(providerType: string): string | null {
   if (providerType === "openai") return "https://api.openai.com/v1";
+  if (providerType === "openai_codex") return "https://chatgpt.com/backend-api";
   if (providerType === "anthropic") return "https://api.anthropic.com";
+  if (providerType === "minimax") return "https://api.minimaxi.com/anthropic";
   if (providerType === "openrouter") return "https://openrouter.ai/api/v1";
+  if (providerType === "deepseek") return "https://api.deepseek.com";
   if (providerType === "zeroentropy") return "https://api.zeroentropy.dev/v1";
   if (providerType === "cohere") return "https://api.cohere.com";
   return null;
@@ -130,12 +142,14 @@ export function normalizeBaseUrl(providerType: string, baseUrl: string | null | 
 }
 
 export function providerInfoFromRow(row: ProviderRow): ProviderInfo {
+  const providerType = canonicalProviderVendorId(row.provider_type);
   return {
     id: row.id,
     space_id: row.space_id,
+    owner_user_id: row.owner_user_id ?? null,
     name: row.name,
-    provider_type: row.provider_type,
-    base_url: normalizeBaseUrl(row.provider_type, row.base_url),
+    provider_type: providerType,
+    base_url: normalizeBaseUrl(providerType, row.base_url),
     network_profile_id: row.network_profile_id ?? null,
     claude_compatible_base_url: claudeCompatibleBaseUrlFromRow(row),
     openai_compatible_base_url: openAiCompatibleBaseUrlFromRow(row),

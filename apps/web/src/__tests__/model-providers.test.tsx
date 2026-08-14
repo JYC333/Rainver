@@ -17,6 +17,10 @@ vi.mock('../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'personal-1', activeSpaceName: 'My Personal' }),
 }))
 
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({ currentUser: { id: 'user-1', is_instance_admin: true } }),
+}))
+
 import ModelProvidersPage from '../modules/providers/ModelProvidersPage'
 
 const EMPTY = /no model providers configured/i
@@ -61,7 +65,7 @@ const providerPresets = [
     mode: 'chat',
     label: 'MiniMax',
     name: 'MiniMax',
-    provider_type: 'anthropic',
+    provider_type: 'minimax',
     base_url: 'https://api.minimaxi.com/anthropic',
     claude_compatible_base_url: 'https://api.minimaxi.com/anthropic',
     openai_compatible_base_url: 'https://api.minimaxi.com/v1',

@@ -11,12 +11,15 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 export const PROVIDER_TYPE_VALUES = [
   "openai",
+  "openai_codex",
   "anthropic",
+  "minimax",
   "openrouter",
+  "deepseek",
   "ollama",
   "zeroentropy",
   "cohere",
-  "other",
+  "openai_compatible",
 ] as const;
 export type ProviderTypeValue = (typeof PROVIDER_TYPE_VALUES)[number];
 export function isProviderType(value: string): value is ProviderTypeValue {
@@ -25,6 +28,7 @@ export function isProviderType(value: string): value is ProviderTypeValue {
 
 export const CREDENTIAL_CHANNEL_VALUES = [
   "model_provider_api_key",
+  "managed_subscription_oauth",
   "cli_login_state",
 ] as const;
 export type CredentialChannelValue = (typeof CREDENTIAL_CHANNEL_VALUES)[number];
@@ -53,6 +57,17 @@ export const ModelProviderDTOSchema = z
     enabled: z.boolean(),
     is_default: z.boolean(),
     has_api_key: z.boolean(),
+    has_subscription: z.boolean().optional(),
+    subscription_type: z.enum(["anthropic", "openai_codex"]).nullish(),
+    subscription_quota: z.object({
+      available: z.boolean(),
+      session_pct: z.number().nullish(),
+      session_resets: z.string().nullish(),
+      week_pct: z.number().nullish(),
+      week_resets: z.string().nullish(),
+      checked_at: z.string().nullish(),
+      error: z.string().nullish(),
+    }).nullish().optional(),
     manageable: z.boolean().optional(),
     grant_enabled: z.boolean().optional(),
     created_at: ISODateTimeSchema,
@@ -207,6 +222,23 @@ export const ProviderConnectionTestResultSchema = z.object({
   model: z.string().nullish(),
 });
 
+export const ManagedSubscriptionTypeSchema = z.enum(["anthropic", "openai_codex"]);
+export type ManagedSubscriptionType = z.infer<typeof ManagedSubscriptionTypeSchema>;
+
+export const ManagedSubscriptionLoginInputSchema = z.object({
+  input: z.string().min(1),
+});
+
+export const ManagedSubscriptionQuotaSchema = z.object({
+  available: z.boolean(),
+  session_pct: z.number().nullish(),
+  session_resets: z.string().nullish(),
+  week_pct: z.number().nullish(),
+  week_resets: z.string().nullish(),
+  checked_at: z.string().nullish(),
+  error: z.string().nullish(),
+});
+
 export const ProviderChatMessageSchema = z.object({
   role: z.string().min(1),
   content: z.string(),
@@ -221,6 +253,12 @@ export const CredentialChannelMetadataSchema = z.discriminatedUnion("channel", [
     channel: z.literal("model_provider_api_key"),
     pooled: z.boolean(),
     rotated: z.boolean(),
+  }),
+  z.object({
+    channel: z.literal("managed_subscription_oauth"),
+    pooled: z.literal(false),
+    rotated: z.literal(false),
+    owner_bound: z.literal(true),
   }),
   z.object({
     channel: z.literal("cli_login_state"),

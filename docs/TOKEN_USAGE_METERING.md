@@ -65,11 +65,18 @@ returns only de-identified totals across the requested time range.
 
 ## Pricing, Imports, And Budgets
 
-`model_pricing_rules` provides auditable, bucket-level cost estimation with
-effective windows, priorities, optional tiers, and the applied rule id stored
-on the event. Token counts remain immutable accounting facts. The dashboard's
-budget preview is read-only projection; alerts and enforcement are not
-implemented and usage recording remains best-effort.
+Managed chat calls copy pi-ai's catalog-derived USD total into
+`estimated_cost_usd`. `cost_details_json` retains the rounded input, output,
+cache-read, cache-write, and total amounts with `pi_ai_catalog` /
+`catalog_estimated` provenance; `usage_accuracy` continues to describe the
+provider token evidence, not the locally calculated cost. Catalog-less custom
+models, CLI usage, embeddings, and reranking intentionally remain uncosted.
+There is no local pricing-rule table or second calculation path. Token counts
+remain immutable accounting facts. Anthropic's
+`cache_creation_1h_input_tokens` is persisted as a priced subset of
+`cache_creation_input_tokens`; it is exposed in event and aggregate DTOs but is
+not added again when deriving total tokens. The dashboard's budget preview is read-only
+projection; usage recording remains fail-closed for managed provider calls.
 
 The current CLI history preview/commit flow supports managed Claude Code and
 Codex CLI credential profiles. Uploaded archives, server-path imports, scanner

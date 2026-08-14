@@ -167,7 +167,7 @@ function assertStoredRequestBinding(raw: unknown, input: RuntimeHostExecuteReque
   }
 }
 
-function validToolLoopSuffix(messages: RuntimeHostExecuteRequest["messages"] extends Array<infer T> | undefined ? T[] : never): boolean {
+export function validToolLoopSuffix(messages: RuntimeHostExecuteRequest["messages"] extends Array<infer T> | undefined ? T[] : never): boolean {
   if (messages.length === 0) return true;
   let index = 0;
   while (index < messages.length) {

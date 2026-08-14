@@ -61,6 +61,7 @@ export interface ModelProviderUpdateInput {
 export interface ProviderInfo {
   id: string;
   space_id: string;
+  owner_user_id?: string | null;
   name: string;
   provider_type: string;
   base_url: string | null;
@@ -77,6 +78,7 @@ export interface PoolKeyCandidate {
   member_id: string | null;
   credential_id: string | null;
   api_key: string | null;
+  credential_kind?: "api_key" | "subscription_oauth" | "none";
 }
 
 export interface InvocationTarget {
@@ -167,7 +169,11 @@ export interface ProviderCommandStore {
     providerId: string,
     grantSpaceId: string,
   ): Promise<void>;
-  getInvocationTarget(spaceId: string, providerId?: string | null): Promise<InvocationTarget>;
+  getInvocationTarget(
+    spaceId: string,
+    providerId?: string | null,
+    subjectUserId?: string | null,
+  ): Promise<InvocationTarget>;
   recordPoolOutcome(memberId: string, outcome: PoolOutcome): Promise<void>;
   resolveUsageAttribution(input: UsageObservation): Promise<UsageAttribution>;
   recordUsageObservation(input: UsageObservation, attribution: UsageAttribution): Promise<void>;

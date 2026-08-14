@@ -73,6 +73,7 @@ export const credentials = pgTable("credentials", {
 	credentialType: varchar("credential_type", { length: 64 }).notNull(),
 	secretRef: text("secret_ref").notNull(),
 	scopesJson: jsonb("scopes_json").notNull(),
+	metadataJson: jsonb("metadata_json").default({}).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

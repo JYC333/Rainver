@@ -31,11 +31,12 @@ import {
   type RetrievalToolPolicyAction,
 } from "../retrieval/tool/policy";
 import type { RunRecord } from "./repository";
+import {
+  runManagedAgentLoop,
+  type ManagedModelRequest,
+} from "./managedAgentLoop";
 
-export type RuntimeHostExecutor = (
-  config: ServerConfig,
-  request: RuntimeHostExecuteRequest,
-) => Promise<RuntimeHostExecuteResponse>;
+export type RuntimeHostExecutor = ManagedModelRequest;
 
 export interface ManagedApiRetrievalToolDeps {
   retrievalToolService?: RetrievalToolService | null;
@@ -62,8 +63,6 @@ const RETRIEVAL_TOOL_MODES = ["exact", "lexical", "hybrid", "hybrid_rerank"] as 
 const MAX_TOOL_TURNS = 4;
 const MAX_MODEL_RESULT_ITEMS = 8;
 const MAX_MODEL_SNIPPET_CHARS = 500;
-// Mirrors the runtime-host error code for a provider that cannot do tool calls.
-const RUNTIME_TOOL_PROVIDER_UNSUPPORTED = "runtime_tool_provider_unsupported";
 
 type RetrievalToolDomain = "knowledge" | "memory" | "project_public_summary" | "source";
 
@@ -251,7 +250,7 @@ export async function executeWithRetrievalTools(
     toolDefinitions?: CanonicalToolDefinition[];
     toolBindings?: RuntimeHostExecuteRequest["tool_bindings"];
     dispatch?: (call: CanonicalToolCall) => Promise<{ modelResult: unknown; summary: Record<string, unknown>; artifact?: unknown; suspend?: RuntimeHostExecuteResponse }>;
-    onActionEvent?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<RuntimeHostExecuteResponse> {
   const actor = {
@@ -263,7 +262,6 @@ export async function executeWithRetrievalTools(
   const messages = initialMessagesForToolLoop(request);
   const artifacts: unknown[] = [];
   const toolSummaries: Array<Record<string, unknown>> = [];
-  let lastResponse: RuntimeHostExecuteResponse | null = null;
 
   await applyRetrievalPreflight(binding, actor, run, request, messages, toolSummaries, artifacts, extensions.dispatch);
 
@@ -277,72 +275,27 @@ export async function executeWithRetrievalTools(
     return responseWithRetrievalToolMetadata(response, toolSummaries, artifacts);
   }
 
-  for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
-    const response = await execute(config, {
-      ...request,
-      messages: cloneMessages(messages),
-      tool_mode: "authorized_bindings",
-      tool_bindings: [...binding.toolBindings, ...(extensions.toolBindings ?? [])],
-      tools: [...binding.toolDefinitions, ...(extensions.toolDefinitions ?? [])],
-    });
-    lastResponse = response;
-    // The run's provider cannot perform tool calls (e.g. ollama). Rather than
-    // failing the whole run, degrade to a single plain no-tool turn and record
-    // why, so the run still produces output. Only on the first turn — once a
-    // tool call has succeeded the model is provably tool-capable.
-    if (
-      turn === 0 &&
-      !response.success &&
-      response.error_code === RUNTIME_TOOL_PROVIDER_UNSUPPORTED
-    ) {
-      const plain = await execute(config, {
-        ...request,
-        messages: cloneMessages(messages),
-        tool_mode: "disabled",
-      });
-      return responseWithRetrievalToolMetadata(
-        plain,
-        [{ tool_name: "retrieval", ok: false, error_code: "retrieval_tool_provider_unsupported" }],
-        [],
-      );
-    }
-    const toolCalls = toolCallsFromResponse(response);
-    if (!response.success || toolCalls.length === 0) {
-      return responseWithRetrievalToolMetadata(response, toolSummaries, artifacts);
-    }
-
-    messages.push({
-      role: "assistant",
-      content: response.output_text || null,
-      tool_calls: toolCalls,
-    });
-    for (const call of toolCalls) {
-      const result = extensions.dispatch
-        ? await extensions.dispatch(call)
-        : await runRetrievalToolCall(call, binding, actor, run);
-      toolSummaries.push(result.summary);
-      if ("artifact" in result && result.artifact) artifacts.push(result.artifact);
-      if ("suspend" in result && result.suspend) {
-        return responseWithRetrievalToolMetadata(result.suspend, toolSummaries, artifacts);
-      }
-      messages.push({
-        role: "tool",
-        content: JSON.stringify(result.modelResult),
-        tool_call_id: call.id,
-        name: call.name,
-      });
-    }
-  }
-
+  const loop = await runManagedAgentLoop({
+    config,
+    request: { ...request, messages: cloneMessages(messages) },
+    executeModel: execute,
+    tools: [...binding.toolDefinitions, ...(extensions.toolDefinitions ?? [])],
+    toolBindings: [...binding.toolBindings, ...(extensions.toolBindings ?? [])],
+    dispatch: extensions.dispatch
+      ? extensions.dispatch
+      : (call) => runRetrievalToolCall(call, binding, actor, run),
+    maxTurns: MAX_TOOL_TURNS,
+    signal: extensions.signal,
+  });
   return responseWithRetrievalToolMetadata(
-    withoutPendingToolCalls(
-      lastResponse ?? toolLoopFailure(request, "retrieval_tool_loop_empty", "No model response was produced."),
-    ),
-    [
-      ...toolSummaries,
-      { tool_name: "retrieval", ok: false, error_code: "retrieval_tool_turn_limit" },
-    ],
-    artifacts,
+    loop.turnLimitReached ? withoutPendingToolCalls(loop.response) : loop.response,
+    loop.turnLimitReached
+      ? [
+          ...loop.toolSummaries,
+          { tool_name: "retrieval", ok: false, error_code: "retrieval_tool_turn_limit" },
+        ]
+      : loop.toolSummaries,
+    loop.artifacts,
   );
 }
 
@@ -671,19 +624,6 @@ function parseRetrievalToolArguments(
   return params;
 }
 
-function toolCallsFromResponse(response: RuntimeHostExecuteResponse): CanonicalToolCall[] {
-  const output = recordOrEmpty(response.output_json);
-  const calls = Array.isArray(output.tool_calls) ? output.tool_calls : [];
-  return calls.filter((call): call is CanonicalToolCall => {
-    const record = recordOrEmpty(call);
-    return (
-      typeof record.id === "string" &&
-      typeof record.name === "string" &&
-      typeof record.arguments_json === "string"
-    );
-  });
-}
-
 function responseWithRetrievalToolMetadata(
   response: RuntimeHostExecuteResponse,
   toolSummaries: Array<Record<string, unknown>>,
@@ -928,35 +868,6 @@ function compactRetrievalItems(items: RetrievalSearchResponse["items"]): Array<R
 function truncateModelText(value: string | null, maxChars: number): string | null {
   if (value === null) return null;
   return value.length > maxChars ? `${value.slice(0, maxChars - 3)}...` : value;
-}
-
-function toolLoopFailure(
-  request: RuntimeHostExecuteRequest,
-  errorCode: string,
-  errorText: string,
-): RuntimeHostExecuteResponse {
-  const now = new Date().toISOString();
-  return {
-    success: false,
-    stdout: "",
-    stderr: errorText,
-    output_text: "",
-    output_json: { adapter_type: "ts_agent_host", run_id: request.run_id },
-    exit_code: 1,
-    error_code: errorCode,
-    error_text: errorText,
-    started_at: now,
-    completed_at: now,
-    model: request.model ?? null,
-    usage: null,
-    events: [],
-    adapter_metadata: {
-      adapter_type: "ts_agent_host",
-      run_id: request.run_id,
-      tool_mode: "authorized_bindings",
-    },
-    adapter_log_json: null,
-  };
 }
 
 function recordOrEmpty(value: unknown): Record<string, unknown> {

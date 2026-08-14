@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
 import type { Pool } from "../src/db/pool";
 import {
-  executeWithAgentDelegationTools,
   resolveAgentDelegationToolBinding,
-  type RuntimeHostExecutor,
+  runAgentRoomToolCall,
+  type AgentDelegationToolBinding,
 } from "../src/modules/runs/managedAgentDelegationTools";
+import {
+  executeWithRetrievalTools,
+  type ResolvedRetrievalToolBinding,
+  type RuntimeHostExecutor,
+} from "../src/modules/runs/managedRetrievalTools";
+import { AgentToolGateway } from "../src/modules/systemActions/agentToolGateway";
 import type { RunRecord } from "../src/modules/runs/repository";
 import type {
   RuntimeHostExecuteRequest,
@@ -117,6 +123,34 @@ function request(): RuntimeHostExecuteRequest {
   };
 }
 
+/**
+ * The carrier binding a delegation-only run enters the loop through. The
+ * gateway builds its own; this one lets the tool-behaviour tests below drive
+ * the loop without standing up policy and its database.
+ *
+ * That the gateway really produces one for a delegation-only run is asserted
+ * separately, against `AgentToolGateway` itself.
+ */
+function carrierBinding(): ResolvedRetrievalToolBinding {
+  return {
+    service: {} as never,
+    services: {},
+    toolMode: "manual_tool_only",
+    toolDefinitions: [],
+    toolBindings: [],
+    policyDatabaseUrl: undefined,
+    egressPolicySnapshot: { external_egress_enabled: false },
+    settingsSnapshot: { source: "test" },
+  } as unknown as ResolvedRetrievalToolBinding;
+}
+
+function delegationExtensions(binding: AgentDelegationToolBinding) {
+  return {
+    toolDefinitions: binding.toolDefinitions,
+    toolBindings: binding.toolBindings,
+  };
+}
+
 describe("managed agent delegation tools", () => {
   it("turns model agent.delegate calls into auditable child-run requests", async () => {
     const spawnCalls: unknown[] = [];
@@ -213,12 +247,16 @@ describe("managed agent delegation tools", () => {
       });
     };
 
-    const result = await executeWithAgentDelegationTools(
+    const result = await executeWithRetrievalTools(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
       managerRun,
       request(),
       execute,
-      binding!,
+      carrierBinding(),
+      {
+        ...delegationExtensions(binding!),
+        dispatch: (call) => runAgentRoomToolCall(call, binding!, managerRun, request()),
+      },
     );
 
     expect(spawnCalls).toHaveLength(2);
@@ -235,12 +273,9 @@ describe("managed agent delegation tools", () => {
       tool_mode: "authorized_bindings",
       tools: expect.arrayContaining([expect.objectContaining({ name: "agent.delegate" })]),
     });
-    expect(hostRequests[0].system_prompt).toContain("available to every active room agent");
-    expect(hostRequests[0].system_prompt).toContain("capabilities: code_review");
-    expect(hostRequests[0].system_prompt).toContain("multiple agent.delegate calls in one turn");
     expect(hostRequests[1].messages?.filter((message) => message.role === "tool")).toHaveLength(2);
     expect(result.output_json).toMatchObject({
-      agent_room_tool_calls: [
+      retrieval_tool_calls: [
         expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a" }),
         expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-b", child_run_id: "run-child-b" }),
       ],
@@ -317,12 +352,16 @@ describe("managed agent delegation tools", () => {
       });
     };
 
-    const result = await executeWithAgentDelegationTools(
+    const result = await executeWithRetrievalTools(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
       managerRun,
       request(),
       execute,
-      binding!,
+      carrierBinding(),
+      {
+        ...delegationExtensions(binding!),
+        dispatch: (call) => runAgentRoomToolCall(call, binding!, managerRun, request()),
+      },
     );
 
     expect(hostRequests).toHaveLength(1);
@@ -333,7 +372,7 @@ describe("managed agent delegation tools", () => {
         depends_on_run_ids: ["run-reviewer"],
         pending_run_ids: ["run-reviewer"],
       },
-      agent_room_tool_calls: [
+      retrieval_tool_calls: [
         expect.objectContaining({
           tool_name: "agent.wait_for_results",
           ok: true,
@@ -342,5 +381,61 @@ describe("managed agent delegation tools", () => {
       ],
     });
     expect(result.output_text).toBe("");
+  });
+  it("routes a delegation-only run through the general tool loop and offers it the delegation tools", async () => {
+    // The phase's load-bearing change: a run with delegation and no
+    // retrieval-domain tool used to take a second, private loop. It now reaches
+    // the general one through a synthesised carrier binding. Driving
+    // `AgentToolGateway` rather than the loop is the point — reverting the
+    // widened condition must fail here.
+    const managerRun = run({
+      // The gateway offers only granted actions, so the grants are part of what
+      // makes this case reachable at all.
+      permission_snapshot_json: {
+        tool_grants: [
+          { action_id: "agent.delegate" },
+          { action_id: "agent.wait_for_results" },
+        ],
+      },
+    } as Partial<RunRecord>);
+    const offered: string[][] = [];
+    const gateway = new AgentToolGateway(
+      // No database URL: the synthetic carrier is built without reading space
+      // retrieval settings, and the model turn below produces no tool call, so
+      // policy and dispatch are never reached.
+      loadConfig({}),
+    );
+
+    const result = await gateway.execute(
+      managerRun,
+      request(),
+      async (_config, hostRequest) => {
+        offered.push((hostRequest.tools ?? []).map((tool) => tool.name));
+        return response({ output_text: "Nothing to delegate.", output_json: {} });
+      },
+      {
+        agentDelegationTools: {
+          targets: [
+            {
+              agent_id: "agent-reviewer-a",
+              name: "Reviewer A",
+              role: "worker",
+              capabilities_json: { capabilities: ["code_review"] },
+            },
+          ],
+          service: {
+            async spawnChildRun() {
+              throw new Error("no delegation call is expected in this test");
+            },
+          },
+        },
+      },
+    );
+
+    expect(offered).toHaveLength(1);
+    expect(offered[0]).toEqual(
+      expect.arrayContaining(["agent.delegate", "agent.wait_for_results"]),
+    );
+    expect(result.success).toBe(true);
   });
 });

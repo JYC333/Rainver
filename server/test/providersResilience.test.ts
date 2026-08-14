@@ -14,6 +14,7 @@ import {
   type ProviderTaskChainEntry,
 } from "../src/modules/providers";
 import type { UsageObservation } from "../src/modules/usage";
+import { anthropicChatResponse, openAiChatResponse } from "./support/piAiHttp";
 
 // Network-error retries add a real delay between attempts (see
 // NETWORK_ERROR_RETRY_DELAY_MS in invocation.ts) — skip it here so tests
@@ -133,11 +134,11 @@ function scriptedHttp(script: Array<{ status: number; body?: unknown }>): Attemp
   const attempts: Attempt[] = [];
   __setProviderHttpClientForTests({
     async fetch(url, init) {
-      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const headers = new Headers(init?.headers);
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       attempts.push({
         url,
-        key: headers.authorization?.replace("Bearer ", "") ?? headers["x-api-key"] ?? null,
+        key: headers.get("authorization")?.replace("Bearer ", "") ?? headers.get("x-api-key"),
         model: body.model ?? null,
         body,
       });
@@ -157,10 +158,12 @@ function scriptedHttp(script: Array<{ status: number; body?: unknown }>): Attemp
               model: body.model,
               usage: {},
             });
-      return new Response(JSON.stringify(payload), {
-        status: step.status,
-        headers: { "content-type": "application/json" },
-      });
+      return String(url).endsWith("/embeddings") || String(url).includes("/models/") || String(url).includes("/v2/")
+        ? new Response(JSON.stringify(payload), {
+            status: step.status,
+            headers: { "content-type": "application/json" },
+          })
+        : openAiChatResponse(payload, step.status);
     },
   });
   return attempts;
@@ -315,11 +318,11 @@ describe("provider invocation resilience", () => {
     const attempts: Attempt[] = [];
     __setProviderHttpClientForTests({
       async fetch(url, init) {
-        const headers = (init?.headers ?? {}) as Record<string, string>;
+        const headers = new Headers(init?.headers);
         const body = init?.body ? JSON.parse(String(init.body)) : {};
         attempts.push({
           url: String(url),
-          key: headers.authorization?.replace("Bearer ", "") ?? null,
+          key: headers.get("authorization")?.replace("Bearer ", "") ?? null,
           model: body.model ?? null,
           body,
         });
@@ -331,14 +334,11 @@ describe("provider invocation resilience", () => {
           error.cause = new Error("getaddrinfo ENOTFOUND api.p1.test");
           throw error;
         }
-        return new Response(
-          JSON.stringify({
-            choices: [{ message: { content: "fallback ok" } }],
-            model: body.model,
-            usage: {},
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return openAiChatResponse({
+          choices: [{ message: { content: "fallback ok" } }],
+          model: body.model,
+          usage: {},
+        });
       },
     });
 
@@ -388,10 +388,7 @@ describe("provider invocation resilience", () => {
           error.cause = new Error("read ECONNRESET");
           throw error;
         }
-        return new Response(
-          JSON.stringify({ choices: [{ message: { content: "ok" } }], model: "m", usage: {} }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return openAiChatResponse({ choices: [{ message: { content: "ok" } }], model: "m", usage: {} });
       },
     });
 
@@ -401,12 +398,12 @@ describe("provider invocation resilience", () => {
     expect(delays).toEqual([500, 1000, 1500]);
   });
 
-  it("uses an anthropic provider's OpenAI-compatible URL and retries a transient network reset", async () => {
+  it("uses MiniMax's Anthropic-compatible endpoint and retries a transient network reset", async () => {
     const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
     const store = makeStore(
       {
         minimax: target("minimax", [{ member: "m1", key: "k1" }], {
-          provider_type: "anthropic",
+          provider_type: "minimax",
           base_url: "https://api.minimaxi.com/anthropic",
           openai_compatible_base_url: "https://api.minimaxi.com/v1",
           default_model: "MiniMax-M3",
@@ -417,11 +414,11 @@ describe("provider invocation resilience", () => {
     const attempts: Attempt[] = [];
     __setProviderHttpClientForTests({
       async fetch(url, init) {
-        const headers = (init?.headers ?? {}) as Record<string, string>;
+        const headers = new Headers(init?.headers);
         const body = init?.body ? JSON.parse(String(init.body)) : {};
         attempts.push({
           url: String(url),
-          key: headers.authorization?.replace("Bearer ", "") ?? headers["x-api-key"] ?? null,
+          key: headers.get("authorization")?.replace("Bearer ", "") ?? headers.get("x-api-key"),
           model: body.model ?? null,
           body,
         });
@@ -430,14 +427,12 @@ describe("provider invocation resilience", () => {
           error.cause = new Error("read ECONNRESET");
           throw error;
         }
-        return new Response(
-          JSON.stringify({
-            choices: [{ message: { content: "openai compatible ok" } }],
-            model: body.model,
-            usage: {},
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return anthropicChatResponse({
+          content: [{ type: "text", text: "anthropic compatible ok" }],
+          model: body.model,
+          usage: {},
+          stop_reason: "end_turn",
+        });
       },
     });
 
@@ -448,21 +443,21 @@ describe("provider invocation resilience", () => {
       model: "MiniMax-M3",
     });
 
-    expect(result.content).toBe("openai compatible ok");
+    expect(result.content).toBe("anthropic compatible ok");
     expect(attempts.map((a) => a.url)).toEqual([
-      "https://api.minimaxi.com/v1/chat/completions",
-      "https://api.minimaxi.com/v1/chat/completions",
+      "https://api.minimaxi.com/anthropic/v1/messages",
+      "https://api.minimaxi.com/anthropic/v1/messages",
     ]);
     expect(attempts.map((a) => a.key)).toEqual(["k1", "k1"]);
     expect(attempts[0].body).toMatchObject({
+      system: [{ type: "text", text: "Return JSON only." }],
       messages: [
-        { role: "system", content: "Return JSON only." },
         { role: "user", content: "hi" },
       ],
     });
     expect(attempts[1].body).toMatchObject({
+      system: [{ type: "text", text: "Return JSON only." }],
       messages: [
-        { role: "system", content: "Return JSON only." },
         { role: "user", content: "hi" },
       ],
     });
@@ -532,7 +527,7 @@ describe("provider invocation resilience", () => {
     const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
     const usageObservations: UsageObservation[] = [];
     const store = makeStore(
-      { p1: target("p1", [{ member: "m1", key: "k1" }]) },
+      { p1: target("p1", [{ member: "m1", key: "k1" }], { default_model: "gpt-4o" }) },
       outcomes,
       {},
       usageObservations,
@@ -542,7 +537,7 @@ describe("provider invocation resilience", () => {
         status: 200,
         body: {
           choices: [{ message: { content: "metered" } }],
-          model: "gpt-metered",
+          model: "gpt-4o",
           usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
         },
       },
@@ -590,11 +585,66 @@ describe("provider invocation resilience", () => {
         provider_type: "openai",
         provider_name_snapshot: "p1",
         vendor: "openai",
-        model: "gpt-metered",
+        model: "gpt-4o",
         task: "reflector",
-        provider_usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+        provider_usage: {
+          input_tokens: 11,
+          output_tokens: 7,
+          total_tokens: 18,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_tokens: 0,
+        },
+        estimated_cost_usd: 0.0000975,
+        cost_details: {
+          source: "pi_ai_catalog",
+          accuracy: "catalog_estimated",
+          input: 0.0000275,
+          output: 0.00007,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0.0000975,
+        },
         usage_accuracy: "provider_reported",
         dimensions: { mode: "live" },
+      }),
+    ]);
+  });
+
+  it("leaves catalog-less compatible chat usage uncosted", async () => {
+    const usageObservations: UsageObservation[] = [];
+    const store = makeStore(
+      {
+        p1: target("p1", [{ member: "m1", key: "k1" }], {
+          provider_type: "openai_compatible",
+          default_model: "custom-model",
+        }),
+      },
+      [],
+      {},
+      usageObservations,
+    );
+    scriptedHttp([{
+      status: 200,
+      body: {
+        choices: [{ message: { content: "ok" } }],
+        model: "custom-model",
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+      },
+    }]);
+
+    await completeProviderText(store, "space-1", {
+      provider_id: "p1",
+      system: "",
+      user: "hello",
+      metering: { subject_user_id: "user-1" },
+    });
+
+    expect(usageObservations).toEqual([
+      expect.objectContaining({
+        usage_accuracy: "provider_reported",
+        estimated_cost_usd: null,
+        cost_details: null,
       }),
     ]);
   });

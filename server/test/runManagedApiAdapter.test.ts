@@ -155,6 +155,7 @@ function invocationDelivery(id: string, prompt: string): InvocationDelivery {
 describe("executeManagedApiNoToolAdapter", () => {
   it("builds an explicit no-tool runtime-host request and maps success", async () => {
     const calls: Array<Parameters<RuntimeHostExecutor>[1]> = [];
+    mockRetrievalSettingsPool({ retrieval_tool_mode: "off" });
     const executor: RuntimeHostExecutor = async (_config, request) => {
       calls.push(request);
       return {
@@ -178,7 +179,11 @@ describe("executeManagedApiNoToolAdapter", () => {
 
     const result = await executeManagedApiNoToolAdapter(
       config(),
-      { run: run(), model: "gpt-4o-mini", max_tokens: 64 },
+      {
+        run: run({ instructed_by_user_id: "user-1", owner_user_id: "owner-1" }),
+        model: "gpt-4o-mini",
+        max_tokens: 64,
+      },
       { executeRuntimeHost: executor },
     );
 
@@ -186,6 +191,7 @@ describe("executeManagedApiNoToolAdapter", () => {
       {
         run_id: "run-1",
         space_id: "space-1",
+        subject_user_id: "user-1",
         model_provider_id: "provider-1",
         model: "gpt-4o-mini",
         system_prompt: "Be concise.",

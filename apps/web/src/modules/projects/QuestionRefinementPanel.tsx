@@ -36,7 +36,7 @@ type ConversationMessage = {
 type ClarifyingAnswer = { selected: string[]; other: string }
 type ClarifyingQuestion = ProjectResearchQuestionRefinement['clarifying_questions'][number]
 
-const structuredOutputProviderTypes = new Set(['openai', 'openrouter', 'other', 'anthropic', 'ollama'])
+const structuredOutputProviderTypes = new Set(['openai', 'openai_codex', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'])
 
 /** Sessions saved before clarifying questions gained structured options may still contain strings. */
 function clarifyingQuestionItems(refinement: ProjectResearchQuestionRefinement): ClarifyingQuestion[] {

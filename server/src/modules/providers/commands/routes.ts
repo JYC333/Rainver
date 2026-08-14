@@ -15,6 +15,7 @@ import type {
   ProviderTaskChainEntry,
   RotationStrategy,
 } from "./store";
+import { ProviderCommandForbiddenError } from "./store";
 import {
   completeProviderChat,
   completeProviderEmbedding,
@@ -29,6 +30,15 @@ import {
 } from "../../retrieval/embedding/job";
 import { RETRIEVAL_EMBEDDING_TASK } from "../../retrieval/embedding/config";
 import { createProviderFromPreset } from "./fromPreset";
+import { getDbPool } from "../db";
+import {
+  createManagedSubscriptionLoginSession,
+  disconnectManagedSubscription,
+  loginManagedSubscription,
+  parseManagedSubscriptionType,
+  refreshManagedSubscriptionQuota,
+  type ManagedSubscriptionLoginSession,
+} from "../subscriptionOAuth";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -127,6 +137,22 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
   return reply.code(Number.isInteger(statusCode) ? statusCode : 400).send({ detail: message });
 }
 
+async function requireInstanceAdmin(config: ServerConfig, userId: string): Promise<void> {
+  if (!config.instanceAdminEmail || !config.databaseUrl) {
+    throw new ProviderCommandForbiddenError("INSTANCE_ADMIN_EMAIL is not configured");
+  }
+  const result = await getDbPool(config.databaseUrl).query<{ email: string | null }>(
+    `SELECT email FROM users WHERE id=$1 AND status='active' LIMIT 1`,
+    [userId],
+  );
+  const email = result.rows[0]?.email?.trim().toLowerCase() ?? null;
+  if (email !== config.instanceAdminEmail.trim().toLowerCase()) {
+    throw new ProviderCommandForbiddenError("Requires instance admin");
+  }
+}
+
+const subscriptionLoginSessions = new Map<string, ManagedSubscriptionLoginSession>();
+
 async function parseWith<T>(
   schemaName: string,
   value: unknown,
@@ -145,6 +171,99 @@ export function registerProviderCommandRoutes(
   // so that shutdown, failure alerting, and liveness cover it like every other
   // recurring job.
   const broker = new CliCredentialBroker(config, app.log);
+
+  app.get("/api/v1/providers/subscriptions/login/stream", async (request, reply) => {
+    const identity = await resolveIdentity(config, request, reply);
+    if (!identity) return reply;
+    try {
+      await requireInstanceAdmin(config, identity.userId);
+      const type = parseManagedSubscriptionType(query(request).type ?? "");
+      const sessionKey = `${identity.userId}:${type}`;
+      if (subscriptionLoginSessions.has(sessionKey)) {
+        return reply.code(409).send({ detail: `A ${type} subscription login is already active` });
+      }
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "x-accel-buffering": "no",
+      });
+      const emit = (event: unknown) => {
+        if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      };
+      const session = createManagedSubscriptionLoginSession(type, emit);
+      subscriptionLoginSessions.set(sessionKey, session);
+      const close = () => session.cancel();
+      reply.raw.once("close", close);
+      try {
+        const provider = await loginManagedSubscription(
+          config,
+          type,
+          identity.spaceId,
+          identity.userId,
+          session.interaction,
+        );
+        emit({ type: "connected", provider });
+      } catch (error) {
+        emit({ type: "error", message: error instanceof Error ? error.message : "Subscription login failed" });
+      } finally {
+        reply.raw.removeListener("close", close);
+        subscriptionLoginSessions.delete(sessionKey);
+        reply.raw.end();
+      }
+      return reply;
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/providers/subscriptions/login/input", async (request, reply) => {
+    const identity = await resolveIdentity(config, request, reply);
+    if (!identity) return reply;
+    try {
+      await requireInstanceAdmin(config, identity.userId);
+      const type = parseManagedSubscriptionType(query(request).type ?? "");
+      const body = await parseWith<{ input: string }>("ManagedSubscriptionLoginInputSchema", jsonBody(request));
+      const session = subscriptionLoginSessions.get(`${identity.userId}:${type}`);
+      if (!session?.submit(body.input)) {
+        return reply.code(404).send({ detail: `No ${type} subscription login is awaiting input` });
+      }
+      return reply.send({ status: "sent" });
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/providers/:configId/subscription/quota", async (request, reply) => {
+    const identity = await resolveIdentity(config, request, reply);
+    if (!identity) return reply;
+    try {
+      await requireInstanceAdmin(config, identity.userId);
+      return reply.send(await refreshManagedSubscriptionQuota(
+        config,
+        identity.spaceId,
+        identity.userId,
+        params(request).configId ?? "",
+      ));
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  app.delete("/api/v1/providers/:configId/subscription", async (request, reply) => {
+    const identity = await resolveIdentity(config, request, reply);
+    if (!identity) return reply;
+    try {
+      await requireInstanceAdmin(config, identity.userId);
+      return reply.send(await disconnectManagedSubscription(
+        config,
+        identity.spaceId,
+        identity.userId,
+        params(request).configId ?? "",
+      ));
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
 
   app.post("/api/v1/providers", async (request, reply) => {
     const identity = await resolveIdentity(config, request, reply);
@@ -267,6 +386,7 @@ export function registerProviderCommandRoutes(
         resolveProviderCommandStore(config),
         identity.spaceId,
         params(request).configId ?? "",
+        identity.userId,
       );
       return reply.send(value);
     } catch (error) {
@@ -282,6 +402,7 @@ export function registerProviderCommandRoutes(
       const target = await store.getInvocationTarget(
         identity.spaceId,
         params(request).configId ?? "",
+        identity.userId,
       );
       if (isRetrievalOnlyProvider(target.provider.provider_type)) {
         const scope = retrievalProviderTestScope(target.provider);

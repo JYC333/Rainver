@@ -74,6 +74,7 @@ const EMPTY_TOTALS: UsageTotals = {
   input_tokens: 0,
   output_tokens: 0,
   cache_creation_input_tokens: 0,
+  cache_creation_1h_input_tokens: 0,
   cache_read_input_tokens: 0,
   reasoning_tokens: 0,
   total_tokens: 0,
@@ -791,7 +792,7 @@ export default function UsagePage() {
             <KpiTile
               label="Reasoning"
               value={formatTokens(selectedTotals.reasoning_tokens)}
-              detail={`${formatTokens(selectedTotals.cache_creation_input_tokens)} cache create`}
+              detail={`${formatTokens(selectedTotals.cache_creation_input_tokens)} cache create · ${formatTokens(selectedTotals.cache_creation_1h_input_tokens)} at 1h`}
               icon={<Filter className="size-4" />}
             />
             <KpiTile

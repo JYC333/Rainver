@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mergeRewriteVariants, MAX_REWRITE_VARIANTS } from "../src/modules/retrieval/queryRewrite";
 import { parseQueryRewriteVariants } from "../src/modules/retrieval/queryRewriteProvider/prompt";
 import { ProviderQueryRewriter } from "../src/modules/retrieval/queryRewriteProvider/providerQueryRewriter";
-import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
+import { __setProviderHttpClientForTests as setRawProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
 import { resolveTestUsageAttribution } from "./support/usageAttribution";
+import { piAiHttpClient } from "./support/piAiHttp";
+
+function __setProviderHttpClientForTests(client: Parameters<typeof setRawProviderHttpClientForTests>[0]): void {
+  setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);
+}
 
 describe("mergeRewriteVariants", () => {
   it("always keeps the original query first", () => {
@@ -211,7 +216,7 @@ describe("ProviderQueryRewriter", () => {
     expect(await rewriter.rewrite("space-1", "viewer-1", "pg indexes")).toEqual([
       "postgres indexing strategies",
     ]);
-    expect(calls).toEqual(["http://localhost:11434/api/chat"]);
+    expect(calls).toEqual(["http://localhost:11434/v1/chat/completions"]);
   });
 
   it("degrades to null when the model returns no usable JSON", async () => {

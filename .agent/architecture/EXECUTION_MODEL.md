@@ -221,6 +221,16 @@ enforced against the sum of `token_usage_events.estimated_cost_usd` before a
 retry. The snapshot is exposed by the Run read model, while Task API mappings
 expose the source contract fields.
 
+Managed chat usage records cost at the same per-provider-call boundary as its
+provider-reported token counts. The amount is pi-ai's catalog-derived total,
+rounded to the ledger's eight-decimal USD precision; `cost_details_json` keeps
+the input/output/cache breakdown with `pi_ai_catalog` / `catalog_estimated`
+provenance. Anthropic's `cache_creation_1h_input_tokens` is retained as a
+priced subset of `cache_creation_input_tokens`; it is never added a second time
+when deriving total tokens. `usage_accuracy` describes token evidence only. Unknown custom
+models and CLI, embedding, or rerank paths remain uncosted rather than falling
+back to a second local pricing engine.
+
 After acquiring the execution lock and before resolving credentials, context,
 or a sandbox, dispatch revalidates the instructing user's active Space,
 Project, and Room membership. A bound Project Folder must also still be active,
@@ -311,6 +321,17 @@ call id as their idempotency key. Best-effort `action_invoked` /
 `action_completed` RunEvents carry safe summaries and PolicyDecisionRecord ids;
 their persistence failure does not block or roll back the action. Required
 PolicyDecisionRecord persistence remains the fail-closed audit boundary.
+
+The managed multi-turn loop is implemented behind the agent-space-owned
+`managedAgentLoop` port by pi-agent-core. Pi owns transcript accumulation,
+sequential batch execution, truncated-batch failure and turn stopping; it does
+not own provider access, tool grants, policy, audit, credentials or context.
+Every model turn calls the existing Runtime Host executor, and therefore gets a
+fresh accepted Delivery, dispatch fingerprint, provider usage record,
+acknowledgement and finalization. Raw model tool arguments cross back into
+`SystemActionGateway`, which remains the validation and authorization authority.
+Suspend envelopes terminate the current batch and later calls are represented
+as blocked tool results without being executed.
 
 Room dispatch reuses the canonical session -> queued Run -> orchestration
 pipeline. A Room is project-bound and may own multiple sessions. Every human
@@ -499,6 +520,11 @@ canonical runtime credential resolver.
 - Runtime adapters must not read `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from
   the ambient environment.
 - Raw credential values are never stored in RunStep fields, artifact content, or logs.
+- Managed Claude and OpenAI Codex subscription providers use encrypted DB OAuth
+  credentials through the same server authority but remain owner-only and
+  outside credential pools. Near-expiry refresh is serialized with a database
+  row lock before pi-ai receives the in-memory access token. CLI login state is
+  neither read nor modified by this path.
 - `server/src/modules/runs/evidenceRedaction.ts` redacts sensitive
   content before persisting runtime evidence.
 

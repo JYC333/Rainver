@@ -122,7 +122,7 @@ type TaskSelections = Partial<Record<RetrievalTask, TaskSelection>>
 type TaskPolicyMap = Partial<Record<RetrievalTask, ProviderTaskPolicyOut>>
 
 function embeddingProviderFilter(provider: ModelProviderOut): string | null {
-  return ['openai', 'openrouter', 'ollama', 'zeroentropy', 'cohere', 'other'].includes(provider.provider_type)
+  return ['openai', 'openrouter', 'ollama', 'zeroentropy', 'cohere', 'openai_compatible'].includes(provider.provider_type)
     ? null
     : 'no embeddings endpoint'
 }
@@ -132,7 +132,7 @@ function rerankProviderFilter(provider: ModelProviderOut): string | null {
 }
 
 function chatProviderFilter(provider: ModelProviderOut): string | null {
-  return ['openai', 'anthropic', 'openrouter', 'ollama', 'other'].includes(provider.provider_type)
+  return ['openai', 'anthropic', 'minimax', 'openrouter', 'deepseek', 'ollama', 'openai_compatible'].includes(provider.provider_type)
     ? null
     : 'not a chat provider'
 }

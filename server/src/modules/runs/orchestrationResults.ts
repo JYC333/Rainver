@@ -40,7 +40,7 @@ export function managedToolDegradation(
   result: RunAdapterResultEnvelope,
 ): { tool_names: string[]; error_codes: string[] } | null {
   const metadata = recordValue(result.metadata_json);
-  const failed = ["retrieval_tool_calls", "agent_room_tool_calls"]
+  const failed = ["retrieval_tool_calls"]
     .flatMap((key) => (Array.isArray(metadata[key]) ? metadata[key] as unknown[] : []))
     .map((call) => recordValue(call))
     .filter((call) => call.ok === false);

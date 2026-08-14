@@ -2362,6 +2362,9 @@ export class RunOrchestrationService {
       if (usage.cache_creation_input_tokens !== undefined) {
         details.input_cache_creation = usage.cache_creation_input_tokens;
       }
+      if (usage.cache_creation_1h_input_tokens !== undefined) {
+        details.input_cache_creation_1h = usage.cache_creation_1h_input_tokens;
+      }
       if (usage.cache_read_input_tokens !== undefined) {
         details.input_cache_read = usage.cache_read_input_tokens;
       }

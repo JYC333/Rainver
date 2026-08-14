@@ -138,6 +138,61 @@ Prerequisite: a CLI runtime must exist in the sandbox image before any probe —
 existing or new — can produce an observation. See the instance reality section of
 [../tasks/current-focus.md](../tasks/current-focus.md).
 
+## 7. Harness And Scope Convergence
+
+Three remaining specifications, written 2026-08-13, cover routing, capability
+shrink, and the two-Scope user model. Each is a separate convergence with its
+own prerequisites; pointers only here, detail there.
+
+None is currently active — see
+[../tasks/current-focus.md](../tasks/current-focus.md). The completed managed
+execution replatform is current-state architecture, not backlog work.
+
+### H1 — Managed tool families cannot contribute to the system prompt
+
+Found during Step 0's discovery review, 2026-08-13.
+
+`managedApiAdapter.ts:128` overwrites `system_prompt` with the
+InvocationDelivery's system content on every dispatch, and `baseExecute` refuses
+to run without the delivery's `invocation_audit_refs`. Anything a tool loop
+writes to `system_prompt` is therefore discarded before the provider call.
+
+The concrete casualty was Agent room delegation. `delegationSystemPrompt()`
+built guidance — when to delegate, that every room agent may delegate rather
+than only the manager, that several `agent.delegate` calls may run in one turn,
+that `agent.wait_for_results` is the alternative to guessing, and that the model
+must not invent the delegated agent's answer — and none of it has ever reached a
+model. Step 0 deleted the builder rather than leave code that looks live and is
+not; recover it from Git when this is implemented.
+
+Valid `target_agent_id` values are unaffected: they reach the model through the
+tool schema's `enum`, not the prompt. What is missing is behavioural guidance,
+of which "do not invent the delegated agent's answer" is the one with
+correctness weight.
+
+- [ ] Decide where a tool family contributes instructions, given that the
+  delivery owns the system prompt. The Runtime Context render path is the
+  candidate; the loop is not.
+- [ ] Restore the delegation guidance through that seam.
+- [ ] Cover it with a test that fails if the contribution is dropped before the
+  provider call, rather than one that asserts the loop's own input.
+
+Constraint: the delivery is immutable audit evidence. A contribution has to be
+part of what the delivery renders, not a mutation applied after it.
+- [ ] [runtime-routing-plan.md](runtime-routing-plan.md) — remove the
+  `adapter_type`-name special cases from `executionShapeScore()`, unpin
+  `RESEARCH_ADAPTER`, and (Stage B) let the router read funding mode and the
+  subscription quota state the credential broker already caches. Two claims in
+  its first version were wrong and are corrected in place: the router has no
+  cost signal at all, and Stage B's trigger is a connected non-payg funding
+  channel rather than an installed CLI.
+- [ ] [scope-model-plan.md](scope-model-plan.md) — raise Domain to a first-class
+  Scope beside Project and generalize the project-only content governance
+  interface. Needs an ADR first.
+- [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — collapse the
+  capability model to `SkillPackage + SkillBinding + SkillPolicy`, and amend
+  ADR 0009 in place rather than superseding it.
+
 ## Completion and retirement
 
 Remove an item once it is implemented and recorded in current-state

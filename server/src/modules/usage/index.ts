@@ -6,7 +6,7 @@ export const usageModule: ServerModule = {
   registerRoutes,
 };
 
-export { normalizeUsageObservation } from "./normalizer";
+export { normalizeUsageObservation, normalizeUsageDetails } from "./normalizer";
 export {
   estimateModelTokens,
   resolveModelWindow,

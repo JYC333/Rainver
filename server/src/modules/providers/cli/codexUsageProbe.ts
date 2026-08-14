@@ -245,6 +245,18 @@ function quotaFromRateLimits(rateLimits: RpcRateLimits | null): QuotaResult {
   return result;
 }
 
+/** Normalize the direct ChatGPT `/wham/usage` response used by Codex
+ * app-server into the repository's stable quota vocabulary. */
+export function parseCodexManagedUsageResponse(value: unknown): QuotaResult {
+  const root = asRecord(value);
+  const rateLimit = asRecord(root?.rate_limit ?? root?.rateLimit);
+  if (!rateLimit) return emptyQuota();
+  return quotaFromRateLimits({
+    primary: parseApiWindow(rateLimit.primary_window ?? rateLimit.primaryWindow),
+    secondary: parseApiWindow(rateLimit.secondary_window ?? rateLimit.secondaryWindow),
+  });
+}
+
 class CodexRpcSession {
   private nextId = 1;
   private lineBuffer = "";

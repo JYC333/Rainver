@@ -53,7 +53,10 @@ capture / trigger
 
 ### ModelProvider and RuntimeAdapter are separate
 
-- `ModelProvider` = model/vendor/API endpoint (OpenAI-compatible, Anthropic-compatible, OpenRouter, Ollama, or other).
+- `ModelProvider` = vendor identity, model catalog, API endpoint, credential pool,
+  and Space grant. Managed chat protocol and catalog behavior are resolved by
+  the server vendor registry and executed through pi-ai; configurable endpoint
+  and NetworkProfile routing remain agent-space authority.
 - Configured per space via `GET/POST/PATCH /api/v1/providers`. API keys are encrypted server-side; responses expose `has_api_key` only.
 - `RuntimeAdapter` = execution loop/tool environment (capability, model_api, claude_code, codex_cli, etc.).
 - Agents select a default provider/model on `AgentVersion` (`model_provider_id`, `model_name`); runs resolve provider at creation time.

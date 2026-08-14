@@ -1,13 +1,7 @@
-const STRUCTURED_OUTPUT_PROVIDER_TYPES = new Set([
-  "openai",
-  "openrouter",
-  "other",
-  "anthropic",
-  "ollama",
-]);
+import { providerVendor } from "./vendors";
 
 export function providerSupportsStructuredOutput(providerType: string): boolean {
-  return STRUCTURED_OUTPUT_PROVIDER_TYPES.has(providerType);
+  return providerVendor(providerType)?.supportsStructuredOutput ?? false;
 }
 
 /**
