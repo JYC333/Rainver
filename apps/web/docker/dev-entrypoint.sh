@@ -8,14 +8,18 @@ STAMP_FILE="$STAMP_DIR/package-inputs.sha256"
 
 dependency_hash() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum package.json package-lock.json | sha256sum | awk '{print $1}'
+    sha256sum /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
+      /repo/packages/protocol/package.json /repo/server/package.json package.json \
+      | sha256sum | awk '{print $1}'
     return
   fi
-  shasum -a 256 package.json package-lock.json | shasum -a 256 | awk '{print $1}'
+  shasum -a 256 /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
+    /repo/packages/protocol/package.json /repo/server/package.json package.json \
+    | shasum -a 256 | awk '{print $1}'
 }
 
-if [ ! -f package.json ] || [ ! -f package-lock.json ]; then
-  echo "[web-dev] package.json and package-lock.json are required in /repo/apps/web" >&2
+if [ ! -f package.json ] || [ ! -f /repo/pnpm-lock.yaml ]; then
+  echo "[web-dev] package.json and /repo/pnpm-lock.yaml are required" >&2
   exit 1
 fi
 
@@ -32,8 +36,10 @@ elif [ "$installed_hash" != "$current_hash" ]; then
 fi
 
 if [ -n "$install_reason" ]; then
-  echo "[web-dev] $install_reason; running npm ci"
-  npm ci
+  echo "[web-dev] $install_reason; running pnpm install"
+  pnpm --dir /repo install --frozen-lockfile \
+    --filter @agent-space/protocol \
+    --filter agent-core-ui
   mkdir -p "$STAMP_DIR"
   printf '%s\n' "$current_hash" > "$STAMP_FILE"
 else

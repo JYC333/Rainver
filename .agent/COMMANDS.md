@@ -3,8 +3,13 @@
 ## Quick Start
 
 ```bash
+# Enable the package-manager version pinned by the root package.json and install
+# every workspace package from the single pnpm lockfile.
+corepack enable
+pnpm install --frozen-lockfile
+
 # Start everything (Docker Compose). First run creates ~/.aspace/dev/.env from template.
-# The start script runs `npm run schema:generate` from server/ before image build
+# The start script runs `pnpm run schema:generate` from server/ before image build
 # and migration, so TypeScript schema edits are converted to generated artifacts.
 ./ops/scripts/start.sh
 
@@ -21,21 +26,18 @@
 ```bash
 cd server
 
-# Install dependencies
-npm ci
-
 # Build/typecheck/test
-npm run build
-npm run typecheck
-npm test
+pnpm run build
+pnpm run typecheck
+pnpm test
 
 # Real-Postgres tests share one tuned container and reuse it across local runs.
 # Opt out when a CI/job boundary requires the container to be stopped afterward.
-TESTCONTAINERS_REUSE_ENABLE=false npm test
+TESTCONTAINERS_REUSE_ENABLE=false pnpm test
 
 # Explicit schema migrations
-SERVER_DATABASE_URL=postgresql://... npm run migrate:status
-SERVER_DATABASE_URL=postgresql://... npm run migrate
+SERVER_DATABASE_URL=postgresql://... pnpm run migrate:status
+SERVER_DATABASE_URL=postgresql://... pnpm run migrate
 
 # Schema changes: edit server/src/db/schema/, then generate SQL artifacts.
 # Generation writes a fresh baseline directly to server/drizzle, replacing the
@@ -46,8 +48,8 @@ SERVER_DATABASE_URL=postgresql://... npm run migrate
 # explicitly when you want to inspect or commit the generated files before start.
 # Do not hand-edit server/migrations/*.sql for schema changes. No database is
 # needed for either command.
-npm run schema:generate
-npm run schema:check
+pnpm run schema:generate
+pnpm run schema:check
 ```
 
 For the default Docker Compose setup, Postgres is **not** published to the host, so prefer the
@@ -132,27 +134,24 @@ See [docs/BACKUP_AND_RESTORE.md](../docs/BACKUP_AND_RESTORE.md) for the full mod
 ```bash
 cd apps/web
 
-# Install dependencies
-npm ci
-
 # Run (development, with hot reload)
-npm run dev
+pnpm run dev
 # → http://localhost:5173
 
 # Build for production
-npm run build
+pnpm run build
 
 # Preview production build
-npm run preview
+pnpm run preview
 
 # Lint  [TODO: configure eslint]
-# npm run lint
+# pnpm run lint
 ```
 
 Docker dev/test frontend services keep `node_modules` inside a container volume.
-Their dev entrypoint compares `apps/web/package.json` and
-`apps/web/package-lock.json` against a stored hash and runs `npm ci`
-automatically when dependency inputs change.
+Their dev entrypoint hashes the root workspace files, `pnpm-lock.yaml`, and package
+manifests, then runs `pnpm install --frozen-lockfile` automatically when those
+dependency inputs change.
 
 ## Runtime CLI tools
 
@@ -228,11 +227,11 @@ Focused verification commands from repo root:
 
 ```bash
 cd packages/protocol
-npm run typecheck && npm test && npm run build
+pnpm run typecheck && pnpm test && pnpm run build
 
 cd ../server
-npm run typecheck
-npx vitest run \
+pnpm run typecheck
+pnpm exec vitest run \
   test/evidenceRedaction.test.ts \
   test/runOrchestrationService.test.ts \
   test/runMaterializationService.test.ts \
@@ -243,7 +242,7 @@ npx vitest run \
   test/config.test.ts \
   test/features.test.ts \
   test/boundaries.test.ts
-npm run build
+pnpm run build
 
 ```
 
@@ -261,8 +260,8 @@ that half is captured while the suites run and prepared afterwards:
 ```bash
 cd server
 rm -rf .tmp/sql-capture
-SQL_CAPTURE_DIR=$PWD/.tmp/sql-capture npx vitest run
-SQL_CAPTURE_DIR=$PWD/.tmp/sql-capture npx vitest run test/capturedSqlPrepare.test.ts
+SQL_CAPTURE_DIR=$PWD/.tmp/sql-capture pnpm exec vitest run
+SQL_CAPTURE_DIR=$PWD/.tmp/sql-capture pnpm exec vitest run test/capturedSqlPrepare.test.ts
 ```
 
 Only statements issued from `src/` are recorded; test fixtures build rows with
@@ -322,11 +321,11 @@ Focused verification commands from repo root:
 
 ```bash
 cd packages/protocol
-npm run typecheck && npm test && npm run build
+pnpm run typecheck && pnpm test && pnpm run build
 
 cd ../server
-npm run typecheck
-npx vitest run \
+pnpm run typecheck
+pnpm exec vitest run \
   test/policyDecisionCore.test.ts \
   test/policyDecisionContract.test.ts \
   test/policyEnforceService.test.ts \
@@ -336,5 +335,5 @@ npx vitest run \
   test/features.test.ts \
   test/gateway.test.ts \
   test/boundaries.test.ts
-npm run build
+pnpm run build
 ```

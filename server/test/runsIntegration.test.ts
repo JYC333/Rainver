@@ -16,7 +16,7 @@ import {
 // ambiguity. These run the actual SQL against the repository's shared
 // PostgreSQL Testcontainers template loaded from migrations/0001_baseline.sql.
 //
-// The whole suite skips gracefully when Docker is unavailable so `npm test`
+// The whole suite skips gracefully when Docker is unavailable so `pnpm test`
 // still runs everywhere; where Docker is present (dev, CI) it always runs.
 
 let container: TestPostgresDatabase | undefined;

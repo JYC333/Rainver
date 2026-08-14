@@ -125,7 +125,7 @@ function generate() {
 
 function check() {
   if (!existsSync(drizzleDir) || !existsSync(baselineMigration)) {
-    throw new Error("Generated schema baseline is missing; run npm run schema:generate");
+    throw new Error("Generated schema baseline is missing; run pnpm run schema:generate");
   }
   assertSingleBaseline(drizzleDir);
   assertSingleMigration();

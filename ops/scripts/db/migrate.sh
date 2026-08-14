@@ -135,13 +135,13 @@ run_drizzle_schema_check_docker() {
     -v "$REPO_ROOT/server/migrations:/app/server/migrations:ro" \
     -v "$REPO_ROOT/server/drizzle.config.ts:/app/server/drizzle.config.ts:ro" \
     -v "$REPO_ROOT/server/scripts:/app/server/scripts:ro" \
-    server npm run schema:check
+    server pnpm run schema:check
 }
 
 run_drizzle_schema_check_host() {
   echo "[migrate] checking Drizzle schema artifacts before database bootstrap..."
   cd "$REPO_ROOT/server"
-  COREPACK_ENABLE_AUTO_PIN=0 npm run schema:check
+  pnpm run schema:check
 }
 
 # Resolve a host-mode DATABASE_URL (env, mode .env, or POSTGRES_* parts). Sets the
@@ -255,10 +255,9 @@ run_host() {
   echo "  target: $(redacted_target "$MIGRATION_DATABASE_URL")"
 
   cd "$REPO_ROOT/server"
-  COREPACK_ENABLE_AUTO_PIN=0 \
-    SERVER_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+  SERVER_DATABASE_URL="$MIGRATION_DATABASE_URL" \
     SERVER_MIGRATIONS_DIR="$REPO_ROOT/server/migrations" \
-    npm run migrate
+    pnpm run migrate
   echo "Migrations complete."
 }
 

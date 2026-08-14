@@ -13,7 +13,7 @@ import { PgSessionRepository } from "../src/modules/sessions/repository";
 // add-message + session-touch CTE. These run the actual SQL against a throwaway
 // Postgres (testcontainers) loaded with test/fixtures/sessionsSchema.sql.
 //
-// The suite skips gracefully when Docker is unavailable so `npm test` still runs
+// The suite skips gracefully when Docker is unavailable so `pnpm test` still runs
 // everywhere; where Docker is present (dev, CI) it always runs.
 
 const SCHEMA = readFileSync(

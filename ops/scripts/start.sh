@@ -76,19 +76,19 @@ ensure_env() {
 
 generate_schema_migrations() {
   echo "Generating Drizzle migration artifacts from TypeScript schema..."
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "npm is required to run server schema generation before start" >&2
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "pnpm is required to run server schema generation before start" >&2
     exit 1
   fi
   if [[ ! -x "$REPO_ROOT/server/node_modules/.bin/drizzle-kit" ]]; then
     echo "Server dependencies are required to generate Drizzle migrations before start." >&2
-    echo "Run: cd server && npm ci" >&2
+    echo "Run: corepack enable && pnpm install --frozen-lockfile" >&2
     exit 1
   fi
 
   (
     cd "$REPO_ROOT/server"
-    COREPACK_ENABLE_AUTO_PIN=0 npm run schema:generate
+    pnpm run schema:generate
   )
 }
 

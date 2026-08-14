@@ -109,11 +109,13 @@ describe("compose server config", () => {
       join(repoRoot, "apps", "web", "Dockerfile"),
       "utf8",
     );
+    const workspaceInstall = dockerfile.indexOf("RUN pnpm install --frozen-lockfile");
     const protocolBuild = dockerfile.indexOf("WORKDIR /repo/packages/protocol");
     const webInstall = dockerfile.indexOf("WORKDIR /repo/apps/web");
 
+    expect(workspaceInstall).toBeGreaterThanOrEqual(0);
     expect(protocolBuild).toBeGreaterThanOrEqual(0);
-    expect(dockerfile.slice(protocolBuild, webInstall)).toContain("RUN npm run build");
+    expect(dockerfile.slice(protocolBuild, webInstall)).toContain("RUN pnpm run build");
     expect(webInstall).toBeGreaterThan(protocolBuild);
   });
 

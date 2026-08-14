@@ -27,7 +27,7 @@ describe("database migration ops scripts", () => {
     expect(reset).toContain('"$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"');
 
     expect(start).toContain("generate_schema_migrations()");
-    expect(start).toContain("npm run schema:generate");
+    expect(start).toContain("pnpm run schema:generate");
     expect(start.lastIndexOf("generate_schema_migrations")).toBeLessThan(
       start.lastIndexOf("ensure_server_image_for_migrations"),
     );

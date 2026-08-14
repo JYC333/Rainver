@@ -469,7 +469,7 @@ describe('InquiryAreaPage', () => {
       started_by_user_id: null, started_run_id: null,
       created_at: '2026-07-23T00:00:00.000Z', updated_at: '2026-07-23T00:00:00.000Z',
     }])
-    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 42 as unknown as number)
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 42 as unknown as ReturnType<typeof window.setInterval>)
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit wording' }))
@@ -819,7 +819,7 @@ describe('InquiryAreaPage', () => {
       started_by_user_id: null, started_run_id: null,
       created_at: '2026-07-23T00:00:00.000Z', updated_at: '2026-07-23T00:00:00.000Z',
     }])
-    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 42 as unknown as number)
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 42 as unknown as ReturnType<typeof window.setInterval>)
     renderPage()
 
     await waitFor(() => expect(interval).toHaveBeenCalledWith(expect.any(Function), 5_000))
@@ -913,7 +913,7 @@ describe('InquiryAreaPage', () => {
       created_at: '2026-07-23T00:00:00.000Z', updated_at: '2026-07-23T00:00:00.000Z',
     }
     vi.mocked(projectResearchApi.workflows).mockResolvedValue([activeWorkflow])
-    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 42 as unknown as number)
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation(() => 42 as unknown as ReturnType<typeof window.setInterval>)
     renderPage()
 
     await waitFor(() => expect(screen.getByRole('tab', { name: /^Acquire/ })).toHaveAccessibleName(/work running/))

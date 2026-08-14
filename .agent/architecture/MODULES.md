@@ -181,6 +181,6 @@ Run these after structural module changes:
 
 ```bash
 cd server
-npm run typecheck
-npx vitest run test/boundaries.test.ts
+pnpm run typecheck
+pnpm exec vitest run test/boundaries.test.ts
 ```

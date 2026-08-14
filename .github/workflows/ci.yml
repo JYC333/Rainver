@@ -18,23 +18,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: |
-            packages/protocol/package-lock.json
-            server/package-lock.json
-            apps/web/package-lock.json
+          cache: pnpm
 
-      - name: Install protocol dependencies
-        working-directory: packages/protocol
-        run: npm ci
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build protocol
-        working-directory: packages/protocol
-        run: npm run build
+        run: pnpm --filter @agent-space/protocol build
 
       - name: Test deployer boundary
         run: python3 -m unittest discover -s deployer -p 'test_*.py'
@@ -42,29 +39,17 @@ jobs:
       - name: Test backup archive safety
         run: python3 -m unittest discover -s ops/scripts/system -p 'test_*.py'
 
-      - name: Install server dependencies
-        working-directory: server
-        run: npm ci
-
       - name: Typecheck server
-        working-directory: server
-        run: npm run typecheck
+        run: pnpm --filter @agent-space/server typecheck
 
       - name: Test server
-        working-directory: server
         env:
           REQUIRE_TEST_POSTGRES: "true"
           TESTCONTAINERS_REUSE_ENABLE: "false"
-        run: npm test
-
-      - name: Install web dependencies
-        working-directory: apps/web
-        run: npm ci
+        run: pnpm --filter @agent-space/server test
 
       - name: Typecheck web
-        working-directory: apps/web
-        run: npm run typecheck
+        run: pnpm --filter agent-core-ui typecheck
 
       - name: Test web
-        working-directory: apps/web
-        run: npm test
+        run: pnpm --filter agent-core-ui test

@@ -184,11 +184,11 @@ Use the server and protocol suites from their package roots:
 
 ```bash
 cd server
-npx tsc --noEmit
-npx vitest run
+pnpm exec tsc --noEmit
+pnpm exec vitest run
 
 cd ../packages/protocol
-npx vitest run
+pnpm exec vitest run
 ```
 
 Do not point tests at a real mode data tree. Integration tests that need

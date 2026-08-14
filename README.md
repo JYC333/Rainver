@@ -90,13 +90,19 @@ they leave already-running app stacks alone.
 
 ## Development
 
+Install all JavaScript dependencies once from the repository root:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+```
+
 For server work:
 
 ```bash
 cd server
-npm ci
-npm run typecheck
-npm test
+pnpm run typecheck
+pnpm test
 ```
 
 Run explicit TS migrations through the ops wrapper:

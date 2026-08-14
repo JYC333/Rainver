@@ -73,7 +73,7 @@ Use the package-local commands when protocol contracts change:
 
 ```bash
 cd packages/protocol
-npm run typecheck
-npm test
-npm run build
+pnpm run typecheck
+pnpm test
+pnpm run build
 ```

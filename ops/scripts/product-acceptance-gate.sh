@@ -17,26 +17,26 @@ run_package() {
   shift
   (
     cd "$REPO_ROOT/$directory"
-    COREPACK_ENABLE_AUTO_PIN=0 "$@"
+    "$@"
   )
 }
 
 echo "==> Protocol contracts"
-run_package packages/protocol npm run typecheck
-run_package packages/protocol npm test
-run_package packages/protocol npm run build
+run_package packages/protocol pnpm run typecheck
+run_package packages/protocol pnpm test
+run_package packages/protocol pnpm run build
 
 echo "==> Database schema"
-run_package server npm run schema:check
+run_package server pnpm run schema:check
 
 echo "==> Server"
-run_package server npm run typecheck
-run_package server npm test
-run_package server npm run build
+run_package server pnpm run typecheck
+run_package server pnpm test
+run_package server pnpm run build
 
 echo "==> Web"
-run_package apps/web npm run typecheck
-run_package apps/web npm test
-run_package apps/web npm run build
+run_package apps/web pnpm run typecheck
+run_package apps/web pnpm test
+run_package apps/web pnpm run build
 
 echo "Product acceptance deterministic gate passed."

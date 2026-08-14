@@ -13,7 +13,7 @@ import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/module
 // check. These run the actual SQL against a throwaway Postgres (testcontainers)
 // loaded with test/fixtures/memorySchema.sql.
 //
-// Skips gracefully when Docker is unavailable so `npm test` runs everywhere.
+// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
 
 const SCHEMA = readFileSync(
   join(process.cwd(), "test/fixtures/memorySchema.sql"),

@@ -8,7 +8,7 @@ import { migrate, status, loadMigrations } from "../src/db/migrator";
 import { withTransaction } from "../src/db/tx";
 
 // Real-Postgres tests for the server migration runner. Skips gracefully when Docker
-// is unavailable so `npm test` still runs everywhere.
+// is unavailable so `pnpm test` still runs everywhere.
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;

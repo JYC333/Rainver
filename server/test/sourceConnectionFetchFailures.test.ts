@@ -156,7 +156,9 @@ describe("history page narrowing", () => {
   };
 
   it("recovers the page at a smaller width instead of losing the whole source", async () => {
-    const { result, asked } = await run({ fails: (n) => (n > 25 ? upstream(500) : null) }) as never;
+    const outcome = await run({ fails: (n) => (n > 25 ? upstream(500) : null) });
+    if (!("result" in outcome)) throw outcome.error;
+    const { result, asked } = outcome;
     expect(asked.map(a => a.pageSize)).toEqual([100, 25]);
     expect(result.pageSize).toBe(25);
     expect(result.response.ok).toBe(true);
@@ -180,13 +182,15 @@ describe("history page narrowing", () => {
   });
 
   it("does not narrow a connector whose paging cannot express it", async () => {
-    const { error, asked } = await run({ narrowingAllowed: false, fails: () => upstream(500) }) as never;
+    const outcome = await run({ narrowingAllowed: false, fails: () => upstream(500) });
+    if (!("error" in outcome)) throw new Error("Expected the upstream fetch to fail");
+    const { error, asked } = outcome;
     expect(asked.map(a => a.pageSize)).toEqual([100]);
     expect(error).toBeInstanceOf(SourceFetchFailure);
   });
 
   it("stops immediately on a failure that a smaller page cannot fix", async () => {
-    const { asked } = await run({ fails: () => upstream(404) }) as never;
+    const { asked } = await run({ fails: () => upstream(404) });
     expect(asked.map(a => a.pageSize)).toEqual([100]);
   });
 

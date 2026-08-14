@@ -104,6 +104,11 @@ services:
     ports:
       - "3100:5173"
     volumes:
+      - ../../package.json:/repo/package.json:ro
+      - ../../pnpm-workspace.yaml:/repo/pnpm-workspace.yaml:ro
+      - ../../pnpm-lock.yaml:/repo/pnpm-lock.yaml:ro
+      - ../../packages/protocol/package.json:/repo/packages/protocol/package.json:ro
+      - ../../server/package.json:/repo/server/package.json:ro
       - ../../apps/web:/repo/apps/web
       - ../../plugins:/repo/plugins:ro
       - /repo/apps/web/node_modules

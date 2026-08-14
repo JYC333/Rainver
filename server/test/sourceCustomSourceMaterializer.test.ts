@@ -25,7 +25,7 @@ import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSo
 // entire point: the copy drifted from the real shape and the suite could no
 // longer fail when code and production disagreed.
 //
-// Skips gracefully when Docker is unavailable so `npm test` runs everywhere.
+// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
 
 const SPACE_A = "space-a";
 

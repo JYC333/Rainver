@@ -61,7 +61,7 @@ command, not a startup hook.
 
 `server/migrations/0001_baseline.sql` is the current consolidated generated
 schema baseline for this pre-history phase. Ordinary schema changes start in
-`server/src/db/schema/`, run through `npm run schema:generate`, and are then
+`server/src/db/schema/`, run through `pnpm run schema:generate`, and are then
 applied by the server migration runner.
 
 ## Configuration

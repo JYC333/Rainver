@@ -223,8 +223,8 @@ Run all of these before declaring RC ready.
 
 ```bash
 cd server
-npm run typecheck
-npm test -- --hookTimeout=60000
+pnpm run typecheck
+pnpm test -- --hookTimeout=60000
 ```
 
 Expected: all server tests pass. Tests that need Docker/Postgres may skip
@@ -234,7 +234,7 @@ when no container runtime is available.
 
 ```bash
 cd apps/web
-npm run typecheck
+pnpm run typecheck
 ```
 
 Expected: no output (no errors).
@@ -243,7 +243,7 @@ Expected: no output (no errors).
 
 ```bash
 cd apps/web
-npm run build
+pnpm run build
 ```
 
 Expected: clean build with no TypeScript or bundler errors.
@@ -268,16 +268,16 @@ shellcheck ops/scripts/system/backup.sh ops/scripts/system/restore.sh ops/script
 cd server
 
 # API entrypoint and route registry
-npm test -- gateway.test.ts composeConfig.test.ts
+pnpm test -- gateway.test.ts composeConfig.test.ts
 
 # Auth, spaces, memory, proposals, artifacts, workspace routes
-npm test -- authRoutes.test.ts memoryRoutes.test.ts proposalsRoutes.test.ts artifactsRoutes.test.ts workspacesRoutes.test.ts
+pnpm test -- authRoutes.test.ts memoryRoutes.test.ts proposalsRoutes.test.ts artifactsRoutes.test.ts workspacesRoutes.test.ts
 
 # Runtime, policy, run orchestration, and path safety
-npm test -- policyDecisionCore.test.ts policyEnforceService.test.ts policyRoutes.test.ts runsRoutes.test.ts runtimeHost.test.ts workspacesPathPolicy.test.ts
+pnpm test -- policyDecisionCore.test.ts policyEnforceService.test.ts policyRoutes.test.ts runsRoutes.test.ts runtimeHost.test.ts workspacesPathPolicy.test.ts
 
 # Jobs, backup, schedulers, deployment boundary
-npm test -- jobsSchedulers.test.ts backups.test.ts deploymentClient.test.ts
+pnpm test -- jobsSchedulers.test.ts backups.test.ts deploymentClient.test.ts
 ```
 
 ---
@@ -706,7 +706,7 @@ File an incident note immediately (see §J template) before resuming or discussi
 
 ```bash
 cd server
-npm test -- <implicated-tests>
+pnpm test -- <implicated-tests>
 ```
 
 Do not resume dogfooding until the failing gate passes.

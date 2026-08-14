@@ -14,8 +14,8 @@ import { migrate } from "../src/db/migrator";
 // against a freshly migrated schema.
 //
 // Two-step by design, because capture has to happen first:
-//   SQL_CAPTURE_DIR=.tmp/sql-capture npx vitest run          # capture
-//   SQL_CAPTURE_DIR=.tmp/sql-capture npx vitest run test/capturedSqlPrepare.test.ts
+//   SQL_CAPTURE_DIR=.tmp/sql-capture pnpm exec vitest run          # capture
+//   SQL_CAPTURE_DIR=.tmp/sql-capture pnpm exec vitest run test/capturedSqlPrepare.test.ts
 // Without a capture directory there is nothing to check and the test no-ops,
 // so a normal `vitest run` is unaffected.
 

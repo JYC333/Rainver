@@ -6,7 +6,7 @@
  * generated baseline for empty database bootstrap; applied schema versions are
  * immutable for any database that has recorded them.
  *
- * During the consolidated-baseline phase, `npm run schema:generate`
+ * During the consolidated-baseline phase, `pnpm run schema:generate`
  * (drizzle-kit diffing `server/src/db/schema/` against `server/drizzle/meta/`)
  * merges generated SQL into `0001_baseline.sql` instead of creating a new
  * migration file. This runner doesn't care which produced a file; it only reads

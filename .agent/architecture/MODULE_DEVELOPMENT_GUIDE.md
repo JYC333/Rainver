@@ -38,7 +38,7 @@ Support packages are documented in `MODULES.md`.
 5. Add request/response schemas in the module or `packages/protocol/src/` when
    the contract is shared with clients.
 6. Add Drizzle schema under `server/src/db/schema/` when the module owns new
-   tables, then run `npm run schema:generate` from `server/` to merge generated
+   tables, then run `pnpm run schema:generate` from `server/` to merge generated
    SQL into `server/migrations/0001_baseline.sql`. Use UUID/string primary keys
    and include `space_id` for space-scoped data.
 7. Register the module in `server/src/gateway/routeRegistry.ts`.
@@ -217,7 +217,7 @@ Run these after structural module changes:
 
 ```bash
 cd server
-npx vitest run test/boundaries.test.ts
+pnpm exec vitest run test/boundaries.test.ts
 ```
 
 Add or run registry-specific tests when changing scheduler/job/space/run/proposal extension

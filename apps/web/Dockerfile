@@ -12,30 +12,34 @@
 # ---- shared dependency layer ----------------------------------------------
 FROM node:24.18.0-slim AS base
 
-# npm retry config — guards against transient ECONNRESET in WSL2/Docker builds
-ENV NPM_CONFIG_FETCH_RETRIES=5 \
-    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
-    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
+# pnpm retry config guards against transient ECONNRESET in WSL2/Docker builds.
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    PNPM_CONFIG_FETCH_RETRIES=5 \
+    PNPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    PNPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
+RUN corepack enable
 
-# The web package depends on @agent-space/protocol through a local file link.
-# Build that package inside the image before installing the web dependencies so
-# npm does not create a dangling /repo/packages/protocol symlink. Type-only
-# imports can hide a missing link, but runtime value imports need dist/index.js.
+# Install the web package and its local protocol dependency from the workspace.
+WORKDIR /repo
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY packages/protocol/package.json ./packages/protocol/
+COPY server/package.json ./server/
+COPY apps/web/package.json ./apps/web/
+RUN pnpm install --frozen-lockfile \
+    --filter @agent-space/protocol \
+    --filter agent-core-ui
+
 WORKDIR /repo/packages/protocol
-
-COPY packages/protocol/package.json packages/protocol/package-lock.json ./
-RUN npm ci
-
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./
 COPY packages/protocol/src ./src
-RUN npm run build
+RUN pnpm run build
 
 WORKDIR /repo/apps/web
 
-COPY apps/web/package.json apps/web/package-lock.json ./
-RUN npm ci \
-    && mkdir -p node_modules/.cache/agent-space \
-    && sha256sum package.json package-lock.json \
+RUN mkdir -p node_modules/.cache/agent-space \
+    && sha256sum /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
+      /repo/packages/protocol/package.json /repo/server/package.json package.json \
       | sha256sum \
       | awk '{print $1}' > node_modules/.cache/agent-space/package-inputs.sha256
 
@@ -59,7 +63,7 @@ FROM base AS build
 
 COPY apps/web ./
 COPY plugins /repo/plugins
-RUN npm run build
+RUN pnpm run build
 
 # ---- prod: serve the built bundle via nginx -------------------------------
 # This is what makes the PWA installable: real `dist/` output (manifest +

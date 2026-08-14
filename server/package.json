@@ -8,25 +8,25 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "build:protocol": "npm --prefix ../packages/protocol run build",
-    "pretypecheck": "npm run build:protocol",
+    "build:protocol": "pnpm --filter @agent-space/protocol build",
+    "pretypecheck": "pnpm run build:protocol",
     "typecheck": "tsc -p tsconfig.typecheck.json",
-    "prebuild": "npm run build:protocol",
+    "prebuild": "pnpm run build:protocol",
     "build": "tsc -p tsconfig.json",
     "build:official-plugins": "node scripts/build-official-plugins.mjs",
-    "postbuild": "npm run build:official-plugins",
+    "postbuild": "pnpm run build:official-plugins",
     "start": "node dist/index.js",
-    "pretest": "npm run build:protocol",
+    "pretest": "pnpm run build:protocol",
     "test": "vitest run",
-    "pretest:watch": "npm run build:protocol",
+    "pretest:watch": "pnpm run build:protocol",
     "test:watch": "vitest",
-    "migrate": "npm run build && node dist/db/migrateCli.js up",
-    "migrate:status": "npm run build && node dist/db/migrateCli.js status",
+    "migrate": "pnpm run build && node dist/db/migrateCli.js up",
+    "migrate:status": "pnpm run build && node dist/db/migrateCli.js status",
     "schema:generate": "node scripts/db/schema-baseline.mjs generate",
     "schema:check": "node scripts/db/schema-baseline.mjs check && drizzle-kit check --config=drizzle.config.ts"
   },
   "dependencies": {
-    "@agent-space/protocol": "file:../packages/protocol",
+    "@agent-space/protocol": "workspace:*",
     "@earendil-works/pi-agent-core": "^0.84.1",
     "@earendil-works/pi-ai": "^0.84.1",
     "drizzle-orm": "^0.45.2",
@@ -47,6 +47,5 @@
     "testcontainers": "^12.0.2",
     "typescript": "^7.0.0",
     "vitest": "^3.2.6"
-  },
-  "packageManager": "npm@11.16.0"
+  }
 }

@@ -197,8 +197,8 @@ successful commit and never participate in the critical write outcome.
   migration runner applies. During the consolidated-baseline phase, generated
   SQL is merged into `server/migrations/0001_baseline.sql` rather than leaving
   a new `0002_*` file. Do not hand-edit migration SQL for schema changes; edit
-  the Drizzle schema and run `npm run schema:generate`.
-  `ops/scripts/start.sh` also runs `npm run schema:generate` from `server/`
+  the Drizzle schema and run `pnpm run schema:generate`.
+  `ops/scripts/start.sh` also runs `pnpm run schema:generate` from `server/`
   before building the server image or applying migrations, so startup keeps the
   generated artifacts in sync with TypeScript schema files.
 - In bundled compose modes, server uses the Postgres owner/app role from
@@ -207,16 +207,16 @@ successful commit and never participate in the critical write outcome.
   per-table app role.
 - Boolean defaults are PostgreSQL-native (`true`/`false`).
 - **Migration command path** (`ops/scripts/db/migrate.sh`): defaults to Docker-native. The normal
-  `ops/scripts/start.sh` path first runs `npm run schema:generate` from `server/`, then this helper
+  `ops/scripts/start.sh` path first runs `pnpm run schema:generate` from `server/`, then this helper
   runs a no-write Drizzle schema check, verifying the committed Drizzle snapshot matches
   `server/src/db/schema/` before any database bootstrap. Docker-native mode then creates
   `POSTGRES_DB` if the target database is missing, and finally runs `node dist/db/migrateCli.js up`
   inside a one-shot server container using the in-network `postgres` host (Postgres is not
-  published to the host). Production server image builds also run `npm run schema:check` so prod
+  published to the host). Production server image builds also run `pnpm run schema:check` so prod
   artifacts are validated before release. Deleting the database and then running migrate is a
   valid empty-instance initialization path. `--host` runs the same schema check and migration
   runner from `server/` only against an explicitly configured, reachable external Postgres; run
-  `npm run schema:generate` yourself before host-mode migrate when schema files changed.
+  `pnpm run schema:generate` yourself before host-mode migrate when schema files changed.
   `ops/scripts/db/reset-postgres.sh` reuses this path after dropping the target DB and always runs
   it before touching any saved dev setup archive, so the reset database is always on the current
   schema (an empty DB is never left unmigrated). When a private dev setup archive exists (dev mode,
@@ -439,7 +439,7 @@ changes.
 
 **Changing a table:**
 1. Edit the relevant file under `src/db/schema/`.
-2. `npm run schema:generate` (from `server/`) — runs `drizzle-kit generate`,
+2. `pnpm run schema:generate` (from `server/`) — runs `drizzle-kit generate`,
    then merges the generated SQL from `server/drizzle/` into
    `server/migrations/0001_baseline.sql`. Drizzle's own internal numbering
    starts at 0000 and is never used directly by the runtime migrator.
@@ -449,7 +449,7 @@ changes.
 3. Review the generated SQL now consolidated into `0001_baseline.sql`. Do not
    hand-edit it for ordinary schema changes; fix the Drizzle schema and
    regenerate.
-4. `npm run schema:check` (CI-safe, no database needed) fails if schema TS
+4. `pnpm run schema:check` (CI-safe, no database needed) fails if schema TS
    was edited without regenerating, or if a drizzle-generated migration
    wasn't merged into `server/migrations/0001_baseline.sql`. It also fails on
    duplicate migration version prefixes.

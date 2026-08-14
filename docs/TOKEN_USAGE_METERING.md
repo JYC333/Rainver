@@ -94,5 +94,5 @@ Instance operations have only the de-identified totals route.
 
 Schema authoring lives in `server/src/db/schema/usage.ts`. Regenerate the single
 Drizzle baseline and `server/migrations/0001_baseline.sql` with
-`npm run schema:generate` from `server/`; do not edit generated SQL or add a
+`pnpm run schema:generate` from `server/`; do not edit generated SQL or add a
 second migration.

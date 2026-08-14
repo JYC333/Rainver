@@ -1,60 +1,66 @@
 # agent-space server — multi-stage build
 #
-# Build context: the REPO ROOT (not server), because the server package has a
-# file: dependency on ../packages/protocol that must be present at install time.
+# Build context: the REPO ROOT (not server), because the server and protocol are
+# installed together from the repository pnpm workspace.
 # Compose sets `context: ../../` and `dockerfile: server/Dockerfile`.
 #
 # This image serves the backend. The production image runs compiled JS
 # (not tsx/ts-node).
 
-# ---- deps: install node_modules and build the local protocol package ----------
+# ---- deps: install workspace dependencies and build the protocol package ------
 FROM node:24.18.0-slim AS deps
 WORKDIR /app
 
-ENV NPM_CONFIG_FETCH_RETRIES=5 \
-    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
-    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    PNPM_CONFIG_FETCH_RETRIES=5 \
+    PNPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    PNPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
+RUN corepack enable
 
 # Build toolchain for native modules (node-pty hosts the CLI login PTY).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
-COPY packages/protocol/package.json ./packages/protocol/package.json
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY packages/protocol/package.json ./packages/protocol/
+COPY server/package.json ./server/
+COPY apps/web/package.json ./apps/web/
+RUN pnpm install --frozen-lockfile \
+    --filter @agent-space/protocol \
+    --filter @agent-space/server
+
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./packages/protocol/
 COPY packages/protocol/src ./packages/protocol/src
-
-COPY server/package.json server/package-lock.json ./server/
-WORKDIR /app/server
-RUN npm ci
-RUN ln -s /app/server/node_modules ../packages/protocol/node_modules \
-    && ./node_modules/.bin/tsc -p ../packages/protocol/tsconfig.build.json
+RUN pnpm --filter @agent-space/protocol build
 
 # ---- build: compile TS -> dist ------------------------------------------------
 FROM deps AS build
-COPY server/tsconfig.json ./
-COPY server/drizzle.config.ts ./
-COPY server/drizzle ./drizzle
-COPY server/src ./src
-COPY server/migrations ./migrations
-COPY server/scripts ./scripts
+COPY server/tsconfig.json ./server/
+COPY server/drizzle.config.ts ./server/
+COPY server/drizzle ./server/drizzle
+COPY server/src ./server/src
+COPY server/migrations ./server/migrations
+COPY server/scripts ./server/scripts
 COPY plugins /app/plugins
-RUN npm run schema:check
-RUN npm run build
+RUN pnpm --filter @agent-space/server schema:check
+RUN pnpm --filter @agent-space/server build
 
 # ---- dev-runtime: full deps + writable dist for compose hot reload ------------
 FROM deps AS dev-runtime
 ENV NODE_ENV=development
 
 COPY catalog /app/catalog
-COPY server/tsconfig.json ./
-COPY server/drizzle.config.ts ./
-COPY server/drizzle ./drizzle
-COPY server/scripts ./scripts
-COPY server/src ./src
-COPY server/migrations ./migrations
+COPY server/tsconfig.json ./server/
+COPY server/drizzle.config.ts ./server/
+COPY server/drizzle ./server/drizzle
+COPY server/scripts ./server/scripts
+COPY server/src ./server/src
+COPY server/migrations ./server/migrations
 COPY plugins /app/plugins
-COPY --from=build /app/server/dist ./dist
+COPY --from=build /app/server/dist /app/server/dist
+WORKDIR /app/server
 
 # CLI login helper processes need a writable HOME before their state is synced
 # into the managed profile dir under AGENT_SPACE_HOME. Dev/test compose also
@@ -76,14 +82,21 @@ CMD ["node", "dist/index.js"]
 FROM node:24.18.0-slim AS prod-deps
 WORKDIR /app
 
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH
+RUN corepack enable
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
-COPY packages/protocol/package.json ./packages/protocol/package.json
-COPY server/package.json server/package-lock.json ./server/
-WORKDIR /app/server
-RUN npm ci --omit=dev
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY packages/protocol/package.json ./packages/protocol/
+COPY server/package.json ./server/
+COPY apps/web/package.json ./apps/web/
+RUN pnpm install --prod --frozen-lockfile \
+    --filter @agent-space/protocol \
+    --filter @agent-space/server
 
 # ---- runtime: prod deps + compiled output -------------------------------------
 FROM node:24.18.0-slim AS runtime
@@ -99,10 +112,11 @@ COPY --from=deps /app/packages/protocol/dist ./packages/protocol/dist
 # Built-in catalog definitions served read-only by the catalog module
 # (default SERVER_CATALOG_ROOT resolves to /app/catalog).
 COPY catalog ./catalog
-COPY server/package.json server/package-lock.json ./server/
+COPY server/package.json ./server/package.json
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/packages/protocol/node_modules ./packages/protocol/node_modules
 COPY --from=prod-deps /app/server/node_modules ./server/node_modules
 WORKDIR /app/server
-RUN ln -s /app/server/node_modules ../packages/protocol/node_modules
 
 COPY server/migrations ./migrations
 COPY --from=build /app/server/dist ./dist
