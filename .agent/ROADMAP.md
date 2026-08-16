@@ -51,4 +51,3 @@
 - [BOUNDARIES.md](BOUNDARIES.md) — invariants
 - [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) — capability line roadmap and future risks
 - [architecture/NON_GOALS_AND_DISABLED_SURFACES.md](architecture/NON_GOALS_AND_DISABLED_SURFACES.md) — disabled surfaces
-- [tasks/current-focus.md](tasks/current-focus.md) — short-term priorities

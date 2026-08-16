@@ -23,9 +23,10 @@ Controlled local/manual testing does not wait for this plan. Thirty-day
 unattended dogfooding does.
 
 Status of the trigger, checked 2026-08-13: none of the last three conditions
-holds. Acceptance is deferred — [../tasks/current-focus.md](../tasks/current-focus.md)
-declares no active sequence and records the gate. No CLI runtime is installed on
-this instance, so the CLI half of the smoke cannot run at all. And the failure
+holds. Acceptance is gated — see
+[../tasks/deferred-register.md](../tasks/deferred-register.md). No CLI runtime
+was installed on this instance, so the CLI half of the smoke cannot run at all.
+And the failure
 evidence this plan needs does not exist: across 2278 Runs there is not one
 `failed` or `degraded` record, so retry classification and backoff timing would
 be designed against imagined failures. That last point is the substantive reason

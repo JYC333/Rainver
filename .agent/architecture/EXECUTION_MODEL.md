@@ -192,19 +192,23 @@ selected state but never requested state; an explicit request remains a hard pin
 
 Route hints carry a runtime-neutral execution shape:
 `conversational`, `structured_generation`, `agentic_files`, or
-`code_execution`, plus required capabilities/tools. Conversational Runs
+`code_execution`, plus required capabilities. (A parallel required-tools channel
+exists and is reachable from a Task's `policy_json`, but nothing populates the
+candidate side, so declaring one rejects every candidate; see
+[ROUTING.md](ROUTING.md).) Conversational Runs
 (including session-backed Chat) and structured generation score Managed API as
-the default. File/code shapes reject tool-free Managed API and score OpenCode
-as the default only when its conformance status is `passed`. An explicit
+the default. File/code shapes are admitted on the candidate's declared
+`requires_file_access`: a runtime without it has no working directory to act in
+and is rejected unconditionally — not as a consequence of which tools the run
+was granted — and a runtime with it must carry a C3 pass before serving those
+shapes. Managed API is rejected by that declaration rather than by its name. An explicit
 Runtime Profile remains a hard pin but still must pass capability, tool,
 sandbox, trust, credential, and shape compatibility filters. Fallback chains
 contain only candidates that passed those same hard filters; the selected
 profile/adapter/provider and decision id are stamped as route evidence.
 
 TaskRun creation copies the Task contract and project binding. Automation fire
-copies the automation's validated contract configuration. Workflow run drafts
-carry a server-resolved built-in template id/config; the Run creation route
-re-resolves that template before constructing the snapshot. Direct runs get a
+copies the automation's validated contract configuration. Direct runs get a
 null-contract direct snapshot. When Task, Automation, and Workflow carriers
 overlap, creation-time explicit precedence selects the highest-precedence cap;
 without precedence the strictest cap wins. The snapshot records both the

@@ -82,9 +82,10 @@ remain immutable accounting facts. Anthropic's
 not added again when deriving total tokens. The dashboard's budget preview is read-only
 projection; usage recording remains fail-closed for managed provider calls.
 Routing and budget SQL currently aggregate `estimated_cost_usd` with `sum()` and
-therefore still swallow the known/unknown distinction. Stage B is the consumer
-that will use `cost_accuracy`; this phase records the provenance without
-changing routing decisions.
+therefore still swallow the known/unknown distinction. The intended consumer is
+funding-aware routing, deferred in
+[deferred-register.md](../.agent/tasks/deferred-register.md); this phase records
+the provenance without changing routing decisions.
 
 The current CLI history preview/commit flow supports managed Claude Code and
 Codex CLI credential profiles. Uploaded archives, server-path imports, scanner

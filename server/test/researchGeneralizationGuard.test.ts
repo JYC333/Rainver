@@ -27,7 +27,11 @@ describe("Project Research generalization boundaries", () => {
       source("server/src/modules/projectResearch/synthesisOnlyExecution.ts"),
     ].join("\n");
 
-    expect(pack).toContain("workflow_template_ids: []");
+    // The pack used to carry an empty `workflow_template_ids: []` to prove no
+    // label-only preset had crept back. The workflow template layer is gone
+    // entirely, so the absence of the field is the stronger form of the same
+    // guard: there is nothing left for a preset to be declared in.
+    expect(pack).not.toContain("workflow_template_ids");
     for (const retired of [
       "research.academic_literature_review",
       "research.news_scan",

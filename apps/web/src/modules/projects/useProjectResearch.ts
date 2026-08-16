@@ -3,12 +3,12 @@ import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useSpaceNavigate } from '../../core/spaceNav'
 import {
-  inquiryApi, projectFoldersApi, projectResearchApi, projectsApi, providersApi, sourcesApi,
+  inquiryApi, projectResearchApi, projectsApi, providersApi, sourcesApi,
 } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
 import type {
-  InquiryThread, Project, ProjectFolder, ProjectOperation, ProjectResearchCheckpoint,
+  InquiryThread, Project, ProjectOperation, ProjectResearchCheckpoint,
   ProjectResearchEvidenceMatrixItem, ProjectResearchInitialIntakeInput, ProjectResearchQuestionResolutionStrategy,
   ProjectResearchReport, ProjectResearchScanSummary, ProjectResearchWorkflow, ProjectSourceBinding,
   SourceChannel, SourceItem,
@@ -89,8 +89,6 @@ export interface ProjectResearchController {
   focusProps: FocusResearchWorkbenchProps | null
   newSearch: NewSearchDialogState
   settings: ProjectResearchSettings | null
-  workflowFolderOptions: Array<{ id: string; name: string; root_path: string | null }>
-  onWorkflowRunCreated: () => void
   saveInitialIntake: (config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) => Promise<boolean>
   startInitialIntake: (config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) => Promise<void>
 }
@@ -110,7 +108,6 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [project, setProject] = useState<Project | null>(null)
-  const [folders, setFolders] = useState<ProjectFolder[]>([])
   const [sourceChannels, setSourceChannels] = useState<SourceChannel[]>([])
   const [sourceBindings, setSourceBindings] = useState<ProjectSourceBinding[]>([])
   const [recentSourceItems, setRecentSourceItems] = useState<SourceItem[]>([])
@@ -152,7 +149,6 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       let workflows: ProjectResearchWorkflow[] = []
       await Promise.all([
         projectsApi.get(projectId).then(setProject),
-        projectFoldersApi.list(projectId, { limit: '200' }).then(page => setFolders(page.items)),
         sourcesApi.channels().then(setSourceChannels),
         sourcesApi.projectSourceBindings({ project_id: projectId }).then(setSourceBindings),
         sourcesApi.projectItems({ project_id: projectId, limit: 5 })
@@ -631,15 +627,6 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         monitoringField: setupDraft.monitoring_field === 'lastUpdatedDate' ? 'Last update date' : 'Submission date',
       },
     } : null,
-    workflowFolderOptions: folders.map(folder => ({
-      id: folder.id,
-      name: folder.name,
-      root_path: folder.root_path,
-    })),
-    // A Workflow launch creates a Run that a research operation groups; the
-    // operation read model is what this Area renders, so refresh that rather
-    // than keeping a second copy of recent Runs here.
-    onWorkflowRunCreated: () => { void refreshOperations() },
     saveInitialIntake,
     startInitialIntake,
   }

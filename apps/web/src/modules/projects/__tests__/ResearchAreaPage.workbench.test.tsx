@@ -23,10 +23,6 @@ vi.mock('../../../core/spaceNav', () => ({
 
 vi.mock('../researchArea/ReadingListView', () => ({ ReadingListView: () => <div>Reading list</div> }))
 
-vi.mock('../../capabilities/ResearchWorkflowPanel', () => ({
-  ResearchWorkflowPanel: () => <div>Research workflow panel</div>,
-}))
-
 vi.mock('../../../api/client', () => ({
   ApiRequestError: class ApiRequestError extends Error {
     constructor(message: string, readonly status: number) { super(message) }
@@ -146,11 +142,6 @@ vi.mock('../../../api/client', () => ({
   },
   credentialsApi: {
     profiles: vi.fn().mockResolvedValue([]),
-  },
-  projectFoldersApi: {
-    list: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 }),
-    scan: vi.fn().mockResolvedValue({ items: [] }),
-    create: vi.fn(),
   },
   activityApi: {
     list: vi.fn().mockResolvedValue([]),

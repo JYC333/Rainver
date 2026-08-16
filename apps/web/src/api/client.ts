@@ -216,13 +216,14 @@ import type {
   ProjectResearchQuestionRefinementResponse,
   ProjectResearchReport,
   ProjectResearchScreeningCriteria,
+  FocusArea,
+  FocusAreaContents,
   ProjectResearchWorkflow,
   ProjectSourceBinding,
   ProjectSourceBindingBackfillResult,
   ProjectSourceItem,
   ProjectSourceSummary,
   ProjectUpdate,
-  ProjectWorkflowProfile,
   PromptAssetDetail,
   PromptAssetSummary,
   PromptDeploymentRef,
@@ -372,9 +373,6 @@ import type {
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
   WorkflowExecutionSummary,
-  WorkflowRunDraftRequest,
-  WorkflowRunDraftResponse,
-  WorkflowTemplate,
 } from '../types/api'
 import type {
   ContentPublication,
@@ -633,6 +631,23 @@ export const contentAccessApi = {
     post<ContentDemotionDisclosure>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/demotion-disclosures`, {
       target_visibility: targetVisibility,
     }),
+}
+
+export const focusAreasApi = {
+  list: (includeArchived = false) =>
+    get<FocusArea[]>(`/focus-areas${includeArchived ? '?include_archived=true' : ''}`),
+  get: (id: string) =>
+    get<FocusArea>(`/focus-areas/${encodeURIComponent(id)}`),
+  create: (body: { name: string; description?: string | null }) =>
+    post<FocusArea>('/focus-areas', body),
+  update: (id: string, body: { name?: string; description?: string | null }) =>
+    patch<FocusArea>(`/focus-areas/${encodeURIComponent(id)}`, body),
+  contents: (id: string) =>
+    get<FocusAreaContents>(`/focus-areas/${encodeURIComponent(id)}/contents`),
+  setForObject: (objectId: string, focusAreaId: string | null) =>
+    put<void>(`/space-objects/${encodeURIComponent(objectId)}/focus-area`, { focus_area_id: focusAreaId }),
+  setForProject: (projectId: string, focusAreaId: string | null) =>
+    put<void>(`/projects/${encodeURIComponent(projectId)}/focus-area`, { focus_area_id: focusAreaId }),
 }
 
 export const publicationsApi = {
@@ -1748,10 +1763,6 @@ export const capabilitiesFrameworkApi = {
     get<CapabilityPackDescriptor[]>('/capability-packs'),
   getCapabilityPack: (id: string) =>
     get<CapabilityPackDescriptor>(`/capability-packs/${encodeURIComponent(id)}`),
-  listWorkflowTemplates: () =>
-    get<WorkflowTemplate[]>('/workflow-templates'),
-  getWorkflowTemplate: (id: string) =>
-    get<WorkflowTemplate>(`/workflow-templates/${encodeURIComponent(id)}`),
   previewSkillImport: (data: { url: string }) =>
     post<SkillImportPreviewResponse>('/skill-sources/import-preview', data),
   importSkill: (data: { url: string }) =>
@@ -1779,21 +1790,6 @@ export const capabilitiesFrameworkApi = {
     post<Proposal>(`/capability-definitions/${encodeURIComponent(capabilityId)}/enable-proposal`, data),
   createCapabilityDisableProposal: (capabilityId: string, data: { capability_version_id?: string; project_id?: string; agent_id?: string; user_id?: string } = {}) =>
     post<Proposal>(`/capability-definitions/${encodeURIComponent(capabilityId)}/disable-proposal`, data),
-}
-
-export const projectWorkflowProfilesApi = {
-  list: (projectId: string) =>
-    get<ProjectWorkflowProfile[]>(`/projects/${encodeURIComponent(projectId)}/workflow-profiles`),
-  create: (projectId: string, data: { workflow_template_id: string; name: string; enabled?: boolean; config_json?: Record<string, unknown> }) =>
-    post<ProjectWorkflowProfile>(`/projects/${encodeURIComponent(projectId)}/workflow-profiles`, data),
-  update: (projectId: string, profileId: string, data: { name?: string; enabled?: boolean; config_json?: Record<string, unknown> }) =>
-    patch<ProjectWorkflowProfile>(`/projects/${encodeURIComponent(projectId)}/workflow-profiles/${encodeURIComponent(profileId)}`, data),
-  disable: (projectId: string, profileId: string) =>
-    del<ProjectWorkflowProfile>(`/projects/${encodeURIComponent(projectId)}/workflow-profiles/${encodeURIComponent(profileId)}`),
-  buildTemplateRunDraft: (projectId: string, workflowTemplateId: string, data: WorkflowRunDraftRequest = {}) =>
-    post<WorkflowRunDraftResponse>(`/projects/${encodeURIComponent(projectId)}/workflow-templates/${encodeURIComponent(workflowTemplateId)}/run-draft`, data),
-  buildRunDraft: (projectId: string, profileId: string, data: WorkflowRunDraftRequest = {}) =>
-    post<WorkflowRunDraftResponse>(`/projects/${encodeURIComponent(projectId)}/workflow-profiles/${encodeURIComponent(profileId)}/run-draft`, data),
 }
 
 export const contextOpsApi = {

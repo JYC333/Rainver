@@ -17,8 +17,6 @@ import { getBuiltInCapabilityPack, listBuiltInCapabilityPacks } from "./packRegi
 import { PgCapabilitiesRepository } from "./repository";
 import { CapabilitiesService } from "./service";
 import { previewSkillImport, type SkillFetcher, type SkillImportOptions } from "./skillImporter";
-import type { WorkflowRunPromptResolver } from "./workflowPrompts";
-import { getBuiltInWorkflowTemplate, listBuiltInWorkflowTemplates } from "./workflowRegistry";
 
 type CapabilitiesRepositoryFactory = (context: ModuleContext) => PgCapabilitiesRepository;
 type CapabilitiesIdentityOverride =
@@ -28,7 +26,6 @@ type CapabilitiesIdentityOverride =
 let repositoryFactoryOverride: CapabilitiesRepositoryFactory | null = null;
 let identityOverride: CapabilitiesIdentityOverride | null = null;
 let importOptionsOverride: SkillFetcher | SkillImportOptions | null = null;
-let workflowRunPromptResolverOverride: WorkflowRunPromptResolver | null = null;
 
 export function __setCapabilitiesRepositoryFactoryForTests(
   factory: CapabilitiesRepositoryFactory | null,
@@ -48,22 +45,12 @@ export function __setCapabilitiesSkillFetcherForTests(
   importOptionsOverride = importOptions;
 }
 
-export function __setCapabilitiesWorkflowRunPromptResolverForTests(
-  resolver: WorkflowRunPromptResolver | null,
-): void {
-  workflowRunPromptResolverOverride = resolver;
-}
-
 function repository(context: ModuleContext): PgCapabilitiesRepository {
   return repositoryFactoryOverride?.(context) ?? PgCapabilitiesRepository.fromConfig(context.config);
 }
 
 function service(context: ModuleContext): CapabilitiesService {
-  return new CapabilitiesService(
-    repository(context),
-    importOptionsOverride ?? undefined,
-    workflowRunPromptResolverOverride ?? undefined,
-  );
+  return new CapabilitiesService(repository(context), importOptionsOverride ?? undefined);
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -138,20 +125,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(found);
   });
 
-  app.get("/api/v1/workflow-templates", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    return reply.send(listBuiltInWorkflowTemplates());
-  });
-
-  app.get("/api/v1/workflow-templates/:workflowTemplateId", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const found = getBuiltInWorkflowTemplate(params(request).workflowTemplateId ?? "");
-    if (!found) return reply.code(404).send({ detail: "Workflow template not found" });
-    return reply.send(found);
-  });
-
   app.get("/api/v1/capabilities/skills/index", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -196,101 +169,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         parsed.data,
       );
       return reply.send(protocol.SkillLocalOverlaySchema.parse(overlay));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.get("/api/v1/projects/:projectId/workflow-profiles", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await service(context).listWorkflowProfiles(identity, params(request).projectId ?? ""),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/workflow-templates/:workflowTemplateId/run-draft", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await service(context).buildWorkflowTemplateRunInputDraft(
-          identity,
-          params(request).projectId ?? "",
-          params(request).workflowTemplateId ?? "",
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/workflow-profiles", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(
-        await service(context).createWorkflowProfile(
-          identity,
-          params(request).projectId ?? "",
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/projects/:projectId/workflow-profiles/:profileId", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await service(context).updateWorkflowProfile(
-          identity,
-          params(request).projectId ?? "",
-          params(request).profileId ?? "",
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/projects/:projectId/workflow-profiles/:profileId", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await service(context).disableWorkflowProfile(
-          identity,
-          params(request).projectId ?? "",
-          params(request).profileId ?? "",
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/workflow-profiles/:profileId/run-draft", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await service(context).buildWorkflowRunInputDraft(
-          identity,
-          params(request).projectId ?? "",
-          params(request).profileId ?? "",
-          jsonBody(request),
-        ),
-      );
     } catch (error) {
       return sendRouteError(reply, error);
     }

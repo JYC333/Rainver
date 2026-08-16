@@ -48,71 +48,9 @@ export interface CapabilityPackDescriptor {
   description: string;
   version: string;
   capability_ids: string[];
-  workflow_template_ids: string[];
   artifact_types: string[];
   source_kind: CapabilitySourceKind;
   status: CapabilityStatus;
-}
-
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  capability_ids: string[];
-  input_schema_json: Record<string, unknown>;
-  default_config_json: Record<string, unknown>;
-  output_artifact_types: string[];
-  proposal_policy: Record<string, unknown>;
-  recommended_runtime_adapters: string[];
-  execution_shape?: "conversational" | "structured_generation" | "agentic_files" | "code_execution";
-  required_capabilities?: string[];
-  required_tools?: string[];
-  prompt_asset_keys: string[];
-}
-
-export interface ProjectWorkflowProfile {
-  id: string;
-  space_id: string;
-  project_id: string;
-  workflow_template_id: string;
-  name: string;
-  enabled: boolean;
-  config_json: Record<string, unknown>;
-  created_by_user_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkflowRunDraft {
-  workflow_template: WorkflowTemplate;
-  workflow_profile: ProjectWorkflowProfile | null;
-  capability_ids: string[];
-  output_artifact_types: string[];
-  config_json: Record<string, unknown>;
-  run_create_body: {
-    mode: "live";
-    run_type: "agent";
-    trigger_origin: "manual";
-    project_id: string;
-    workflow_template_id: string;
-    workflow_config_json: Record<string, unknown>;
-    agent_id: string | null;
-    runtime_profile_id?: string | null;
-    project_folder_id?: string | null;
-    session_id?: string | null;
-    prompt: string;
-    instruction?: string | null;
-    adapter_type?: string | null;
-    capability_id?: string | null;
-    capabilities_json?: string[];
-    model_provider_id?: string | null;
-    model?: string | null;
-    prompt_asset_key?: string | null;
-    prompt_version_id?: string | null;
-    prompt_content_hash?: string | null;
-  };
-  warnings: string[];
 }
 
 export interface SkillSource {

@@ -9,8 +9,8 @@ Accepted; amended 2026-08-14
 ## Context
 
 Agent-space needs a vendor-neutral way to represent canonical capabilities,
-group them into packs, compose them into workflow templates, configure them per
-project, import external Agent-Skills-compatible packages safely, and render
+group them into packs, configure them per project, import external
+Agent-Skills-compatible packages safely, and render
 capabilities for runtime adapters such as Claude Code, Codex, and `model_api`.
 
 The existing capability surface is catalog metadata only. Runtime adapters are
@@ -27,8 +27,6 @@ framework data and APIs for:
 
 - capability definitions
 - capability packs
-- workflow templates
-- project workflow profiles
 - imported skill sources/packages
 - normalized skills
 - runtime skill bindings
@@ -85,12 +83,37 @@ amendment supersedes those statements. The original untrusted-import posture
 and all proposal, policy, Runtime Context, and execution-safety boundaries remain
 in force.
 
+## Amendment — Workflow Template Layer Removed (2026-08-14)
+
+The original decision gave the `capabilities` module a workflow template layer:
+`WorkflowTemplate` as a user-facing reusable process composing capabilities,
+`ProjectWorkflowProfile` as its saved project-scoped preset, and
+`CapabilityPack.workflow_template_ids` grouping templates into packs.
+The capability-shrink plan deleted that layer in full — the types, their protocol schemas, the
+`/workflow-templates` and `/projects/{projectId}/workflow-profiles` routes, and
+the `project_workflow_profiles` table.
+
+The layer never carried a production workflow. Its built-in registry returned an
+empty array outside tests, so every preset creation failed validation and no
+preset could exist. What survives is the enforced-process side that was always
+the real mechanism: an approved `workflow_definition.v1` version stored as a
+`workflow_template` evolvable asset and executed by the Workflow execution
+engine. A user-chosen reusable process is that; it is not a capability grouping.
+
+Accordingly, `workflow templates` and `project workflow profiles` are struck
+from the module's owned APIs in the Decision above, `workflow templates` is
+struck from the Context paragraph, and the Consequences bullet about modeling
+Research as "a capability pack and workflow templates" reads as a capability
+pack alone. Capability definitions, packs, imported skill sources/packages,
+normalized skills, and runtime skill bindings and rendering are unaffected here;
+the capability-shrink plan's remaining items address those separately.
+
 ## Consequences
 
 - Capability lifecycle remains reviewable and can later use proposal types such
   as `capability_install`, `capability_update`, and `capability_enable`.
-- Research can be modeled first as a capability pack and workflow templates
-  rather than as a product plugin.
+- Research can be modeled first as a capability pack rather than as a product
+  plugin.
 - Imported skills can be stored, inspected, normalized, risk-scanned, and
   converted to capability candidates without enabling execution.
 - The native `capability` runtime remains disabled until a separate executor

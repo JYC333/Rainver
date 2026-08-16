@@ -1,6 +1,5 @@
 import type { Pool } from "./pool";
 import { syncBuiltinPrompts } from "../modules/prompts/builtins";
-import { syncBuiltinWorkflows } from "../modules/capabilities/workflowAssets";
 
 interface Logger {
   info: (msg: string) => void;
@@ -10,14 +9,11 @@ export async function runBuiltInSeeds(pool: Pool, log: Logger, catalogRoot: stri
   await seedEvolutionStrategyAssets(pool);
   await seedSourceConnectors(pool);
   const promptSync = await syncBuiltinPrompts(pool, catalogRoot);
-  const workflowSync = await syncBuiltinWorkflows(pool);
   log.info(
     [
       "[seeds] built-in assets upserted",
       `prompt_assets=${promptSync.assetKeys.length}`,
       `prompt_versions_created=${promptSync.versionsCreated.length}`,
-      `workflow_assets=${workflowSync.assetKeys.length}`,
-      `workflow_versions_created=${workflowSync.versionsCreated.length}`,
     ].join(" "),
   );
 }

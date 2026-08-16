@@ -9,10 +9,10 @@ on 2026-08-13.
 ## How to use this file
 
 Every item here is a genuine gap that someone will eventually close; none of
-them is waiting on a trigger. Anything that *is* waiting on a trigger belongs in
+them is waiting on a trigger. Anything that *is* waiting on a trigger, and every
+standing enablement gate, belongs in
 [../tasks/deferred-register.md](../tasks/deferred-register.md) instead. Nothing
-here is scheduled: [../tasks/current-focus.md](../tasks/current-focus.md)
-declares no active sequence, so items are pulled on demand.
+here is scheduled; items are pulled on demand.
 
 Implementation truth remains the code. Current-state architecture belongs under
 `.agent/architecture/`; this file is forward-looking only. Remove an item once
@@ -135,8 +135,36 @@ installed on this instance.
   fail-closed behavior.
 
 Prerequisite: a CLI runtime must exist in the sandbox image before any probe —
-existing or new — can produce an observation. See the instance reality section of
-[../tasks/current-focus.md](../tasks/current-focus.md).
+existing or new — can produce an observation. Check the running instance for
+whether one is installed; see also the CLI gate in
+[../tasks/deferred-register.md](../tasks/deferred-register.md).
+
+### C3.2 — Routing cannot express a provider or model requirement
+
+Found 2026-08-15 while retiring the routing plan. The router never reads
+`model_provider_id` or `model_name` — they are carried on `RouteCandidate` and
+referenced nowhere in `router.ts`. A caller that needs a specific provider has
+exactly one way to get it: pin the profile as `explicit`, which hard-filters
+every other candidate and takes the run out of routing entirely. Project
+Research does this, and it is why its stage runs record a foregone route
+decision.
+
+- [ ] Decide whether a run may declare a provider/model requirement, and
+  whether it is a hard filter or a scoring term.
+- [ ] Wire both sides. A requirement dimension needs a producer *and* a
+  populated candidate side; `required_tools` has the first without the second
+  and therefore rejects every candidate when used. See
+  [../architecture/ROUTING.md](../architecture/ROUTING.md).
+- [ ] Decide whether `required_tools` should be repaired or removed while here.
+  It is reachable today from four carriers — Task `policy_json`, workflow node
+  `contract_json`, plan node `policy_json`, and automation `config_json` — and
+  any of them rejects every system-created candidate. Removal has to close all
+  four; repair means populating the candidate side.
+
+Constraint: this must land before "Let Project Research stage runs route" in
+[deferred-register.md](../tasks/deferred-register.md), or unpinning Project
+Research silently discards the user's provider choice rather than letting the
+router honour it.
 
 ### G1.3 — Chat provider presets cover one vendor
 
@@ -155,16 +183,70 @@ and `api_key_required` stays a server-declared fact. The server-owned vendor
 registry and its API are current-state authority; see
 [provider-policy.md](../modules/provider-policy.md).
 
+### G1.4 — A managed run cannot produce an artifact
+
+Found 2026-08-15 during the routing plan review. Both artifact materialisation
+paths require a sandbox working directory: `produced_artifact_paths` and
+`exchange_artifact_paths` are read from `sandbox_cwd` / `exchange_output_cwd`,
+and `materializationService.ts:285` throws without one. `managedApiAdapter.ts`
+contains no artifact reference at all — a managed run's entire output surface is
+`output_text` and `output_json`.
+
+The consequence is a real limit on what the managed path can produce: anything
+durable needs a domain service and a domain table to receive it. Project
+Research works this way, writing to `project_research_reports.content_json`. So
+the set of things a managed agent can produce equals the set of things someone
+has already written a table for; it cannot produce something whose shape was not
+anticipated.
+
+- [ ] Decide whether a managed run may declare an artifact (type plus content)
+  directly, materialised without a sandbox cwd.
+- [ ] If so, route it through the same provenance, policy, and visibility path
+  as a sandbox-produced artifact, so the two do not become separate lifecycles.
+
+Constraint: this is a materialisation question, not a sandbox one. Giving the
+managed path a working directory is a separate and much larger decision, and
+routing deliberately does not take it: a provider API has no file primitive, and
+a server-side `file.write` tool is a worse version of what a CLI runtime does
+natively while turning an ungated mutation surface loose in the one path that
+currently has none.
+
+### G1.5 — Every Project shows all fifteen Areas from birth
+
+Found 2026-08-16. `ProjectAreaLayout.tsx` declares its navigation as a
+hardcoded four-group, fifteen-item `as const`: Project (Overview, Notes, Rooms,
+Raw material), Explore (Inquiry, Research, Sources, Digest, Files & Code,
+Experiments), Decide & learn (Decisions, Learning, Knowledge review), Execute
+(Delivery, Operations).
+
+`primary_mode` is read in that file only to render the words "<mode> mode" — it
+does not filter. There is no visibility or presence check anywhere in the
+component. So a Project created to hold a few notes presents the same fifteen
+destinations as one running experiments and deliveries, and most of them will
+never hold data.
+
+- [ ] Decide what governs an Area's visibility — `primary_mode`, data presence,
+  explicit enablement, or a combination.
+- [ ] Make the list contributed rather than literal. The back end is already
+  contribution-based (`projects/attentionRegistry.ts` plus the per-module
+  `projectIntegration.ts` files); only this component is not.
+
+Constraint: an Area that has data must never become unreachable. Hiding is a
+default, not a deletion — a Project whose Mode changes cannot lose access to
+what it already produced.
+
 ## 7. Harness And Scope Convergence
 
-Three remaining specifications cover routing, capability shrink, and the
-two-Scope user model. Each is a separate convergence with its own prerequisites;
-pointers only here, detail there. Runtime-boundary and registry-lifecycle work
-completed on 2026-08-14 and is recorded in current-state architecture.
+Two remaining specifications cover capability shrink and the two-Scope user
+model. Each is a separate convergence with its own prerequisites; pointers only
+here, detail there. Runtime-boundary and registry-lifecycle work completed on
+2026-08-14, and the routing specification was retired on 2026-08-15 — its
+shipped behaviour is in
+[../architecture/ROUTING.md](../architecture/ROUTING.md) and its untriggered
+remainder in [../tasks/deferred-register.md](../tasks/deferred-register.md).
 
-None is currently active — see
-[../tasks/current-focus.md](../tasks/current-focus.md). The completed managed
-execution replatform is current-state architecture, not backlog work.
+None is currently active. The completed managed execution replatform is
+current-state architecture, not backlog work.
 
 ### H1 — Managed tool families cannot contribute to the system prompt
 
@@ -197,19 +279,18 @@ correctness weight.
 
 Constraint: the delivery is immutable audit evidence. A contribution has to be
 part of what the delivery renders, not a mutation applied after it.
-- [ ] [runtime-routing-plan.md](runtime-routing-plan.md) — remove the
-  `adapter_type`-name special cases from `executionShapeScore()`, unpin
-  `RESEARCH_ADAPTER`, and (Stage B) let the router read funding mode and the
-  subscription quota state the credential broker already caches. Two claims in
-  its first version were wrong and are corrected in place: the router has no
-  cost signal at all, and Stage B's trigger is a connected non-payg funding
-  channel rather than an installed CLI.
-- [ ] [scope-model-plan.md](scope-model-plan.md) — raise Domain to a first-class
-  Scope beside Project and generalize the project-only content governance
-  interface. Needs an ADR first.
-- [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — Item 1 amended
-  ADR 0009 and the authority documents on 2026-08-14. Items 2–7 still collapse
-  the implementation to `SkillPackage + SkillBinding + SkillPolicy`.
+- [ ] Focus areas: classify from where content lives. The first slice shipped
+  ([ADR 0015](../decisions/0015-focus-area-classification.md)) with
+  classification available only from a focus area's own page, through pickers
+  that list the first 100 notes and knowledge items. That does not scale and it
+  is the wrong direction of travel: filing something should be possible from the
+  note, the knowledge item or the Project itself. `focusAreasApi.setForObject`
+  and `setForProject` already exist, so this is a front-end affordance rather
+  than new API. The aggregation page also caps objects at 200 with no paging.
+- [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — the authority
+  documents and the workflow template layer landed on 2026-08-14. The remaining
+  items collapse the implementation to
+  `SkillPackage + SkillBinding + SkillPolicy`.
 
 ## Completion and retirement
 

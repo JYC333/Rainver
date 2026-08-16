@@ -55,6 +55,16 @@ vi.mock('../../../api/client', () => {
     },
   ]
   return {
+    focusAreasApi: {
+      list: vi.fn().mockResolvedValue([]),
+      get: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      contents: vi.fn(),
+      setForObject: vi.fn(),
+      setForProject: vi.fn(),
+    },
+    projectsApi: { list: vi.fn().mockResolvedValue(emptyPage) },
     notesCollectionsApi: {
       list: vi.fn().mockResolvedValue(collections),
       create: vi.fn(),
@@ -216,9 +226,20 @@ beforeEach(() => {
 })
 
 describe('Knowledge section switcher catalog', () => {
-  it('lists exactly Knowledge Home, Notes, Wiki, Sources, Cards', () => {
-    expect(KNOWLEDGE_SECTIONS.map(s => s.id)).toEqual(['home', 'notes', 'wiki', 'sources', 'cards'])
-    expect(KNOWLEDGE_SECTIONS.map(s => s.label)).toEqual(['Knowledge Home', 'Notes', 'Wiki', 'Sources', 'Cards'])
+  it('lists exactly Knowledge Home, Notes, Wiki, Sources, Cards, Domains', () => {
+    expect(KNOWLEDGE_SECTIONS.map(s => s.id)).toEqual(['home', 'notes', 'wiki', 'sources', 'cards', 'domains'])
+    expect(KNOWLEDGE_SECTIONS.map(s => s.label)).toEqual(['Knowledge Home', 'Notes', 'Wiki', 'Sources', 'Cards', 'Domains'])
+  })
+
+  // Domains is a focus-area surface parked under Knowledge because the section
+  // taxonomy is functional and has no home for a life-area grouping yet. Its
+  // placement is a stopgap; that it is *reachable* is not — this renders the
+  // route because the defect it guards against (a splat mount with no nested
+  // Routes) is invisible to an assertion on the catalog constant.
+  it('renders Domains at its own route', async () => {
+    expect(KNOWLEDGE_SECTIONS.find(s => s.id === 'domains')?.to).toBe('/knowledge/domains')
+    renderAt('/spaces/personal-1/knowledge/domains')
+    expect(await screen.findByText('No domains yet')).toBeInTheDocument()
   })
 
   it('keeps Wiki backed by the KnowledgeItem route', () => {

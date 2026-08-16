@@ -120,7 +120,6 @@ import type {
   ProjectResearchQuestionRefinement,
   ProjectResearchQuestionRefinementResponse,
   ProjectResearchQuestionRefinementResult,
-  ProjectWorkflowProfile,
   PromptAssetContent,
   PromptAssetDetail,
   PromptAssetScopeType,
@@ -237,9 +236,6 @@ import type {
   SpaceRetrievalSettingsUpdate,
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
-  WorkflowRunDraftRequest,
-  WorkflowRunDraftResponse,
-  WorkflowTemplate,
 } from '@agent-space/protocol'
 export type {
   AgentRunGroup,
@@ -362,7 +358,6 @@ export type {
   ProjectResearchQuestionRefinement,
   ProjectResearchQuestionRefinementResponse,
   ProjectResearchQuestionRefinementResult,
-  ProjectWorkflowProfile,
   PromptAssetContent,
   PromptAssetDetail,
   PromptAssetScopeType,
@@ -479,9 +474,6 @@ export type {
   SpaceRetrievalSettingsUpdate,
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
-  WorkflowRunDraftRequest,
-  WorkflowRunDraftResponse,
-  WorkflowTemplate,
 }
 import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from '@agent-space/protocol'
 
@@ -4840,3 +4832,19 @@ export interface RelocationBlock {
   anchored: boolean
 }
 
+/** A user-created durable focus area. Classifies content; decides no access (ADR 0015). */
+export interface FocusArea {
+  id: string
+  space_id: string
+  owner_user_id: string | null
+  name: string
+  description: string | null
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+}
+
+export interface FocusAreaContents {
+  projects: Array<{ id: string; name: string; status: string }>
+  objects: Array<{ id: string; object_type: string; title: string | null }>
+}

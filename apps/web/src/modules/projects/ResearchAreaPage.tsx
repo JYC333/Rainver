@@ -11,7 +11,6 @@ import { Card } from '../../components/ui/card'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import { errMsg } from '../../lib/utils'
-import { ResearchWorkflowPanel } from '../capabilities/ResearchWorkflowPanel'
 import { ChecklistView } from './researchArea/ChecklistView'
 import { ReadingListView } from './researchArea/ReadingListView'
 import { FocusResearchWorkbench } from './FocusResearchWorkbench'
@@ -138,15 +137,6 @@ export default function ResearchAreaPage() {
             either one. */}
         <TabsContent value="standing" forceMount className="space-y-4 data-[state=inactive]:hidden">
           <ProjectResearchStandingPanel projectId={projectId} canAct={research.project?.status === 'active'} />
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Research workflows</h2>
-            <ResearchWorkflowPanel
-              projectId={projectId}
-              projectName={research.project?.name ?? ''}
-              folderOptions={research.workflowFolderOptions}
-              onRunCreated={research.onWorkflowRunCreated}
-            />
-          </section>
         </TabsContent>
         <TabsContent value="focus" forceMount className="space-y-4 data-[state=inactive]:hidden">
           {research.focusProps && <FocusResearchWorkbench {...research.focusProps} />}

@@ -3,19 +3,16 @@ import {
   analyzeSkillRisk,
   assertPackReferencesValid,
   assertUniqueCapabilityIds,
-  assertUniqueWorkflowTemplateIds,
   listBuiltInCapabilityDefinitions,
   listBuiltInCapabilityPacks,
-  listBuiltInWorkflowTemplates,
   parseSkillMarkdown,
   previewSkillImport,
   renderAllRuntimeSkills,
 } from "../src/modules/capabilities";
 
 describe("capability framework built-ins", () => {
-  it("registers the built-in research pack without label-only workflow presets", () => {
+  it("registers the built-in research pack", () => {
     const capabilities = listBuiltInCapabilityDefinitions();
-    const workflows = listBuiltInWorkflowTemplates();
     const packs = listBuiltInCapabilityPacks();
 
     expect(packs.map((pack) => pack.id)).toContain("research");
@@ -29,10 +26,7 @@ describe("capability framework built-ins", () => {
       "research.source_collect",
       "research.source_summarize",
     ]);
-    expect(workflows).toEqual([]);
-
     expect(() => assertUniqueCapabilityIds(capabilities)).not.toThrow();
-    expect(() => assertUniqueWorkflowTemplateIds(workflows)).not.toThrow();
     expect(() => assertPackReferencesValid(packs)).not.toThrow();
   });
 });

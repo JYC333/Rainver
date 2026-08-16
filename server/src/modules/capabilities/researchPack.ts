@@ -112,9 +112,6 @@ export const RESEARCH_PACK: CapabilityPackDescriptor = {
   description: "Built-in reusable research capabilities.",
   version: "0.1.0",
   capability_ids: RESEARCH_CAPABILITIES.map((capability) => capability.id),
-  // D2: a preset is admitted only when it changes concrete behavior or configuration;
-  // labels over identical execution settings are not presets.
-  workflow_template_ids: [],
   artifact_types: RESEARCH_ARTIFACT_TYPES,
   source_kind: "builtin",
   status: "available",

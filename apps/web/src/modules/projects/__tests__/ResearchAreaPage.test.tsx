@@ -34,9 +34,6 @@ vi.mock('../FocusResearchWorkbench', () => ({
 vi.mock('../ProjectResearchStandingPanel', () => ({
   ProjectResearchStandingPanel: () => <div>Standing overview</div>,
 }))
-vi.mock('../../capabilities/ResearchWorkflowPanel', () => ({
-  ResearchWorkflowPanel: () => <div>Research workflow panel</div>,
-}))
 vi.mock('../../../api/client', () => ({
   ApiRequestError: class ApiRequestError extends Error {
     constructor(message: string, readonly status: number) { super(message) }
@@ -50,7 +47,6 @@ vi.mock('../../../api/client', () => ({
   },
   notesApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), jot: vi.fn(), linkingTo: vi.fn() },
   projectsApi: { get: vi.fn(), updateCorpusItem: vi.fn(), operations: vi.fn() },
-  projectFoldersApi: { list: vi.fn() },
   inquiryApi: {
     listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn() },
   sourcesApi: { channels: vi.fn(), projectSourceBindings: vi.fn(), projectItems: vi.fn() },
@@ -89,7 +85,6 @@ describe('ResearchAreaPage', () => {
     vi.mocked(projectResearchApi.scanSummaries).mockResolvedValue([])
     vi.mocked(projectResearchApi.checkpoints).mockResolvedValue([])
     vi.mocked(api.projectsApi.operations).mockResolvedValue([])
-    vi.mocked(api.projectFoldersApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
     vi.mocked(api.inquiryApi.listThreads).mockResolvedValue([])
     vi.mocked(api.sourcesApi.channels).mockResolvedValue([])
     vi.mocked(api.sourcesApi.projectSourceBindings).mockResolvedValue([])

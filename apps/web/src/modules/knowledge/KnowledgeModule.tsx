@@ -11,6 +11,7 @@ import KnowledgePage from './KnowledgePage'
 import KnowledgeDetailPage from './KnowledgeDetailPage'
 import SourcesPage from './SourcesPage'
 import KnowledgeCardsPanel from './KnowledgeCardsPanel'
+import FocusAreaList, { FocusAreaDetail } from '../focusAreas/FocusAreasPage'
 
 /**
  * `/knowledge` is a thin entry point, not a section: it redirects to the
@@ -58,6 +59,8 @@ export default function KnowledgeModule() {
       <Route path="wiki/:itemId" element={<KnowledgeDetailPage />} />
       <Route path="sources" element={<SourcesPage />} />
       <Route path="cards" element={<KnowledgeCardsPanel />} />
+      <Route path="domains" element={<FocusAreaList />} />
+      <Route path="domains/:focusAreaId" element={<FocusAreaDetail />} />
     </Routes>
   )
 }

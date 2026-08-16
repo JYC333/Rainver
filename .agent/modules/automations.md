@@ -84,9 +84,9 @@ External/webhook triggers remain deferred (roadmap Capability 6).
 
 ## Native target authority
 
-A user-chosen reusable process is a Workflow Template. A maintenance or
-control-plane job that a user only enables or disables is a registered native
-Automation target. The protocol registry records every target's kind,
+A user-chosen reusable process is a Workflow — an approved
+`workflow_definition.v1` version. A maintenance or control-plane job that a
+user only enables or disables is a registered native Automation target. The protocol registry records every target's kind,
 selectability, Run fan-out, Project-binding requirement, credential-grant
 requirement, enforcement point, and description. A frozen fixture pins its
 count, order, and fields.

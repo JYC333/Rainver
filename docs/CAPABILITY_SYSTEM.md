@@ -104,8 +104,8 @@ This is not a marketplace or remote install system.
 ## Capability / Workflow / Open Skill Framework
 
 The product control plane for canonical capability definitions, capability
-packs, workflow templates, imported Open Skill packages, project workflow
-profiles, and runtime skill bindings is the `capabilities` server module.
+packs, imported Open Skill packages, and runtime skill bindings is the
+`capabilities` server module.
 `catalog` remains the raw on-disk manifest reader.
 
 Key distinctions:
@@ -115,9 +115,7 @@ Key distinctions:
 | Open Skill | External portable source package, usually `SKILL.md`; untrusted by default. |
 | NormalizedSkill | Internal intermediate representation produced from imported skill content. |
 | CapabilityDefinition | Agent-space canonical ability object and source of truth. |
-| CapabilityPack | Grouping of related capabilities, workflow templates, artifact types, docs/tests/examples. |
-| WorkflowTemplate | Reusable process/mode that composes capabilities. |
-| ProjectWorkflowProfile | Project-scoped configuration of a workflow template. |
+| CapabilityPack | Grouping of related capabilities, artifact types, docs/tests/examples. |
 | Runtime Skill | Generated Claude/Codex/model_api adapter content; not source of truth. |
 | Product Plugin | Optional product feature package; separate from capabilities. |
 

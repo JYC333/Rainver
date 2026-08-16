@@ -35,12 +35,9 @@ import {
 } from "../routeUtils/common";
 import { PgProposalRepository } from "../proposals/repository";
 import { PgAgentChatRepository, PgAgentRepository } from "./repository";
-import { getBuiltInWorkflowTemplate } from "../capabilities/workflowRegistry";
-import { resolveWorkflowVersionId } from "../capabilities/workflowAssets";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters";
 import { resolveContentCreationContext } from "../access/creationContext";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker";
-import { workflowContractInput } from "../capabilities/workflowContract";
 import {
   applyAgentIdentityPatch,
   configPatch,
@@ -524,20 +521,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         projectId,
       });
       const resolvedProjectFolderId = creation.projectId ? projectFolderId : null;
-      const workflowTemplateId = stringValue(body.workflow_template_id);
-      const workflowTemplate = workflowTemplateId ? getBuiltInWorkflowTemplate(workflowTemplateId) : null;
-      if (workflowTemplateId && !workflowTemplate) {
-        throw new RunCreateValidationError(`Workflow template '${workflowTemplateId}' not found`, 422);
-      }
-      const workflowVersionId = workflowTemplate
-          ? await resolveWorkflowVersionId(dbPool(context.config), {
-            spaceId: creation.spaceId,
-            userId: identity.userId,
-            projectId,
-            agentId,
-            workflowId: workflowTemplate.id,
-          })
-        : null;
       const run = await repository.createQueuedRunWithBudgetAdmission({
         agent_id: agentId,
         space_id: creation.spaceId,
@@ -555,17 +538,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         runtime_profile_id: stringValue(body.runtime_profile_id),
         capability_id: stringValue(body.capability_id),
         capabilities_json: optionalArrayBody(body, "capabilities_json"),
-        workflow_version_id: workflowVersionId,
+        workflow_version_id: null,
         visibility: creation.visibility,
-        contract_snapshot: workflowTemplate
-          ? workflowContractInput({
-              template: workflowTemplate,
-              workflowVersionId,
-              config: optionalRecordBody(body, "workflow_config_json") ?? {},
-              projectId,
-              projectFolderId,
-            })
-          : undefined,
       });
       return reply.code(201).send(runToOut(run));
     } catch (error) {

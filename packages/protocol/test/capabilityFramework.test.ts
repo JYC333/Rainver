@@ -4,18 +4,16 @@ import {
   CapabilityPackDescriptorSchema,
   CapabilityRuntimeBindingSchema,
   NormalizedSkillSchema,
-  ProjectWorkflowProfileSchema,
   SkillConvertToCapabilityResponseSchema,
   SkillImportApprovalProposalResponseSchema,
   SkillImportPreviewRequestSchema,
   SkillImportPreviewResponseSchema,
   SkillPackageSchema,
   SkillSourceSchema,
-  WorkflowTemplateSchema,
 } from "../src";
 
-describe("capability/workflow/open-skill protocol schemas", () => {
-  it("parses capability definitions, packs, bindings, and workflow templates", () => {
+describe("capability/open-skill protocol schemas", () => {
+  it("parses capability definitions, packs, and bindings", () => {
     const binding = CapabilityRuntimeBindingSchema.parse({
       id: "bind-1",
       capability_id: "research.source_collect",
@@ -49,45 +47,14 @@ describe("capability/workflow/open-skill protocol schemas", () => {
         description: "Research pack.",
         version: "0.1.0",
         capability_ids: [capability.id],
-        workflow_template_ids: ["test.research_workflow"],
         artifact_types: ["research_report.archive.v1"],
         source_kind: "builtin",
         status: "available",
       }).id,
     ).toBe("research");
-
-    expect(
-      WorkflowTemplateSchema.parse({
-        id: "test.research_workflow",
-        name: "Technical Survey",
-        description: "Survey technical sources.",
-        category: "research",
-        capability_ids: [capability.id],
-        input_schema_json: {},
-        default_config_json: {},
-        output_artifact_types: ["research_report.archive.v1"],
-        proposal_policy: {},
-        recommended_runtime_adapters: ["model_api"],
-      }).category,
-    ).toBe("research");
   });
 
-  it("parses project workflow profile and skill import contracts", () => {
-    expect(
-      ProjectWorkflowProfileSchema.parse({
-        id: "profile-1",
-        space_id: "space-1",
-        project_id: "project-1",
-        workflow_template_id: "test.research_workflow",
-        name: "Survey",
-        enabled: true,
-        config_json: { source_mode: "project_sources" },
-        created_by_user_id: "user-1",
-        created_at: "2026-06-20T00:00:00.000Z",
-        updated_at: "2026-06-20T00:00:00.000Z",
-      }).enabled,
-    ).toBe(true);
-
+  it("parses skill import contracts", () => {
     const normalized = NormalizedSkillSchema.parse({
       name: "Skill",
       description: "Useful skill.",

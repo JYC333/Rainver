@@ -6,27 +6,6 @@ import { proposals } from "./proposals";
 import { projects } from "./projects";
 import { agents } from "./agents";
 
-export const projectWorkflowProfiles = pgTable("project_workflow_profiles", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	projectId: varchar("project_id", { length: 36 }).notNull(),
-	workflowTemplateId: varchar("workflow_template_id", { length: 128 }).notNull(),
-	name: varchar({ length: 256 }).notNull(),
-	enabled: boolean().notNull(),
-	configJson: jsonb("config_json").default({}).notNull(),
-	createdByUserId: varchar("created_by_user_id", { length: 36 }),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_project_workflow_profiles_space_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
-	index("ix_project_workflow_profiles_template").using("btree", table.workflowTemplateId.asc().nullsLast()),
-	uniqueIndex("uq_project_workflow_profiles_name").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.workflowTemplateId.asc().nullsLast(), table.name.asc().nullsLast()),
-	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "project_workflow_profiles_space_fkey" }),
-	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "project_workflow_profiles_project_fkey" }).onDelete("cascade"),
-	foreignKey({ columns: [table.createdByUserId], foreignColumns: [users.id], name: "project_workflow_profiles_created_by_user_fkey" }).onDelete("set null"),
-	check("ck_project_workflow_profiles_config_object", sql`jsonb_typeof(config_json) = 'object'::text`),
-]);
-
 export const capabilityVersions = pgTable("capability_versions", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	capabilityKey: varchar("capability_key", { length: 128 }).notNull(),

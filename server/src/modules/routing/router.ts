@@ -101,18 +101,15 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   if (localCli && request.risk_level !== "low" && candidate.conformance_status !== "passed") {
     reasons.push("runtime_conformance_required");
   }
-  if (
-    candidate.adapter_type === "opencode" &&
-    (shape === "agentic_files" || shape === "code_execution") &&
-    candidate.conformance_status !== "passed"
-  ) {
-    reasons.push("runtime_conformance_required_for_execution_shape");
-  }
-  if (
-    candidate.adapter_type === "model_api" &&
-    (shape === "agentic_files" || shape === "code_execution")
-  ) {
+  // File and code shapes are admitted on what the adapter declares, never on
+  // its name. A runtime without file access has no working directory to act in,
+  // and one that has it must carry conformance evidence before doing so.
+  const fileShape = shape === "agentic_files" || shape === "code_execution";
+  if (fileShape && !candidate.requires_file_access) {
     reasons.push("execution_shape_incompatible");
+  }
+  if (fileShape && candidate.requires_file_access && candidate.conformance_status !== "passed") {
+    reasons.push("runtime_conformance_required_for_execution_shape");
   }
   if (request.excluded_runtime_profile_ids?.includes(candidate.runtime_profile_id)) {
     reasons.push("runtime_profile_excluded_for_retry");

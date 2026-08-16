@@ -484,6 +484,7 @@ function candidateFromRow(
     capabilities: stringArray(row.capabilities_json),
     tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids ?? runtimePolicy.tools),
     minimum_sandbox_level: sandboxLevel(spec?.sandbox.minimum_sandbox_level),
+    requires_file_access: Boolean(spec?.sandbox.requires_file_access),
     requires_workspace_for_execution: Boolean(spec?.sandbox.requires_workspace_for_execution),
     supports_workspace: Boolean(spec?.sandbox.supports_worktree),
     supports_one_shot_docker: Boolean(spec?.sandbox.supports_one_shot_docker),

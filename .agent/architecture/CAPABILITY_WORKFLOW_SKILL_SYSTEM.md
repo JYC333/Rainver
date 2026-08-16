@@ -25,11 +25,12 @@ request only and grants no callable or execution authority. A Workflow is a
 third concept: an enforced process definition, not a soft instruction package.
 
 The current implementation is transitional: it still contains canonical
-capability definitions, packs, workflow templates, `NormalizedSkill`, imported
-skill conversion, capability runtime bindings, and renderers built from the
-normalized representation. Those paths remain subject to all existing proposal,
-policy, Delivery, and audit checks until capability-shrink items 2–7 replace
-them; this document does not treat them as the target authority model or invite
+capability definitions, packs, `NormalizedSkill`, imported skill conversion,
+capability runtime bindings, and renderers built from the normalized
+representation. The workflow template layer that this list also named was
+deleted by the capability-shrink plan. Those paths remain subject to all existing
+proposal, policy, Delivery, and audit checks until the plan's remaining items
+replace them; this document does not treat them as the target authority model or invite
 new callers to extend them. The native `capability` runtime remains disabled.
 
 Terminology for runtime binaries, adapters, extensions, tool bindings, skill
@@ -125,28 +126,17 @@ mutate definitions.
 for a capability. It can store runtime preference, prompt overrides, source
 mode, output policy, budget, and review policy.
 
-The first implementation stores saved project workflow preset configuration
-(`ProjectWorkflowProfile`) and capability enablement configuration. Broader
+The first implementation stores capability enablement configuration. Broader
 profile surfaces remain future work.
 
 ### CapabilityPack
 
 `CapabilityPack` is a grouping and distribution unit. It contains related
-capabilities, workflow templates, docs/tests/examples, artifact types, and
-possibly artifact renderer mappings.
+capabilities, docs/tests/examples, artifact types, and possibly artifact
+renderer mappings.
 
 The first version supports static built-in packs and imported skill-derived
 capability candidates. It is not a full marketplace.
-
-### WorkflowTemplate
-
-`WorkflowTemplate` is a user-facing reusable process or mode that composes
-capabilities. Examples include academic literature review, news scan, market
-research, and technical survey.
-
-Users generally choose workflows or modes rather than raw capabilities.
-Templates declare input schema, default config, output artifact types, proposal
-policy, and recommended runtime adapters.
 
 ### WorkflowDefinition v1
 
@@ -164,19 +154,6 @@ execution provenance, not user-selectable domain Templates. User or space
 workflow versions still use the existing draft → evaluation →
 promotion-proposal → approval path; the generic evolvable asset APIs do not
 grant approval directly.
-
-### ProjectWorkflowProfile / Saved Workflow Preset
-
-`ProjectWorkflowProfile` is the database/API name for a saved project workflow
-preset. Product UI should call it a **Saved preset** rather than forcing users
-to learn another profile concept. For example, a Project can save a preset for
-a genuine user-authored Workflow whose source and output defaults differ from
-its base definition.
-
-Saved presets are scoped by `space_id` and `project_id`. They store reusable
-workflow defaults such as source mode and output artifact types. They do not
-bind an Agent, runtime profile, Project Folder, or one-off research question, and
-they do not execute research by themselves.
 
 ### RuntimeSkillBinding
 
@@ -222,38 +199,10 @@ mandatory delegated-instruction items and persists them through the Gateway as
 ordered Delivery message blocks. No vendor instruction file is written.
 `model_api` bindings use the same path with their inline prompt block.
 
-### WorkflowRunDraft
-
-`WorkflowRunDraft` converts either a `WorkflowTemplate` plus request config, or
-an enabled saved workflow preset plus request config, into a normal agents
-`run_create_body`. It records template/preset provenance when a preset is used,
-merged config, artifact expectations, optional selected Agent runtime profile,
-the primary capability id stored in `runs.capability_id`, and the complete
-workflow capability list stored in `runs.capabilities_json`.
-
-When a workflow draft is submitted, the server resolves the approved
-evolvable workflow version and records its id as `runs.workflow_version_id`.
-If the system baseline has not been seeded yet, the static built-in template
-remains the launch fallback and the pointer is null; this fallback is
-deliberately frozen while graph execution is deferred to B2.
-
-Workflow drafts are launch inputs only. Runs still execute through the existing
-agent/run/orchestration path. The product launcher should select `agent_id` and
-`runtime_profile_id`; it should not use workflow-level naked adapter/provider
-overrides. The run creation path snapshots the selected runtime profile on the
-Run.
-
-The run draft request is validated against the protocol request schema. Unknown
-fields are rejected, request-level `config_json` overrides reuse workflow
-preset config validation, and generated prompts use the effective output
-artifact types after template/preset/request merging.
-
 Run creation persists `capabilities_json` as run-scoped execution context.
 Context preparation prefers a non-empty run-level capability list and falls
-back to the AgentVersion `capabilities_json` for ordinary agent runs. This lets
-workflow runs render all workflow-selected runtime skills without mutating the
-Agent's saved capability configuration, while `runs.capability_id` remains the
-single primary capability field for compatibility.
+back to the AgentVersion `capabilities_json` for ordinary agent runs, while
+`runs.capability_id` remains the single primary capability field.
 
 ## Frontend Surfaces
 
@@ -266,7 +215,7 @@ plugin boundary:
   while user-facing Project Research controls call the domain application
   service rather than constructing generic run drafts in the browser.
 - The Capabilities page remains the control-plane inspection surface. It shows
-  built-in packs/templates, GitHub skill package preview/import, imported skill
+  built-in packs, GitHub skill package preview/import, imported skill
   review/convert proposal actions, and imported package details including
   requested permissions, package root/hash/source, instructions, diagnostics,
   and package file risk inventory.
@@ -294,9 +243,10 @@ The built-in `research` pack includes:
 - `research.brief_synthesize`
 - `research.idea_generate`
 
-It deliberately includes no built-in workflow templates. A preset is admitted
-only when it changes concrete behaviour or configuration; the four former
-label-only research templates were removed under that rule.
+It declares no workflow presets. The four former label-only research templates
+were removed because a preset is admitted only when it changes concrete
+behaviour or configuration, and the whole workflow template layer was deleted
+by the capability-shrink plan.
 
 The synthesis output artifact type is `research_report.archive.v1`; the
 user-facing report is the corresponding `project_research_reports` row.
@@ -383,8 +333,7 @@ a native execution path exists.
 
 - `catalog` remains the raw on-disk catalog reader for bundled manifests.
 - `capabilities` is the product/control-plane module for canonical capability
-  definitions, packs, workflow templates, safe skill import, runtime bindings,
-  and project workflow profiles.
+  definitions, packs, safe skill import, and runtime bindings.
 - `runtimeAdapters` remains the adapter type/spec registry.
 - `runs` remains the execution lifecycle owner.
 - `runtimeContext` remains the sole typed acquisition, planning, Delivery, and continuity authority.

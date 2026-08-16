@@ -32,7 +32,6 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 
 | What you need | Link |
 |---|---|
-| Current active focus and short-term priorities | [tasks/current-focus.md](tasks/current-focus.md) |
 | Implemented Runtime Context architecture and decision record | [architecture/MEMORY_CONTEXT_RUNTIME.md](architecture/MEMORY_CONTEXT_RUNTIME.md) · [modules/runtime-context.md](modules/runtime-context.md) · [decisions/0014-unified-runtime-context-engine.md](decisions/0014-unified-runtime-context-engine.md) |
 | Security and access boundary reference | [architecture/SECURITY_AND_ACCESS_BOUNDARIES.md](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md) |
 | Test layer and product invariant philosophy | [architecture/TESTING_STRATEGY.md](architecture/TESTING_STRATEGY.md) |
@@ -220,25 +219,32 @@ Load only the module docs relevant to your task.
 | [0012](decisions/0012-ontology-ownership-and-language-alignment.md) | `ontology` module owns `space_objects`/`object_relations`/object profiles; root contract drops `status`; aggregate-root membership rule; definition authority is code in registerable registries; Interface as an explicit primitive; Link Type / Object Profile naming; Action `applies_to` |
 | [0013](decisions/0013-personal-team-content-boundary.md) | Personal vs team content boundary: creation context decides Space/scope/visibility, capture lands in the personal Space, filing is a transformation, Run-level context taint narrows derived output, cross-person read auditing; amends ADR 0001 for per-user aggregated cross-Space reads |
 | [0014](decisions/0014-unified-runtime-context-engine.md) | Accepted clean cutover to one Runtime Context Gateway for Agent task context, with separate Retrieval/Policy/Usage authorities, typed deliveries, event/checkpoint continuity, product-owned Project context, and per-work-scope CLI isolation |
+| [0015](decisions/0015-focus-area-classification.md) | Focus area is a user-created classification, not a second access scope: it aggregates Projects/Notes/Knowledge, participates in no access decision, and is told apart from a module by whether the thing needs code. Internal identifier `focus_area`; `domain` is reserved for this codebase's DDD vocabulary |
 
 ---
 
 ## 6. Current Work
 
-Planned work lives in exactly four documents, each with one job. Reorganized
-2026-08-13 from six overlapping files.
+Planned work lives in the documents below, each with one job, plus one
+specification per active convergence under `plans/`. Reorganized 2026-08-13 from
+six overlapping files; a specification is retired into current-state
+architecture and the defer register once nothing in it can be advanced.
 
 | Document | Holds |
 |---|---|
-| [tasks/current-focus.md](tasks/current-focus.md) | What is actually being worked on, the verified state of this instance, and the gates that guard acceptance, CLI runtimes, and Always-on |
 | [plans/backlog.md](plans/backlog.md) | Real work with no trigger condition, pulled on demand |
-| [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, including watch items and parked ideas |
+| [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, the standing enablement gates, watch items, and parked ideas |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — a design, not a checklist |
 
-Do not create competing task files. Multiple task docs cause context conflicts
-for both humans and AI agents; if the focus changes, update `current-focus.md`
-in place. An approved multi-phase implementation may keep a short-lived
-execution ledger under `plans/`, but it is retired into current-state
+Do not create competing task files, and do not reintroduce a "current focus"
+document. One existed and was removed: a file whose job is to declare what is
+being worked on requires continuous maintenance that never happened, so it
+repeatedly declared work nobody was doing — which is worse than declaring
+nothing. What is scheduled is visible in Git and in the plan documents
+themselves. Observable instance state (what is installed, what has run, what has
+failed) is not written down at all; query the instance, because a recorded
+snapshot only rots. An approved multi-phase implementation may keep a
+short-lived execution ledger under `plans/`, but it is retired into current-state
 architecture as soon as its phases are complete.
 
 ---
@@ -272,8 +278,8 @@ load all docs for every task.
 | Runtime / agent / run change | `runtime-agent` bundle: `EXECUTION_MODEL.md`, `RUNS_AND_OUTPUTS.md`, `agents.md`, `BOUNDARIES.md` |
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
 | Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `sandbox.md`, `project-files.md` |
-| Dogfooding / product slice | `current-focus.md` + `PRODUCT_AND_BOUNDARIES.md` + `NON_GOALS_AND_DISABLED_SURFACES.md` |
-| Picking up planned work | `current-focus.md` + `plans/backlog.md` + `tasks/deferred-register.md` |
+| Dogfooding / product slice | `tasks/deferred-register.md` + `PRODUCT_AND_BOUNDARIES.md` + `NON_GOALS_AND_DISABLED_SURFACES.md` |
+| Picking up planned work | `plans/backlog.md` + `tasks/deferred-register.md` |
 | Sync / offline / local-first compatibility | `local-first-compatibility` bundle: `LOCAL_FIRST_COMPATIBILITY.md`, `sync-and-conflicts.md`, `mobile-client.md` |
 
 Additional agent rules:

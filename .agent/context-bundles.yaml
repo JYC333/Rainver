@@ -17,7 +17,6 @@
 default:
   docs:
     - .agent/INDEX.md
-    - .agent/tasks/current-focus.md
     - .agent/architecture/SECURITY_AND_ACCESS_BOUNDARIES.md
     - .agent/architecture/TESTING_STRATEGY.md
 

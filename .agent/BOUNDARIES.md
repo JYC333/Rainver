@@ -335,11 +335,13 @@ implementation state and must not be extended as the target skill model.
 
 **B52** — Capability (`catalog/capabilities/`) and Official Optional Module (`/api/v1/plugins`) are distinct concepts and must not be conflated in code, comments, or API design. Capabilities are agent AI skill descriptors; Official Optional Modules are product feature packages. A module may use a capability internally, but they are not the same type.
 
-**B52A** — Open Skill, Capability, Capability Pack, Workflow Template, Runtime
-Skill, and Product Plugin are distinct concepts. External Open Skill packages
-can be normalized into capability candidates; Capability Packs group
-capabilities and workflow templates; Runtime Skills are generated runtime
-bindings; Product Plugins are optional product feature packages.
+**B52A** — Open Skill, Capability, Capability Pack, Runtime Skill, and Product
+Plugin are distinct concepts. External Open Skill packages can be normalized
+into capability candidates; Capability Packs group capabilities; Runtime Skills
+are generated runtime bindings; Product Plugins are optional product feature
+packages. Workflow Template was a sixth concept here until the
+capability-shrink plan deleted that layer; an enforced process is a Workflow Definition, which is
+execution-engine data rather than a capability grouping.
 
 **B53** — Plugin settings and enablement state must be scoped exactly as declared in the descriptor's `scope` field: `space` uses `(plugin_id, space_id)` and requires space owner/admin for writes; `user` uses `(plugin_id, user_id)` and follows the user across spaces. Space-scoped plugin state for space A must never be readable or writable in the context of space B, and user-scoped plugin state must never be readable or writable by another user. The plugin guard must check both plugin existence and descriptor scope.
 
@@ -393,6 +395,31 @@ schema adds that table.
 **B44** — The deployer container's Docker socket plus read-write repository mount is host-equivalent authority. Nothing on the evolution, `code_patch`, capability, agent-runtime, automation, job, or scheduler path may reach deployer input or invoke its scripts. The CLI sandbox executor is a separate run path with a fixed image, fixed resource policy, deny-by-default network, and allowlisted mounts; it is never routed through the deployer protocol.
 
 **B44A** — An agent-space instance must never be directly exposed to the public internet. The current frontend has no production TLS termination, rate limiting, or general CSRF-token hardening. Any move toward internet exposure must first implement and review those controls and update the security boundary documentation.
+
+---
+
+## Change Convention Boundaries
+
+**B58** — Do not introduce compatibility aliases or dual authorities. When a
+concept is renamed or replaced, the old name is removed in the same change. Two
+names for one thing, or two documents claiming the same authority, is the defect
+this rule exists to prevent — not a migration convenience.
+
+**B59** — While the product has no production data to preserve, schema changes
+are edited to their final shape in `server/src/db/schema/` and folded into the
+canonical `server/migrations/0001_baseline.sql` by `pnpm run schema:generate`.
+Do not add incremental migration files or compatibility shims for superseded
+shapes. This boundary expires the moment a deployment holds data someone would
+miss; from then on, superseded shapes need real migrations.
+
+**B60** — Internal UUIDs remain valid storage and transport identifiers. Users
+never type them in normal product flows, but that is a UI requirement, not a
+reason to invent a second identifier scheme.
+
+**B61** — Implementation functions and tests use domain names, never `phase1`,
+`phase2`, `phaseX`, or similar migration-stage names. A plan's phase numbering
+is scheduling vocabulary and must not outlive the plan by being written into
+code.
 
 ---
 

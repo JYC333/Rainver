@@ -61,6 +61,7 @@ import { captureModule } from "../modules/capture";
 import { captureFilingModule } from "../modules/captureFiling";
 import { crossSpaceRetrievalModule } from "../modules/crossSpaceRetrieval";
 import { activityModule } from "../modules/activity";
+import { focusAreasModule } from "../modules/focusAreas";
 import { publicationsModule } from "../modules/publications";
 import { sourcesModule } from "../modules/sources";
 import { readerModule } from "../modules/reader";
@@ -153,6 +154,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   captureFilingModule,
   crossSpaceRetrievalModule,
   activityModule,
+  focusAreasModule,
   publicationsModule,
   sourcesModule,
   readerModule,

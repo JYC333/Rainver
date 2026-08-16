@@ -58,6 +58,19 @@ export interface RouteCandidate {
   capabilities: string[];
   tools: string[];
   minimum_sandbox_level: SandboxLevel;
+  /**
+   * Mirrors `RuntimeAdapterSpec.sandbox.requires_file_access`: this runtime
+   * *needs* a sandbox working directory to execute at all. Admission for
+   * `agentic_files` / `code_execution` reads it because, across every adapter
+   * declared today, needing a working directory and being able to act on files
+   * coincide. A future adapter that can use a working directory without
+   * requiring one would need its own capability field rather than a looser
+   * reading of this one. Note the admission path also demands C3 evidence, and
+   * `runtimeConformance/service.ts` refuses to record it for anything whose
+   * `runtime_kind` is not `local_cli` — so a non-CLI file-access runtime fails
+   * closed until that restriction is revisited.
+   */
+  requires_file_access: boolean;
   /** Whether this runtime needs a persistent workspace to execute at all. */
   requires_workspace_for_execution: boolean;
   supports_workspace: boolean;

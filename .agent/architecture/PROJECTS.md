@@ -6,6 +6,11 @@ A **Project** is a goal-oriented knowledge and activity container.
 It organises activities, artifacts, proposals, agent runs, and owned Project Folders around a long-lived objective.
 It is the stable ownership and context boundary for durable objects — not a task manager or execution environment.
 
+A Project may carry `focus_area_id`, pointing at the long-term focus area it
+serves. That is navigation only: it is not containment, it transfers no read
+access, and Project membership is unaffected. See
+[ADR 0015](../decisions/0015-focus-area-classification.md).
+
 ## What is a Project Folder?
 
 A **Project Folder** is a file, code, and execution boundary.

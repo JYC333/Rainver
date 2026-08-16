@@ -56,7 +56,29 @@ Agent setup. Its execution-profile service provisions or reuses a space-scoped
 ModelProvider/model. Research setup does not accept explicit Agent/profile,
 runtime-adapter, or CLI-credential selection. The resolved Agent/profile IDs
 are recorded in the research workflow and operation before any stage run is
-queued.
+queued, and each stage run carries the profile as an `explicit` pin — provider
+choice has no other expression in routing (see
+[ROUTING.md](ROUTING.md)).
+
+**No research stage run can hold a tool grant.** `buildRunToolGrants`
+intersects three sets: the run's `capabilities_json`, the AgentVersion's
+`tool_permissions_json.allowed_tools`, and the System Action Registry. Two of
+them exclude every research stage independently — `research.*` ids are
+capability declarations rather than System Action ids, and the research
+AgentVersion is provisioned without `tool_permissions_json`, so `allowed_tools`
+is empty. `permission_snapshot_json.tool_grants` is therefore `[]` for every
+research run, `authorization.request` included, since that entry is appended
+only when other grants exist.
+
+Granting a stage a system action means satisfying all of: the action's id in the
+stage's `capabilities_json`, the same id in the research AgentVersion's
+`capabilities_json` (or routing rejects the profile for a missing capability),
+the id in that AgentVersion's `allowed_tools`, and — decided by the registry
+rather than by configuration — the action being `agent_tool` visible and
+accepting `agent` as an actor type. The `objectAction` and `httpAction` entries
+are deliberately not agent-tool visible, so the three configurable conditions
+can all hold and still yield no grant. See
+[SYSTEM_ACTIONS.md](SYSTEM_ACTIONS.md).
 
 OpenCode is a local CLI adapter with two credential paths: CLI login state, or
 an OpenAI-compatible ModelProvider. In provider mode, the CLI receives a

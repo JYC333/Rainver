@@ -16,12 +16,6 @@ export {
   getBuiltInCapabilityDefinition,
   listBuiltInCapabilityDefinitions,
 } from "./registry";
-export {
-  __setWorkflowTemplateRegistryForTests,
-  assertUniqueWorkflowTemplateIds,
-  getBuiltInWorkflowTemplate,
-  listBuiltInWorkflowTemplates,
-} from "./workflowRegistry";
 export { parseSkillMarkdown } from "./skillParser";
 export { analyzeSkillRisk } from "./skillRisk";
 export {
@@ -48,27 +42,19 @@ export {
 export { CapabilitiesService } from "./service";
 export { PgCapabilitiesRepository } from "./repository";
 export {
-  resolveWorkflowVersionId,
-  syncBuiltinWorkflows,
-  workflowDefinitionFromTemplate,
-} from "./workflowAssets";
-export {
   __setCapabilitiesIdentityForTests,
   __setCapabilitiesRepositoryFactoryForTests,
   __setCapabilitiesSkillFetcherForTests,
-  __setCapabilitiesWorkflowRunPromptResolverForTests,
 } from "./routes";
 export type {
   CapabilityDefinition,
   CapabilityPackDescriptor,
   CapabilityRuntimeBinding,
   NormalizedSkill,
-  ProjectWorkflowProfile,
   RuntimeRenderedSkill,
   SkillImportPreview,
   SkillPackage,
   SkillPackageFile,
   SkillPackageFilePreview,
   SkillRiskAnalysis,
-  WorkflowTemplate,
 } from "./types";

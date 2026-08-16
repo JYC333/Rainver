@@ -16,13 +16,11 @@ import {
 } from "../routeUtils/common";
 import { proposalToOut } from "../proposals/repository";
 import { insertProposalRow } from "../proposals/reviewPackets";
-import { assertProjectWriter } from "../projects/access";
 import { getBuiltInCapabilityDefinition } from "./registry";
 import type {
   CapabilityDefinition,
   CapabilityRuntimeBinding,
   NormalizedSkill,
-  ProjectWorkflowProfile,
   SkillImportPreview,
   SkillPackage,
   SkillPackageFilePreview,
@@ -48,19 +46,6 @@ interface SkillPackageRow {
   normalized_json: unknown;
   risk_level: SkillRiskLevel;
   status: string;
-  created_at: unknown;
-  updated_at: unknown;
-}
-
-interface WorkflowProfileRow {
-  id: string;
-  space_id: string;
-  project_id: string;
-  workflow_template_id: string;
-  name: string;
-  enabled: boolean;
-  config_json: unknown;
-  created_by_user_id: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -131,21 +116,12 @@ const SKILL_LOCAL_OVERLAY_COLUMNS = `
   created_by_user_id, created_at, updated_at
 `;
 
-const WORKFLOW_PROFILE_COLUMNS = `
-  id, space_id, project_id, workflow_template_id, name, enabled,
-  config_json, created_by_user_id, created_at, updated_at
-`;
-
 export class PgCapabilitiesRepository {
   constructor(private readonly db: Pool) {}
 
   static fromConfig(config: ServerConfig): PgCapabilitiesRepository {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
     return new PgCapabilitiesRepository(getDbPool(config.databaseUrl));
-  }
-
-  queryable(): Queryable {
-    return this.db;
   }
 
   async listConvertedCapabilityDefinitions(
@@ -600,102 +576,6 @@ export class PgCapabilitiesRepository {
     };
   }
 
-  async listWorkflowProfiles(
-    identity: SpaceUserIdentity,
-    projectId: string,
-  ): Promise<ProjectWorkflowProfile[]> {
-    await this.requireProject(identity.spaceId, projectId);
-    const rows = await this.db.query<WorkflowProfileRow>(
-      `SELECT ${WORKFLOW_PROFILE_COLUMNS}
-         FROM project_workflow_profiles
-        WHERE space_id = $1 AND project_id = $2
-        ORDER BY enabled DESC, updated_at DESC, name ASC`,
-      [identity.spaceId, projectId],
-    );
-    return rows.rows.map(workflowProfileOut);
-  }
-
-  async requireWorkflowProject(identity: SpaceUserIdentity, projectId: string): Promise<void> {
-    await this.requireProject(identity.spaceId, projectId);
-  }
-
-  async getWorkflowProfile(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    profileId: string,
-  ): Promise<ProjectWorkflowProfile | null> {
-    await this.requireProject(identity.spaceId, projectId);
-    const row = await this.getWorkflowProfileRow(identity.spaceId, projectId, profileId);
-    return row ? workflowProfileOut(row) : null;
-  }
-
-  async createWorkflowProfile(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    body: Record<string, unknown>,
-  ): Promise<ProjectWorkflowProfile> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const now = new Date().toISOString();
-    const rows = await this.db.query<WorkflowProfileRow>(
-      `INSERT INTO project_workflow_profiles (
-         id, space_id, project_id, workflow_template_id, name, enabled,
-         config_json, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9)
-       RETURNING ${WORKFLOW_PROFILE_COLUMNS}`,
-      [
-        randomUUID(),
-        identity.spaceId,
-        projectId,
-        requiredString(body.workflow_template_id, "workflow_template_id"),
-        requiredString(body.name, "name"),
-        body.enabled === undefined ? true : body.enabled === true,
-        JSON.stringify(optionalObject(body.config_json) ?? {}),
-        identity.userId,
-        now,
-      ],
-    );
-    return workflowProfileOut(rows.rows[0]!);
-  }
-
-  async updateWorkflowProfile(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    profileId: string,
-    body: Record<string, unknown>,
-  ): Promise<ProjectWorkflowProfile> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const current = await this.getWorkflowProfileRow(identity.spaceId, projectId, profileId);
-    if (!current) throw new HttpError(404, "Workflow profile not found");
-    const now = new Date().toISOString();
-    const rows = await this.db.query<WorkflowProfileRow>(
-      `UPDATE project_workflow_profiles
-          SET name = $4,
-              enabled = $5,
-              config_json = $6::jsonb,
-              updated_at = $7
-        WHERE space_id = $1 AND project_id = $2 AND id = $3
-        RETURNING ${WORKFLOW_PROFILE_COLUMNS}`,
-      [
-        identity.spaceId,
-        projectId,
-        profileId,
-        optionalString(body.name) ?? current.name,
-        typeof body.enabled === "boolean" ? body.enabled : current.enabled,
-        JSON.stringify(optionalObject(body.config_json) ?? objectValue(current.config_json)),
-        now,
-      ],
-    );
-    return workflowProfileOut(rows.rows[0]!);
-  }
-
-  async disableWorkflowProfile(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    profileId: string,
-  ): Promise<ProjectWorkflowProfile> {
-    return this.updateWorkflowProfile(identity, projectId, profileId, { enabled: false });
-  }
-
   private async insertProposal(
     identity: SpaceUserIdentity,
     input: {
@@ -770,20 +650,6 @@ export class PgCapabilitiesRepository {
       [scopeId, identity.spaceId],
     );
     if (!found.rows[0]) throw new HttpError(404, `${scopeType} not found`);
-  }
-
-  private async getWorkflowProfileRow(
-    spaceId: string,
-    projectId: string,
-    profileId: string,
-  ): Promise<WorkflowProfileRow | null> {
-    const rows = await this.db.query<WorkflowProfileRow>(
-      `SELECT ${WORKFLOW_PROFILE_COLUMNS}
-         FROM project_workflow_profiles
-        WHERE space_id = $1 AND project_id = $2 AND id = $3`,
-      [spaceId, projectId, profileId],
-    );
-    return rows.rows[0] ?? null;
   }
 }
 
@@ -1207,21 +1073,6 @@ function normalizeOverlayScopeId(
   if (scopeType === "user" && !scopeId) return userId;
   if (!scopeId) throw new HttpError(422, "scope_id is required for this scope_type");
   return scopeId;
-}
-
-function workflowProfileOut(row: WorkflowProfileRow): ProjectWorkflowProfile {
-  return {
-    id: row.id,
-    space_id: row.space_id,
-    project_id: row.project_id,
-    workflow_template_id: row.workflow_template_id,
-    name: row.name,
-    enabled: row.enabled,
-    config_json: objectValue(row.config_json),
-    created_by_user_id: row.created_by_user_id,
-    created_at: dateIso(row.created_at) ?? "",
-    updated_at: dateIso(row.updated_at) ?? "",
-  };
 }
 
 function normalizedFromPackage(record: Record<string, unknown>): NormalizedSkill {

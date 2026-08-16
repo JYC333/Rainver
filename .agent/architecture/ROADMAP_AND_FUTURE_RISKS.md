@@ -226,20 +226,20 @@ OpenCode-first Router preference and does not route the managed API path through
   the two hardcoded automation fire paths (`knowledge_retrieval_maintenance`,
   context review cycle in `automations/service.ts`) are frozen — no new
   hardcoded business fires may be added. Re-evaluate migrating them to system
-  workflow templates (or explicitly retiring them as documented native
+  workflow definitions (or explicitly retiring them as documented native
   targets) once versioned workflow graph execution (plan Track B2/B3) is
   stable. Do not let the freeze silently become permanent.
 
   **Amended 2026-07-26 — re-evaluation done; the migration option is
-  withdrawn.** `WorkflowTemplate` is a *user-facing* process that users choose
-  to run, declaring an input schema and output artifact types and moving
-  through the evolvable-asset approval path. Both frozen paths — and the
+  withdrawn.** A Workflow is a *user-facing* process that users choose to run,
+  declaring an input schema and output artifact types and moving through the
+  evolvable-asset approval path. Both frozen paths — and the
   planned `autonomous_tick` — are maintenance/control-plane jobs with none of
   those properties, so migrating them would surface them in user-facing
   Workflow panels and force control flow into a bounded data-flow DAG. The
-  standing rule is now: a domain process a user chooses to run is a
-  `WorkflowTemplate`; a maintenance or control-plane job the user only switches
-  on or off is a **registered native Automation target**. The freeze is
+  standing rule is now: a domain process a user chooses to run is an approved
+  `workflow_definition.v1` version; a maintenance or control-plane job the user
+  only switches on or off is a **registered native Automation target**. The freeze is
   replaced by a declarative target registry with a frozen fixture and a
   drift test, which is what actually prevents a new unregistered hardcoded
   fire. See [the current Automation module architecture](../modules/automations.md).

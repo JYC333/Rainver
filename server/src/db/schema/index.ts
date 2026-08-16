@@ -19,6 +19,7 @@ export * from "./crossSpaceRetrieval";
 export * from "./decisions";
 export * from "./domainChangeOutbox";
 export * from "./evolution";
+export * from "./focusAreas";
 export * from "./evolvableAssets";
 export * from "./experiments";
 export * from "./graph";

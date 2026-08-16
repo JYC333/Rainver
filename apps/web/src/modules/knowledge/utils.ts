@@ -63,7 +63,12 @@ export function validateConfidence(value: number | null): boolean {
  * *section* (never `home`, which stays an intentional destination) and defaults
  * to `notes` on a fresh client. See KnowledgeModule / KnowledgeSectionHeader.
  */
-export type KnowledgeSection = 'home' | 'notes' | 'wiki' | 'sources' | 'cards'
+/**
+ * `domains` (focus areas) is a section but deliberately not a workspace section:
+ * it is parked under Knowledge until the app has a home for life-area groupings,
+ * so `/knowledge` should not reopen it as a last-used destination.
+ */
+export type KnowledgeSection = 'home' | 'notes' | 'wiki' | 'sources' | 'cards' | 'domains'
 
 /** Sections eligible to be remembered as the `/knowledge` redirect target. */
 export const KNOWLEDGE_WORKSPACE_SECTIONS: Exclude<KnowledgeSection, 'home'>[] = [

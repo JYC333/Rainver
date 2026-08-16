@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaceMemberships, spaces } from "./spaces";
+import { focusAreas } from "./focusAreas";
 
 export const projects = pgTable("projects", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -16,6 +17,8 @@ export const projects = pgTable("projects", {
 	// The single Project classification axis: how work advances. Creation also
 	// appends an immutable Mode Transition; there is no Template provenance.
 	primaryMode: varchar("primary_mode", { length: 32 }).default('research').notNull(),
+	/** Which long-term focus area this Project serves. Navigation only. ADR 0015. */
+	focusAreaId: varchar("focus_area_id", { length: 36 }),
 	activeBriefVersionId: varchar("active_brief_version_id", { length: 36 }),
 	activeInstructionVersionId: varchar("active_instruction_version_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -26,6 +29,9 @@ export const projects = pgTable("projects", {
 	index("ix_projects_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
 	index("ix_projects_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_projects_status").using("btree", table.status.asc().nullsLast()),
+	index("ix_projects_focus_area_id")
+		.using("btree", table.focusAreaId.asc().nullsLast())
+		.where(sql`focus_area_id IS NOT NULL`),
 	uniqueIndex("uq_projects_space_name_active").using("btree", table.spaceId.asc().nullsLast(), table.name.asc().nullsLast()).where(sql`((status)::text = 'active'::text)`),
 	foreignKey({
 			columns: [table.ownerUserId],
@@ -41,6 +47,12 @@ export const projects = pgTable("projects", {
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
 			name: "projects_space_id_fkey"
+		}),
+	// Composite so a Project cannot point at another Space's focus area.
+	foreignKey({
+			columns: [table.focusAreaId, table.spaceId],
+			foreignColumns: [focusAreas.id, focusAreas.spaceId],
+			name: "projects_focus_area_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.activeBriefVersionId, table.id, table.spaceId],

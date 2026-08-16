@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
-  BookOpen, Check, ChevronDown, Layers, LayoutDashboard, Library, NotebookPen,
+  BookOpen, Check, ChevronDown, Compass, Layers, LayoutDashboard, Library, NotebookPen,
   type LucideIcon,
 } from 'lucide-react'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -55,6 +55,11 @@ export const KNOWLEDGE_SECTIONS: SectionDef[] = [
     id: 'cards', label: 'Cards', crumb: 'Cards', icon: Layers,
     to: '/knowledge/cards',
     description: 'Review cards derived from Notes, Wiki items, and Sources.',
+  },
+  {
+    id: 'domains', label: 'Domains', crumb: 'Domains', icon: Compass,
+    to: '/knowledge/domains',
+    description: 'One durable place per long-term focus: the projects, notes and knowledge that belong to it.',
   },
 ]
 

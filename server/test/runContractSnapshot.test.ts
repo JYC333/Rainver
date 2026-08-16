@@ -3,20 +3,8 @@ import {
   contractRecord,
   createRunContractSnapshot,
 } from "../src/modules/runs/contractSnapshot";
-import { workflowContractInput } from "../src/modules/capabilities/workflowContract";
-import { workflowDefinitionFromTemplate } from "../src/modules/capabilities/workflowAssets";
-import type { WorkflowTemplate } from "../src/modules/capabilities/types";
-import { loadProtocol } from "../src/modules/providers/protocolRuntime";
 import { runToOut } from "../src/modules/runs/runReadModel";
 import type { RunRecord } from "../src/modules/runs/repository";
-
-const workflowTemplateFixture: WorkflowTemplate = {
-  id: "test.research_workflow", name: "Research Workflow", description: "Collect and synthesize source material.", category: "research",
-  capability_ids: ["research.source_collect", "research.source_summarize", "research.evidence_extract", "research.brief_synthesize", "research.idea_generate"], input_schema_json: { type: "object" },
-  default_config_json: { output_artifact_types: ["research_report.archive.v1"] }, output_artifact_types: ["research_report.archive.v1"],
-  proposal_policy: {}, recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
-  execution_shape: "structured_generation", required_capabilities: [], required_tools: [], prompt_asset_keys: ["test.research_workflow.run"],
-};
 
 describe("Run contract snapshots", () => {
   it("resolves Space, Automation, Workflow, and Plan caps with a persisted source trace", () => {
@@ -109,35 +97,6 @@ describe("Run contract snapshots", () => {
     expect(snapshot.acceptance_criteria_json).toEqual({ checks: [{ command: "npm test" }] });
   });
 
-  it("builds a workflow contract from the server-owned template", () => {
-    const template = workflowTemplateFixture;
-    const contract = workflowContractInput({
-      template,
-      workflowVersionId: "workflow-version-1",
-      config: { max_duration_seconds: 120, max_runs: 4, max_attempts: 2 },
-      projectId: "project-1",
-      projectFolderId: "workspace-1",
-    });
-
-    expect(contract).toMatchObject({
-      source: { kind: "workflow", id: "workflow-version-1" },
-      project_id: "project-1",
-      project_folder_id: "workspace-1",
-      required_outputs_json: {
-        artifact_types: ["research_report.archive.v1"],
-      },
-      max_duration_seconds: 120,
-      max_runs: 4,
-      max_attempts: 2,
-    });
-    expect(contract.route_hints_json).toEqual({
-      recommended_runtime_adapters: ["model_api", "claude_code", "codex_cli"],
-      execution_shape: "structured_generation",
-      required_capabilities: [],
-      required_tools: [],
-    });
-  });
-
   it("exposes the contract through the run API mapper", () => {
     const run: RunRecord = {
       id: "run-1",
@@ -172,16 +131,5 @@ describe("Run contract snapshots", () => {
       kind: "automation",
       id: "automation-1",
     });
-  });
-
-  it("produces a validated versioned definition with a dependency chain", async () => {
-    const template = workflowTemplateFixture;
-    const definition = await workflowDefinitionFromTemplate(template);
-    const protocol = await loadProtocol();
-    expect(protocol.WorkflowDefinitionSchema.safeParse(definition).success).toBe(true);
-    expect(definition.schema_version).toBe("workflow_definition.v1");
-    expect(definition.nodes[0]!.depends_on).toEqual([]);
-    expect(definition.nodes[1]!.depends_on).toEqual([definition.nodes[0]!.id]);
-    expect(definition.nodes.at(-1)?.approval_checkpoint.required).toBe(true);
   });
 });

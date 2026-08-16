@@ -6,6 +6,7 @@ import { activityRecords } from "./activity";
 import { users } from "./auth";
 import { runs } from "./runs";
 import { spaces } from "./spaces";
+import { focusAreas } from "./focusAreas";
 import { projectFolders } from "./projectFolders";
 import { artifacts } from "./artifacts";
 import { proposals } from "./proposals";
@@ -309,6 +310,8 @@ export const spaceObjects = pgTable("space_objects", {
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	primaryProjectId: varchar("primary_project_id", { length: 36 }),
+	/** Classification only — never read by the content access predicate. ADR 0015. */
+	focusAreaId: varchar("focus_area_id", { length: 36 }),
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }),
 	createdByAgentId: varchar("created_by_agent_id", { length: 36 }),
@@ -322,6 +325,9 @@ export const spaceObjects = pgTable("space_objects", {
 	index("ix_space_objects_deleted_at").using("btree", table.deletedAt.asc().nullsLast()),
 	index("ix_space_objects_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
 	index("ix_space_objects_primary_project_id").using("btree", table.primaryProjectId.asc().nullsLast()),
+	index("ix_space_objects_focus_area_id")
+		.using("btree", table.focusAreaId.asc().nullsLast())
+		.where(sql`focus_area_id IS NOT NULL`),
 	index("ix_space_objects_space_type").using("btree", table.spaceId.asc().nullsLast(), table.objectType.asc().nullsLast()),
 	index("ix_space_objects_visibility").using("btree", table.visibility.asc().nullsLast()),
 	index("ix_space_objects_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
@@ -349,6 +355,12 @@ export const spaceObjects = pgTable("space_objects", {
 			columns: [table.primaryProjectId, table.spaceId],
 			foreignColumns: [projects.id, projects.spaceId],
 			name: "space_objects_primary_project_id_fkey"
+		}),
+	// Composite so a focus area cannot classify content from another Space.
+	foreignKey({
+			columns: [table.focusAreaId, table.spaceId],
+			foreignColumns: [focusAreas.id, focusAreas.spaceId],
+			name: "space_objects_focus_area_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.spaceId],

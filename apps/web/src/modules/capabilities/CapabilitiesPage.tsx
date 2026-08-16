@@ -10,7 +10,6 @@ import type {
   SkillImportPreviewResponse,
   SkillPackage,
   SkillPackageFile,
-  WorkflowTemplate,
 } from '../../types/api'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -232,7 +231,6 @@ export default function CapabilitiesPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [caps, setCaps]           = useState<CapabilityDefinition[]>([])
   const [packs, setPacks]         = useState<CapabilityPackDescriptor[]>([])
-  const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
   const [skillPackages, setSkillPackages] = useState<SkillPackage[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [selected, setSelected]   = useState<string | null>(null)
@@ -250,7 +248,6 @@ export default function CapabilitiesPage() {
     if (!activeSpaceId) {
       setCaps([])
       setPacks([])
-      setWorkflows([])
       setSkillPackages([])
       setSelected(null)
       setSelectedSkillId(null)
@@ -258,15 +255,13 @@ export default function CapabilitiesPage() {
       return
     }
     try {
-      const [data, packData, workflowData, skillData] = await Promise.all([
+      const [data, packData, skillData] = await Promise.all([
         capabilitiesFrameworkApi.listCapabilityDefinitions(),
         capabilitiesFrameworkApi.listCapabilityPacks(),
-        capabilitiesFrameworkApi.listWorkflowTemplates(),
         capabilitiesFrameworkApi.listSkillPackages(),
       ])
       setCaps(data)
       setPacks(packData)
-      setWorkflows(workflowData)
       setSkillPackages(skillData.items)
       if (data.length && !selected) setSelected(data[0].id)
       if (skillData.items.length && !selectedSkillId) setSelectedSkillId(skillData.items[0].id)
@@ -406,46 +401,26 @@ export default function CapabilitiesPage() {
         </Button>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="p-4 space-y-3">
-          <div>
-            <CardTitle>Skill Packs</CardTitle>
-            <p className="text-xs text-muted-foreground mt-1">Built-in packs and output types.</p>
-          </div>
-          <div className="space-y-3">
-            {packs.map(pack => (
-              <div key={pack.id} className="border border-border rounded-lg p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium text-sm">{pack.name}</div>
-                  <Badge variant="secondary">{pack.version}</Badge>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">{pack.description}</p>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {pack.artifact_types.map(type => <Badge key={type} variant="outline">{type}</Badge>)}
-                </div>
+      <Card className="p-4 space-y-3">
+        <div>
+          <CardTitle>Skill Packs</CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">Built-in packs and output types.</p>
+        </div>
+        <div className="space-y-3">
+          {packs.map(pack => (
+            <div key={pack.id} className="border border-border rounded-lg p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-medium text-sm">{pack.name}</div>
+                <Badge variant="secondary">{pack.version}</Badge>
               </div>
-            ))}
-          </div>
-        </Card>
-
-        <Card className="p-4 space-y-3">
-          <div>
-            <CardTitle>Research Modes</CardTitle>
-            <p className="text-xs text-muted-foreground mt-1">Reusable templates for direct run drafts and optional project presets.</p>
-          </div>
-          <div className="space-y-2">
-            {workflows.map(workflow => (
-              <div key={workflow.id} className="flex items-start justify-between gap-3 border-b border-border last:border-b-0 pb-2 last:pb-0">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{workflow.name}</div>
-                  <div className="text-xs text-muted-foreground truncate">{workflow.id}</div>
-                </div>
-                <Badge variant="muted">{workflow.output_artifact_types.length} outputs</Badge>
+              <p className="text-xs text-muted-foreground mt-1">{pack.description}</p>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {pack.artifact_types.map(type => <Badge key={type} variant="outline">{type}</Badge>)}
               </div>
-            ))}
-          </div>
-        </Card>
-      </div>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       <Card className="p-4 space-y-4">
         <div>

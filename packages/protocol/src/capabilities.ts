@@ -76,7 +76,6 @@ export const CapabilityPackDescriptorSchema = z
     description: z.string(),
     version: z.string().min(1),
     capability_ids: z.array(z.string().min(1)),
-    workflow_template_ids: z.array(z.string().min(1)),
     artifact_types: z.array(z.string().min(1)),
     source_kind: CapabilitySourceKindSchema,
     status: CapabilityStatusSchema,
