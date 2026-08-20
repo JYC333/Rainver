@@ -77,6 +77,8 @@ import {
   checkPinnedThreadDrift,
   type ResearchThreadScopeRef,
 } from "./threadScope";
+import { InquiryIterationService } from "../inquiry/iterationService";
+import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "./pipeline/researchOperationFailureNotifyJob";
 import {
   PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS,
   latestPublicationWatermarkForItems,
@@ -1942,6 +1944,15 @@ export class ProjectResearchOrchestrator {
     for (let index = 0; index < plans.length; index += 1) {
       await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "source_backfill_plan", String(plans[index]!.id), "history_backfill");
     }
+    // The Inquiry step becomes a background acquisition only after both the
+    // Workflow and its first Operation exist. Merely opening setup must never
+    // claim that a search is running.
+    await new InquiryIterationService(this.db).updateWork(
+      identity,
+      projectId,
+      threadScope.thread_id,
+      { attention_state: "focused", next_focus_kind: "search_acquisition", blocked_reason: null },
+    );
     return this.startResponse(identity, projectId, operation.id);
   }
 
@@ -2584,6 +2595,43 @@ export class ProjectResearchOrchestrator {
           }
         : step);
     await this.setState(operation, { ...state, failed_stage: failedStage, error }, failedSteps);
+    await this.notifyRoomOfOperationFailure(operation, message);
+  }
+
+  /** `research_workflow_terminal` (failed variant) — the completed/waiting_review
+   * variants are not wired yet (room-advancement-reliability-plan Phase 4
+   * follow-up: they require Room-notification capability inside the
+   * ports-abstracted screening/synthesis/monitoring coordinators, which this
+   * phase does not touch). Inert for every operation without a Room origin —
+   * i.e. every operation not started via `research.start_acquisition`, which
+   * today is all of them except this one path.
+   *
+   * Enqueues a job via `this.db` rather than posting the Room message
+   * directly. `failOperation` is called from action-node handlers that
+   * `WorkflowExecutionService.runActionNode` wraps in a `SAVEPOINT` — on
+   * rethrow (which every `failOperation` call site does) that savepoint is
+   * rolled back, discarding this method's own `setState` "failed" write made
+   * moments earlier via the same client. A Room message posted through an
+   * independent connection would not be rolled back with it: the user would
+   * be told the operation failed while the database still shows it as not
+   * failed, and the event-key dedupe (`findRoomEventContinuation`) would then
+   * permanently swallow the real notification once the failure is genuinely
+   * recorded on a later attempt. Enqueuing through `this.db` instead ties the
+   * notification's fate to the same commit/rollback boundary as the state
+   * write it reports on — both persist together, or neither does. */
+  private async notifyRoomOfOperationFailure(operation: Pick<OperationRow, "id" | "space_id" | "project_id" | "progress_json">, message: string): Promise<void> {
+    const origin = objectValue(operation.progress_json);
+    const roomId = optionalString(origin.origin_room_id);
+    const sessionId = optionalString(origin.origin_session_id);
+    if (!roomId || !sessionId) return;
+    const identity = await this.projectWriterActor(operation.space_id, operation.project_id);
+    if (!identity) return;
+    await new PgJobQueueRepository(this.db).enqueue({
+      job_type: RESEARCH_OPERATION_FAILURE_NOTIFY_JOB,
+      space_id: operation.space_id,
+      user_id: identity,
+      payload: { operation_id: operation.id, room_id: roomId, session_id: sessionId, reason: message },
+    });
   }
 
   private async readOperation(identity: SpaceUserIdentity, projectId: string, operationId: string): Promise<OperationRead> {

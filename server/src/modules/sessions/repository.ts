@@ -201,6 +201,7 @@ export class PgSessionRepository {
     sessionId: string,
     limit: number,
     offset: number,
+    visibleRoomTranscriptOnly = false,
   ): Promise<MessageOut[]> {
     const result = await this.db.query<MessageRow>(
       `SELECT *
@@ -217,11 +218,12 @@ export class PgSessionRepository {
              FROM messages m
             WHERE m.session_id = $1
               AND m.space_id = $2
+              AND ($5::boolean = false OR COALESCE(m.metadata_json->>'room_display', 'conversation') <> 'internal')
             ORDER BY m.created_at DESC, m.id DESC
             LIMIT $3 OFFSET $4
          ) message_page
         ORDER BY message_page.created_at ASC, message_page.id ASC`,
-      [sessionId, spaceId, limit, offset],
+      [sessionId, spaceId, limit, offset, visibleRoomTranscriptOnly],
     );
     return result.rows.map(messageToOut);
   }
@@ -241,7 +243,7 @@ export class PgSessionRepository {
       roomId,
     );
     if (!session) return null;
-    return this.loadMessagePage(spaceId, sessionId, limit, offset);
+    return this.loadMessagePage(spaceId, sessionId, limit, offset, true);
   }
 
   async listRecentMessagesForContext(
@@ -348,7 +350,7 @@ export class PgSessionRepository {
     // session is 404 (null), not an error.
     const session = await this.getSession(spaceId, userId, sessionId);
     if (!session) return null;
-    return this.insertUserMessage(spaceId, userId, sessionId, input);
+    return this.insertAttributedMessage(spaceId, userId, sessionId, input);
   }
 
   async attachRunToUserMessage(input: {
@@ -393,17 +395,95 @@ export class PgSessionRepository {
       roomId,
     );
     if (!session) return null;
-    return this.insertUserMessage(spaceId, userId, sessionId, {
+    return this.insertAttributedMessage(spaceId, userId, sessionId, {
       ...input,
       role: "user",
     });
   }
 
-  private async insertUserMessage(
+  async addRoomInternalInstruction(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    input: Omit<AddMessageInput, "role">,
+  ): Promise<MessageOut | null> {
+    const session = await this.getRoomConversation(
+      spaceId,
+      userId,
+      sessionId,
+      roomId,
+    );
+    if (!session) return null;
+    return this.insertAttributedMessage(spaceId, userId, sessionId, {
+      ...input,
+      role: "system",
+      metadata: {
+        ...(input.metadata ?? {}),
+        room_display: "internal",
+        continuation: true,
+        continuation_requested_by_user_id: userId,
+      },
+    }, null);
+  }
+
+  async findRoomProposalContinuation(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    proposalId: string,
+  ): Promise<MessageOut | null> {
+    const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
+    if (!session) return null;
+    const result = await this.db.query<MessageRow>(
+      `SELECT id, session_id, space_id, user_id, sender_agent_id, role,
+              content, metadata_json, created_at
+         FROM messages
+        WHERE space_id = $1 AND session_id = $2 AND role = 'system'
+          AND metadata_json->>'room_display' = 'internal'
+          AND metadata_json->>'continuation_proposal_id' = $3
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [spaceId, sessionId, proposalId],
+    );
+    return result.rows[0] ? messageToOut(result.rows[0]) : null;
+  }
+
+  /** The event-triggered sibling of `findRoomProposalContinuation` (plan
+   * Phase 3): dedupes a domain-completion continuation by (event kind,
+   * event key) instead of a Proposal id. */
+  async findRoomEventContinuation(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    eventKind: string,
+    eventKey: string,
+  ): Promise<MessageOut | null> {
+    const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
+    if (!session) return null;
+    const result = await this.db.query<MessageRow>(
+      `SELECT id, session_id, space_id, user_id, sender_agent_id, role,
+              content, metadata_json, created_at
+         FROM messages
+        WHERE space_id = $1 AND session_id = $2 AND role = 'system'
+          AND metadata_json->>'room_display' = 'internal'
+          AND metadata_json->>'continuation_event_kind' = $3
+          AND metadata_json->>'continuation_event_key' = $4
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [spaceId, sessionId, eventKind, eventKey],
+    );
+    return result.rows[0] ? messageToOut(result.rows[0]) : null;
+  }
+
+  private async insertAttributedMessage(
     spaceId: string,
     userId: string,
     sessionId: string,
     input: AddMessageInput,
+    storedUserId: string | null = userId,
   ): Promise<MessageOut> {
     const now = new Date().toISOString();
     // Atomic: insert the message and touch the session's updated_at in one
@@ -423,7 +503,7 @@ export class PgSessionRepository {
         randomUUID(),
         spaceId,
         sessionId,
-        userId,
+        storedUserId,
         input.role,
         input.content,
         jsonParam(input.metadata),
@@ -528,14 +608,34 @@ export class PgSessionRepository {
          ON CONFLICT DO NOTHING
          RETURNING id, space_id, session_id, user_id, sender_agent_id, role,
                    content, metadata_json, created_at
+       ), updated AS (
+         UPDATE messages message
+            SET content = $5,
+                metadata_json = jsonb_build_object('room_id', authorized.room_id)
+                  || $6::jsonb
+           FROM authorized
+          WHERE NOT EXISTS (SELECT 1 FROM inserted)
+            AND message.space_id = $2
+            AND message.session_id = authorized.session_id
+            AND message.role = 'assistant'
+            AND message.sender_agent_id = $4
+            AND message.metadata_json->>'run_id' = $8
+         RETURNING message.id, message.space_id, message.session_id,
+                   message.user_id, message.sender_agent_id, message.role,
+                   message.content, message.metadata_json, message.created_at
        ), touched AS (
          UPDATE sessions
             SET updated_at = $7
           WHERE id = $3
-            AND EXISTS (SELECT 1 FROM inserted)
+            AND (
+              EXISTS (SELECT 1 FROM inserted)
+              OR EXISTS (SELECT 1 FROM updated)
+            )
          RETURNING 1
        )
-       SELECT * FROM inserted`,
+       SELECT * FROM inserted
+       UNION ALL
+       SELECT * FROM updated`,
       [
         randomUUID(),
         input.space_id,

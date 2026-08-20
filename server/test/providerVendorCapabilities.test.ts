@@ -15,6 +15,8 @@ describe("provider vendor capabilities", () => {
     expect(piStructuredToolChoice("openai_codex_responses", "structured_output")).toBe("required");
     expect(providerSupportsTask("retrieval_query_rewrite", "openai_codex")).toBe(false);
     expect(providerSupportsTask("retrieval_synthesis", "openai_codex")).toBe(false);
+    expect(providerSupportsTask("room_conversation_title", "openai_codex")).toBe(false);
+    expect(providerSupportsTask("room_conversation_title", "openai")).toBe(true);
   });
 
   it("records vendor identity and capability, and nothing about a chat implementation", () => {

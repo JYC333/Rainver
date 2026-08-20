@@ -138,13 +138,13 @@ function control(retention = 60): ExecutionControlSnapshot {
   };
 }
 
-function envelope() {
+function envelope(trust: "domain_approved" | "user_confirmed" = "domain_approved") {
   const message = normalizeContextItem({
     sourceRef: { type: "message", id: MESSAGE },
     acquisition: "direct",
     selection: "required",
     semanticRole: "user_input",
-    trust: "domain_approved",
+    trust,
     sensitivity: "normal",
     visibility: "private",
     ownerUserId: USER,
@@ -505,6 +505,39 @@ describe("Context Event continuity and checkpoints", () => {
     expect(visible.messages.map((message) => message.content)).toEqual(["current"]);
   });
 
+  it("keeps earlier messages that share the triggering message timestamp", async () => {
+    if (!available || !pool) return;
+    const sessionId = randomUUID();
+    const earlierId = "30000000-0000-4000-8000-000000000020";
+    const currentId = "30000000-0000-4000-8000-000000000021";
+    const futureId = "30000000-0000-4000-8000-000000000022";
+    const timestamp = "2026-08-17T14:00:00.000Z";
+    await pool.query(
+      `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'active',now(),now())`,
+      [sessionId, SPACE, USER],
+    );
+    await pool.query(
+      `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES
+       ($1,$4,$5,$6,'user','earlier same timestamp',$7),
+       ($2,$4,$5,$6,'user','current same timestamp',$7),
+       ($3,$4,$5,$6,'user','future same timestamp',$7)`,
+      [earlierId, currentId, futureId, SPACE, sessionId, USER, timestamp],
+    );
+
+    const visible = await loadConversationContinuityThroughMessage(pool, {
+      spaceId: SPACE,
+      sessionId,
+      workContextScopeId: RUN,
+      currentMessageId: currentId,
+    });
+
+    expect(visible.messages.map((message) => message.content)).toEqual([
+      "earlier same timestamp",
+      "current same timestamp",
+    ]);
+  });
+
   it("rejects concurrent extraction output based on a superseded checkpoint", async () => {
     if (!available || !pool) return;
     const releases: Array<() => void> = [];
@@ -561,7 +594,11 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     const sessionId = randomUUID();
     const priorMessageId = randomUUID();
     const priorReplyId = randomUUID();
-    const futureMessageId = "00000000-0000-4000-8000-000000000001";
+    // Ties on created_at break on id (proven by the "keeps earlier messages
+    // that share the triggering message timestamp" test above), so this
+    // must sort lexically after MESSAGE (id ...007) to actually land after
+    // the triggering point, not before it.
+    const futureMessageId = "30000000-0000-4000-8000-000000000008";
     const decisionId = randomUUID();
     await pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
@@ -1303,7 +1340,11 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         source_connection_ids: [],
       },
     });
-    const planned = envelope();
+    // This test exercises requireLiveAuthorization: true, which checks the
+    // message's trust classification against its role (gateway.ts
+    // authorizeMessageSource) — a 'user' role message must carry
+    // user_confirmed, not the shared helper's default domain_approved.
+    const planned = envelope("user_confirmed");
     const plan = new RuntimeContextPlanner().plan({
       executionControlSnapshotId: CONTROL,
       setupRef: authoritative.work_context_setup_ref,

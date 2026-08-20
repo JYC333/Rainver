@@ -6,6 +6,9 @@ import type {
 import type { Queryable } from "../../routeUtils/common";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common";
 import { contextItemText, normalizeContextItem } from "../itemNormalizer";
+import { estimateModelTokens } from "../../usage/modelCatalog";
+
+const MAX_CLI_DELTA_TOKENS = 6_000;
 
 export type CliRotationReason =
   | "new_scope"
@@ -48,6 +51,8 @@ interface BindingRow {
   acknowledged_item_ids_json: unknown;
   generation: number;
   rotation_reason: CliRotationReason | null;
+  execution_lease_id?: string | null;
+  execution_lease_expires_at?: Date | string | null;
 }
 
 interface BindingFingerprint {
@@ -249,7 +254,8 @@ export class RuntimeContextCliContinuityService {
       const bindingResult = await db.query<BindingRow & { work_context_scope_id: string; space_id: string; status: string }>(
         `SELECT id,space_id,work_context_scope_id,status,runtime_state_key,vendor_session_id,
                 authority_fingerprint,runtime_fingerprint,fingerprint_json,cli_known_cursor,
-                acknowledged_item_ids_json,generation,rotation_reason
+                acknowledged_item_ids_json,generation,rotation_reason,
+                execution_lease_id,execution_lease_expires_at
            FROM runtime_context_cli_bindings WHERE id=$1 FOR UPDATE`,
         [input.bindingId],
       );
@@ -265,7 +271,8 @@ export class RuntimeContextCliContinuityService {
         [input.spaceId, input.workContextScopeId],
       );
       const targetCursor = Number(scope.rows[0]?.event_head_cursor ?? 0);
-      const mode = binding.vendor_session_id ? "delta" : "full";
+      let effectiveBinding = binding;
+      let mode: "full" | "delta" = binding.vendor_session_id ? "delta" : "full";
       let checkpoint = mode === "full"
         ? await loadActiveCheckpointForCli(db, input.spaceId, input.workContextScopeId, targetCursor)
         : null;
@@ -277,7 +284,7 @@ export class RuntimeContextCliContinuityService {
       }))) {
         checkpoint = null;
       }
-      const events = mode === "delta"
+      let events = mode === "delta"
         ? await loadCliDeltaEvents(db, {
             spaceId: input.spaceId,
             workContextScopeId: input.workContextScopeId,
@@ -292,17 +299,59 @@ export class RuntimeContextCliContinuityService {
             currentMessageRef: input.currentMessageRef,
             checkpoint,
           });
-      const deltaText = mode === "full"
+      let deltaText = mode === "full"
         ? renderCliReconstruction(checkpoint?.checkpoint_json ?? null, events)
         : renderCliEventDelta(events);
+      if (mode === "delta" && deltaText && estimateModelTokens(deltaText) > MAX_CLI_DELTA_TOKENS) {
+        // A stale vendor cursor must never turn into an unbounded prompt. Rotate
+        // to a fresh vendor session and reconstruct from the bounded checkpoint.
+        await db.query(
+          `UPDATE runtime_context_cli_bindings
+              SET status='rotated',rotation_reason='overflow_reconstruction',
+                  execution_lease_id=NULL,execution_lease_expires_at=NULL,updated_at=now()
+            WHERE id=$1 AND status='active'`,
+          [binding.id],
+        );
+        const replacement = await db.query<BindingRow & { work_context_scope_id: string; space_id: string; status: string }>(
+          `INSERT INTO runtime_context_cli_bindings (
+             id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
+             runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+             runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
+             fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
+             status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
+           ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
+                    runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+                    $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
+                    0,'[]'::jsonb,generation+1,'active','overflow_reconstruction',$4,$5,now(),now()
+               FROM runtime_context_cli_bindings
+              WHERE id=$1
+           RETURNING id,space_id,work_context_scope_id,status,runtime_state_key,vendor_session_id,
+                     authority_fingerprint,runtime_fingerprint,fingerprint_json,cli_known_cursor,
+                     acknowledged_item_ids_json,generation,rotation_reason`,
+          [binding.id, randomUUID(), randomUUID(),
+            binding.execution_lease_id ?? null, binding.execution_lease_expires_at ?? null],
+        );
+        if (!replacement.rows[0]) throw new HttpError(409, "CLI continuity overflow rotation failed");
+        effectiveBinding = replacement.rows[0];
+        mode = "full";
+        checkpoint = await loadActiveCheckpointForCli(db, input.spaceId, input.workContextScopeId, targetCursor);
+        events = await loadCliReconstructionEvents(db, {
+          spaceId: input.spaceId,
+          workContextScopeId: input.workContextScopeId,
+          throughCursor: targetCursor,
+          currentMessageRef: input.currentMessageRef,
+          checkpoint,
+        });
+        deltaText = renderCliReconstruction(checkpoint?.checkpoint_json ?? null, events);
+      }
       const deltaItem = deltaText
         ? normalizeContextItem({
             sourceRef: {
               type: mode === "full" ? "context_scope_reconstruction" : "context_event_range",
-              id: binding.id,
+              id: effectiveBinding.id,
               version: mode === "full"
                 ? String(targetCursor)
-                : `${binding.cli_known_cursor + 1}-${targetCursor}`,
+                : `${effectiveBinding.cli_known_cursor + 1}-${targetCursor}`,
             },
             acquisition: "runtime_event",
             selection: "pinned",
@@ -317,7 +366,7 @@ export class RuntimeContextCliContinuityService {
             structuredPayload: {
               after_cursor: mode === "full"
                 ? Number(checkpoint?.covered_cursor ?? 0)
-                : binding.cli_known_cursor,
+                : effectiveBinding.cli_known_cursor,
               through_cursor: targetCursor,
               checkpoint_ref: checkpoint
                 ? { type: "semantic_checkpoint", id: checkpoint.id, version: String(checkpoint.version) }
@@ -328,7 +377,7 @@ export class RuntimeContextCliContinuityService {
           })
         : null;
       return {
-        ...bindingOut(binding),
+        ...bindingOut(effectiveBinding),
         mode,
         target_cursor: targetCursor,
         delta_item: deltaItem,

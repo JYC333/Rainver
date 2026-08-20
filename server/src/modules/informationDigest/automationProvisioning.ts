@@ -30,8 +30,8 @@ export async function reconcileInformationDigestAutomations(db: Queryable): Prom
         await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
           `information-digest-automation:${scope.space_id}:${scopeType}:${scopeKey}:${operation}`,
         ]);
-        const existing = await tx.query<{ id: string }>(
-          `SELECT id FROM automations
+        const existing = await tx.query<{ id: string; agent_id: string }>(
+          `SELECT id, agent_id FROM automations
           WHERE space_id = $1 AND status <> 'archived'
             AND config_json->>'target_type' = 'information_digest'
             AND config_json->>'scope' = $2
@@ -41,7 +41,27 @@ export async function reconcileInformationDigestAutomations(db: Queryable): Prom
           LIMIT 1`,
         [scope.space_id, scopeType, scopeKey, operation],
       );
-        if (existing.rows[0]) return false;
+        if (existing.rows[0]) {
+          // Older reconciliation could bind a native digest to the managed
+          // Personal Assistant when no annotator existed yet. That Assistant
+          // is Room-only, so repair the attribution binding instead of letting
+          // every schedule fail before an Automation Run can be created.
+          if (existing.rows[0].agent_id !== scope.agent_id) {
+            await tx.query(
+              `UPDATE automations
+                  SET agent_id = $1::uuid,
+                      preflight_snapshot_json = jsonb_set(
+                        COALESCE(preflight_snapshot_json, '{}'::jsonb),
+                        '{information_digest_preflight,attribution_agent_id}',
+                        to_jsonb(($1::uuid)::text), true
+                      ),
+                      updated_at = $2
+                WHERE id = $3 AND space_id = $4`,
+              [scope.agent_id, new Date().toISOString(), existing.rows[0].id, scope.space_id],
+            );
+          }
+          return false;
+        }
         const configJson = {
           target_type: "information_digest",
           scope: scopeType,
@@ -87,6 +107,7 @@ async function eligibleScopes(db: Queryable): Promise<DigestScope[]> {
        SELECT s.id AS space_id,
               (SELECT a.id FROM agents a
                 WHERE a.space_id = s.id AND a.status = 'active' AND a.current_version_id IS NOT NULL
+                  AND a.agent_kind <> 'system_assistant'
                 ORDER BY (a.agent_kind = 'system_source_annotator') DESC, a.created_at ASC LIMIT 1) AS agent_id
          FROM spaces s
      ), personal AS (

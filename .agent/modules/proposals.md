@@ -9,6 +9,7 @@ Approval workflow. Durable memory and code changes must go through a Proposal be
 - `Artifact` (persistent output of agent runs)
 - `ProposalApplyService` — validates source trust, writes provenance links, and dispatches through `ProposalApplierRegistry` to module-owned appliers
 - `SourceMonitoringService` — gates semantic/policy acceptance by source trust
+- `ConversationContinuationRegistry` (`proposals/continuationRegistry.ts`) — maps a resolved (accepted/rejected) Proposal to what a Room continuation run should do next: a short directive tag, neutral instruction text, and structured context. Mirrors `ProposalApplierRegistry`'s ownership split — each domain registers its own handler alongside its applier (e.g. `registerInquiryThreadContinuation` next to `registerInquiryThreadProposalAppliers`); Rooms (`rooms/service.ts`) consumes the registry and holds no domain-specific continuation logic (plan: `.agent/plans/room-advancement-reliability-plan.md`, Phase 2). A rejected Proposal always gets the same generic revise instruction regardless of type; an accepted Proposal with no registered handler gets a generic "confirm and continue" fallback. A directive is a hint tag, not a forced tool call — `advance_accepted_thread` (accepted `inquiry_thread_create`) deliberately names an activity rather than one specific tool, since more than one Room tool can satisfy it. A second trigger source (Phase 3) resolves a domain-completion event instead of a Proposal (`registerEvent`/`resolveEvent`) — a run group or research operation finishing, not a human decision — dispatched through `RoomService.continueAfterDomainEventInTransaction` and deduped by `(event kind, event key)` instead of a Proposal id. Unlike the Proposal side, an unregistered event kind throws: firing an event nobody registered a handler for is a wiring bug, not a legitimate case needing a fallback.
 
 ## Key Models
 
@@ -119,6 +120,9 @@ proposal mutations fail-closed instead of silently no-oping.
 - Agents generate Proposals; humans approve explicitly or in advance through
   a scoped, expiring, use-limited ActionApprovalGrant. Both modes retain the
   Proposal and approval audit record.
+- A Room continuation produced by accepting an `inquiry_thread_create`
+  Proposal cannot create another Inquiry Thread proposal. Pending siblings
+  from the original question batch remain the sole review items.
 - `code_patch` rollback requires a non-expired `available` snapshot; once used, status becomes `rolled_back` and cannot be reused
 - Snapshot retention (days + max count) is configurable per-Project-Folder and per-space; builtin defaults are 7 days / 20 snapshots
 

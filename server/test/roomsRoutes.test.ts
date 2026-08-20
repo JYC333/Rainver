@@ -22,7 +22,9 @@ function service(overrides: Record<string, unknown>) {
     createConversation: async () => { throw new Error("not used"); },
     listConversations: async () => { throw new Error("not used"); },
     listMessages: async () => { throw new Error("not used"); },
+    getConversationSummary: async () => { throw new Error("not used"); },
     sendMessage: async () => { throw new Error("not used"); },
+    continueAfterProposal: async () => { throw new Error("not used"); },
     ...overrides,
   } as never;
 }
@@ -54,6 +56,17 @@ describe("Room routes", () => {
           },
           user_members: [],
           agent_members: [],
+          conversation: {
+            id: "session-1",
+            space_id: "space-1",
+            room_id: "room-1",
+            project_id: "project-1",
+            project_folder_id: null,
+            title: "Conversation",
+            status: "active",
+            created_at: "2026-07-26T00:00:00.000Z",
+            updated_at: "2026-07-26T00:00:00.000Z",
+          },
         };
       },
     }));
@@ -65,10 +78,8 @@ describe("Room routes", () => {
       payload: {
         project_id: "project-1",
         title: "Delivery Room",
-        manager_agent_id: "agent-1",
-        agent_ids: ["agent-2"],
-        user_ids: ["user-2"],
       },
+      headers: { "idempotency-key": "room-route-test-1" },
     });
 
     expect(response.statusCode).toBe(201);
@@ -80,9 +91,7 @@ describe("Room routes", () => {
       input: {
         project_id: "project-1",
         title: "Delivery Room",
-        manager_agent_id: "agent-1",
-        agent_ids: ["agent-2"],
-        user_ids: ["user-2"],
+        idempotency_key: "room-route-test-1",
       },
     });
   });
@@ -113,6 +122,17 @@ describe("Room routes", () => {
             },
             created_at: "2026-07-26T00:00:00.000Z",
           },
+          conversation: {
+            id: "session-1",
+            space_id: "space-1",
+            room_id: "room-1",
+            project_id: "project-1",
+            project_folder_id: null,
+            title: "Review this",
+            status: "active",
+            created_at: "2026-07-26T00:00:00.000Z",
+            updated_at: "2026-07-26T00:00:00.000Z",
+          },
           task_group_ids: ["group-1"],
           run_ids: ["run-1"],
         };
@@ -136,6 +156,7 @@ describe("Room routes", () => {
 
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({
+      conversation: { id: "session-1", title: "Review this" },
       task_group_ids: ["group-1"],
       run_ids: ["run-1"],
     });
@@ -149,6 +170,183 @@ describe("Room routes", () => {
           credential_profile_id: "credential-user-2",
         }],
       },
+    });
+  });
+
+  it("continues only through the server-owned Proposal continuation boundary", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
+    let seen: unknown;
+    __setRoomServiceFactoryForTests(() => service({
+      continueAfterProposal: async (
+        identity: unknown,
+        roomId: string,
+        sessionId: string,
+        input: unknown,
+      ) => {
+        seen = { identity, roomId, sessionId, input };
+        return {
+          message: { id: "internal-1", role: "system" },
+          conversation: { id: "session-1" },
+          task_group_ids: ["group-1"],
+          run_ids: ["run-1"],
+        };
+      },
+    }));
+    app = buildServer(config(), { logger: false });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/conversations/session-1/proposal-continuations",
+      payload: {
+        proposal_id: "proposal-1",
+        backends: [{
+          agent_id: "agent-1",
+          runtime_profile_id: "runtime-cli",
+          credential_profile_id: "credential-user-2",
+        }],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(seen).toEqual({
+      identity: { spaceId: "space-1", userId: "user-2" },
+      roomId: "room-1",
+      sessionId: "session-1",
+      input: {
+        proposal_id: "proposal-1",
+        backends: [{
+          agent_id: "agent-1",
+          runtime_profile_id: "runtime-cli",
+          credential_profile_id: "credential-user-2",
+        }],
+      },
+    });
+  });
+
+  it("returns member-visible summary freshness without exposing owner usage metadata", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
+    let seen: unknown;
+    __setRoomServiceFactoryForTests(() => service({
+      getConversationSummary: async (...args: unknown[]) => {
+        seen = args;
+        return {
+          state: {
+            room_id: "room-1",
+            session_id: "session-1",
+            status: "idle",
+            active_summary_id: "summary-1",
+            requested_through_message_id: "message-4",
+            requested_through_created_at: "2026-07-26T00:00:04.000Z",
+            retry_count: 0,
+            next_attempt_at: null,
+            last_error: null,
+            updated_at: "2026-07-26T00:00:05.000Z",
+            owner_user_id: null,
+            room_title: "Delivery Room",
+          },
+          summary: {
+            id: "summary-1",
+            version: 1,
+            summary_text: "Earlier decisions.",
+            covered_through_message_id: "message-2",
+            covered_through_created_at: "2026-07-26T00:00:02.000Z",
+            covered_message_count: 2,
+            source_token_estimate: 400,
+            summary_token_estimate: 120,
+            project_id: "project-1",
+            created_at: "2026-07-26T00:00:05.000Z",
+            provider_id: null,
+            model: null,
+            usage: null,
+            audit: null,
+          },
+        };
+      },
+    }));
+    app = buildServer(config(), { logger: false });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/rooms/room-1/conversations/session-1/summary",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ summary: { id: "summary-1", provider_id: null, usage: null } });
+    expect(seen).toEqual([{ spaceId: "space-1", userId: "user-2" }, "room-1", "session-1"]);
+  });
+
+  it("exposes roster mutations through strict request contracts", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const seen: Array<{ method: string; args: unknown[] }> = [];
+    __setRoomServiceFactoryForTests(() => service({
+      listAgentCandidates: async (...args: unknown[]) => {
+        seen.push({ method: "listAgentCandidates", args });
+        return { agents: [], presets: [], total: 0, limit: 50, offset: 0 };
+      },
+      addAgent: async (...args: unknown[]) => {
+        seen.push({ method: "addAgent", args });
+        return { room: {}, user_members: [], agent_members: [] };
+      },
+      addAgentPreset: async (...args: unknown[]) => {
+        seen.push({ method: "addAgentPreset", args });
+        return { room: {}, user_members: [], agent_members: [] };
+      },
+      transferOwner: async (...args: unknown[]) => {
+        seen.push({ method: "transferOwner", args });
+        return { room: {}, user_members: [], agent_members: [] };
+      },
+    }));
+    app = buildServer(config(), { logger: false });
+
+    const candidates = await app.inject({
+      method: "GET",
+      url: "/api/v1/rooms/room-1/agent-candidates?limit=10&offset=2",
+    });
+    expect(candidates.statusCode).toBe(200);
+    expect(seen[0]).toMatchObject({
+      method: "listAgentCandidates",
+      args: [{ spaceId: "space-1", userId: "user-1" }, "room-1", { limit: 10, offset: 2 }],
+    });
+
+    const add = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/agents",
+      payload: { agent_id: "agent-2" },
+    });
+    expect(add.statusCode).toBe(201);
+    expect(seen[1]).toMatchObject({
+      method: "addAgent",
+      args: [{ spaceId: "space-1", userId: "user-1" }, "room-1", {
+        agent_id: "agent-2",
+        share_private_with_member_ids: [],
+        confirm_room_share: false,
+      }],
+    });
+
+    const preset = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/agent-presets",
+      payload: { preset_id: "research-analyst" },
+      headers: { "idempotency-key": "preset-route-test-1" },
+    });
+    expect(preset.statusCode).toBe(201);
+    expect(seen[2]).toMatchObject({
+      method: "addAgentPreset",
+      args: [{ spaceId: "space-1", userId: "user-1" }, "room-1", {
+        preset_id: "research-analyst",
+        confirm_room_share: false,
+        idempotency_key: "preset-route-test-1",
+      }],
+    });
+
+    const transfer = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/owner-transfer",
+      payload: { user_id: "user-2" },
+    });
+    expect(transfer.statusCode).toBe(200);
+    expect(seen[3]).toMatchObject({
+      method: "transferOwner",
+      args: [{ spaceId: "space-1", userId: "user-1" }, "room-1", "user-2"],
     });
   });
 });

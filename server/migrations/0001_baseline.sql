@@ -4035,6 +4035,18 @@ CREATE TABLE "route_decisions" (
 	CONSTRAINT "uq_route_decisions_run_attempt" UNIQUE("space_id","run_id","attempt_number")
 );
 --> statement-breakpoint
+CREATE TABLE "room_agent_access_grants" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"agent_id" varchar(36) NOT NULL,
+	"grantee_user_id" varchar(36) NOT NULL,
+	"granted_by_user_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"revoked_at" timestamp with time zone,
+	"revoked_by_user_id" varchar(36)
+);
+--> statement-breakpoint
 CREATE TABLE "room_agent_members" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -4047,6 +4059,49 @@ CREATE TABLE "room_agent_members" (
 	CONSTRAINT "uq_room_agent_members_room_agent" UNIQUE("room_id","agent_id"),
 	CONSTRAINT "ck_room_agent_members_role" CHECK (role IN ('manager', 'member')),
 	CONSTRAINT "ck_room_agent_members_status" CHECK (status IN ('active', 'removed'))
+);
+--> statement-breakpoint
+CREATE TABLE "room_agent_preset_idempotencies" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"idempotency_key" varchar(128) NOT NULL,
+	"request_fingerprint" varchar(128) NOT NULL,
+	"agent_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_agent_preset_idempotencies_caller_key" UNIQUE("space_id","user_id","room_id","idempotency_key")
+);
+--> statement-breakpoint
+CREATE TABLE "room_invitation_agent_approvals" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"invitation_id" varchar(36) NOT NULL,
+	"agent_id" varchar(36) NOT NULL,
+	"owner_user_id" varchar(36) NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"decided_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_invitation_agent_approvals_invitation_agent" UNIQUE("invitation_id","agent_id"),
+	CONSTRAINT "ck_room_invitation_agent_approvals_status" CHECK (status IN ('pending', 'approved', 'rejected', 'invalidated'))
+);
+--> statement-breakpoint
+CREATE TABLE "room_user_invitations" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"invitee_user_id" varchar(36) NOT NULL,
+	"invited_by_user_id" varchar(36) NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"required_roster_revision" bigint NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	"resolved_at" timestamp with time zone,
+	CONSTRAINT "uq_room_user_invitations_id_space" UNIQUE("id","space_id"),
+	CONSTRAINT "ck_room_user_invitations_status" CHECK (status IN ('pending', 'active', 'rejected', 'expired', 'cancelled', 'invalidated'))
 );
 --> statement-breakpoint
 CREATE TABLE "room_user_members" (
@@ -4074,9 +4129,75 @@ CREATE TABLE "rooms" (
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	"archived_at" timestamp with time zone,
+	"roster_revision" bigint DEFAULT 0 NOT NULL,
 	CONSTRAINT "uq_rooms_id_space" UNIQUE("id","space_id"),
 	CONSTRAINT "uq_rooms_id_space_project" UNIQUE("id","space_id","project_id"),
 	CONSTRAINT "ck_rooms_status" CHECK (status IN ('active', 'archived'))
+);
+--> statement-breakpoint
+CREATE TABLE "room_conversation_summary_states" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"session_id" varchar(36) NOT NULL,
+	"status" varchar(24) NOT NULL,
+	"active_summary_id" varchar(36),
+	"requested_through_message_id" varchar(36),
+	"requested_through_created_at" timestamp with time zone,
+	"lease_token" varchar(36),
+	"lease_expires_at" timestamp with time zone,
+	"retry_count" integer DEFAULT 0 NOT NULL,
+	"next_attempt_at" timestamp with time zone,
+	"last_attempt_at" timestamp with time zone,
+	"last_error" varchar(2000),
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_conversation_summary_states_session" UNIQUE("session_id"),
+	CONSTRAINT "ck_room_conversation_summary_states_status" CHECK (status IN ('idle','queued','running','waiting_provider','retry_wait','failed')),
+	CONSTRAINT "ck_room_conversation_summary_states_retry" CHECK (retry_count >= 0),
+	CONSTRAINT "ck_room_conversation_summary_states_lease" CHECK ((lease_token IS NULL AND lease_expires_at IS NULL) OR (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "room_conversation_summary_versions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"session_id" varchar(36) NOT NULL,
+	"version" integer NOT NULL,
+	"status" varchar(16) NOT NULL,
+	"summary_text" text NOT NULL,
+	"covered_through_message_id" varchar(36) NOT NULL,
+	"covered_through_created_at" timestamp with time zone NOT NULL,
+	"covered_message_count" integer NOT NULL,
+	"source_token_estimate" integer NOT NULL,
+	"summary_token_estimate" integer NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"owner_user_id" varchar(36) NOT NULL,
+	"provider_id" varchar(36),
+	"model" varchar(256),
+	"usage_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"audit_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"system_prompt_version" varchar(128) NOT NULL,
+	"schema_version" varchar(128) NOT NULL,
+	"supersedes_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_conversation_summary_versions_session_version" UNIQUE("session_id","version"),
+	CONSTRAINT "uq_room_conversation_summary_versions_scope" UNIQUE("id","session_id","room_id","space_id"),
+	CONSTRAINT "ck_room_conversation_summary_versions_status" CHECK (status IN ('active','superseded')),
+	CONSTRAINT "ck_room_conversation_summary_versions_coverage" CHECK (version >= 1 AND covered_message_count >= 1 AND source_token_estimate >= 0 AND summary_token_estimate >= 0 AND char_length(summary_text) >= 1),
+	CONSTRAINT "ck_room_conversation_summary_versions_json" CHECK (jsonb_typeof(usage_json) = 'object' AND jsonb_typeof(audit_json) = 'object')
+);
+--> statement-breakpoint
+CREATE TABLE "room_creation_idempotencies" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"idempotency_key" varchar(128) NOT NULL,
+	"request_fingerprint" varchar(64) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"conversation_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_room_creation_idempotency_scope" UNIQUE("space_id","user_id","idempotency_key")
 );
 --> statement-breakpoint
 CREATE TABLE "retrieval_aliases" (
@@ -6366,14 +6487,42 @@ ALTER TABLE "relation_source_links" ADD CONSTRAINT "relation_source_links_source
 ALTER TABLE "relation_source_links" ADD CONSTRAINT "relation_source_links_evidence_id_fkey" FOREIGN KEY ("evidence_id") REFERENCES "public"."extracted_evidence"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "route_decisions" ADD CONSTRAINT "route_decisions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "route_decisions" ADD CONSTRAINT "route_decisions_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_access_grants" ADD CONSTRAINT "room_agent_access_grants_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_access_grants" ADD CONSTRAINT "room_agent_access_grants_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_access_grants" ADD CONSTRAINT "room_agent_access_grants_grantee_user_fkey" FOREIGN KEY ("grantee_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_access_grants" ADD CONSTRAINT "room_agent_access_grants_granted_by_user_fkey" FOREIGN KEY ("granted_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_access_grants" ADD CONSTRAINT "room_agent_access_grants_revoked_by_user_fkey" FOREIGN KEY ("revoked_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_agent_members" ADD CONSTRAINT "room_agent_members_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_agent_members" ADD CONSTRAINT "room_agent_members_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_preset_idempotencies" ADD CONSTRAINT "room_agent_preset_idempotencies_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_preset_idempotencies" ADD CONSTRAINT "room_agent_preset_idempotencies_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_agent_preset_idempotencies" ADD CONSTRAINT "room_agent_preset_idempotencies_user_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_invitation_agent_approvals" ADD CONSTRAINT "room_invitation_agent_approvals_invitation_scope_fkey" FOREIGN KEY ("invitation_id","space_id") REFERENCES "public"."room_user_invitations"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_invitation_agent_approvals" ADD CONSTRAINT "room_invitation_agent_approvals_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_invitation_agent_approvals" ADD CONSTRAINT "room_invitation_agent_approvals_owner_user_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_user_invitations" ADD CONSTRAINT "room_user_invitations_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_user_invitations" ADD CONSTRAINT "room_user_invitations_invitee_user_fkey" FOREIGN KEY ("invitee_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_user_invitations" ADD CONSTRAINT "room_user_invitations_invited_by_user_fkey" FOREIGN KEY ("invited_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_user_members" ADD CONSTRAINT "room_user_members_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_user_members" ADD CONSTRAINT "room_user_members_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_project_folder_scope_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_project_scope_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_states" ADD CONSTRAINT "room_conversation_summary_states_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_states" ADD CONSTRAINT "room_conversation_summary_states_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_states" ADD CONSTRAINT "room_conversation_summary_states_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_states" ADD CONSTRAINT "room_conversation_summary_states_active_summary_fkey" FOREIGN KEY ("active_summary_id","session_id","room_id","space_id") REFERENCES "public"."room_conversation_summary_versions"("id","session_id","room_id","space_id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_room_scope_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_project_scope_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_supersedes_id_fkey" FOREIGN KEY ("supersedes_id") REFERENCES "public"."room_conversation_summary_versions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_space_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_user_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_room_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_conversation_fkey" FOREIGN KEY ("conversation_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retrieval_aliases" ADD CONSTRAINT "retrieval_aliases_retrieval_object_id_fkey" FOREIGN KEY ("retrieval_object_id") REFERENCES "public"."retrieval_objects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retrieval_aliases" ADD CONSTRAINT "retrieval_aliases_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "retrieval_chunks" ADD CONSTRAINT "retrieval_chunks_retrieval_object_id_fkey" FOREIGN KEY ("retrieval_object_id") REFERENCES "public"."retrieval_objects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -7323,11 +7472,23 @@ CREATE INDEX "ix_relation_source_links_source_item_id" ON "relation_source_links
 CREATE INDEX "ix_relation_source_links_evidence_id" ON "relation_source_links" USING btree ("evidence_id");--> statement-breakpoint
 CREATE INDEX "ix_route_decisions_space_created" ON "route_decisions" USING btree ("space_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_route_decisions_selected_profile" ON "route_decisions" USING btree ("selected_runtime_profile_id");--> statement-breakpoint
+CREATE INDEX "ix_room_agent_access_grants_grantee" ON "room_agent_access_grants" USING btree ("space_id","grantee_user_id","room_id");--> statement-breakpoint
+CREATE INDEX "ix_room_agent_access_grants_agent" ON "room_agent_access_grants" USING btree ("space_id","agent_id","room_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_room_agent_access_grants_active" ON "room_agent_access_grants" USING btree ("room_id","agent_id","grantee_user_id") WHERE revoked_at IS NULL;--> statement-breakpoint
 CREATE INDEX "ix_room_agent_members_agent" ON "room_agent_members" USING btree ("space_id","agent_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_room_agent_members_manager" ON "room_agent_members" USING btree ("room_id") WHERE role = 'manager' AND status = 'active';--> statement-breakpoint
+CREATE INDEX "ix_room_invitation_agent_approvals_owner" ON "room_invitation_agent_approvals" USING btree ("space_id","owner_user_id","status");--> statement-breakpoint
+CREATE INDEX "ix_room_user_invitations_invitee" ON "room_user_invitations" USING btree ("space_id","invitee_user_id","status");--> statement-breakpoint
+CREATE INDEX "ix_room_user_invitations_room" ON "room_user_invitations" USING btree ("space_id","room_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_room_user_invitations_pending" ON "room_user_invitations" USING btree ("room_id","invitee_user_id") WHERE status = 'pending';--> statement-breakpoint
 CREATE INDEX "ix_room_user_members_user" ON "room_user_members" USING btree ("space_id","user_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_room_user_members_owner" ON "room_user_members" USING btree ("room_id") WHERE role = 'owner' AND status = 'active';--> statement-breakpoint
 CREATE INDEX "ix_rooms_project_updated" ON "rooms" USING btree ("space_id","project_id","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_rooms_space_updated" ON "rooms" USING btree ("space_id","updated_at");--> statement-breakpoint
+CREATE INDEX "ix_room_conversation_summary_states_due" ON "room_conversation_summary_states" USING btree ("status","next_attempt_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_room_conversation_summary_versions_active" ON "room_conversation_summary_versions" USING btree ("session_id") WHERE status = 'active';--> statement-breakpoint
+CREATE INDEX "ix_room_conversation_summary_versions_room_created" ON "room_conversation_summary_versions" USING btree ("space_id","room_id","created_at");--> statement-breakpoint
+CREATE INDEX "ix_room_creation_idempotency_room" ON "room_creation_idempotencies" USING btree ("space_id","room_id");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_normalized_alias" ON "retrieval_aliases" USING btree ("normalized_alias");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_object" ON "retrieval_aliases" USING btree ("object_type","object_id");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_space_id" ON "retrieval_aliases" USING btree ("space_id");--> statement-breakpoint
@@ -7437,6 +7598,7 @@ CREATE INDEX "ix_scheduler_tasks_due" ON "scheduler_tasks" USING btree ("task_ty
 CREATE INDEX "ix_scheduler_tasks_space_id" ON "scheduler_tasks" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_scheduler_tasks_user_id" ON "scheduler_tasks" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "ix_messages_session_id" ON "messages" USING btree ("session_id");--> statement-breakpoint
+CREATE INDEX "ix_messages_space_session_created" ON "messages" USING btree ("space_id","session_id","created_at","id");--> statement-breakpoint
 CREATE INDEX "ix_messages_space_id" ON "messages" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_messages_user_id" ON "messages" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "ix_messages_sender_agent_id" ON "messages" USING btree ("sender_agent_id");--> statement-breakpoint

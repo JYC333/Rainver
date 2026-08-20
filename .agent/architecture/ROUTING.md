@@ -67,6 +67,14 @@ capability restriction when present, otherwise from the AgentVersion currently
 attached to the agent. A runtime profile describes execution transport and
 does not need to duplicate the agent's declared task capabilities.
 
+`runs.capabilities_json` also carries declarations for server-owned System
+Actions used to build the immutable Run tool-grant snapshot. Registered System
+Action ids are removed before `required_capabilities` is evaluated because
+they execute through the server's Agent Tool Gateway rather than the selected
+runtime. Their authorization remains fail-closed through
+`permission_snapshot_json`; non-System-Action capability ids continue to
+participate in the runtime hard filter.
+
 Persistent Project Folder availability is evaluated separately from a runtime's
 minimum sandbox level. A file-access CLI whose adapter declares
 `requires_workspace_for_execution=false` may be routed without a project

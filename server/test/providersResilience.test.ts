@@ -169,6 +169,29 @@ function scriptedHttp(script: Array<{ status: number; body?: unknown }>): Attemp
   return attempts;
 }
 
+/**
+ * A response the provider committed to with 200 headers and then failed to
+ * deliver — undici's `terminated`, reproduced at the only layer that can see
+ * it. The opening chunk carries no text, so this is the structured-output
+ * shape: nothing has been handed to the caller that a retry would duplicate.
+ */
+function terminatedStreamResponse(): Response {
+  const chunk = {
+    id: "chatcmpl_test",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "test-model",
+    choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+  };
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      controller.error(new TypeError("terminated"));
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 const CHAT = {
   messages: [{ role: "user", content: "hi" }],
   max_tokens: 5,
@@ -367,6 +390,59 @@ describe("provider invocation resilience", () => {
       },
     });
     expect(outcomes[1]).toEqual({ member: "m2", outcome: { kind: "success" } });
+  });
+
+  it("retries and falls back when the stream dies after the provider already answered 200", async () => {
+    // undici reports a response body torn off mid-flight as a bare
+    // `terminated`. Classifying that from the 200 already in hand called it
+    // permanent, so the call failed with no retry and no fallback — fatal
+    // every time for the longest generation on the platform, a whole research
+    // report returned in one structured response.
+    const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
+    const store = makeStore(
+      {
+        p1: target("p1", [{ member: "m1", key: "k1" }], { fallback_provider_ids: ["p2"] }),
+        p2: target("p2", [{ member: "m2", key: "k2" }]),
+      },
+      outcomes,
+    );
+    const keys: Array<string | null> = [];
+    __setProviderHttpClientForTests({
+      async fetch(url, init) {
+        const headers = new Headers(init?.headers);
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        keys.push(headers.get("authorization")?.replace("Bearer ", "") ?? null);
+        if (keys.length <= 2) return terminatedStreamResponse();
+        return openAiChatResponse({
+          choices: [{ message: { content: "fallback ok" } }],
+          model: body.model,
+          usage: {},
+        });
+      },
+    });
+
+    const result = await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+
+    expect(result.content).toBe("fallback ok");
+    // One same-key retry — the ordinary transient budget, not the larger one
+    // for failures that never started a response — then the fallback provider.
+    expect(keys).toEqual(["k1", "k1", "k2"]);
+    expect(outcomes[0]).toMatchObject({ member: "m1", outcome: { failure_class: "transient" } });
+  });
+
+  it("names a mid-stream death rather than reporting it as a generic invocation failure", async () => {
+    const store = makeStore({ p1: target("p1", [{ member: "m1", key: "k1" }]) }, []);
+    let calls = 0;
+    __setProviderHttpClientForTests({
+      async fetch() {
+        calls += 1;
+        return terminatedStreamResponse();
+      },
+    });
+
+    await expect(completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" }))
+      .rejects.toMatchObject({ code: "provider_stream_terminated" });
+    expect(calls).toBe(2);
   });
 
   it("waits an increasing delay between network-error retries instead of hammering the endpoint instantly", async () => {

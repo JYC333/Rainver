@@ -4,13 +4,14 @@ import type { EditorView } from '@tiptap/pm/view'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Bot } from 'lucide-react'
-import type { AgentOut } from '../../types/api'
 
 export interface RoomMessageComposerValue {
   text: string
   mentionIds: string[]
   routingSegments: RoomMessageRoutingSegment[]
 }
+
+type MentionAgent = { id: string; name: string; status?: string }
 
 export interface RoomMessageRoutingSegment {
   recipient_agent_ids: string[]
@@ -90,7 +91,7 @@ export function RoomMessageComposer({
 }: {
   value: RoomMessageComposerValue
   onChange: (value: RoomMessageComposerValue) => void
-  agents: AgentOut[]
+  agents: Array<{ id: string; name: string; status?: string }>
   members: Array<{ agent_id: string; status: string }>
   disabled: boolean
   resetToken: number
@@ -99,7 +100,7 @@ export function RoomMessageComposer({
   const [mentionRange, setMentionRange] = useState<MentionRange | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   const mentionRangeRef = useRef<MentionRange | null>(null)
-  const suggestionsRef = useRef<AgentOut[]>([])
+  const suggestionsRef = useRef<Array<{ id: string; name: string; status?: string }>>([])
   const activeIndexRef = useRef(0)
   const disabledRef = useRef(disabled)
   const onSubmitRef = useRef(onSubmit)
@@ -173,7 +174,7 @@ export function RoomMessageComposer({
     setActiveIndex(0)
   }, [mentionRange?.query])
 
-  function insertMention(agent: AgentOut, range: MentionRange | null = mentionRange) {
+  function insertMention(agent: MentionAgent, range: MentionRange | null = mentionRange) {
     if (!editor || disabled) return
     const label = agent.name.trim() || agent.id
     const chain = editor.chain().focus()
@@ -185,7 +186,7 @@ export function RoomMessageComposer({
     setMentionRange(null)
   }
 
-  function insertMentionFromView(view: EditorView, agent: AgentOut, range: MentionRange) {
+  function insertMentionFromView(view: EditorView, agent: MentionAgent, range: MentionRange) {
     if (disabledRef.current) return false
     const mentionType = view.state.schema.nodes.agentMention
     if (!mentionType) return false
@@ -237,7 +238,7 @@ export function RoomMessageComposer({
       setMentionRange(null)
       return true
     }
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault()
       onSubmitRef.current()
       return true

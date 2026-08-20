@@ -99,6 +99,7 @@ export interface ApplyProposal {
   project_folder_id: string | null;
   visibility?: string | null;
   created_by_user_id: string | null;
+  owner_user_id?: string | null;
   created_by_agent_id?: string | null;
   created_by_run_id?: string | null;
   project_id: string | null;

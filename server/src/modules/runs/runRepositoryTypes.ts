@@ -79,6 +79,7 @@ export interface RunListFilters {
   workflow_version_id?: string | null;
   capability_id?: string | null;
   run_role?: "execution" | "coordinator" | null;
+  exclude_system_assistants?: boolean;
   limit: number;
   offset: number;
 }
@@ -243,6 +244,17 @@ export interface RunCreateInput {
   workflow_version_id?: string | null;
   visibility?: "private" | "space_shared" | "selected_users";
   grantee_user_ids?: string[];
+  /**
+   * Tool allowance for a Run whose permission comes from the scenario it was
+   * opened in rather than from the Agent's own standing permissions — see
+   * `modules/systemActions/scenarioToolAllowance.ts`. When present it
+   * replaces the AgentVersion's `tool_permissions_json` as the allowance
+   * side of the grant intersection; the intersection itself, and its
+   * fail-closed behaviour, are unchanged.
+   */
+  scenario_tool_allowance?: readonly string[] | null;
+  /** Internal-only authority marker. Only Room dispatch may run the managed Assistant. */
+  allow_system_assistant?: boolean;
 }
 
 export interface DelegatedChildRunCreateInput {
@@ -267,8 +279,11 @@ export interface DelegatedChildRunCreateInput {
   model_override_json?: Record<string, unknown> | null;
   budget_json?: Record<string, unknown> | null;
   context_policy_json?: Record<string, unknown> | null;
+  contract_snapshot?: import("./contractSnapshot").RunContractSnapshotInput;
   visibility?: "private" | "space_shared" | "selected_users";
   grantee_user_ids?: string[];
+  /** Internal-only authority marker propagated from a Room-backed group. */
+  allow_system_assistant?: boolean;
 }
 
 export class RunCreateValidationError extends Error {

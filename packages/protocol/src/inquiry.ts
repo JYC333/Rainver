@@ -39,6 +39,77 @@ export const InquiryNextFocusKindSchema = z.enum([
 ]);
 export type InquiryNextFocusKind = z.infer<typeof InquiryNextFocusKindSchema>;
 
+/**
+ * Research is a spiral, not a line. A round runs Clarify → Acquire → Digest →
+ * Conclude → Land and then begins again on what the conclusion raised, so
+ * reaching Land closes a round rather than finishing the Thread and there is
+ * no such thing as regression here.
+ *
+ * Stages are derived, never stored — this grouping exists so both the Room
+ * Project state panel (Phase B) and, when Room dispatch has an Inquiry
+ * next-focus kind to label, the Room agent's context assembly (Phase A
+ * decision 3) share one classification instead of drifting copies (plan:
+ * `.agent/plans/project-conversational-advancement-plan.md`).
+ */
+export const InquiryStageIdSchema = z.enum(["clarify", "acquire", "digest", "conclude", "land"]);
+export type InquiryStageId = z.infer<typeof InquiryStageIdSchema>;
+
+export const INQUIRY_STAGE_ORDER: InquiryStageId[] = ["clarify", "acquire", "digest", "conclude", "land"];
+
+export const INQUIRY_STAGE_LABELS: Record<InquiryStageId, string> = {
+  clarify: "Clarify",
+  acquire: "Acquire",
+  digest: "Digest",
+  conclude: "Conclude",
+  land: "Land",
+};
+
+/** What each stage is for, and what counts as being done with it. */
+export const INQUIRY_STAGE_HELP: Record<InquiryStageId, { purpose: string; done: string }> = {
+  clarify: {
+    purpose: "Pin down what you are actually asking, and split it if it hides several questions.",
+    done: "The wording has been through the assessment workspace.",
+  },
+  acquire: {
+    purpose: "Get evidence — find it in the literature, or produce it yourself with an experiment.",
+    done: "Evidence has reached this Thread, or an acquisition step has finished.",
+  },
+  digest: {
+    purpose: "Read what arrived and decide what it does to your position.",
+    done: "Nothing is left waiting for review.",
+  },
+  conclude: {
+    purpose: "Say where the evidence leaves you, even if the answer is still partial.",
+    done: "The position has moved off its starting state.",
+  },
+  land: {
+    purpose: "Put the conclusion somewhere it does work: reusable Knowledge, a decision, or a task.",
+    done: "This round has been recorded.",
+  },
+};
+
+/**
+ * Acquire holds two paths rather than two stages: find evidence externally, or
+ * produce it. Questions lean to the first and Hypotheses to the second, but
+ * either may take either. Land holds three exits and gets no special treatment
+ * — one recommendation and two explained alternatives, like every other stage.
+ */
+export const INQUIRY_STAGE_FOR_KIND: Record<InquiryNextFocusKind, InquiryStageId> = {
+  clarify_or_decompose: "clarify",
+  search_acquisition: "acquire",
+  design_run_experiment: "acquire",
+  read_evidence: "digest",
+  synthesize: "conclude",
+  promote_knowledge: "land",
+  create_decision_case: "land",
+  create_delivery_task: "land",
+};
+
+export function inquiryKindsInStage(stage: InquiryStageId): InquiryNextFocusKind[] {
+  return (Object.keys(INQUIRY_STAGE_FOR_KIND) as InquiryNextFocusKind[])
+    .filter((kind) => INQUIRY_STAGE_FOR_KIND[kind] === stage);
+}
+
 export const InquiryThreadSchema = z.object({
   id: z.string(),
   space_id: z.string(),

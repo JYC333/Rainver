@@ -15,6 +15,7 @@ import {
   PgRunRepository,
   type RunRecord,
 } from "./repository";
+import { requestRoomConversationSummary } from "../rooms/conversationSummaryService";
 
 const TERMINAL_STATUSES = new Set([
   "succeeded",
@@ -32,6 +33,7 @@ interface ChatTurnMetadata {
   agent_id: string;
   agent_version_id: string;
   project_id: string | null;
+  room_id?: string | null;
 }
 
 export interface ChatTurnFinalizerDeps {
@@ -48,7 +50,37 @@ export async function finalizeChatTurn(
   deps: ChatTurnFinalizerDeps = {},
 ): Promise<ChatTurnCompletion | null> {
   const metadata = chatTurnMetadata(run.model_override_json);
-  if (!metadata || !TERMINAL_STATUSES.has(run.status)) return null;
+  if (!metadata) return null;
+  if (run.status === "waiting_for_review") {
+    if (isRoomConversationRun(run)) {
+      const errorJson = recordValue(run.error_json);
+      const sessions = deps.sessions ?? PgSessionRepository.fromConfig(config);
+      await requiredRoomMessageWriter(sessions)({
+        space_id: run.space_id,
+        session_id: metadata.session_id,
+        sender_agent_id: metadata.agent_id,
+        run_id: run.id,
+        content: roomReviewReply(run),
+        metadata: {
+          ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}),
+          status: run.status,
+          attention_kind: errorJson.supervisor_review === true
+            ? "run_decision"
+            : "authorization",
+          ...(stringValue(errorJson.authorization_request_id)
+            ? { authorization_request_id: stringValue(errorJson.authorization_request_id) }
+            : {}),
+          ...(stringValue(errorJson.error_code)
+            ? { error_code: stringValue(errorJson.error_code) }
+            : {}),
+        },
+      });
+    }
+    // A pause is not chat completion. The same Run may resume; its eventual
+    // terminal reply replaces this Run-scoped notice before chat_completed.
+    return null;
+  }
+  if (!TERMINAL_STATUSES.has(run.status)) return null;
   const existingCompletion = await repository.listRunEventsPage(
     run.space_id,
     run.id,
@@ -71,6 +103,7 @@ export async function finalizeChatTurn(
     : [];
   let assistantMessage: AssistantMessage | null = null;
   let terminalMessageId: string | null = null;
+  let terminalMessageCreatedAt: string | null = null;
 
   if (outcome.ok) {
     const artifactRefs = artifactReferences(run.output_json);
@@ -119,6 +152,7 @@ export async function finalizeChatTurn(
       created_at: stored.created_at,
     };
     terminalMessageId = stored.id;
+    terminalMessageCreatedAt = stored.created_at;
   } else if (isRoomConversationRun(run)) {
     const sessions = deps.sessions ?? PgSessionRepository.fromConfig(config);
     const stored = await requiredRoomMessageWriter(sessions)({
@@ -142,6 +176,7 @@ export async function finalizeChatTurn(
       );
     }
     terminalMessageId = stored.id;
+    terminalMessageCreatedAt = stored.created_at;
   }
 
   const continuity = deps.continuity ?? productionContinuity(config);
@@ -178,6 +213,21 @@ export async function finalizeChatTurn(
       assistant_message_id: assistantMessage?.id ?? null,
     },
   });
+  const roomId = isRoomConversationRun(run) ? metadata.room_id ?? null : null;
+  if (isRoomConversationRun(run) && outcome.ok && roomId && terminalMessageId && terminalMessageCreatedAt) {
+    try {
+      await requestRoomConversationSummary(getDbPool(config.databaseUrl!), {
+        spaceId: run.space_id,
+        roomId,
+        sessionId: metadata.session_id,
+        throughMessageId: terminalMessageId,
+        throughCreatedAt: terminalMessageCreatedAt,
+      });
+    } catch {
+      // Summary work is auxiliary. The canonical Room turn remains complete;
+      // the freshness scheduler will enqueue it again when the state is due.
+    }
+  }
   return completion;
 }
 
@@ -223,6 +273,7 @@ function chatTurnMetadata(value: unknown): ChatTurnMetadata | null {
     agent_id: stringValue(chatTurn.agent_id)!,
     agent_version_id: stringValue(chatTurn.agent_version_id)!,
     project_id: stringValue(chatTurn.project_id),
+    room_id: stringValue(chatTurn.room_id),
   };
 }
 
@@ -233,6 +284,18 @@ function chatOutcome(
   error: string;
   errorCode: string;
 } {
+  const outputEnvelope = recordValue(run.output_json);
+  const output = runOutputResult(run.output_json);
+  const reply =
+    stringValue(outputEnvelope.summary) ??
+    stringValue(output.output_text) ??
+    "";
+  // A degraded managed Run can still contain the complete model reply. The
+  // degraded status records a non-blocking tool/materialization warning; it
+  // must not replace usable conversation output with a synthetic failure.
+  if (run.status === "succeeded" || (run.status === "degraded" && reply)) {
+    return { ok: true, reply };
+  }
   if (run.status !== "succeeded") {
     const errorJson = recordValue(run.error_json);
     const errorCode = stringValue(errorJson.error_code) ?? "run_failed";
@@ -242,15 +305,31 @@ function chatOutcome(
       `The assistant run ended with status '${run.status}'.`;
     return { ok: false, error, errorCode };
   }
-  const outputEnvelope = recordValue(run.output_json);
-  const output = runOutputResult(run.output_json);
-  return {
-    ok: true,
-    reply:
-      stringValue(outputEnvelope.summary) ??
-      stringValue(output.output_text) ??
+  return { ok: true, reply };
+}
+
+function roomReviewReply(run: RunRecord): string {
+  const errorJson = recordValue(run.error_json);
+  const reason = stringValue(errorJson.error_text)
+    ?? stringValue(errorJson.error)
+    ?? stringValue(run.error_message)
+    ?? "The run cannot continue without your input.";
+  if (errorJson.supervisor_review === true) {
+    return [
+      "I couldn't complete this request automatically and need your decision before retrying.",
       "",
-  };
+      `Reason: ${reason}`,
+      "",
+      "Open the Run details below to retry or abandon this attempt.",
+    ].join("\n").slice(0, 2_000);
+  }
+  return [
+    "I need your approval before I can continue.",
+    "",
+    `Reason: ${reason}`,
+    "",
+    "Open the review request below to approve or reject it.",
+  ].join("\n").slice(0, 2_000);
 }
 
 function artifactReferences(value: unknown): string[] {

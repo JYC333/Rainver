@@ -379,6 +379,7 @@ describe("managed agent delegation tools", () => {
       },
     } as Partial<RunRecord>);
     const offered: string[][] = [];
+    const systemPrompts: string[] = [];
     const gateway = new AgentToolGateway(
       // No database URL: a delegation-only run reads no space retrieval
       // settings, and the model turn below produces no tool call, so policy and
@@ -391,6 +392,7 @@ describe("managed agent delegation tools", () => {
       request(),
       async (_config, hostRequest) => {
         offered.push((hostRequest.tools ?? []).map((tool) => tool.name));
+        systemPrompts.push(hostRequest.system_prompt ?? "");
         return response({ output_text: "Nothing to delegate.", output_json: {} });
       },
       {
@@ -416,6 +418,8 @@ describe("managed agent delegation tools", () => {
     expect(offered[0]).toEqual(
       expect.arrayContaining(["agent.delegate", "agent.wait_for_results"]),
     );
+    expect(systemPrompts[0]).toContain("Do not print raw action arguments, JSON schemas");
+    expect(systemPrompts[0]).toContain("call the action instead of simulating it in prose");
     expect(result.success).toBe(true);
   });
 });

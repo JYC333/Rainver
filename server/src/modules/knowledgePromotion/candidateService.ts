@@ -11,10 +11,18 @@ import {
 } from "../routeUtils/common";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
 import { contentReadSql } from "../access/contentAccessSql";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
 import type { PinnedSourceRef } from "./outbox";
 
 const CANDIDATE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "summary"]);
 const DECISIONS = new Set(["promote", "dismiss", "defer"]);
+
+export interface CandidateProposalActor {
+  agentId?: string | null;
+  runId?: string | null;
+  idempotencyKey?: string | null;
+  visibility?: "private" | "space_shared" | "selected_users";
+}
 
 interface CandidateRow {
   id: string; space_id: string; project_id: string | null; trigger: string;
@@ -100,6 +108,7 @@ export class KnowledgePromotionCandidateService {
     identity: SpaceUserIdentity,
     projectId: string,
     body: Record<string, unknown>,
+    accessOverride?: { visibility: "private" | "space_shared"; ownerUserId: string | null },
   ): Promise<Record<string, unknown>> {
     const threadId = requiredString(body.thread_id, "thread_id");
     return this.create(identity, projectId, body, async (db) => {
@@ -113,8 +122,100 @@ export class KnowledgePromotionCandidateService {
         kind: "inquiry_thread_revision", thread_id: threadId, revision_id: revision.rows[0].id,
         version: revision.rows[0].version, content_hash: revision.rows[0].content_hash,
       };
-      return { sourceKind: "inquiry_thread", sourceId: threadId, sourceRef: ref };
+      return {
+        sourceKind: "inquiry_thread",
+        sourceId: threadId,
+        sourceRef: ref,
+        ...(accessOverride ?? {}),
+      };
     });
+  }
+
+  /**
+   * Combines `createFromThread` and an immediate `decideCandidate({decision:
+   * "promote"})` into one call (plan:
+   * `.agent/plans/project-conversational-advancement-plan.md`, Phase A,
+   * `inquiry.promote_knowledge`). The two-hop Candidate design stays intact
+   * for the manual Knowledge Review path (`createFromThread` alone,
+   * `decideCandidate` as a separate later human action); this method exists
+   * only so a single conversational instruction produces one reviewable
+   * Proposal instead of leaving a Candidate stranded pending a second visit
+   * to Knowledge Review. Idempotent on `(created_by_run_id,
+   * action_idempotency_key)`: a retry returns the already-created proposal
+   * rather than minting a second Candidate.
+   */
+  async proposeFromThreadForAgent(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    body: Record<string, unknown>,
+    actor: CandidateProposalActor,
+  ): Promise<{ candidate: Record<string, unknown>; proposal_id: string | null }> {
+    if (actor.runId && actor.idempotencyKey) {
+      const existing = await this.db.query<{ id: string; created_proposal_id: string | null }>(
+        `SELECT kpc.id, kpc.created_proposal_id
+           FROM knowledge_promotion_candidates kpc
+           JOIN proposals p ON p.id = kpc.created_proposal_id AND p.space_id = kpc.space_id
+          WHERE kpc.space_id=$1 AND kpc.project_id=$2
+            AND p.created_by_run_id=$3 AND p.action_idempotency_key=$4`,
+        [identity.spaceId, projectId, actor.runId, actor.idempotencyKey],
+      );
+      if (existing.rows[0]) {
+        const candidate = await this.getCandidate(identity, projectId, existing.rows[0].id);
+        return { candidate, proposal_id: existing.rows[0].created_proposal_id };
+      }
+    }
+    // A Thread can be legitimately promoted and later revalidated more than
+    // once, so coalescing onto any prior Candidate for the thread is unsafe
+    // regardless of its decided/undecided status: `knowledge_promotion_candidates`
+    // carries no column distinguishing a Candidate this agent flow created
+    // from one a human independently drafted for the same thread through
+    // manual Knowledge Review, so a content-based or provenance-based
+    // coalesce here cannot be built safely without a schema change. The
+    // exact-idempotency-key check above remains this method's retry
+    // protection (network-level retries of the same call); a model-initiated
+    // re-plan without a reused key is not deduplicated here.
+    // A Room-derived draft must not turn its shared conversation content into
+    // a Space-visible Candidate. The Proposal below inherits the full Room
+    // roster; the intermediate Candidate stays private to the instructor.
+    const candidate = await this.createFromThread(
+      identity,
+      projectId,
+      body,
+      actor.visibility === "selected_users"
+        ? { visibility: "private", ownerUserId: identity.userId }
+        : undefined,
+    );
+    try {
+      const decided = await this.decideCandidate(
+        identity,
+        projectId,
+        requiredString(candidate.id, "candidate.id"),
+        { decision: "promote", proposed_title: body.proposed_title, proposed_content: body.proposed_content },
+        actor,
+      );
+      return { candidate: decided, proposal_id: (decided.created_proposal_id as string | null) ?? null };
+    } catch (error) {
+      // A genuinely concurrent identical retry can lose the idempotency-key
+      // unique-index race here: the pre-check above ran before either
+      // decideCandidate call committed. Recover by returning the row the
+      // winner actually created rather than surfacing a raw constraint
+      // violation for what the caller believes is a repeat of the same call.
+      if (actor.runId && actor.idempotencyKey && (error as { code?: string }).code === "23505") {
+        const existing = await this.db.query<{ id: string; created_proposal_id: string | null }>(
+          `SELECT kpc.id, kpc.created_proposal_id
+             FROM knowledge_promotion_candidates kpc
+             JOIN proposals p ON p.id = kpc.created_proposal_id AND p.space_id = kpc.space_id
+            WHERE kpc.space_id=$1 AND kpc.project_id=$2
+              AND p.created_by_run_id=$3 AND p.action_idempotency_key=$4`,
+          [identity.spaceId, projectId, actor.runId, actor.idempotencyKey],
+        );
+        if (existing.rows[0]) {
+          const resolved = await this.getCandidate(identity, projectId, existing.rows[0].id);
+          return { candidate: resolved, proposal_id: existing.rows[0].created_proposal_id };
+        }
+      }
+      throw error;
+    }
   }
 
   async createFromInterpretation(
@@ -228,6 +329,7 @@ export class KnowledgePromotionCandidateService {
     projectId: string,
     candidateId: string,
     body: Record<string, unknown>,
+    actor: CandidateProposalActor = {},
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const decision = requiredString(body.decision, "decision");
@@ -259,6 +361,7 @@ export class KnowledgePromotionCandidateService {
       const proposalId = randomUUID();
       const promotedTitle = optionalString(body.proposed_title) ?? candidate.proposed_title;
       const promotedContent = optionalString(body.proposed_content) ?? candidate.proposed_content;
+      const actionId = actor.agentId ? "inquiry.promote_knowledge" : null;
       const payload = candidate.trigger === "revalidation"
         ? {
           proposal_type: "knowledge_update",
@@ -270,6 +373,7 @@ export class KnowledgePromotionCandidateService {
           pinned_source_ref: candidate.source_ref_json,
           visibility: candidate.visibility,
           owner_user_id: candidate.owner_user_id,
+          ...(actionId ? { action_id: actionId } : {}),
         }
         : {
           proposal_type: "knowledge_create",
@@ -281,16 +385,34 @@ export class KnowledgePromotionCandidateService {
           pinned_source_ref: candidate.source_ref_json,
           visibility: candidate.visibility,
           owner_user_id: candidate.owner_user_id,
+          ...(actionId ? { action_id: actionId } : {}),
         };
+      // Attribute the action to the Agent while retaining the instructing user
+      // as owner. The owner is material when a private Run drafts a Proposal.
+      const createdByUserId = actor.agentId ? null : identity.userId;
+      const proposalVisibility = actor.visibility ?? "space_shared";
       await db.query(
         `INSERT INTO proposals (
            id, space_id, proposal_type, status, risk_level, urgency, title, summary,
-           payload_json, created_at, updated_at, created_by_user_id, owner_user_id, project_id
-         ) VALUES ($1, $2, $3, 'pending', 'low', 'normal', $4, $5, $6::jsonb, $7, $7, $8, $8, $9)`,
+           payload_json, created_at, updated_at, created_by_user_id, owner_user_id, project_id,
+           created_by_agent_id, created_by_run_id, action_idempotency_key, visibility
+         ) VALUES ($1, $2, $3, 'pending', 'low', 'normal', $4, $5, $6::jsonb, $7, $7, $8, $13, $9, $10, $11, $12, $14)`,
         [proposalId, identity.spaceId, payload.proposal_type, `Promote Knowledge Candidate: ${promotedTitle}`,
           `Created from a ${candidate.trigger} Candidate over ${candidate.source_kind} ${candidate.source_id}.`,
-          JSON.stringify(payload), now, identity.userId, projectId],
+          JSON.stringify(payload), now, createdByUserId, projectId,
+          actor.agentId ?? null, actor.runId ?? null, actor.idempotencyKey ?? null,
+          identity.userId, proposalVisibility],
       );
+      if (proposalVisibility === "selected_users" && actor.runId) {
+        await inheritContentAccessGrants(db, {
+          spaceId: identity.spaceId,
+          sourceResourceType: "run",
+          sourceResourceId: actor.runId,
+          targetResourceType: "proposal",
+          targetResourceId: proposalId,
+          inheritedAt: now,
+        });
+      }
       await db.query(
         `UPDATE knowledge_promotion_candidates SET status='promoted', created_proposal_id=$3, decided_by_user_id=$4, decided_at=$5, updated_at=$5 WHERE id=$1 AND space_id=$2`,
         [candidateId, identity.spaceId, proposalId, identity.userId, now],

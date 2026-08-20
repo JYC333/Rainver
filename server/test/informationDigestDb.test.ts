@@ -27,6 +27,8 @@ const CHANNEL = "55555555-5555-4555-8555-555555555555";
 const PROJECT = "66666666-6666-4666-8666-666666666666";
 const AGENT = "77777777-7777-4777-8777-777777777777";
 const AGENT_VERSION = "88888888-8888-4888-8888-888888888888";
+const MANAGED_ASSISTANT = "99999999-9999-4999-8999-999999999999";
+const MANAGED_ASSISTANT_VERSION = "99999999-9999-4999-8999-999999999998";
 const DATE = new Date().toISOString().slice(0, 10);
 
 let container: TestPostgresDatabase | undefined;
@@ -572,6 +574,39 @@ describe("information digest Automation provisioning", () => {
       { scope: "personal", operation: "probe", project_id: null, cron: "0 6 * * 1" },
       { scope: "project", operation: "daily", project_id: PROJECT, cron: "0 7 * * *" },
     ]);
+  });
+
+  it("repairs a native digest that was bound to the Room-only managed Assistant", async () => {
+    if (!available) return;
+    const now = `${DATE}T08:30:00.000Z`;
+    await pool!.query(
+      `INSERT INTO agents (id,space_id,owner_user_id,name,status,current_version_id,visibility,agent_kind,created_at,updated_at)
+       VALUES ($1,$2,$3,'Personal Assistant','active',NULL,'space_shared','system_assistant',$4,$4)`,
+      [MANAGED_ASSISTANT, SPACE, OWNER, now],
+    );
+    await pool!.query(
+      `INSERT INTO agent_versions
+         (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
+          context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
+       VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{"allowed_tools":[]}','{}',$4)`,
+      [MANAGED_ASSISTANT_VERSION, MANAGED_ASSISTANT, SPACE, now],
+    );
+    await pool!.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [MANAGED_ASSISTANT, MANAGED_ASSISTANT_VERSION]);
+    await reconcileInformationDigestAutomations(pool!);
+    await pool!.query(
+      `UPDATE automations SET agent_id=$1
+        WHERE config_json->>'target_type'='information_digest'`,
+      [MANAGED_ASSISTANT],
+    );
+
+    expect(await reconcileInformationDigestAutomations(pool!)).toBe(0);
+    const repaired = await pool!.query<{ agent_id: string; snapshot_agent_id: string }>(
+      `SELECT agent_id,
+              preflight_snapshot_json->'information_digest_preflight'->>'attribution_agent_id' AS snapshot_agent_id
+         FROM automations WHERE config_json->>'target_type'='information_digest'`,
+    );
+    expect(repaired.rows).toHaveLength(3);
+    expect(repaired.rows.every(row => row.agent_id === AGENT && row.snapshot_agent_id === AGENT)).toBe(true);
   });
 });
 

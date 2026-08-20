@@ -13,6 +13,7 @@ export interface RoomRecord {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  roster_revision: number;
 }
 
 export interface RoomUserMemberRecord {
@@ -31,8 +32,11 @@ export interface RoomAgentMemberRecord {
   space_id: string;
   room_id: string;
   agent_id: string;
+  agent_name: string;
+  agent_kind: string;
   role: "manager" | "member";
   status: "active" | "removed";
+  private_shared_user_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -40,11 +44,13 @@ export interface RoomAgentMemberRecord {
 const ROOM_COLUMNS = `
   id, space_id, project_id, project_folder_id, created_by_user_id, title, status,
   created_at, updated_at, archived_at
+  , roster_revision::int AS roster_revision
 `;
 const ROOM_SELECT = `
   room.id, room.space_id, room.project_id, room.project_folder_id,
   room.created_by_user_id, room.title,
-  room.status, room.created_at, room.updated_at, room.archived_at
+  room.status, room.created_at, room.updated_at, room.archived_at,
+  room.roster_revision::int AS roster_revision
 `;
 const ROOM_PROJECT_READABLE = `
   EXISTS (
@@ -129,7 +135,13 @@ export class PgRoomRepository {
       `INSERT INTO room_agent_members (
          id, space_id, room_id, agent_id, role, status, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
-       RETURNING id, space_id, room_id, agent_id, role, status, created_at, updated_at`,
+       RETURNING id, space_id, room_id, agent_id,
+                 (SELECT name FROM agents
+                   WHERE agents.space_id = $2 AND agents.id = $4) AS agent_name,
+                 (SELECT agent_kind FROM agents
+                   WHERE agents.space_id = $2 AND agents.id = $4) AS agent_kind,
+                 '[]'::jsonb AS private_shared_user_ids,
+                 role, status, created_at, updated_at`,
       [randomUUID(), input.space_id, input.room_id, input.agent_id, input.role, now],
     );
     return required(result.rows[0], "Room agent member insert returned no row");
@@ -155,6 +167,17 @@ export class PgRoomRepository {
           AND ${ROOM_PROJECT_READABLE}
         ${lock ? "FOR UPDATE OF room" : ""}`,
       [spaceId, userId, roomId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async getRoomById(spaceId: string, roomId: string, lock = false): Promise<RoomRecord | null> {
+    const result = await this.db.query<RoomRecord>(
+      `SELECT ${ROOM_COLUMNS}
+         FROM rooms
+        WHERE space_id = $1 AND id = $2
+        ${lock ? "FOR UPDATE" : ""}`,
+      [spaceId, roomId],
     );
     return result.rows[0] ?? null;
   }
@@ -218,10 +241,23 @@ export class PgRoomRepository {
 
   async listAgentMembers(spaceId: string, roomId: string): Promise<RoomAgentMemberRecord[]> {
     const result = await this.db.query<RoomAgentMemberRecord>(
-      `SELECT id, space_id, room_id, agent_id, role, status, created_at, updated_at
-         FROM room_agent_members
-        WHERE space_id = $1 AND room_id = $2 AND status = 'active'
-        ORDER BY role DESC, created_at ASC, id ASC`,
+      `SELECT member.id, member.space_id, member.room_id, member.agent_id,
+              agent.name AS agent_name, agent.agent_kind,
+              COALESCE((
+                SELECT jsonb_agg(grant_row.grantee_user_id ORDER BY grant_row.grantee_user_id)
+                  FROM room_agent_access_grants grant_row
+                 WHERE grant_row.space_id = member.space_id
+                   AND grant_row.room_id = member.room_id
+                   AND grant_row.agent_id = member.agent_id
+                   AND grant_row.revoked_at IS NULL
+              ), '[]'::jsonb) AS private_shared_user_ids,
+              member.role, member.status, member.created_at, member.updated_at
+         FROM room_agent_members member
+         JOIN agents agent
+           ON agent.space_id = member.space_id AND agent.id = member.agent_id
+        WHERE member.space_id = $1 AND member.room_id = $2
+          AND member.status = 'active' AND agent.status = 'active'
+        ORDER BY member.role DESC, member.created_at ASC, member.id ASC`,
       [spaceId, roomId],
     );
     return result.rows;
@@ -287,7 +323,7 @@ export class PgRoomRepository {
       `SELECT id, space_id, room_id, project_id, title, status, created_at, updated_at
          FROM sessions
         WHERE space_id = $1 AND room_id = $2 AND status = 'active'
-        ORDER BY updated_at DESC, id DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT $3 OFFSET $4`,
       [input.space_id, input.room_id, input.limit, input.offset],
     );

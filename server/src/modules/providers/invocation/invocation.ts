@@ -825,6 +825,7 @@ function providerTaskOwnerDomain(task: string): string {
   if (task.startsWith("project_public_summary")) return "projects";
   if (task.startsWith("research_query_")) return "research";
   if (task.startsWith("retrieval_")) return "retrieval";
+  if (task.startsWith("room_")) return "rooms";
   if (task === "context.checkpoint.extract") return "runtimeContext";
   return "providers";
 }

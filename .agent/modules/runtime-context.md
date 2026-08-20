@@ -50,6 +50,12 @@ authority is invalid.
 
 - All acquisition is Space- and instructing-user-scoped and revalidated in the
   Delivery transaction.
+- A Room Proposal continuation may use its server-created hidden `system`
+  message as the current turn only when the message is in the same Room
+  conversation, carries the internal-continuation markers, names the same
+  requesting user, and that user is still an active Room member. It is
+  delivered as `system_approved` input and is never treated as a visible human
+  message.
 - Policy, credential, external-egress, tool, and budget decisions come from the
   immutable execution-control snapshot; Runtime Context does not reinterpret
   those authorities.

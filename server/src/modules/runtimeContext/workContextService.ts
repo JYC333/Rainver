@@ -4,7 +4,7 @@ import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from 
 import { HttpError, dateIso, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
 import { assertProjectReadable, assertProjectReadableLocked } from "../projects/access";
 import { loadProtocol } from "../providers/protocolRuntime";
-import { contentReadSql } from "../access/contentAccessSql";
+import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql";
 import { projectFolderReadAccessSql } from "../projectFolders/access";
 import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository";
 
@@ -262,12 +262,27 @@ async function lockWorkContextScopeAuthority(
       `SELECT 1
          FROM room_agent_members recipient
          JOIN rooms room ON room.id=recipient.room_id AND room.space_id=recipient.space_id
+         JOIN agents recipient_agent
+           ON recipient_agent.id=recipient.agent_id AND recipient_agent.space_id=recipient.space_id
          JOIN sessions session ON session.room_id=room.id AND session.space_id=room.space_id
          JOIN room_user_members member
            ON member.room_id=room.id AND member.space_id=room.space_id
           AND member.user_id=$3 AND member.status='active'
         WHERE recipient.id=$1 AND recipient.space_id=$2
-          AND recipient.status='active' AND session.room_id IS NOT NULL
+          AND recipient.status='active' AND recipient_agent.status='active'
+          AND room.status='active' AND session.room_id IS NOT NULL
+          AND (
+            recipient_agent.visibility = 'space_shared'
+            OR recipient_agent.owner_user_id = $3
+            OR EXISTS (
+              SELECT 1 FROM room_agent_access_grants room_grant
+               WHERE room_grant.space_id = recipient.space_id
+                 AND room_grant.room_id = recipient.room_id
+                 AND room_grant.agent_id = recipient.agent_id
+                 AND room_grant.grantee_user_id = $3
+                 AND room_grant.revoked_at IS NULL
+            )
+          )
         FOR SHARE OF recipient,room,session,member`,
       [scopeId, identity.spaceId, identity.userId],
     );
@@ -330,11 +345,26 @@ async function inferWorkContextScopeKind(
        FROM room_agent_members recipient
        JOIN rooms room
          ON room.id=recipient.room_id AND room.space_id=recipient.space_id
+       JOIN agents recipient_agent
+         ON recipient_agent.id=recipient.agent_id AND recipient_agent.space_id=recipient.space_id
        JOIN room_user_members member
          ON member.room_id=room.id AND member.space_id=room.space_id
         AND member.user_id=$3 AND member.status='active'
       WHERE recipient.id=$1 AND recipient.space_id=$2
-        AND recipient.status='active'
+        AND recipient.status='active' AND recipient_agent.status='active'
+        AND room.status='active'
+        AND (
+          recipient_agent.visibility = 'space_shared'
+          OR recipient_agent.owner_user_id = $3
+          OR EXISTS (
+            SELECT 1 FROM room_agent_access_grants room_grant
+             WHERE room_grant.space_id = recipient.space_id
+               AND room_grant.room_id = recipient.room_id
+               AND room_grant.agent_id = recipient.agent_id
+               AND room_grant.grantee_user_id = $3
+               AND room_grant.revoked_at IS NULL
+          )
+        )
       LIMIT 1`,
     [scopeId, identity.spaceId, identity.userId],
   );
@@ -381,10 +411,57 @@ async function assertSetupReferences(
     if (!folder.rows[0]) throw new HttpError(404, "Project Folder not found in Work Context Project");
   }
   if (input.agent_id) {
-    const agent = await db.query(`SELECT 1 FROM agents a WHERE a.id=$1 AND a.space_id=$2 AND (a.project_id IS NULL OR a.project_id IS NOT DISTINCT FROM $3) AND a.status='active' AND ${contentReadSql("agent", "a", "$4")}`, [input.agent_id, identity.spaceId, input.project_id, identity.userId]);
+    const agent = await db.query(
+      `SELECT 1 FROM agents a
+        WHERE a.id=$1 AND a.space_id=$2
+          AND (a.project_id IS NULL OR a.project_id IS NOT DISTINCT FROM $3)
+          AND a.status='active'
+          AND (
+            ${contentReadSql("agent", "a", "$4")}
+            OR (
+              $5::varchar = 'room_recipient'
+              AND ${roomScopedAgentReadSql("a", "$4", "$6")}
+            )
+          )`,
+      [input.agent_id, identity.spaceId, input.project_id, identity.userId, input.scope_kind, input.work_context_scope_id],
+    );
     if (!agent.rows[0]) throw new HttpError(404, "Agent not found");
   }
   await resolveExplicitReferences(db, identity, input.pinned_refs, input.project_id);
+}
+
+/** Room-only Agent grants are valid only for the recipient scope that owns the setup. */
+export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, scopeExpr: string): string {
+  return `EXISTS (
+    SELECT 1
+      FROM room_agent_members recipient
+      JOIN rooms room_scope
+        ON room_scope.id=recipient.room_id AND room_scope.space_id=recipient.space_id
+      JOIN room_user_members room_member
+        ON room_member.space_id=recipient.space_id
+       AND room_member.room_id=recipient.room_id
+       AND room_member.user_id=${userExpr}
+       AND room_member.status='active'
+     WHERE recipient.id=${scopeExpr}
+       AND recipient.space_id=${agentAlias}.space_id
+       AND recipient.agent_id=${agentAlias}.id
+       AND recipient.status='active'
+       AND room_scope.status='active'
+       AND (${agentAlias}.project_id IS NULL OR ${agentAlias}.project_id=room_scope.project_id)
+       AND ${projectReadAccessSql("room_scope.space_id", "room_scope.project_id", userExpr)}
+       AND (
+         ${agentAlias}.visibility='space_shared'
+         OR ${agentAlias}.owner_user_id=${userExpr}
+         OR EXISTS (
+           SELECT 1 FROM room_agent_access_grants room_grant
+            WHERE room_grant.space_id=recipient.space_id
+              AND room_grant.room_id=recipient.room_id
+              AND room_grant.agent_id=${agentAlias}.id
+              AND room_grant.grantee_user_id=${userExpr}
+              AND room_grant.revoked_at IS NULL
+         )
+       )
+  )`;
 }
 
 export async function resolveExplicitReferences(
@@ -480,13 +557,28 @@ export async function resolveWorkContextScopeBindings(
          FROM room_agent_members recipient
          JOIN rooms room
            ON room.id=recipient.room_id AND room.space_id=recipient.space_id
+         JOIN agents recipient_agent
+           ON recipient_agent.id=recipient.agent_id AND recipient_agent.space_id=recipient.space_id
          JOIN sessions s
            ON s.room_id=room.id AND s.space_id=room.space_id
          JOIN room_user_members member
            ON member.room_id=s.room_id AND member.space_id=s.space_id
           AND member.user_id=$3 AND member.status='active'
         WHERE recipient.id=$1 AND recipient.space_id=$2
-          AND recipient.status='active' AND s.room_id IS NOT NULL`,
+          AND recipient.status='active' AND recipient_agent.status='active'
+          AND room.status='active' AND s.room_id IS NOT NULL
+          AND (
+            recipient_agent.visibility = 'space_shared'
+            OR recipient_agent.owner_user_id = $3
+            OR EXISTS (
+              SELECT 1 FROM room_agent_access_grants room_grant
+               WHERE room_grant.space_id = recipient.space_id
+                 AND room_grant.room_id = recipient.room_id
+                 AND room_grant.agent_id = recipient.agent_id
+                 AND room_grant.grantee_user_id = $3
+                 AND room_grant.revoked_at IS NULL
+            )
+          )`,
       [scopeId, identity.spaceId, identity.userId],
     );
   } else if (scopeKind === "root_task") {

@@ -128,6 +128,7 @@ export const messages = pgTable("messages", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_messages_session_id").using("btree", table.sessionId.asc().nullsLast()),
+	index("ix_messages_space_session_created").on(table.spaceId, table.sessionId, table.createdAt, table.id),
 	index("ix_messages_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_messages_user_id").using("btree", table.userId.asc().nullsLast()),
 	index("ix_messages_sender_agent_id").on(table.senderAgentId),

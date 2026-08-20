@@ -470,6 +470,7 @@ export class PgTaskRepository {
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSources);
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
+      await assertRunnableAgent(client, identity.spaceId, agentId);
       const projectFolderId = optionalString(body.project_folder_id) ?? task.project_folder_id;
       const run = await new PgRunRepository(client).createQueuedRun({
         agent_id: agentId,
@@ -527,11 +528,7 @@ export class PgTaskRepository {
       if (task.task_role !== "source") throw new HttpError(409, "Only source tasks can request Agent planning");
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when the Task has no assigned agent");
-      const agent = await client.query<{ id: string }>(
-        `SELECT id FROM agents WHERE id = $1 AND space_id = $2 AND status = 'active'`,
-        [agentId, identity.spaceId],
-      );
-      if (!agent.rows[0]) throw new HttpError(404, "Planning Agent not found or inactive in this Space");
+      await assertRunnableAgent(client, identity.spaceId, agentId, "Planning Agent not found or inactive in this Space");
       const referenceWorkflowVersionId = optionalString(body.reference_workflow_version_id);
       if (referenceWorkflowVersionId) {
         const reference = await client.query<{ id: string }>(
@@ -820,6 +817,25 @@ async function getVisibleTaskRow(db: Queryable, identity: SpaceUserIdentity, tas
     [identity.spaceId, taskId, identity.userId],
   );
   return result.rows[0] ?? null;
+}
+
+async function assertRunnableAgent(
+  db: Queryable,
+  spaceId: string,
+  agentId: string,
+  message = "Agent not found or inactive in this Space",
+): Promise<void> {
+  const result = await db.query<{ id: string }>(
+    `SELECT id
+       FROM agents
+      WHERE space_id = $1
+        AND id = $2
+        AND status = 'active'
+        AND agent_kind <> 'system_assistant'
+      LIMIT 1`,
+    [spaceId, agentId],
+  );
+  if (!result.rows[0]) throw new HttpError(404, message);
 }
 
 function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string | null; projectFolderId: string | null; projectId: string | null; status: string | null; assignedToMe: boolean; q: string | null }) {

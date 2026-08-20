@@ -90,6 +90,13 @@ natural-language failure classifier and no retry authority alongside
 moves the Run to `waiting_for_review`; explicit runtime-profile selections
 remain hard pins and therefore cannot be rerouted.
 
+Interactive Chat and Room Runs may use bounded automatic retry for retryable
+failures, but an exhausted or non-retryable execution failure remains terminal
+so the conversation can publish a failure reply. It must not be converted into
+a generic `waiting_for_review` hold. Explicit policy and authorization pauses
+still use `waiting_for_review` and must explain the required decision in the
+conversation without marking the turn complete.
+
 The worker records bounded completion evidence and usage and cleans Run-scoped
 runtime state before publication. The repository then publishes the terminal
 Run/Attempt state, synchronizes conversation state, resolves staged proposals,

@@ -42,6 +42,7 @@ export interface AgentRunGroupMemberRecord {
 
 export interface AgentRunGroupMemberWithAgentStatus extends AgentRunGroupMemberRecord {
   agent_status: string | null;
+  agent_kind: string | null;
 }
 
 export interface AgentRunMessageRecord {
@@ -91,6 +92,7 @@ export interface RunDelegationLifecycleUpdateResult {
 export interface AgentStatusRecord {
   id: string;
   status: string;
+  agent_kind: string;
 }
 
 export interface AgentCapabilitySnapshotRecord {
@@ -438,26 +440,141 @@ export class PgAgentGroupRepository {
   }): Promise<AgentRunGroupMemberWithAgentStatus | null> {
     const result = await this.db.query<AgentRunGroupMemberWithAgentStatus>(
       `SELECT ${MEMBER_COLUMNS_ALIASED},
-              a.status AS agent_status
+              a.status AS agent_status,
+              a.agent_kind
          FROM agent_run_group_members m
+         JOIN agent_run_groups group_row
+           ON group_row.space_id = m.space_id AND group_row.id = m.group_id
          JOIN agents a
            ON a.space_id = m.space_id
           AND a.id = m.agent_id
         WHERE m.space_id = $1 AND m.group_id = $2 AND m.agent_id = $3
-          AND ${contentReadSql("agent", "a", "$4")}`,
+          AND (
+            group_row.room_id IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM rooms room_scope
+                JOIN room_agent_members room_agent_member
+                  ON room_agent_member.space_id = room_scope.space_id
+                 AND room_agent_member.room_id = room_scope.id
+                 AND room_agent_member.agent_id = m.agent_id
+                 AND room_agent_member.status = 'active'
+               WHERE room_scope.space_id = group_row.space_id
+                 AND room_scope.id = group_row.room_id
+                 AND room_scope.status = 'active'
+            )
+          )
+          AND (
+            group_row.room_id IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM rooms room_project_scope
+               WHERE room_project_scope.space_id = group_row.space_id
+                 AND room_project_scope.id = group_row.room_id
+                 AND ${projectReadAccessSql("room_project_scope.space_id", "room_project_scope.project_id", "$4")}
+            )
+          )
+          AND (
+            group_row.room_id IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM room_user_members room_user
+               WHERE room_user.space_id = group_row.space_id
+                 AND room_user.room_id = group_row.room_id
+                 AND room_user.user_id = $4
+                 AND room_user.status = 'active'
+            )
+          )
+          AND (
+            ${contentReadSql("agent", "a", "$4")}
+            OR (
+              group_row.room_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM room_agent_access_grants room_grant
+                  JOIN room_user_members room_member
+                    ON room_member.space_id = room_grant.space_id
+                   AND room_member.room_id = room_grant.room_id
+                   AND room_member.user_id = $4
+                   AND room_member.status = 'active'
+                 WHERE a.visibility <> 'space_shared'
+                   AND room_grant.space_id = a.space_id
+                   AND room_grant.room_id = group_row.room_id
+                   AND room_grant.agent_id = a.id
+                   AND room_grant.grantee_user_id = $4
+                   AND room_grant.revoked_at IS NULL
+              )
+            )
+          )`,
       [input.space_id, input.group_id, input.agent_id, input.user_id],
     );
     return result.rows[0] ?? null;
   }
 
-  async listAgentStatuses(spaceId: string, userId: string, agentIds: readonly string[]): Promise<AgentStatusRecord[]> {
+  async listAgentStatuses(spaceId: string, userId: string, agentIds: readonly string[], roomId?: string | null): Promise<AgentStatusRecord[]> {
     if (agentIds.length === 0) return [];
     const result = await this.db.query<AgentStatusRecord>(
-      `SELECT a.id, a.status
+      `SELECT a.id, a.status, a.agent_kind
          FROM agents a
         WHERE a.space_id = $1 AND a.id = ANY($3::varchar[])
-          AND ${contentReadSql("agent", "a", "$2")}`,
-      [spaceId, userId, agentIds],
+          AND (
+            $4::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM rooms room_scope
+                JOIN room_agent_members room_agent_member
+                  ON room_agent_member.space_id = room_scope.space_id
+                 AND room_agent_member.room_id = room_scope.id
+                 AND room_agent_member.agent_id = a.id
+                 AND room_agent_member.status = 'active'
+               WHERE room_scope.space_id = a.space_id
+                 AND room_scope.id = $4
+                 AND room_scope.status = 'active'
+            )
+          )
+          AND (
+            $4::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM rooms room_project_scope
+               WHERE room_project_scope.space_id = a.space_id
+                 AND room_project_scope.id = $4
+                 AND ${projectReadAccessSql("room_project_scope.space_id", "room_project_scope.project_id", "$2")}
+            )
+          )
+          AND (
+            $4::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM room_user_members room_user
+               WHERE room_user.space_id = a.space_id
+                 AND room_user.room_id = $4
+                 AND room_user.user_id = $2
+                 AND room_user.status = 'active'
+            )
+          )
+          AND (
+            ${contentReadSql("agent", "a", "$2")}
+            OR (
+              $4::varchar IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM room_agent_access_grants room_grant
+                  JOIN room_user_members room_member
+                    ON room_member.space_id = room_grant.space_id
+                   AND room_member.room_id = room_grant.room_id
+                   AND room_member.user_id = $2
+                   AND room_member.status = 'active'
+                 WHERE a.visibility <> 'space_shared'
+                   AND room_grant.space_id = a.space_id
+                   AND room_grant.room_id = $4
+                   AND room_grant.agent_id = a.id
+                   AND room_grant.grantee_user_id = $2
+                   AND room_grant.revoked_at IS NULL
+              )
+            )
+          )`,
+      [spaceId, userId, agentIds, roomId ?? null],
     );
     return result.rows;
   }
@@ -466,6 +583,7 @@ export class PgAgentGroupRepository {
     spaceId: string,
     userId: string,
     agentIds: readonly string[],
+    roomId?: string | null,
   ): Promise<AgentCapabilitySnapshotRecord[]> {
     const ids = [...new Set(agentIds.filter((id) => id.trim().length > 0))];
     if (ids.length === 0) return [];
@@ -481,8 +599,64 @@ export class PgAgentGroupRepository {
           AND av.space_id = a.space_id
           AND av.agent_id = a.id
         WHERE a.space_id = $1 AND a.id = ANY($3::varchar[])
-          AND ${contentReadSql("agent", "a", "$2")}`,
-      [spaceId, userId, ids],
+          AND (
+            $4::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM rooms room_scope
+                JOIN room_agent_members room_agent_member
+                  ON room_agent_member.space_id = room_scope.space_id
+                 AND room_agent_member.room_id = room_scope.id
+                 AND room_agent_member.agent_id = a.id
+                 AND room_agent_member.status = 'active'
+               WHERE room_scope.space_id = a.space_id
+                 AND room_scope.id = $4
+                 AND room_scope.status = 'active'
+            )
+          )
+          AND (
+            $4::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM rooms room_project_scope
+               WHERE room_project_scope.space_id = a.space_id
+                 AND room_project_scope.id = $4
+                 AND ${projectReadAccessSql("room_project_scope.space_id", "room_project_scope.project_id", "$2")}
+            )
+          )
+          AND (
+            $4::varchar IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM room_user_members room_user
+               WHERE room_user.space_id = a.space_id
+                 AND room_user.room_id = $4
+                 AND room_user.user_id = $2
+                 AND room_user.status = 'active'
+            )
+          )
+          AND (
+            ${contentReadSql("agent", "a", "$2")}
+            OR (
+              $4::varchar IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM room_agent_access_grants room_grant
+                  JOIN room_user_members room_member
+                    ON room_member.space_id = room_grant.space_id
+                   AND room_member.room_id = room_grant.room_id
+                   AND room_member.user_id = $2
+                   AND room_member.status = 'active'
+                 WHERE a.visibility <> 'space_shared'
+                   AND room_grant.space_id = a.space_id
+                   AND room_grant.room_id = $4
+                   AND room_grant.agent_id = a.id
+                   AND room_grant.grantee_user_id = $2
+                   AND room_grant.revoked_at IS NULL
+              )
+            )
+          )`,
+      [spaceId, userId, ids, roomId ?? null],
     );
     return result.rows;
   }

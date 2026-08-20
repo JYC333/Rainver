@@ -121,7 +121,10 @@ staged proposals through normal policy enforcement. Terminal publication
 atomically promotes them to pending only for accepted Runs, or rejects them for
 failed/cancelled/orphaned Runs; it never activates memory directly.
 Room Runs use `selected_users` visibility with active content grants for the
-current Room roster, still bounded by the canonical Project ACL. Artifacts and
+current Room roster, still bounded by the canonical Project ACL. Every Run,
+Artifact, and Proposal read (and every Proposal decision/apply path) also
+rechecks active Room membership for Room-backed Runs, so a permanent selected-
+user grant cannot preserve a removed member's historical output. Artifacts and
 proposals materialized from those Runs remain `selected_users` and inherit the
 Run grants; adapter output cannot widen them to `space_shared`. Room members may
 read task evidence, but only the speaking task's `manager_user_id` may mutate,

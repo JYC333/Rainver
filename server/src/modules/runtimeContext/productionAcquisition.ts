@@ -6,6 +6,7 @@ import type {
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { Pool } from "../../db/pool";
 import type { ServerConfig } from "../../config";
+import type { Queryable } from "../routeUtils/common";
 import {
   PgRuntimeContextAcquisitionRepository,
   type RunContextRecord,
@@ -43,13 +44,18 @@ import {
 } from "./acquisitionComposition";
 import { RuntimeContextPlanningService, type RuntimeContextPlanningRequest } from "./planningService";
 import { RetrievalCoordinator, type RetrievalContextAuthorizationPort } from "./retrievalCoordinator";
-import { resolveExplicitReferences } from "./workContextService";
+import { resolveExplicitReferences, roomScopedAgentReadSql } from "./workContextService";
 import { PgSessionRepository } from "../sessions/repository";
 import {
   buildChatConversationWindow,
   renderConversationWindow,
 } from "../agents/messageContinuityWindow";
-import { loadActiveSemanticCheckpoint, loadConversationContinuityThroughMessage } from "./conversationContinuity";
+import {
+  loadActiveSemanticCheckpoint,
+  loadConversationContinuityThroughMessage,
+  loadRoomContinuityForRunRequest,
+} from "./conversationContinuity";
+import { assembleRoomConversationContext, type RoomSummaryCoverage } from "../rooms/conversationContext";
 import {
   PgRuntimeSkillProvider,
   renderRuntimeSkillCandidate,
@@ -101,8 +107,14 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
     const agent = await this.db.query(
       `SELECT 1 FROM agents agent
         WHERE agent.id=$1 AND agent.space_id=$2 AND agent.status='active'
-          AND ${contentReadSql("agent", "agent", "$3")}`,
-      [setup.agent_id, request.identity.spaceId, request.identity.userId],
+          AND (
+            ${contentReadSql("agent", "agent", "$3")}
+            OR (
+              $4::varchar = 'room_recipient'
+              AND ${roomScopedAgentReadSql("agent", "$3", "$5")}
+            )
+          )`,
+      [setup.agent_id, request.identity.spaceId, request.identity.userId, setup.scope_kind, request.turn.work_context_scope_id],
     );
     if (!agent.rows[0]) throw new Error("Runtime Context Agent authority is no longer active or readable");
     const egressDestination = await revalidateExecutionDestination(this.db, control, run.adapter_type ?? null);
@@ -158,30 +170,14 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
     if (!run) throw new Error("Runtime Context root task disappeared during acquisition");
     const current = request.turn.current_message_ref.type === "run_request"
       && request.turn.current_message_ref.id === run.id
-      ? { content: runRequestText(run), created_at: "" }
-      : (await this.db.query<{ content: string; user_id: string | null; created_at: unknown }>(
-          `SELECT message.content, message.user_id, message.created_at
-             FROM messages message
-             JOIN sessions session ON session.id=message.session_id AND session.space_id=message.space_id
-             LEFT JOIN room_user_members room_member
-               ON room_member.room_id=session.room_id AND room_member.space_id=session.space_id
-              AND room_member.user_id=$4 AND room_member.status='active'
-            WHERE message.id=$1 AND message.space_id=$2 AND message.role='user'
-              AND message.session_id=$3
-              AND message.user_id=$4
-              AND (
-                (session.room_id IS NULL AND session.user_id=$4
-                  AND message.metadata_json->>'run_id'=$5)
-                OR (session.room_id IS NOT NULL AND room_member.user_id IS NOT NULL)
-              )`,
-          [
-            request.turn.current_message_ref.id,
-            request.identity.spaceId,
-            run.session_id ?? "",
-            request.identity.userId,
-            run.id,
-          ],
-        )).rows[0];
+      ? { content: runRequestText(run), role: "run_request", created_at: "" }
+      : await loadAuthorizedCurrentContextMessage(this.db, {
+          messageId: request.turn.current_message_ref.id,
+          spaceId: request.identity.spaceId,
+          sessionId: run.session_id ?? "",
+          userId: request.identity.userId,
+          runId: run.id,
+        });
     if (!current || !current.content.trim()) throw new Error("Current input is missing or outside the Work Context scope");
     const project = await this.context.loadPublishedProjectContext(
       request.identity.spaceId,
@@ -203,7 +199,7 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       sourceRef: { type: request.turn.current_message_ref.type, id: request.turn.current_message_ref.id },
       selection: "required",
       semanticRole: "user_input",
-      trust: "user_confirmed",
+      trust: current.role === "system" ? "system_approved" : "user_confirmed",
       text: current.content,
       revalidation: { message_created_at: String(current.created_at ?? "") },
     })];
@@ -277,7 +273,10 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       authority, request,
       sourceRef: { type: "project_brief_version", id: String(project.brief.id), version: String(project.brief.version) },
       selection: "required", semanticRole: "reference_data", trust: "domain_approved",
-      text: JSON.stringify(project.brief),
+      // The model needs the Project's meaning, not its persistence/audit
+      // envelope. Keep ids, version state, timestamps and reviewer identities
+      // in server-owned provenance only; never serialize them into prompt text.
+      text: JSON.stringify(projectBriefConversationProjection(project.brief)),
     }));
     const researchMatrix = await this.loadProjectResearchMatrix(run, request, authority);
     if (researchMatrix) items.push(researchMatrix);
@@ -411,6 +410,71 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
   }
 }
 
+export async function loadAuthorizedCurrentContextMessage(
+  db: Queryable,
+  input: { messageId: string; spaceId: string; sessionId: string; userId: string; runId: string },
+): Promise<{ content: string; role: string; created_at: unknown; metadata_run_id: string | null } | undefined> {
+  return (await db.query<{ content: string; role: string; created_at: unknown; metadata_run_id: string | null }>(
+    `SELECT message.content, message.role, message.created_at,
+            message.metadata_json->>'run_id' AS metadata_run_id
+       FROM messages message
+       JOIN sessions session ON session.id=message.session_id AND session.space_id=message.space_id
+       LEFT JOIN room_user_members room_member
+         ON room_member.room_id=session.room_id AND room_member.space_id=session.space_id
+        AND room_member.user_id=$4 AND room_member.status='active'
+      WHERE message.id=$1 AND message.space_id=$2
+        AND message.session_id=$3
+        AND (
+          (message.role='user' AND message.user_id=$4
+            AND session.room_id IS NULL AND session.user_id=$4
+            AND message.metadata_json->>'run_id'=$5)
+          OR (message.role='user' AND message.user_id=$4
+            AND session.room_id IS NOT NULL AND room_member.user_id IS NOT NULL)
+          OR (message.role='system'
+            AND session.room_id IS NOT NULL AND room_member.user_id IS NOT NULL
+            AND message.metadata_json->>'room_display'='internal'
+            AND message.metadata_json->>'continuation'='true'
+            AND message.metadata_json->>'continuation_requested_by_user_id'=$4)
+        )
+      FOR SHARE OF message`,
+    [input.messageId, input.spaceId, input.sessionId, input.userId, input.runId],
+  )).rows[0];
+}
+
+const PROJECT_BRIEF_CONVERSATION_FIELDS = [
+  "goal",
+  "scope_included",
+  "scope_excluded",
+  "success_definition",
+  "constraints",
+  "assumptions",
+  "current_focus",
+  "confirmed_decisions",
+  "primary_mode",
+  "workspace_identity",
+  "workspace_boundary",
+  "source_refs",
+] as const;
+
+/** Semantic Project Brief view safe to place in model-visible context text. */
+export function projectBriefConversationProjection(
+  brief: Record<string, unknown>,
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  for (const field of PROJECT_BRIEF_CONVERSATION_FIELDS) {
+    const value = brief[field];
+    if (hasConversationValue(value)) projected[field] = value;
+  }
+  return projected;
+}
+
+function hasConversationValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
 class PgExplicitProvider implements RuntimeContextChannelProvider {
   constructor(private readonly db: Pool) {}
 
@@ -485,21 +549,21 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
           currentMessageId: request.turn.current_message_ref.id,
         })
       : {
-          messages: session.room_id
-            ? await this.sessions.listRoomMessages(
-                request.identity.spaceId,
-                request.identity.userId,
-                session.room_id,
-                session.id,
-                80,
-                0,
-              ) ?? []
-            : await this.sessions.listRecentMessagesForContext(
+          ...(session.room_id
+            ? await loadRoomContinuityForRunRequest(this.db, {
+                spaceId: request.identity.spaceId,
+                sessionId: session.id,
+              })
+            : {
+                messages: await this.sessions.listRecentMessagesForContext(
                 request.identity.spaceId,
                 request.identity.userId,
                 session.id,
                 80,
-              ) ?? [],
+                ) ?? [],
+                room_summary: null,
+                room_conversation: false,
+              }),
           checkpoint: await loadActiveSemanticCheckpoint(
             this.db,
             request.identity.spaceId,
@@ -511,14 +575,16 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
       ? messages.find((message) => message.id === request.turn.current_message_ref.id)
       : syntheticRunRequestMessage(run, request);
     if (!current) throw new Error("Current conversation message is unavailable for continuity planning");
-    const continuity = renderCheckpointContinuity(messages, current, checkpoint);
+    const continuity = renderCheckpointContinuity(messages, current, checkpoint, bounded.room_summary, bounded.room_conversation);
     if (!continuity) return [];
     return [normalizeOwned({
       authority,
       request,
-      sourceRef: checkpoint
-        ? { type: "semantic_checkpoint", id: checkpoint.id, version: String(checkpoint.version) }
-        : { type: "session", id: session.id },
+      sourceRef: bounded.room_summary
+        ? { type: "room_conversation_summary", id: bounded.room_summary.id, version: String(bounded.room_summary.version) }
+        : checkpoint
+          ? { type: "semantic_checkpoint", id: checkpoint.id, version: String(checkpoint.version) }
+          : { type: "session", id: session.id },
       selection: "ranked",
       semanticRole: "reference_data",
       trust: "derived",
@@ -542,7 +608,28 @@ export function renderCheckpointContinuity(
   messages: readonly MessageOut[],
   current: MessageOut,
   checkpoint: SemanticCheckpoint | null,
+  roomSummary: RoomSummaryCoverage | null = null,
+  roomConversation = false,
 ): { text: string; messageRefs: Array<{ type: "message"; id: string }>; trace: Record<string, unknown> } | null {
+  if (roomConversation) {
+    const roomContext = assembleRoomConversationContext({ messages, currentMessage: current, summary: roomSummary });
+    if (!roomContext) return null;
+    const recent = roomContext.recent_messages.length > 0
+      ? ["[Recent Room turns]", ...roomContext.recent_messages.map((message) => `${message.role}:\n${message.content}`)].join("\n\n")
+      : "";
+    const summary = roomContext.summary?.summary_text
+      ? `[Room rolling summary]\n${roomContext.summary.summary_text}`
+      : "";
+    return {
+      text: [summary, recent].filter(Boolean).join("\n\n"),
+      messageRefs: roomContext.message_refs.map((id) => ({ type: "message" as const, id })),
+      trace: {
+        ...roomContext.trace,
+        semantic_checkpoint_ref: null,
+        semantic_checkpoint_cursor: checkpoint?.covered_cursor ?? null,
+      },
+    };
+  }
   const window = buildChatConversationWindow({ messages, currentMessage: current });
   const history = renderConversationWindow({
     ...window,

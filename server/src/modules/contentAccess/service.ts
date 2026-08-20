@@ -76,6 +76,7 @@ export class ContentAccessService {
 
   async getPolicy(identity: SpaceUserIdentity, resourceType: string, resourceId: string) {
     const definition = requireDefinition(resourceType);
+    await this.rejectManagedAssistant(resourceType, identity.spaceId, resourceId);
     const resource = await this.loadResource(this.pool, definition, identity.spaceId, resourceId);
     if (!resource || !(await this.canManage(this.pool, identity, resource))) {
       throw new HttpError(404, "Content not found");
@@ -122,6 +123,7 @@ export class ContentAccessService {
     update: ContentAccessUpdate,
   ) {
     const definition = requireDefinition(resourceType);
+    await this.rejectManagedAssistant(resourceType, identity.spaceId, resourceId);
     validateUpdate(update);
     return withDbTransaction(this.pool, async (client) => {
       const resource = await this.loadResource(client, definition, identity.spaceId, resourceId, true);
@@ -224,6 +226,7 @@ export class ContentAccessService {
     update: ContentAccessUpdate,
   ): Promise<{ proposal_id: string; required_approver_user_ids: string[] }> {
     const definition = requireDefinition(resourceType);
+    await this.rejectManagedAssistant(resourceType, identity.spaceId, resourceId);
     if (!definition.publishable || !definition.contextTaintColumn) {
       throw new HttpError(422, "This content type does not support taint-reviewed publication");
     }
@@ -344,6 +347,22 @@ export class ContentAccessService {
     const role = result.rows[0]?.role;
     if (!role) return false;
     return resource.owner_user_id === identity.userId || isSpaceOwnerOrAdmin(role);
+  }
+
+  private async rejectManagedAssistant(
+    resourceType: string,
+    spaceId: string,
+    resourceId: string,
+  ): Promise<void> {
+    if (resourceType !== "agent") return;
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT id
+         FROM agents
+        WHERE space_id = $1 AND id = $2 AND agent_kind = 'system_assistant'
+        LIMIT 1`,
+      [spaceId, resourceId],
+    );
+    if (result.rows[0]) throw new HttpError(404, "Content not found");
   }
 
   private async loadGrants(

@@ -2,7 +2,7 @@ import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import { assertProjectInSpace } from "../projects/access";
 import type { ProposalOut, ProposalPage } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { contentReadSql } from "../access/contentAccessSql";
+import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql";
 import { isProvenanceSourceType } from "../ontology/entities";
 
 export interface QueryResult<Row> {
@@ -119,7 +119,8 @@ export class PgProposalRepository {
          ${activeEgressApprovalJoinSql()}
         WHERE p.space_id = $1
           AND p.id = $2
-          AND ${contentReadSql("proposal", "p", "$3")}`,
+          AND ${contentReadSql("proposal", "p", "$3")}
+          AND ${roomRunReadAccessSql("p.created_by_run_id", "p.space_id", "$3")}`,
       [spaceId, proposalId, userId],
     );
     const row = result.rows[0];
@@ -136,6 +137,7 @@ function buildVisibleWhere(
   const clauses = [
     "p.space_id = $1",
     contentReadSql("proposal", "p", "$2"),
+    roomRunReadAccessSql("p.created_by_run_id", "p.space_id", "$2"),
   ];
   const addParam = (value: unknown): string => {
     params.push(value);

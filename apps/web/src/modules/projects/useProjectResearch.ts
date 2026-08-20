@@ -90,7 +90,7 @@ export interface ProjectResearchController {
   newSearch: NewSearchDialogState
   settings: ProjectResearchSettings | null
   saveInitialIntake: (config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) => Promise<boolean>
-  startInitialIntake: (config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) => Promise<void>
+  startInitialIntake: (config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) => Promise<boolean>
 }
 
 /**
@@ -372,7 +372,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
   // another search" dialog always passes `null` so it can never silently
   // overwrite whichever workflow the user has open.
   async function startInitialIntake(config: ProjectResearchInitialIntakeInput, workflowIdOverride?: string | null) {
-    if (!project) return
+    if (!project) return false
     setActionBusy('start-initial-intake')
     try {
       const workflowId = workflowIdOverride !== undefined ? workflowIdOverride : selectedWorkflowId
@@ -389,8 +389,10 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         setSelectedWorkflowId(response.workflow.id)
         window.localStorage.setItem(`project:${project.id}:research-workflow`, response.workflow.id)
       }
+      return true
     } catch (e) {
       toast.error(errMsg(e))
+      return false
     } finally {
       setActionBusy(null)
     }

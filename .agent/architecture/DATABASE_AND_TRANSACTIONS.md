@@ -135,6 +135,62 @@ scope and rejects stale heads or non-canonical citations.
 
 ## External Call Boundary
 
+## Room roster transaction boundary
+
+Room roster mutations use one transaction after locking the active Room row.
+The lock serializes `roster_revision`, specialist add/remove, grant revocation,
+human membership changes, invitation snapshots, and owner transfer/claim.
+Invitation approval transactions take the Room lock before the invitation lock,
+then compare the persisted revision and current private-Agent owner/status
+projection; a mismatch invalidates approvals and cannot silently widen access.
+Activation inserts the human membership and all Room-only grants atomically.
+Unexpired invitations with a stale roster snapshot are explicitly invalidated
+and recreated, and private-Agent owners have a Space-level pending-approval
+inbox whose rows are filtered by current Project read access before they can be
+shown or decided.
+
+`room_agent_access_grants` is a Room execution predicate only. It is joined
+with an active `room_user_members` row, an active Room Agent member, and the
+Agent Group's matching `room_id`; no generic Agent visibility query consumes
+it. Removing a specialist or human member revokes future grants in the same
+transaction but does not rewrite historical Runs or messages. The partial
+unique owner index is cleared before a transfer or suspended-owner claim
+promotes the new owner, so concurrent ownership changes cannot leave two
+active owners.
+
+## Room conversation summary boundary
+
+Room summaries use two tables: `room_conversation_summary_versions` is
+append-only with one active version per conversation, while
+`room_conversation_summary_states` holds the requested exclusive message
+cursor, active version pointer, retry state, and a time-bounded lease. A
+publisher locks the state and supersedes the prior version before inserting
+the next active version, so concurrent or stale providers cannot publish an
+older cursor over newer coverage. If more messages remain after the published
+cursor, the current job enqueues the follow-up job explicitly; it cannot rely
+on the running job being mistaken for the next one.
+
+Each published version stores its Project scope, source and summary token
+estimates, owner/provider attribution, and system-prompt/schema provenance. The
+active-summary pointer is a composite Space/Room/Session foreign key, and all
+summary reads and writes carry the same aggregate scope. The worker queues only
+after a 6,000-token raw-prefix threshold, uses the active owner only while that
+user can write the Project, and keeps malformed output from advancing the
+cursor.
+
+Summary generation is always asynchronous and therefore never part of the
+Room send transaction. The worker resolves the active Room owner’s eligible
+API provider and meters the call to that owner. Missing provider configuration
+transitions to `waiting_provider` without blocking canonical conversation
+messages. The scheduler also reconciles active Room Conversations whose
+terminal finalizer could not create or advance summary state. Failed calls use
+capped exponential retry with jitter; scheduled `retry_wait` is distinct from
+terminal `failed`, and new turns cannot reset an exhausted retry count. Expired
+leases are recovered by the scheduler.
+Runtime Context reads the active summary cursor
+and selects only the uncaptured recent tail, enforcing the 2,000-summary +
+6,000-recent token contract without overlap.
+
 Do not hold an open transaction while calling:
 - Runtime adapters
 - LLM/model providers

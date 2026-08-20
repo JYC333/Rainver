@@ -32,12 +32,22 @@ import { loadActionRegistry } from "../policy/actionRegistry";
 import { enforce } from "../policy/service";
 import { SourceChannelService } from "../sources/channels/sourceChannelService";
 import { ProjectSourceProposalService } from "../projects/projectSourceProposalService";
+import { ProjectDefinitionProposalService } from "../projects/projectDefinitionProposalService";
 import { SourceBackfillPlanningService } from "../sources/sourceBackfillService";
 import { PgPlanRepository } from "../plans/repository";
+import { InquiryConclusionProposalService } from "../inquiry/inquiryConclusionProposalService";
+import { InquiryThreadProposalService } from "../inquiry/inquiryThreadProposalService";
+import { KnowledgePromotionCandidateService } from "../knowledgePromotion/candidateService";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope";
 import { AuthorizationRequestService } from "../policy/authorizationRequestService";
 import { SystemActionGatewayError } from "./gateway";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService";
+import {
+  DURABLE_ACTION_CLAIM_POLICY,
+  PLAIN_STATUS_RESPONSE_POLICY,
+} from "./conversationPolicy";
+import { ResearchAcquisitionService } from "../projectResearch/pipeline/researchAcquisitionService";
+import { PgAgentGroupRepository } from "../agentGroups/repository";
 
 export interface AgentToolGatewayDeps extends ManagedApiRetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
@@ -45,8 +55,21 @@ export interface AgentToolGatewayDeps extends ManagedApiRetrievalToolDeps {
   abortSignal?: AbortSignal;
 }
 
-const GENERIC_TRANSPORT_ACTION_IDS = ["authorization.request", "source.channel.propose_activation", "project.source.propose_bind", "source.backfill.propose_start", "task.plan.propose"];
+const GENERIC_TRANSPORT_ACTION_IDS = ["authorization.request", "source.channel.propose_activation", "project.source.propose_bind", "project.propose_definition", "source.backfill.propose_start", "task.plan.propose", "inquiry.propose_thread", "inquiry.record_conclusion", "inquiry.promote_knowledge"];
 const GENERIC_PROPOSAL_ACTION_IDS = GENERIC_TRANSPORT_ACTION_IDS.filter((id) => id !== "authorization.request");
+// `research.start_acquisition` is a direct, non-proposal durable action
+// (room-advancement-reliability-plan Phase 4) — it does not belong in
+// GENERIC_TRANSPORT_ACTION_IDS, whose tool/binding metadata always describes
+// a proposal (`side_effect_level: "proposal"`, `approval_required: true`).
+const RESEARCH_ACQUISITION_ACTION_ID = "research.start_acquisition";
+const MANAGED_ACTION_RESPONSE_POLICY = [
+  "System action schemas and tool results are internal execution details.",
+  "Do not print raw action arguments, JSON schemas, placeholder payloads, or tool-result objects unless the user explicitly asks for JSON.",
+  DURABLE_ACTION_CLAIM_POLICY,
+  "When the user has clearly confirmed a supported action, call the action instead of simulating it in prose; then summarize the real result in ordinary language.",
+  PLAIN_STATUS_RESPONSE_POLICY,
+  "If no offered action can perform the request, state that limitation briefly and point to the owning product area.",
+].join(" ");
 
 /** Managed-run adapter over the registry-driven action surface. */
 export class AgentToolGateway {
@@ -89,6 +112,23 @@ export class AgentToolGateway {
       approval_required: true,
     }));
 
+    const researchAcquisitionRegistryDefinition = registry.get(RESEARCH_ACQUISITION_ACTION_ID as SystemActionId);
+    const researchAcquisitionDefinitions: CanonicalToolDefinition[] = researchAcquisitionRegistryDefinition
+      ? [{ name: RESEARCH_ACQUISITION_ACTION_ID, description: researchAcquisitionRegistryDefinition.description, input_schema: researchAcquisitionActionJsonSchema() }]
+      : [];
+    const researchAcquisitionBindings = researchAcquisitionDefinitions.map((tool) => ({
+      id: tool.name,
+      external_type: "internal",
+      external_ref: tool.name,
+      display_name: tool.name,
+      required_scopes: [tool.name],
+      credential_ref: null,
+      data_exposure_level: "model_provider",
+      observability_level: "structured_events",
+      side_effect_level: "durable",
+      approval_required: false,
+    }));
+
     const permitted = new Set(
       [...registry.values()]
         .filter(
@@ -109,9 +149,14 @@ export class AgentToolGateway {
     }
     const permittedGenericDefinitions = genericDefinitions.filter((tool) => permitted.has(tool.name));
     const permittedGenericBindings = genericBindings.filter((tool) => permitted.has(tool.id));
+    const permittedResearchAcquisitionDefinitions = researchAcquisitionDefinitions.filter((tool) => permitted.has(tool.name));
+    const permittedResearchAcquisitionBindings = researchAcquisitionBindings.filter((tool) => permitted.has(tool.id));
 
     if (genericDefinitions.length && this.config.databaseUrl && run.instructed_by_user_id) {
       this.registerGenericProposalExecutors(executors, run);
+    }
+    if (permittedResearchAcquisitionDefinitions.length && this.config.databaseUrl && run.instructed_by_user_id) {
+      this.registerResearchAcquisitionExecutor(executors, run);
     }
 
     const actionEvents = deps.actionEventSink ?? this.actionEventSink(run);
@@ -238,10 +283,18 @@ export class AgentToolGateway {
       permittedGenericDefinitions.length
         ? { definitions: permittedGenericDefinitions, bindings: permittedGenericBindings }
         : null,
+      permittedResearchAcquisitionDefinitions.length
+        ? { definitions: permittedResearchAcquisitionDefinitions, bindings: permittedResearchAcquisitionBindings }
+        : null,
     ];
     return executeManagedToolLoop(
       this.config,
-      request,
+      {
+        ...request,
+        system_prompt: [request.system_prompt, MANAGED_ACTION_RESPONSE_POLICY]
+          .filter((value): value is string => Boolean(value))
+          .join("\n\n"),
+      },
       execute,
       mergeManagedToolContributions(contributions, dispatch),
       { signal: deps.abortSignal },
@@ -333,6 +386,110 @@ export class AgentToolGateway {
         summary: { tool_name: "task.plan.propose", ok: true, plan_id: (plan as { id?: string }).id, plan_version_id: (plan as { current_version?: { id?: string } }).current_version?.id },
       };
     });
+
+    executors.set("inquiry.propose_thread" as SystemActionId, async (input, context) => {
+      if (!run.project_id) throw new Error("inquiry.propose_thread requires a project-scoped run");
+      const result = await new InquiryThreadProposalService(db).proposeThread(
+        identity,
+        run.project_id,
+        input as Record<string, unknown>,
+        {
+          agentId: run.agent_id,
+          runId: run.id,
+          idempotencyKey: context.idempotency_key,
+          visibility: runVisibility(run.visibility),
+        },
+      );
+      return {
+        modelResult: { ok: true, proposal: result.proposal },
+        summary: { tool_name: "inquiry.propose_thread", ok: true, proposal_id: (result.proposal as { id?: string }).id },
+      };
+    });
+
+    executors.set("project.propose_definition" as SystemActionId, async (input, context) => {
+      if (!run.project_id) throw new Error("project.propose_definition requires a project-scoped run");
+      const result = await new ProjectDefinitionProposalService(db).proposeDefinition(
+        identity,
+        run.project_id,
+        input as Record<string, unknown>,
+        {
+          agentId: run.agent_id,
+          runId: run.id,
+          idempotencyKey: context.idempotency_key,
+          visibility: runVisibility(run.visibility),
+        },
+      );
+      return {
+        modelResult: { ok: true, proposal: result.proposal },
+        summary: { tool_name: "project.propose_definition", ok: true, proposal_id: (result.proposal as { id?: string }).id },
+      };
+    });
+
+    executors.set("inquiry.record_conclusion" as SystemActionId, async (input, context) => {
+      if (!run.project_id) throw new Error("inquiry.record_conclusion requires a project-scoped run");
+      const result = await new InquiryConclusionProposalService(db).proposeConclusion(
+        identity,
+        run.project_id,
+        input as Record<string, unknown>,
+        {
+          agentId: run.agent_id,
+          runId: run.id,
+          idempotencyKey: context.idempotency_key,
+          visibility: runVisibility(run.visibility),
+        },
+      );
+      return {
+        modelResult: { ok: true, proposal: result.proposal },
+        summary: { tool_name: "inquiry.record_conclusion", ok: true, proposal_id: (result.proposal as { id?: string }).id },
+      };
+    });
+
+    executors.set("inquiry.promote_knowledge" as SystemActionId, async (input, context) => {
+      if (!run.project_id) throw new Error("inquiry.promote_knowledge requires a project-scoped run");
+      const result = await new KnowledgePromotionCandidateService(db).proposeFromThreadForAgent(
+        identity,
+        run.project_id,
+        input as Record<string, unknown>,
+        {
+          agentId: run.agent_id,
+          runId: run.id,
+          idempotencyKey: context.idempotency_key,
+          visibility: runVisibility(run.visibility),
+        },
+      );
+      return {
+        modelResult: { ok: true, candidate: result.candidate },
+        summary: { tool_name: "inquiry.promote_knowledge", ok: true, proposal_id: result.proposal_id },
+      };
+    });
+  }
+
+  /** `research.start_acquisition` (room-advancement-reliability-plan Phase 4):
+   * unlike the generic proposal set, this is direct-execution, so the
+   * executor calls `ResearchAcquisitionService` rather than a proposal
+   * service. Room origin is resolved from the Run's own agent-group
+   * membership — the same lookup `AgentGroupRunLifecycleProjector` uses for
+   * delegation-completion notifications — not carried by the tool call
+   * itself, matching how `agent.delegate` never asks the model for room
+   * context either. */
+  private registerResearchAcquisitionExecutor(executors: Map<SystemActionId, SystemActionExecutor>, run: RunRecord): void {
+    const db = getDbPool(this.config.databaseUrl!);
+    const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };
+    executors.set(RESEARCH_ACQUISITION_ACTION_ID as SystemActionId, async (input) => {
+      if (!run.project_id) throw new Error("research.start_acquisition requires a project-scoped run");
+      const body = input as { thread_id: string; intent_note?: string };
+      const origin = run.run_group_id ? await new PgAgentGroupRepository(db).getGroup(run.space_id, run.run_group_id) : null;
+      const result = await new ResearchAcquisitionService(db).startAcquisition(identity, run.project_id, {
+        threadId: body.thread_id,
+        intentNote: body.intent_note ?? null,
+        originRoomId: origin?.room_id ?? null,
+        originSessionId: origin?.session_id ?? null,
+      });
+      return {
+        modelResult: { ok: true, tool: RESEARCH_ACQUISITION_ACTION_ID, ...result },
+        summary: { tool_name: RESEARCH_ACQUISITION_ACTION_ID, ok: true, ...result },
+      };
+    });
   }
 
   private async enforcePolicyForAction(
@@ -368,6 +525,33 @@ export class AgentToolGateway {
       const call = { id: definition.id, name: definition.id, arguments_json: JSON.stringify(input) };
       const prepared = agentDelegatePolicyInput(call, delegation, run);
       const decision = await delegation.service.preflightSpawnChildRunPolicy(prepared.identity, prepared.input);
+      return {
+        allowed: decision.status === "allow",
+        policy_decision_record_id: decision.policy_decision_record_id ?? null,
+        reason: decision.message ?? undefined,
+        details: decision,
+      };
+    }
+
+    if (definition.id === "research.start_acquisition" && this.config.databaseUrl) {
+      // `thread_id` is required and non-empty by this point — `dispatch`
+      // (gateway.ts) already ran the strict input schema before calling
+      // this policy branch — so this is always the real Thread id, never a
+      // fallback.
+      const threadId = String((input as Record<string, unknown>).thread_id);
+      const decision = await enforce({ databaseUrl: this.config.databaseUrl }, await loadActionRegistry(), {
+        action: definition.policy_action,
+        force_record: true,
+        actor_type: "agent",
+        actor_id: run.agent_id,
+        space_id: run.space_id,
+        resource_space_id: run.space_id,
+        resource_type: "inquiry_thread",
+        resource_id: threadId,
+        run_id: run.id,
+        context: { action_id: definition.id, project_id: run.project_id, instructed_by_user_id: run.instructed_by_user_id },
+        metadata_json: { surface: "managed_run_system_action_gateway", action_id: definition.id },
+      });
       return {
         allowed: decision.status === "allow",
         policy_decision_record_id: decision.policy_decision_record_id ?? null,
@@ -578,6 +762,74 @@ export function proposalActionJsonSchema(actionId: string): Record<string, unkno
       ? { provider_key: { type: "string" }, name: { type: "string" }, query: { type: "object" }, endpoint_url: { type: "string" } }
       : actionId === "project.source.propose_bind"
         ? { source_channel_id: { type: "string" } }
+      : actionId === "inquiry.propose_thread"
+        ? {
+            kind: { type: "string", enum: ["question", "hypothesis"] },
+            statement: { type: "string" },
+            answerability: { type: "string" },
+            resolution_criteria: { type: "string" },
+            proposed_claim: { type: "string" },
+            predictions: { type: "string" },
+            falsification_criteria: { type: "string" },
+          }
+      : actionId === "project.propose_definition"
+        ? {
+            goal: { type: "string", description: "The formal Project goal or core problem statement." },
+            scope_included: { type: "string" },
+            scope_excluded: { type: "string" },
+            success_definition: { type: "string" },
+            constraints: { type: "string" },
+            assumptions: { type: "string" },
+          }
+      : actionId === "inquiry.record_conclusion"
+        ? {
+            thread_id: { type: "string" },
+            change_summary: { type: "string" },
+            reasoning_summary: { type: "string" },
+            answer_state: { type: "string", enum: ["open", "partial", "answered", "unanswerable"] },
+            current_answer_summary: { type: "string" },
+            known_gaps: { type: "string" },
+            answerability: { type: "string" },
+            evaluation_state: { type: "string", enum: ["untested", "supported", "challenged", "contradicted", "inconclusive"] },
+            confidence: { type: "number" },
+            confidence_method: { type: "string" },
+            unresolved_gaps: { type: "string" },
+            confirmed_next_focus: { type: "string" },
+            next_focus_note: { type: "string" },
+          }
+      : actionId === "inquiry.promote_knowledge"
+        ? {
+            thread_id: { type: "string" },
+            candidate_kind: { type: "string", enum: ["concept", "lesson", "procedure", "decision", "summary"] },
+            proposed_title: { type: "string" },
+            proposed_content: { type: "string" },
+            supersedes_knowledge_item_id: { type: "string" },
+          }
         : { source_channel_id: { type: "string" }, source_backfill_plan_id: { type: "string" } };
-  return { type: "object", properties, required: Object.keys(properties), additionalProperties: true };
+  const required = actionId === "project.propose_definition"
+    ? ["goal"]
+    : actionId === "inquiry.propose_thread"
+    ? ["statement"]
+    : actionId === "inquiry.record_conclusion"
+    ? ["thread_id", "change_summary"]
+    : actionId === "inquiry.promote_knowledge"
+      ? ["thread_id", "candidate_kind", "proposed_title", "proposed_content"]
+      : Object.keys(properties);
+  return { type: "object", properties, required, additionalProperties: true };
+}
+
+export function researchAcquisitionActionJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      thread_id: { type: "string", description: "The accepted Inquiry Thread (Question) to start acquisition for." },
+      intent_note: { type: "string", description: "Optional short note on why acquisition is starting now." },
+    },
+    required: ["thread_id"],
+    additionalProperties: false,
+  };
+}
+
+function runVisibility(value: unknown): "private" | "space_shared" | "selected_users" {
+  return value === "selected_users" || value === "space_shared" ? value : "private";
 }

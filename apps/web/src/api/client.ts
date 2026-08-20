@@ -62,6 +62,11 @@ import type {
   CreateAgentRunGroupRequest,
   CreateAgentRunGroupResponse,
   CreateRoomRequest,
+  CreateRoomResponse,
+  RoomAgentAddRequest,
+  RoomAgentCandidatesResponse,
+  RoomAgentMutationResponse,
+  RoomAgentPresetRequest,
   CredentialLoginMethod,
   CredentialStatus,
   CrossSpaceEgressDisclosure,
@@ -283,8 +288,16 @@ import type {
   RetrievalSearchResponse,
   Room,
   RoomConversation,
+  RoomConversationSummaryResponse,
   RoomDetail,
+  RoomInvitation,
+  RoomInvitationCreateRequest,
+  RoomInvitationDecisionRequest,
+  RoomInvitationListResponse,
+  RoomPendingApprovalListResponse,
+  RoomOwnerTransferRequest,
   RoomMessage,
+  ContinueRoomAfterProposalRequest,
   Run,
   RunAttempt,
   RunCreateBody,
@@ -431,6 +444,7 @@ function formatApiErrorMessage(err: ApiError, fallback: string): string {
 interface RequestOptions {
   includeSpaceContext?: boolean
   spaceId?: string
+  idempotencyKey?: string
 }
 
 export class ApiRequestError extends Error {
@@ -443,6 +457,7 @@ export class ApiRequestError extends Error {
      * surface the message — matching on prose is how error handling rots.
      */
     readonly code?: string,
+    readonly payload?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'ApiRequestError'
@@ -456,6 +471,7 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   const headers: Record<string, string> = isForm ? {} : { 'Content-Type': 'application/json' }
   if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
   if (options.includeSpaceContext ?? true) headers['X-Agent-Space-Id'] = options.spaceId ?? _spaceId
+  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey
 
   const url = BASE + path
 
@@ -471,15 +487,17 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     let code: string | undefined
+    let payload: Record<string, unknown> | undefined
     try {
       const err = await r.json() as ApiError & { code?: unknown }
+      if (err && typeof err === 'object') payload = err as unknown as Record<string, unknown>
       msg = formatApiErrorMessage(err, msg)
       if (typeof err.code === 'string') code = err.code
     } catch {
       const text = await r.text().catch(() => '')
       if (text) msg = text
     }
-    throw new ApiRequestError(msg, r.status, code)
+    throw new ApiRequestError(msg, r.status, code, payload)
   }
 
   if (r.status === 204) return null as T
@@ -1270,8 +1288,43 @@ export const roomsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Room>>('/rooms?' + new URLSearchParams(q))
   },
-  create: (body: CreateRoomRequest) => post<RoomDetail>('/rooms', body),
+  pendingApprovals: (params: { limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.limit !== undefined) q.set('limit', String(params.limit))
+    if (params.offset !== undefined) q.set('offset', String(params.offset))
+    return get<RoomPendingApprovalListResponse>(`/rooms/pending-approvals?${q}`)
+  },
+  create: (body: CreateRoomRequest, idempotencyKey?: string) =>
+    post<CreateRoomResponse>('/rooms', body, { idempotencyKey }),
   get: (roomId: string) => get<RoomDetail>(`/rooms/${roomId}`),
+  agentCandidates: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.limit !== undefined) q.set('limit', String(params.limit))
+    if (params.offset !== undefined) q.set('offset', String(params.offset))
+    return get<RoomAgentCandidatesResponse>(`/rooms/${roomId}/agent-candidates?${q}`)
+  },
+  addAgent: (roomId: string, body: RoomAgentAddRequest) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents`, body),
+  addAgentPreset: (roomId: string, body: RoomAgentPresetRequest, idempotencyKey?: string) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agent-presets`, body, { idempotencyKey }),
+  removeAgent: (roomId: string, agentId: string) =>
+    del<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}`),
+  invitations: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.limit !== undefined) q.set('limit', String(params.limit))
+    if (params.offset !== undefined) q.set('offset', String(params.offset))
+    return get<RoomInvitationListResponse>(`/rooms/${roomId}/invitations?${q}`)
+  },
+  inviteUser: (roomId: string, body: RoomInvitationCreateRequest) =>
+    post<RoomInvitation>(`/rooms/${roomId}/invitations`, body),
+  decideInvitation: (roomId: string, invitationId: string, body: RoomInvitationDecisionRequest) =>
+    post<RoomInvitation>(`/rooms/${roomId}/invitations/${invitationId}/decision`, body),
+  removeUser: (roomId: string, userId: string) =>
+    del<RoomAgentMutationResponse>(`/rooms/${roomId}/members/${userId}`),
+  transferOwner: (roomId: string, body: RoomOwnerTransferRequest) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-transfer`, body),
+  claimOwner: (roomId: string) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-claim`, {}),
   conversations: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
@@ -1280,6 +1333,8 @@ export const roomsApi = {
   },
   createConversation: (roomId: string, body: { title?: string | null }) =>
     post<RoomConversation>(`/rooms/${roomId}/conversations`, body),
+  summary: (roomId: string, sessionId: string) =>
+    get<RoomConversationSummaryResponse>(`/rooms/${roomId}/conversations/${sessionId}/summary`),
   messages: (
     roomId: string,
     sessionId: string,
@@ -1291,6 +1346,7 @@ export const roomsApi = {
     return (
     get<{
       items: RoomMessage[]
+      conversation?: RoomConversation
       task_group_ids: string[]
       limit: number
       offset: number
@@ -1300,9 +1356,20 @@ export const roomsApi = {
   sendMessage: (roomId: string, sessionId: string, body: SendRoomMessageRequest) =>
     post<{
       message: RoomMessage
+      conversation: RoomConversation
       task_group_ids: string[]
       run_ids: string[]
     }>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+  continueAfterProposal: (
+    roomId: string,
+    sessionId: string,
+    body: ContinueRoomAfterProposalRequest,
+  ) => post<{
+    message: RoomMessage
+    conversation: RoomConversation
+    task_group_ids: string[]
+    run_ids: string[]
+  }>(`/rooms/${roomId}/conversations/${sessionId}/proposal-continuations`, body),
 }
 
 // ── Personal Memory Grants ─────────────────────────────────────────────────

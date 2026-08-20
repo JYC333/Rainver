@@ -11,7 +11,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","source.backfill.propose_start","task.plan.propose"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.propose_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -20,6 +20,8 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(byId.get("project.source.propose_bind")!.input_schema.safeParse({}).success).toBe(false);
     expect(byId.get("project.source.propose_bind")!.input_schema.safeParse({source_channel_id:"channel-1"}).success).toBe(true);
     expect(byId.get("source.backfill.propose_start")!.input_schema.safeParse({source_channel_id:"channel-1"}).success).toBe(false);
+    expect(byId.get("project.propose_definition")!.input_schema.safeParse({goal:"Define reliable personal memory"}).success).toBe(true);
+    expect(byId.get("inquiry.propose_thread")!.input_schema.safeParse({ statement: "How should memory retrieval work?" }).success).toBe(true);
   });
 
   it("keeps agent tools audited and high-risk direct writes hidden", () => {

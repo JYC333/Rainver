@@ -27,6 +27,27 @@ export class ConversationTurnInProgressError extends Error {
   }
 }
 
+/**
+ * `claimTurn`'s throw site is several call frames below any caller that
+ * needs to distinguish "the turn is transiently busy, retry" from every
+ * other failure — and `rooms/service.ts`'s `dispatchRoomMessage` re-wraps
+ * this specific error into a generic `HttpError(409, ...)` for its own
+ * (correct, HTTP-facing) purposes on the way up, which erases the
+ * `instanceof` check. Duck-typed on status code + exact message rather than
+ * importing `HttpError` here, to avoid coupling this low-level module to
+ * the HTTP error shape. `statusCode === 409` alone is not sufficient — other
+ * unrelated failures in the same dispatch path also use 409.
+ */
+export function isConversationTurnInProgressError(error: unknown): boolean {
+  if (error instanceof ConversationTurnInProgressError) return true;
+  const candidate = error as { statusCode?: unknown; message?: unknown } | null;
+  return Boolean(
+    candidate
+    && candidate.statusCode === 409
+    && candidate.message === new ConversationTurnInProgressError().message,
+  );
+}
+
 export class PgConversationRuntimeSessionRepository {
   constructor(private readonly db: Queryable) {}
 

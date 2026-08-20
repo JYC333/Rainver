@@ -141,6 +141,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         agent_id: q.agent_id ?? null,
         project_folder_id: q.project_folder_id ?? null,
         project_id: q.project_id ?? null,
+        exclude_system_assistants: true,
         limit: page.limit,
         offset: page.offset,
       });
@@ -159,6 +160,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!run) {
         return reply.code(404).send({ detail: "Run not found in this space" });
       }
+      if (!(await agentRepository().getVisible(identity.spaceId, identity.userId, run.agent_id))) {
+        return reply.code(404).send({ detail: "Run not found in this space" });
+      }
       return reply.send(runToOut(run));
     } catch (error) {
       return sendRouteError(reply, error);
@@ -171,13 +175,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const q = routeQuery(request);
       const page = parsePage(q);
+      const agentId = params(request).agentId ?? "";
+      const visibleAgent = await agentRepository().getVisible(identity.spaceId, identity.userId, agentId);
+      if (!visibleAgent) {
+        return reply.code(404).send({ detail: "Agent not found" });
+      }
       const repository = PgRunRepository.fromConfig(context.config);
       const runs = await repository.listRuns({
         space_id: identity.spaceId,
         user_id: identity.userId,
         status: q.status ?? null,
         mode: q.mode ?? null,
-        agent_id: params(request).agentId ?? "",
+        agent_id: agentId,
         project_folder_id: q.project_folder_id ?? null,
         project_id: q.project_id ?? null,
         limit: page.limit,
@@ -520,6 +529,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         requestSpaceId: identity.spaceId,
         projectId,
       });
+      const visibleAgent = await PgAgentRepository
+        .fromConfig(context.config)
+        .getVisible(creation.spaceId, identity.userId, agentId);
+      if (!visibleAgent) {
+        return reply.code(404).send({ detail: `Agent '${agentId}' not found in this space` });
+      }
       const resolvedProjectFolderId = creation.projectId ? projectFolderId : null;
       const run = await repository.createQueuedRunWithBudgetAdmission({
         agent_id: agentId,

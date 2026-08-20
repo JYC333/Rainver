@@ -5,6 +5,7 @@ import type { PoolClient } from "../../db/pool";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import { contentDecisionFromDb } from "../access/contentAccessQuery";
+import { roomRunReadAccessSql } from "../access/contentAccessSql";
 import {
   enforceProposalApply,
   type EnforceResult,
@@ -61,6 +62,22 @@ export class ProposalApplyHttpError extends Error {
   }
 }
 
+async function roomRunReadableForUser(
+  client: PoolClient,
+  proposal: Pick<ApplyProposalRow, "created_by_run_id" | "space_id">,
+  userId: string,
+): Promise<boolean> {
+  // Ordinary proposals have no originating Run and therefore have no Room
+  // membership boundary to re-check. Avoid an unnecessary SQL probe here and
+  // keep the Room-specific predicate limited to inherited Run output.
+  if (!proposal.created_by_run_id) return true;
+  const result = await client.query<{ allowed: boolean }>(
+    `SELECT ${roomRunReadAccessSql("$1", "$2", "$3")} AS allowed`,
+    [proposal.created_by_run_id, proposal.space_id, userId],
+  );
+  return result.rows[0]?.allowed === true;
+}
+
 export interface ProposalAcceptOptions {
   confirmIncompletePatch?: boolean;
   /** Only the bundle coordinator may apply a proposal while it owns the member row. */
@@ -88,6 +105,7 @@ interface ApplyProposalRow {
   project_folder_id: string | null;
   visibility: string | null;
   created_by_user_id: string | null;
+  owner_user_id: string | null;
   created_by_agent_id: string | null;
   created_by_run_id: string | null;
   project_id: string | null;
@@ -178,6 +196,7 @@ export class PgProposalApplyService {
         proposal.space_id !== identity.spaceId ||
         (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny"
       ) return null;
+      if (!await roomRunReadableForUser(client, proposal, identity.userId)) return null;
 
       await this.assertBundleMemberMayBeDecided(client, proposal.id, options.allowBundleMemberDecision === true);
       assertIncompleteCodePatchConfirmation(
@@ -199,6 +218,7 @@ export class PgProposalApplyService {
           project_folder_id: proposal.project_folder_id,
           visibility: proposal.visibility,
           created_by_user_id: proposal.created_by_user_id,
+          owner_user_id: proposal.owner_user_id,
           created_by_agent_id: proposal.created_by_agent_id,
           created_by_run_id: proposal.created_by_run_id,
           project_id: proposal.project_id,
@@ -270,6 +290,7 @@ export class PgProposalApplyService {
         id: proposal.id, space_id: proposal.space_id, proposal_type: proposal.proposal_type,
         title: proposal.title, payload_json: proposal.payload_json, project_folder_id: proposal.project_folder_id,
         visibility: proposal.visibility, created_by_user_id: proposal.created_by_user_id,
+        owner_user_id: proposal.owner_user_id,
         created_by_agent_id: proposal.created_by_agent_id,
         created_by_run_id: proposal.created_by_run_id, project_id: proposal.project_id,
       }, userId: grantingUserId });
@@ -338,6 +359,7 @@ export class PgProposalApplyService {
       proposal.space_id !== identity.spaceId ||
       proposal.status !== "pending" ||
       (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny" ||
+      !(await roomRunReadableForUser(client, proposal, identity.userId)) ||
       !(await canRejectProposal(client, proposal, identity.userId))
     ) return null;
     await this.assertBundleMemberMayBeDecided(client, proposal.id, allowBundleMemberDecision);
@@ -381,6 +403,7 @@ export class PgProposalApplyService {
         || proposal.status !== "pending"
         || proposal.space_id !== identity.spaceId
         || (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny"
+        || !(await roomRunReadableForUser(client, proposal, identity.userId))
       ) {
         throw new ProposalApplyHttpError(404, "Proposal not found");
       }
@@ -601,7 +624,7 @@ export class PgProposalApplyService {
       `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
               proposal.status, proposal.risk_level, proposal.preview,
               proposal.payload_json, proposal.project_folder_id,
-              proposal.created_by_user_id, proposal.created_by_agent_id,
+              proposal.created_by_user_id, proposal.owner_user_id, proposal.created_by_agent_id,
               proposal.created_by_run_id, proposal.visibility,
               proposal.project_id, proposal.title,
               proposal.required_approver_role
@@ -891,11 +914,20 @@ function recordValue(value: unknown): Record<string, unknown> {
 }
 
 export function canRejectProposalWithRole(
-  proposal: { created_by_user_id: string | null; required_approver_role: string | null },
+  proposal: {
+    created_by_user_id: string | null;
+    owner_user_id: string | null;
+    created_by_agent_id: string | null;
+    required_approver_role: string | null;
+  },
   userId: string,
   role: string | null,
 ): boolean {
   if (proposal.created_by_user_id === userId) return true;
+  // Agent-authored proposals retain Agent attribution, while owner_user_id is
+  // the trusted server-populated identity of the instructing human. Give that
+  // human the same ability to decline their draft as a direct creator.
+  if (proposal.created_by_agent_id && proposal.owner_user_id === userId) return true;
   const requiredRole = normalizeRequiredApproverRole(proposal.required_approver_role);
   return Boolean(requiredRole && role && roleSatisfiesRequiredApprover(role, requiredRole));
 }

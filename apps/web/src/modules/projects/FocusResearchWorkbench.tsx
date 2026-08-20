@@ -376,7 +376,7 @@ export interface FocusResearchWorkbenchProps {
   questionThreads?: InquiryThread[]
   researchActionBusy: string | null
   onSaveInitialIntake: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
-  onStartInitialIntake: (config: ProjectResearchInitialIntakeInput) => void
+  onStartInitialIntake: (config: ProjectResearchInitialIntakeInput) => Promise<boolean>
   onExtendHistory: (config: { from: string; to?: string; max_items: number }) => void
   onTriggerIncremental: () => void
   onLoadQuestionImpact: () => Promise<ProjectResearchQuestionImpact>

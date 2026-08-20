@@ -38,6 +38,7 @@ import {
   stringOrNull,
   stringValue,
 } from "./agentRepositoryHelpers";
+import { stableJsonStringify } from "../evolution/hash";
 
 interface QueryResult<Row> {
   rows: Row[];
@@ -179,6 +180,36 @@ export interface AgentRuntimeProfileOut {
   is_default: boolean;
   created_at: unknown;
   updated_at: unknown;
+}
+
+export interface AgentCreateInput {
+  spaceId: string;
+  projectId?: string | null;
+  userId: string;
+  name: string;
+  description?: string | null;
+  visibility?: string | null;
+  roleInstruction?: string | null;
+  systemPrompt?: string | null;
+  promptProvenanceJson?: PromptProvenance | null;
+  defaultModelProviderId?: string | null;
+  defaultModel?: string | null;
+  adapterType?: string | null;
+  modelConfigJson?: Record<string, unknown> | null;
+  runtimeConfigJson?: Record<string, unknown> | null;
+  /** Pre-resolved by the caller outside the transaction for CLI profiles. */
+  runtimeToolVersion?: string | null;
+  contextPolicyJson?: Record<string, unknown> | null;
+  memoryPolicyJson?: Record<string, unknown> | null;
+  capabilitiesJson?: unknown[] | null;
+  toolPermissionsJson?: Record<string, unknown> | null;
+  runtimePolicyJson?: Record<string, unknown> | null;
+  toolPolicyJson?: Record<string, unknown> | null;
+  outputPolicyJson?: Record<string, unknown> | null;
+  scheduleConfigJson?: Record<string, unknown> | null;
+  outputSchemaJson?: Record<string, unknown> | null;
+  agentKind?: string | null;
+  ownerUserId?: string | null;
 }
 
 const AGENT_COLUMNS = `
@@ -372,6 +403,7 @@ export class PgAgentChatRepository {
         WHERE a.space_id = $1
           AND a.id = $2
           AND a.status = 'active'
+          AND a.agent_kind <> 'system_assistant'
           AND ${contentReadSql("agent", "a", "$3")}
         LIMIT 1`,
       [spaceId, agentId, userId],
@@ -405,7 +437,11 @@ export class PgAgentRepository {
     },
   ): Promise<AgentOut[]> {
     const params: unknown[] = [spaceId, userId];
-    const clauses = ["a.space_id = $1", contentReadSql("agent", "a", "$2")];
+    const clauses = [
+      "a.space_id = $1",
+      "a.agent_kind <> 'system_assistant'",
+      contentReadSql("agent", "a", "$2"),
+    ];
     if (filters.createdByUserId) {
       params.push(filters.createdByUserId);
       clauses.push(contentOwnerFilterSql("agent", "a", `$${params.length}`));
@@ -447,10 +483,76 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 ${DEFAULT_RUNTIME_PROFILE_JOIN}
          LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
         WHERE a.space_id = $1 AND a.id = $2
+          AND a.agent_kind <> 'system_assistant'
         LIMIT 1`,
       [spaceId, agentId],
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
+  }
+
+  async getSystemAssistantInTransaction(
+    db: Queryable,
+    spaceId: string,
+  ): Promise<AgentOut | null> {
+    const result = await db.query<AgentRecord>(
+      `SELECT ${AGENT_COLUMNS}
+         FROM agents a
+         LEFT JOIN agent_versions av ON av.id = a.current_version_id
+${DEFAULT_RUNTIME_PROFILE_JOIN}
+         LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
+        WHERE a.space_id = $1
+          AND a.agent_kind = 'system_assistant'
+          AND a.status = 'active'
+        ORDER BY a.created_at ASC, a.id ASC
+        LIMIT 1`,
+      [spaceId],
+    );
+    return result.rows[0] ? agentOut(result.rows[0]) : null;
+  }
+
+  async ensureAssistantSettingsPointerInTransaction(
+    db: Queryable,
+    spaceId: string,
+    assistantAgentId: string,
+  ): Promise<void> {
+    const store = new ScopedSettingsStore(db);
+    await store.update(ASSISTANT_SETTINGS_DEFINITION, spaceId, (current) => ({
+      ...current,
+      // The managed identity is authoritative. Preserve the user-owned
+      // preference fields, but never retain a deleted, archived, or ordinary
+      // Agent pointer after Room provisioning reconciles the Space assistant.
+      assistant_agent_id: assistantAgentId,
+    }));
+  }
+
+  async ensureSystemAssistantActorInTransaction(
+    db: Queryable,
+    spaceId: string,
+    agentId: string,
+    displayName: string,
+  ): Promise<void> {
+    const result = await db.query<{ id: string }>(
+      `INSERT INTO actors (
+         id, space_id, actor_type, user_id, agent_id, service_name,
+         display_name, status, metadata_json, created_at, updated_at
+       ) VALUES ($1, $2, 'agent', NULL, $1, NULL, $3, 'active', '{}'::jsonb, now(), now())
+       ON CONFLICT (id) DO UPDATE SET
+         space_id = EXCLUDED.space_id,
+         actor_type = 'agent',
+         user_id = NULL,
+         agent_id = EXCLUDED.agent_id,
+         service_name = NULL,
+         display_name = EXCLUDED.display_name,
+         status = 'active',
+         metadata_json = '{}'::jsonb,
+         updated_at = now()
+       WHERE actors.agent_id IS NOT DISTINCT FROM EXCLUDED.agent_id
+       RETURNING id`,
+      [agentId, spaceId, displayName],
+    );
+    if (!result.rows[0]) {
+      throw new HttpError(409, "Managed Assistant actor identity is unavailable");
+    }
   }
 
   async getVisible(spaceId: string, userId: string, agentId: string): Promise<AgentOut | null> {
@@ -461,6 +563,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 ${DEFAULT_RUNTIME_PROFILE_JOIN}
          LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
         WHERE a.space_id = $1 AND a.id = $2
+          AND a.agent_kind <> 'system_assistant'
           AND ${contentReadSql("agent", "a", "$3")}
         LIMIT 1`,
       [spaceId, agentId, userId],
@@ -589,74 +692,133 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     });
   }
 
-  async create(input: {
-    spaceId: string;
-    projectId?: string | null;
-    userId: string;
-    name: string;
-    description?: string | null;
-    visibility?: string | null;
-    roleInstruction?: string | null;
-    systemPrompt?: string | null;
-    promptProvenanceJson?: PromptProvenance | null;
-    defaultModelProviderId?: string | null;
-    defaultModel?: string | null;
-    adapterType?: string | null;
-    modelConfigJson?: Record<string, unknown> | null;
-    runtimeConfigJson?: Record<string, unknown> | null;
-    contextPolicyJson?: Record<string, unknown> | null;
-    memoryPolicyJson?: Record<string, unknown> | null;
-    capabilitiesJson?: unknown[] | null;
-    toolPermissionsJson?: Record<string, unknown> | null;
-    runtimePolicyJson?: Record<string, unknown> | null;
-    toolPolicyJson?: Record<string, unknown> | null;
-    outputPolicyJson?: Record<string, unknown> | null;
-    scheduleConfigJson?: Record<string, unknown> | null;
-    outputSchemaJson?: Record<string, unknown> | null;
-    agentKind?: string | null;
-    ownerUserId?: string | null;
-  }): Promise<AgentOut> {
+  async create(input: AgentCreateInput): Promise<AgentOut> {
+    return withTransaction(this.pool, (client) => this.createInTransaction(client, input));
+  }
+
+  async createInTransaction(client: PoolClient, input: AgentCreateInput): Promise<AgentOut> {
     if (input.visibility && !isContentVisibility(input.visibility)) {
       throw new HttpError(422, "Invalid visibility");
     }
     const adapterType = normalizeAdapterType(input.adapterType);
     const providerId = input.defaultModelProviderId ?? null;
     const modelName = input.defaultModel ?? null;
-    await this.validateModelSelection(this.pool, input.spaceId, adapterType, providerId, modelName);
+    await this.validateModelSelection(client, input.spaceId, adapterType, providerId, modelName);
     const runtimeConfigJson = await this.resolveRuntimeConfig(
-      this.pool,
+      client,
       input.spaceId,
       adapterType,
       input.runtimeConfigJson ?? DEFAULT_RUNTIME_CONFIG,
+      input.runtimeToolVersion,
     );
-    return withTransaction(this.pool, async (client) =>
-      this.createAgentWithVersion(client, {
-        spaceId: input.spaceId,
-        projectId: input.projectId ?? null,
-        ownerUserId: input.ownerUserId === undefined ? input.userId : input.ownerUserId,
-        name: input.name,
-        description: input.description ?? null,
-        visibility: input.visibility ?? "private",
-        roleInstruction: input.roleInstruction ?? null,
-        status: "active",
-        agentKind: input.agentKind ?? "standard",
-        systemPrompt: input.systemPrompt ?? null,
-        promptProvenanceJson: input.promptProvenanceJson ?? null,
-        modelProviderId: providerId,
-        modelName,
-        modelConfigJson: input.modelConfigJson ?? defaultModelConfigFor(modelName),
-        runtimeConfigJson,
-        contextPolicyJson: input.contextPolicyJson ?? {},
-        memoryPolicyJson: input.memoryPolicyJson ?? DEFAULT_MEMORY_POLICY,
-        capabilitiesJson: input.capabilitiesJson ?? [],
-        toolPermissionsJson: input.toolPermissionsJson ?? {},
-        runtimePolicyJson: buildRuntimePolicy(adapterType, input.runtimePolicyJson),
-        toolPolicyJson: input.toolPolicyJson ?? {},
-        outputPolicyJson: input.outputPolicyJson ?? {},
-        scheduleConfigJson: input.scheduleConfigJson ?? {},
-        outputSchemaJson: input.outputSchemaJson ?? {},
-      }),
+    return this.createAgentWithVersion(client, {
+      spaceId: input.spaceId,
+      projectId: input.projectId ?? null,
+      ownerUserId: input.ownerUserId === undefined ? input.userId : input.ownerUserId,
+      name: input.name,
+      description: input.description ?? null,
+      visibility: input.visibility ?? "private",
+      roleInstruction: input.roleInstruction ?? null,
+      status: "active",
+      agentKind: input.agentKind ?? "standard",
+      systemPrompt: input.systemPrompt ?? null,
+      promptProvenanceJson: input.promptProvenanceJson ?? null,
+      modelProviderId: providerId,
+      modelName,
+      modelConfigJson: input.modelConfigJson ?? defaultModelConfigFor(modelName),
+      runtimeConfigJson,
+      contextPolicyJson: input.contextPolicyJson ?? {},
+      memoryPolicyJson: input.memoryPolicyJson ?? DEFAULT_MEMORY_POLICY,
+      capabilitiesJson: input.capabilitiesJson ?? [],
+      toolPermissionsJson: input.toolPermissionsJson ?? {},
+      runtimePolicyJson: buildRuntimePolicy(adapterType, input.runtimePolicyJson),
+      toolPolicyJson: input.toolPolicyJson ?? {},
+      outputPolicyJson: input.outputPolicyJson ?? {},
+      scheduleConfigJson: input.scheduleConfigJson ?? {},
+      outputSchemaJson: input.outputSchemaJson ?? {},
+    });
+  }
+
+  async ensureRuntimeProfileInTransaction(
+    client: PoolClient,
+    spaceId: string,
+    agentId: string,
+    input: {
+      name: string;
+      adapterType: string;
+      modelProviderId?: string | null;
+      modelName?: string | null;
+      runtimeConfigJson?: Record<string, unknown> | null;
+      runtimePolicyJson?: Record<string, unknown> | null;
+      isDefault?: boolean;
+      /** Pre-resolved by the caller outside the transaction for CLI profiles. */
+      runtimeToolVersion?: string | null;
+    },
+  ): Promise<AgentRuntimeProfileOut> {
+    const existing = await client.query<AgentRuntimeProfileRecord>(
+      `SELECT ${RUNTIME_PROFILE_COLUMNS}
+         FROM agent_runtime_profiles arp
+         LEFT JOIN model_providers mp ON mp.id = arp.model_provider_id
+        WHERE arp.space_id = $1
+          AND arp.agent_id = $2
+          AND arp.adapter_type = $3
+          AND arp.model_provider_id IS NOT DISTINCT FROM $4
+        ORDER BY arp.enabled DESC, arp.is_default DESC, arp.created_at ASC, arp.id ASC
+        LIMIT 1`,
+      [
+        spaceId,
+        agentId,
+        normalizeAdapterType(input.adapterType),
+        input.modelProviderId ?? null,
+      ],
     );
+    const normalized = await this.normalizeRuntimeProfileInput(spaceId, {
+      name: input.name,
+      adapterType: input.adapterType,
+      modelProviderId: input.modelProviderId,
+      modelName: input.modelName,
+      runtimeConfigJson: input.runtimeConfigJson,
+      runtimePolicyJson: input.runtimePolicyJson,
+      enabled: true,
+      isDefault: input.isDefault ?? false,
+      runtimeToolVersion: input.runtimeToolVersion,
+    }, client);
+    if (existing.rows[0]) {
+      if (normalized.isDefault) await this.clearDefaultRuntimeProfile(client, spaceId, agentId);
+      const updated = await client.query<{ id: string }>(
+        `UPDATE agent_runtime_profiles
+            SET name = $4,
+                model_name = $5,
+                runtime_config_json = $6::jsonb,
+                runtime_policy_json = $7::jsonb,
+                enabled = true,
+                is_default = $8,
+                updated_at = now()
+          WHERE space_id = $1 AND agent_id = $2 AND id = $3
+          RETURNING id`,
+        [
+          spaceId,
+          agentId,
+          existing.rows[0].id,
+          normalized.name,
+          normalized.modelName,
+          JSON.stringify(normalized.runtimeConfigJson),
+          JSON.stringify(normalized.runtimePolicyJson),
+          normalized.isDefault,
+        ],
+      );
+      const row = updated.rows[0];
+      if (!row) throw new HttpError(404, "Runtime profile not found");
+      const refreshed = await this.getRuntimeProfileWithClient(client, spaceId, agentId, row.id);
+      if (!refreshed) throw new HttpError(404, "Runtime profile not found");
+      return runtimeProfileOut(refreshed);
+    }
+    if (normalized.isDefault) await this.clearDefaultRuntimeProfile(client, spaceId, agentId);
+    return runtimeProfileOut(await this.insertRuntimeProfile(client, {
+      ...normalized,
+      spaceId,
+      agentId,
+    }));
   }
 
   async update(
@@ -720,6 +882,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimeConfigJson?: Record<string, unknown> | null;
     },
   ): Promise<AgentOut> {
+    await this.requireAgent(spaceId, agentId);
     return withTransaction(this.pool, async (client) => {
       const current = await this.lockCurrentVersion(client, spaceId, agentId);
       if (!current) throw new HttpError(404, "Agent has no current version");
@@ -811,6 +974,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   }
 
   async getCurrentVersion(spaceId: string, agentId: string): Promise<AgentVersionRecord | null> {
+    await this.requireAgent(spaceId, agentId);
     const result = await this.pool.query<AgentVersionRecord>(
       `SELECT ${versionColumns("av")}
          FROM agents a
@@ -879,6 +1043,107 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     });
   }
 
+  async reconcileSystemManagedAgentInTransaction(
+    client: PoolClient,
+    input: {
+      spaceId: string;
+      agentId: string;
+      name: string;
+      description: string | null;
+      systemPrompt: string;
+      promptProvenanceJson: PromptProvenance | null;
+      modelProviderId: string | null;
+      modelName: string | null;
+      modelConfigJson: Record<string, unknown>;
+      runtimeConfigJson: Record<string, unknown>;
+      contextPolicyJson: Record<string, unknown>;
+      memoryPolicyJson: Record<string, unknown>;
+      capabilitiesJson: unknown[];
+      toolPermissionsJson: Record<string, unknown>;
+      runtimePolicyJson: Record<string, unknown>;
+      toolPolicyJson: Record<string, unknown>;
+      outputPolicyJson: Record<string, unknown>;
+      scheduleConfigJson: Record<string, unknown>;
+      outputSchemaJson: Record<string, unknown>;
+    },
+  ): Promise<AgentOut> {
+    const agent = await client.query<{ id: string }>(
+      `SELECT id
+         FROM agents
+        WHERE space_id = $1
+          AND id = $2
+          AND agent_kind = 'system_assistant'
+        FOR UPDATE`,
+      [input.spaceId, input.agentId],
+    );
+    if (!agent.rows[0]) throw new HttpError(404, "Active system-managed Agent not found");
+
+    const now = new Date().toISOString();
+    await client.query(
+      `UPDATE agents
+          SET project_id = NULL,
+              owner_user_id = NULL,
+              name = $3,
+              description = $4,
+              role_instruction = NULL,
+              status = 'active',
+              visibility = 'space_shared',
+              access_level = 'full',
+              updated_at = $5
+        WHERE space_id = $1 AND id = $2`,
+      [input.spaceId, input.agentId, input.name, input.description, now],
+    );
+
+    const current = await this.lockCurrentVersion(client, input.spaceId, input.agentId, "system_assistant");
+    const equal = current
+      && current.model_provider_id === input.modelProviderId
+      && current.model_name === input.modelName
+      && current.system_prompt === input.systemPrompt
+      && stableJsonStringify(current.prompt_provenance_json) === stableJsonStringify(input.promptProvenanceJson)
+      && stableJsonStringify(current.model_config_json) === stableJsonStringify(input.modelConfigJson)
+      && stableJsonStringify(current.runtime_config_json) === stableJsonStringify(input.runtimeConfigJson)
+      && stableJsonStringify(current.context_policy_json) === stableJsonStringify(input.contextPolicyJson)
+      && stableJsonStringify(current.memory_policy_json) === stableJsonStringify(input.memoryPolicyJson)
+      && stableJsonStringify(current.capabilities_json) === stableJsonStringify(input.capabilitiesJson)
+      && stableJsonStringify(current.tool_permissions_json) === stableJsonStringify(input.toolPermissionsJson)
+      && stableJsonStringify(current.runtime_policy_json) === stableJsonStringify(input.runtimePolicyJson)
+      && stableJsonStringify(current.tool_policy_json) === stableJsonStringify(input.toolPolicyJson)
+      && stableJsonStringify(current.output_policy_json) === stableJsonStringify(input.outputPolicyJson)
+      && stableJsonStringify(current.schedule_config_json) === stableJsonStringify(input.scheduleConfigJson)
+      && stableJsonStringify(current.output_schema_json) === stableJsonStringify(input.outputSchemaJson);
+
+    if (!equal) {
+      const version = await this.insertVersion(client, {
+        agentId: input.agentId,
+        spaceId: input.spaceId,
+        versionLabel: await this.nextVersionLabel(client, input.spaceId, input.agentId),
+        modelProviderId: input.modelProviderId,
+        modelName: input.modelName,
+        systemPrompt: input.systemPrompt,
+        promptProvenanceJson: input.promptProvenanceJson,
+        modelConfigJson: input.modelConfigJson,
+        runtimeConfigJson: input.runtimeConfigJson,
+        contextPolicyJson: input.contextPolicyJson,
+        memoryPolicyJson: input.memoryPolicyJson,
+        capabilitiesJson: input.capabilitiesJson,
+        toolPermissionsJson: input.toolPermissionsJson,
+        runtimePolicyJson: input.runtimePolicyJson,
+        toolPolicyJson: input.toolPolicyJson,
+        outputPolicyJson: input.outputPolicyJson,
+        scheduleConfigJson: input.scheduleConfigJson,
+        outputSchemaJson: input.outputSchemaJson,
+      });
+      await client.query(
+        `UPDATE agents SET current_version_id = $3, updated_at = $4 WHERE space_id = $1 AND id = $2`,
+        [input.spaceId, input.agentId, version.id, now],
+      );
+    }
+
+    const reconciled = await this.getAgentWithClient(client, input.spaceId, input.agentId);
+    if (!reconciled) throw new HttpError(404, "Active system-managed Agent not found");
+    return reconciled;
+  }
+
   async listVersions(spaceId: string, agentId: string): Promise<AgentVersionRecord[]> {
     await this.requireAgent(spaceId, agentId);
     const result = await this.pool.query<AgentVersionRecord>(
@@ -896,6 +1161,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     agentId: string,
     versionId: string,
   ): Promise<AgentVersionRecord> {
+    await this.requireAgent(spaceId, agentId);
     const result = await this.pool.query<AgentVersionRecord>(
       `SELECT ${VERSION_COLUMNS}
          FROM agent_versions
@@ -1076,9 +1342,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     spaceId: string,
     adapterType: string,
     input: Record<string, unknown>,
+    preparedRuntimeToolVersion?: string | null,
   ): Promise<Record<string, unknown>> {
     const config: Record<string, unknown> = { ...input, adapter_type: adapterType };
     if (!isCliRuntimeTool(adapterType)) return config;
+    if (preparedRuntimeToolVersion) {
+      const requestedVersion = stringValue(config["runtime_tool_version"]);
+      if (requestedVersion && requestedVersion !== preparedRuntimeToolVersion) {
+        throw new HttpError(
+          409,
+          `Prepared runtime tool version '${preparedRuntimeToolVersion}' does not match requested version '${requestedVersion}'`,
+        );
+      }
+      return { ...config, runtime_tool_version: preparedRuntimeToolVersion };
+    }
     if (!this.config) {
       throw new HttpError(500, "Server config is required to resolve CLI runtime tool versions");
     }
@@ -1095,7 +1372,12 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 
   private async requireAgent(spaceId: string, agentId: string): Promise<void> {
     const found = await this.pool.query<{ id: string }>(
-      `SELECT id FROM agents WHERE space_id = $1 AND id = $2 LIMIT 1`,
+      `SELECT id
+         FROM agents
+        WHERE space_id = $1
+          AND id = $2
+          AND agent_kind <> 'system_assistant'
+        LIMIT 1`,
       [spaceId, agentId],
     );
     if (!found.rows[0]) throw new HttpError(404, "Agent not found");
@@ -1223,6 +1505,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     agentId: string,
     profileId: string,
   ): Promise<AgentRuntimeProfileRecord | null> {
+    await this.requireAgent(spaceId, agentId);
     return this.getRuntimeProfileWithClient(this.pool, spaceId, agentId, profileId);
   }
 
@@ -1322,7 +1605,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
       isDefault?: boolean;
+      runtimeToolVersion?: string | null;
     },
+    db: Queryable = this.pool,
   ): Promise<{
     name: string;
     adapterType: string;
@@ -1338,12 +1623,13 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const adapterType = normalizeAdapterType(input.adapterType);
     const modelProviderId = input.modelProviderId ?? null;
     const modelName = input.modelName ?? null;
-    await this.validateRuntimeProfileSelection(spaceId, adapterType, modelProviderId, modelName);
+    await this.validateRuntimeProfileSelection(spaceId, adapterType, modelProviderId, modelName, db);
     const runtimeConfigJson = await this.resolveRuntimeConfig(
-      this.pool,
+      db,
       spaceId,
       adapterType,
       normalizedRuntimeConfig(input.runtimeConfigJson ?? {}, adapterType),
+      input.runtimeToolVersion,
     );
     return {
       name,
@@ -1362,6 +1648,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     adapterType: string,
     providerId: string | null,
     modelName: string | null,
+    db: Queryable = this.pool,
   ): Promise<void> {
     const spec = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType];
     if (!spec) throw new HttpError(400, `Unknown adapter_type ${JSON.stringify(adapterType)}`);
@@ -1369,7 +1656,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       throw new HttpError(400, "model_provider_id is required when model_name is set");
     }
     if (providerId) {
-      const provider = await this.pool.query<{ id: string; config_json: unknown }>(
+      const provider = await db.query<{ id: string; config_json: unknown }>(
         `SELECT p.id, p.config_json
            FROM model_provider_space_grants g
            JOIN model_providers p ON p.id = g.provider_id

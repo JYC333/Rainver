@@ -22,6 +22,8 @@ import { createCliUsageRefreshTask } from "../providers/cli/usageScheduler";
 import { setBackgroundServicesStatusSource } from "./runtimeStatus";
 import { AutonomyRecoveryService } from "../autonomy/recoveryService";
 import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning";
+import { RoomConversationSummaryService } from "../rooms/conversationSummaryService";
+import { RoomConversationTitleService } from "../rooms/conversationTitleService";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -146,6 +148,36 @@ export function startBackgroundServices(
       run: async () => {
         const processed = await processAllUnclaimedDomainChangeEvents(getDbPool(config.databaseUrl!));
         if (processed > 0) log?.info(`[scheduler] knowledge promotion revalidation processed ${processed} domain change event(s)`);
+      },
+    });
+
+    tasks.push({
+      name: "room_conversation_title_reconciliation",
+      intervalSeconds: 60,
+      runOnStart: true,
+      awaitRunOnStart: false,
+      run: async () => {
+        const renamed = await new RoomConversationTitleService(
+          config,
+          getDbPool(config.databaseUrl!),
+        ).reconcilePending();
+        if (renamed > 0) log?.info(`[scheduler] room conversation titles queued=${renamed}`);
+      },
+    });
+
+    tasks.push({
+      name: "room_conversation_summary_scheduler",
+      intervalSeconds: 60,
+      runOnStart: true,
+      awaitRunOnStart: false,
+      run: async () => {
+        const service = new RoomConversationSummaryService(config, getDbPool(config.databaseUrl!));
+        const reconciled = await service.reconcileMissingStates();
+        const recovered = await service.recoverExpiredLeases();
+        const enqueued = await service.enqueueDueJobs();
+        if (reconciled > 0 || recovered > 0 || enqueued > 0) {
+          log?.info(`[scheduler] room conversation summaries reconciled=${reconciled} recovered=${recovered} enqueued=${enqueued}`);
+        }
       },
     });
   }

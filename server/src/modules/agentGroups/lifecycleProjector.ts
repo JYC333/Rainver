@@ -1,19 +1,25 @@
 import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
+import { getDbPool, type Pool, type PoolClient } from "../../db/pool";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { withDbTransaction } from "../routeUtils/common";
 import { PgRunRepository, type RunRecord } from "../runs/repository";
 import { runOutputResult } from "../runs/orchestrationResults";
+import { RoomService } from "../rooms/service";
+import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository";
 import { PgAgentGroupRepository, type RunDelegationRecord } from "./repository";
+import { ROOM_DELEGATION_COMPLETION_RETRY_JOB } from "./delegationCompletionRetryJob";
 
 type DelegationTerminalStatus = "succeeded" | "failed" | "cancelled";
 
 export class AgentGroupRunLifecycleProjector {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly config: ServerConfig,
+  ) {}
 
   static fromConfig(config: ServerConfig): AgentGroupRunLifecycleProjector | null {
     if (!config.databaseUrl) return null;
-    return new AgentGroupRunLifecycleProjector(getDbPool(config.databaseUrl));
+    return new AgentGroupRunLifecycleProjector(getDbPool(config.databaseUrl), config);
   }
 
   async markDelegatedRunRunning(run: RunRecord): Promise<void> {
@@ -87,13 +93,96 @@ export class AgentGroupRunLifecycleProjector {
         status: terminalStatus === "cancelled" ? "cancelled" : terminalStatus,
         summary: resultSummary,
       });
+      // Must read before queueWaitingDependencyRunsIfReady, which resumes
+      // (and thereby mutates away from waiting_for_dependency) any run
+      // waiting on this one — reading after would always see zero waiting
+      // runs and fire the Room notification even when a Manager that called
+      // agent.wait_for_results is already being resumed for this exact
+      // completion, duplicating that path.
+      const waitingBeforeResume = await runs.listWaitingDependencyRunsForRun({
+        space_id: currentRun.space_id,
+        run_group_id: currentRun.run_group_id as string,
+        dependency_run_id: currentRun.id,
+      });
       await queueWaitingDependencyRunsIfReady({
         groups,
         runs,
         jobs: new PgJobQueueRepository(client),
         completedRun: currentRun,
       });
+      if (waitingBeforeResume.length === 0) {
+        await this.notifyRoomOfDelegationCompletion({
+          client,
+          groups,
+          run: currentRun,
+          delegation: result.delegation,
+          resultSummary,
+          terminalStatus,
+        });
+      }
     });
+  }
+
+  /**
+   * Fixes "delegate 完成了却没有后续" (plan Phase 3): when the Manager
+   * replied and ended its turn without calling `agent.wait_for_results`,
+   * nothing else notices this delegation finishing. The caller only invokes
+   * this when nothing was waiting on the completed run before
+   * `queueWaitingDependencyRunsIfReady` ran — the waiting case already
+   * resumes through that path and must not also get this duplicate one.
+   * Wrapped in a SAVEPOINT: a failure here must never roll back the
+   * delegation-terminal bookkeeping already committed above.
+   */
+  private async notifyRoomOfDelegationCompletion(input: {
+    client: PoolClient;
+    groups: PgAgentGroupRepository;
+    run: RunRecord;
+    delegation: RunDelegationRecord;
+    resultSummary: string;
+    terminalStatus: DelegationTerminalStatus;
+  }): Promise<void> {
+    const group = await input.groups.getGroup(input.delegation.space_id, input.delegation.group_id);
+    if (!group?.room_id || !group.session_id) return;
+    await input.client.query("SAVEPOINT room_delegation_continuation");
+    try {
+      await new RoomService(this.config, this.pool).continueAfterDomainEventInTransaction(
+        input.client,
+        { spaceId: group.space_id, userId: group.manager_user_id },
+        group.room_id,
+        group.session_id,
+        {
+          kind: "agent_delegation_result",
+          key: input.delegation.id,
+          payload: {
+            instruction: input.run.instruction ?? input.run.prompt ?? "",
+            result_summary: input.resultSummary,
+            status: input.terminalStatus,
+          },
+        },
+      );
+      await input.client.query("RELEASE SAVEPOINT room_delegation_continuation");
+    } catch (error) {
+      await input.client.query("ROLLBACK TO SAVEPOINT room_delegation_continuation").catch(() => undefined);
+      await input.client.query("RELEASE SAVEPOINT room_delegation_continuation").catch(() => undefined);
+      if (isConversationTurnInProgressError(error)) {
+        // A Room fanning out to more than one specialist without waiting
+        // (budget allows max_fanout: 2) routinely produces this: the first
+        // delegate's notification claims the conversation's turn: the
+        // second's loses the race. Losing once is not a reason to drop the
+        // second specialist's result — retry it once the turn frees up.
+        await new PgJobQueueRepository(input.client).enqueue({
+          job_type: ROOM_DELEGATION_COMPLETION_RETRY_JOB,
+          space_id: input.delegation.space_id,
+          user_id: group.manager_user_id,
+          payload: { delegation_id: input.delegation.id, child_run_id: input.run.id },
+          scheduled_at: new Date(Date.now() + 2_000),
+        });
+        return;
+      }
+      process.stderr.write(
+        `[rooms] delegation-completion continuation failed: ${String((error as Error)?.message ?? error)}\n`,
+      );
+    }
   }
 
   async reconcileWaitingRun(run: RunRecord): Promise<void> {

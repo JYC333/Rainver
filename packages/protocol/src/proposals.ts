@@ -100,6 +100,9 @@ export const ProposalAcceptResultTypeSchema = z.enum([
   "plan_version",
   "plan_checkpoint",
   "workflow_execution_checkpoint",
+  "project_brief_version",
+  "inquiry_thread",
+  "inquiry_iteration",
 ]);
 export type ProposalAcceptResultType = z.infer<
   typeof ProposalAcceptResultTypeSchema

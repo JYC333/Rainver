@@ -40,6 +40,7 @@ export interface InsertProposalRowInput {
   payload: unknown;
   rationale: string;
   createdByUserId: string | null;
+  ownerUserId?: string | null;
   visibility: string;
   accessLevel?: "full" | "summary";
   riskLevel?: string;
@@ -69,7 +70,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
        $1, $2, $3, $4, $5, $6,
        $7, $8, $9, $10, $11::jsonb, NULL,
        NULL, $12, $12, NULL, NULL,
-       $13, $14, $18, $15, $15,
+       $13, $14, $18, $15, $22,
        $19, $16, $17, $20, $21
      )
      RETURNING id, space_id, created_by_user_id, project_folder_id,
@@ -101,6 +102,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
       input.requiredApproverRole ?? null,
       input.accessLevel ?? "full",
       input.actionIdempotencyKey??null,
+      input.ownerUserId === undefined ? input.createdByUserId : input.ownerUserId,
     ],
   );
   return result.rows[0]!;

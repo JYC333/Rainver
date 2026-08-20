@@ -51,6 +51,7 @@ export class PgRunSupervisor implements RunSupervisorPort {
     if (input.run.run_role === "coordinator") return null;
     if (!isSupervisableStatus(input.run.status)) return null;
     const managedFailFast = isManagedFailFastRun(input.run);
+    const interactiveChat = isInteractiveChatRun(input.run);
 
     return withQueryableTransaction(this.db, async (db) => {
       const repository = new PgRunRepository(db);
@@ -85,7 +86,13 @@ export class PgRunSupervisor implements RunSupervisorPort {
       // automatic recovery for transient failures; once that is unavailable
       // or exhausted, leave the run terminal so the owning operation can
       // surface the real error instead of creating a second review gate.
-      if (managedFailFast && !canRetry) return null;
+      // Interactive chat already has a user-facing retry surface and must
+      // close the turn with an explicit failure reply. Turning an exhausted
+      // or non-retryable chat failure into `waiting_for_review` suppresses
+      // that reply and exposes an unexplained internal hold in the thread.
+      // Genuine policy/authorization pauses enter waiting_for_review before
+      // terminal supervision and remain unaffected by this rule.
+      if ((managedFailFast || interactiveChat) && !canRetry) return null;
       const hasFallbackRoute = canRetry
         ? await new PgRouteDecisionRepository(db).hasFallbackRoute(input.run)
         : false;
@@ -232,6 +239,19 @@ async function ensureAttempt(db: Queryable, run: RunRecord): Promise<AttemptRow>
 
 function isSupervisableStatus(status: string): boolean {
   return status === "failed" || status === "degraded" || status === "orphaned";
+}
+
+function isInteractiveChatRun(run: RunRecord): boolean {
+  if (!run.model_override_json || typeof run.model_override_json !== "object" || Array.isArray(run.model_override_json)) {
+    return false;
+  }
+  const chatTurn = (run.model_override_json as Record<string, unknown>).chat_turn;
+  return Boolean(
+    chatTurn
+    && typeof chatTurn === "object"
+    && !Array.isArray(chatTurn)
+    && (chatTurn as Record<string, unknown>).schema_version === "chat_turn.v1",
+  );
 }
 
 function attemptStatusForRun(status: string): string {

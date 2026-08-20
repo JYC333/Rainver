@@ -16,6 +16,8 @@ export const RoomSchema = z.object({
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
   archived_at: ISODateTimeSchema.nullish(),
+  // Internal concurrency cursor surfaced when available; older clients may omit it.
+  roster_revision: z.number().int().nonnegative().optional(),
   ...SecretResponseGuards,
 }).strict();
 export type Room = z.infer<typeof RoomSchema>;
@@ -38,13 +40,141 @@ export const RoomAgentMemberSchema = z.object({
   space_id: IdSchema,
   room_id: IdSchema,
   agent_id: IdSchema,
+  agent_name: z.string().trim().min(1),
+  agent_kind: z.string().trim().min(1),
   role: z.enum(["manager", "member"]),
   status: z.enum(["active", "removed"]),
+  private_shared_user_ids: z.array(IdSchema).optional(),
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
   ...SecretResponseGuards,
 }).strict();
 export type RoomAgentMember = z.infer<typeof RoomAgentMemberSchema>;
+
+export const RoomAgentCandidateSchema = z.object({
+  agent_id: IdSchema,
+  name: z.string().trim().min(1),
+  agent_kind: z.string().trim().min(1),
+  owner_user_id: IdSchema.nullish(),
+  visibility: z.string().trim().min(1),
+  in_room: z.boolean(),
+  member_status: z.enum(["active", "removed"]).nullish(),
+  private: z.boolean(),
+  shared_with_user_ids: z.array(IdSchema).default([]),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomAgentCandidate = z.infer<typeof RoomAgentCandidateSchema>;
+
+export const RoomAgentPresetSchema = z.object({
+  preset_id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomAgentPreset = z.infer<typeof RoomAgentPresetSchema>;
+
+export const RoomAgentCandidatesResponseSchema = z.object({
+  agents: z.array(RoomAgentCandidateSchema),
+  presets: z.array(RoomAgentPresetSchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomAgentCandidatesResponse = z.infer<typeof RoomAgentCandidatesResponseSchema>;
+
+export const RoomAgentAddRequestSchema = z.object({
+  agent_id: IdSchema,
+  share_private_with_member_ids: z.array(IdSchema).default([]),
+  confirm_room_share: z.boolean().default(false),
+}).strict();
+export type RoomAgentAddRequest = z.infer<typeof RoomAgentAddRequestSchema>;
+
+export const RoomAgentPresetRequestSchema = z.object({
+  preset_id: z.string().trim().min(1),
+  name: z.string().trim().min(1).max(256).nullish(),
+  confirm_room_share: z.boolean().default(false),
+}).strict();
+export type RoomAgentPresetRequest = z.infer<typeof RoomAgentPresetRequestSchema>;
+
+export const RoomInvitationApprovalSchema = z.object({
+  id: IdSchema,
+  agent_id: IdSchema,
+  owner_user_id: IdSchema,
+  status: z.enum(["pending", "approved", "rejected", "invalidated"]),
+  decided_at: ISODateTimeSchema.nullish(),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomInvitationApproval = z.infer<typeof RoomInvitationApprovalSchema>;
+
+export const RoomInvitationSchema = z.object({
+  id: IdSchema,
+  space_id: IdSchema,
+  room_id: IdSchema,
+  invitee_user_id: IdSchema,
+  invited_by_user_id: IdSchema,
+  status: z.enum(["pending", "active", "rejected", "expired", "cancelled", "invalidated"]),
+  required_roster_revision: z.number().int().nonnegative(),
+  expires_at: ISODateTimeSchema,
+  created_at: ISODateTimeSchema,
+  updated_at: ISODateTimeSchema,
+  resolved_at: ISODateTimeSchema.nullish(),
+  approvals: z.array(RoomInvitationApprovalSchema),
+  can_decide: z.boolean(),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomInvitation = z.infer<typeof RoomInvitationSchema>;
+
+export const RoomInvitationListResponseSchema = z.object({
+  items: z.array(RoomInvitationSchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomInvitationListResponse = z.infer<typeof RoomInvitationListResponseSchema>;
+
+export const RoomPendingApprovalSchema = z.object({
+  invitation_id: IdSchema,
+  room_id: IdSchema,
+  room_title: z.string(),
+  project_id: IdSchema,
+  project_name: z.string(),
+  invitee_user_id: IdSchema,
+  invitee_display_name: z.string().nullish(),
+  invitee_email: z.string().nullish(),
+  agent_id: IdSchema,
+  agent_name: z.string(),
+  expires_at: ISODateTimeSchema,
+  ...SecretResponseGuards,
+}).strict();
+export type RoomPendingApproval = z.infer<typeof RoomPendingApprovalSchema>;
+
+export const RoomPendingApprovalListResponseSchema = z.object({
+  items: z.array(RoomPendingApprovalSchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  ...SecretResponseGuards,
+}).strict();
+export type RoomPendingApprovalListResponse = z.infer<typeof RoomPendingApprovalListResponseSchema>;
+
+export const RoomInvitationCreateRequestSchema = z.object({
+  user_id: IdSchema,
+  confirm_owned_private_agent_shares: z.boolean().default(false),
+}).strict();
+export type RoomInvitationCreateRequest = z.infer<typeof RoomInvitationCreateRequestSchema>;
+
+export const RoomInvitationDecisionRequestSchema = z.object({
+  agent_id: IdSchema,
+  decision: z.enum(["approved", "rejected"]),
+}).strict();
+export type RoomInvitationDecisionRequest = z.infer<typeof RoomInvitationDecisionRequestSchema>;
+
+export const RoomOwnerTransferRequestSchema = z.object({
+  user_id: IdSchema,
+}).strict();
+export type RoomOwnerTransferRequest = z.infer<typeof RoomOwnerTransferRequestSchema>;
 
 export const RoomConversationSchema = z.object({
   id: IdSchema,
@@ -59,6 +189,43 @@ export const RoomConversationSchema = z.object({
   ...SecretResponseGuards,
 }).strict();
 export type RoomConversation = z.infer<typeof RoomConversationSchema>;
+
+export const RoomConversationSummarySchema = z.object({
+  id: IdSchema,
+  version: z.number().int().positive(),
+  summary_text: z.string().min(1),
+  covered_through_message_id: IdSchema,
+  covered_through_created_at: ISODateTimeSchema,
+  covered_message_count: z.number().int().positive(),
+  source_token_estimate: z.number().int().nonnegative(),
+  summary_token_estimate: z.number().int().nonnegative(),
+  project_id: IdSchema,
+  created_at: ISODateTimeSchema,
+  provider_id: IdSchema.nullish(),
+  model: z.string().nullish(),
+  usage: z.record(z.unknown()).nullish(),
+  audit: z.record(z.unknown()).nullish(),
+}).strict();
+export type RoomConversationSummary = z.infer<typeof RoomConversationSummarySchema>;
+
+export const RoomConversationSummaryResponseSchema = z.object({
+  state: z.object({
+    room_id: IdSchema,
+    session_id: IdSchema,
+    status: z.enum(["idle", "queued", "running", "waiting_provider", "retry_wait", "failed"]),
+    active_summary_id: IdSchema.nullish(),
+    requested_through_message_id: IdSchema.nullish(),
+    requested_through_created_at: ISODateTimeSchema.nullish(),
+    retry_count: z.number().int().nonnegative(),
+    next_attempt_at: ISODateTimeSchema.nullish(),
+    last_error: z.string().nullish(),
+    updated_at: ISODateTimeSchema,
+    owner_user_id: IdSchema.nullish(),
+    room_title: z.string(),
+  }).nullable(),
+  summary: RoomConversationSummarySchema.nullable(),
+}).strict();
+export type RoomConversationSummaryResponse = z.infer<typeof RoomConversationSummaryResponseSchema>;
 
 export const RoomMessageSchema = z.object({
   id: IdSchema,
@@ -91,9 +258,6 @@ export const CreateRoomRequestSchema = z.object({
   project_id: IdSchema,
   project_folder_id: IdSchema.nullish(),
   title: z.string().trim().min(1).max(256),
-  manager_agent_id: IdSchema,
-  agent_ids: z.array(IdSchema).default([]),
-  user_ids: z.array(IdSchema).default([]),
 }).strict();
 export type CreateRoomRequest = z.infer<typeof CreateRoomRequestSchema>;
 
@@ -101,9 +265,28 @@ export const RoomDetailSchema = z.object({
   room: RoomSchema,
   user_members: z.array(RoomUserMemberSchema),
   agent_members: z.array(RoomAgentMemberSchema),
+  conversation: RoomConversationSchema.nullish(),
   ...SecretResponseGuards,
 }).strict();
 export type RoomDetail = z.infer<typeof RoomDetailSchema>;
+
+export const RoomAgentMutationResponseSchema = RoomDetailSchema.extend({
+  revoked_grant_count: z.number().int().nonnegative().default(0),
+}).strict();
+export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponseSchema>;
+
+export const CreateRoomResponseSchema = RoomDetailSchema.extend({
+  conversation: RoomConversationSchema,
+}).strict();
+export type CreateRoomResponse = z.infer<typeof CreateRoomResponseSchema>;
+
+export const RoomBackendSetupTargetSchema = z.enum(["model_providers", "cli_credentials"]);
+export const RoomBackendRequiredErrorSchema = z.object({
+  code: z.literal("conversation_backend_required"),
+  detail: z.string().trim().min(1),
+  setup_targets: z.array(RoomBackendSetupTargetSchema).min(1),
+}).strict();
+export type RoomBackendRequiredError = z.infer<typeof RoomBackendRequiredErrorSchema>;
 
 export const CreateRoomConversationRequestSchema = z.object({
   title: z.string().trim().min(1).max(512).nullish(),
@@ -121,8 +304,19 @@ export const SendRoomMessageRequestSchema = z.object({
 }).strict();
 export type SendRoomMessageRequest = z.infer<typeof SendRoomMessageRequestSchema>;
 
+export const ContinueRoomAfterProposalRequestSchema = z.object({
+  proposal_id: IdSchema,
+  backends: z.array(z.object({
+    agent_id: IdSchema,
+    runtime_profile_id: IdSchema,
+    credential_profile_id: IdSchema.nullish(),
+  }).strict()).default([]),
+}).strict();
+export type ContinueRoomAfterProposalRequest = z.infer<typeof ContinueRoomAfterProposalRequestSchema>;
+
 export const SendRoomMessageResponseSchema = z.object({
   message: RoomMessageSchema,
+  conversation: RoomConversationSchema,
   task_group_ids: z.array(IdSchema).min(1),
   run_ids: z.array(IdSchema).min(1),
   ...SecretResponseGuards,

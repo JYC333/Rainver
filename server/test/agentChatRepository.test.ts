@@ -19,6 +19,7 @@ describe("PgAgentChatRepository", () => {
       "user-2",
     ]);
     expect(calls[0]?.sql).toContain("a.status = 'active'");
+    expect(calls[0]?.sql).toContain("a.agent_kind <> 'system_assistant'");
     expect(calls[0]?.sql).toContain("content_access_grants");
   });
 });

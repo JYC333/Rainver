@@ -319,6 +319,54 @@ export function projectReadAccessSql(
   )`;
 }
 
+/**
+ * Room-backed Run outputs remain readable only while the viewer is an active
+ * member of that Run's Room. Generic content grants are intentionally not
+ * sufficient: a selected-user grant on an artifact or Proposal must not keep
+ * a removed Room member's historical output visible.
+ */
+export function roomRunReadAccessSql(
+  runExpr: string,
+  spaceExpr: string,
+  userExpr: string,
+): string {
+  const roomIdSql = `COALESCE(room_group.room_id, room_session.room_id)`;
+  const roomRunSql = `
+    FROM runs room_run
+    LEFT JOIN agent_run_groups room_group
+      ON room_group.id=room_run.run_group_id AND room_group.space_id=room_run.space_id
+    LEFT JOIN sessions room_session
+      ON room_session.id=room_run.session_id AND room_session.space_id=room_run.space_id
+   WHERE room_run.id=${runExpr}
+     AND room_run.space_id=${spaceExpr}
+     AND ${roomIdSql} IS NOT NULL`;
+  return `(
+    NOT EXISTS (SELECT 1 ${roomRunSql})
+    OR EXISTS (
+      SELECT 1
+        FROM runs room_read_run
+        LEFT JOIN agent_run_groups room_read_group
+          ON room_read_group.id=room_read_run.run_group_id
+         AND room_read_group.space_id=room_read_run.space_id
+        LEFT JOIN sessions room_read_session
+          ON room_read_session.id=room_read_run.session_id
+         AND room_read_session.space_id=room_read_run.space_id
+        JOIN rooms room_scope
+          ON room_scope.id=COALESCE(room_read_group.room_id, room_read_session.room_id)
+         AND room_scope.space_id=room_read_run.space_id
+        JOIN room_user_members room_member
+          ON room_member.room_id=room_scope.id
+         AND room_member.space_id=room_scope.space_id
+         AND room_member.user_id=${userExpr}
+         AND room_member.status='active'
+       WHERE room_read_run.id=${runExpr}
+         AND room_read_run.space_id=${spaceExpr}
+         AND room_scope.status='active'
+         AND ${projectReadAccessSql("room_scope.space_id", "room_scope.project_id", userExpr)}
+    )
+  )`;
+}
+
 function assertSqlIdentifier(value: string, label: string): void {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) {
     throw new Error(`Invalid content access SQL ${label}`);

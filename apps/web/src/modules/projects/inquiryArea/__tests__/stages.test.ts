@@ -149,6 +149,37 @@ describe('deriveStages', () => {
     expect(recommendStep(roundTwo).kind).toBe('search_acquisition')
   })
 
+  it('does not spin on a step only the user can end', () => {
+    // A primary step stays `in_progress` until the round closes, so a spinner
+    // on one could never stop: Clarify sat ticked and spinning at once for the
+    // rest of the round. Only background work spins.
+    const clarifying = { ...base, roundSteps: [step({ kind: 'clarify_or_decompose' })] }
+    expect(deriveStages(clarifying).stages.find(stage => stage.id === 'clarify')?.running).toBe(false)
+
+    const searching = {
+      ...base,
+      questionRefined: true,
+      roundSteps: [step({ kind: 'search_acquisition', slot: 'background' as const })],
+    }
+    expect(deriveStages(searching).stages.find(stage => stage.id === 'acquire')?.running).toBe(true)
+  })
+
+  it('waits for the assessment before ticking Clarify, and marks the work meanwhile', () => {
+    // Starting the action is not doing it. The tick used to land on the click,
+    // before the wording had been near the assessment workspace.
+    const started = deriveStages({ ...base, roundSteps: [step({ kind: 'clarify_or_decompose' })] })
+    const clarify = started.stages.find(stage => stage.id === 'clarify')
+    expect(clarify?.complete).toBe(false)
+    expect(clarify?.started).toBe(true)
+
+    const assessed = deriveStages({
+      ...base, questionRefined: true, roundSteps: [step({ kind: 'clarify_or_decompose' })],
+    })
+    const ticked = assessed.stages.find(stage => stage.id === 'clarify')
+    expect(ticked?.complete).toBe(true)
+    expect(ticked?.started).toBe(false)
+  })
+
   it('reaches Land from a write-up still in progress, the only state a live round has', () => {
     // A hand-done step is marked `done` only by close-out, which stamps it out
     // of the round in the same statement. Waiting for `done` left Conclude
@@ -191,9 +222,13 @@ describe('deriveStages', () => {
     expect(deriveStages({ ...base, closedRounds: 2 }).round).toBe(3)
   })
 
-  it('lets a stage count as done because the user went and did it, not only by state', () => {
+  it('lets the round move on because the user went and did the stage, not only by state', () => {
+    // Skipping refinement is a legitimate choice, and a Clarify that could
+    // never settle would pin the round to it forever — so the row moves on
+    // without claiming the stage produced anything.
     const input = { ...base, roundSteps: [step({ kind: 'clarify_or_decompose' })] }
     expect(deriveStages(input).current).toBe('acquire')
+    expect(deriveStages(input).stages.find(stage => stage.id === 'clarify')?.complete).toBe(false)
   })
 
   it('takes a stage back when the user backs out of it', () => {

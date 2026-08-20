@@ -283,7 +283,12 @@ export default function InquiryAreaPage() {
       roundStartedAt: iterations[0]?.created_at ?? null,
     })
     : null
-  const hasLiveWork = steps.some(step => step.status === 'in_progress') || startedWorkflow !== null
+  // Only work the server can finish on its own. A primary step stays open for
+  // as long as the user holds it, so counting one kept the page polling every
+  // five seconds for the rest of the round with nothing on the server able to
+  // change.
+  const hasLiveWork = steps.some(step => step.slot === 'background' && step.status === 'in_progress')
+    || startedWorkflow !== null
 
   // Returning to a backgrounded tab should never leave a completed search or
   // newly generated recommendation looking stale, even when no polling loop is

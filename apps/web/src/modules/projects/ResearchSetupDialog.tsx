@@ -50,7 +50,7 @@ interface ResearchSetupDialogProps {
   // autosave created (see sessionWorkflowId below), so the caller reuses it
   // too instead of creating yet another draft Workflow for the same session.
   onSave: (config: ProjectResearchInitialIntakeInput, workflowId?: string | null) => Promise<boolean>
-  onStart: (config: ProjectResearchInitialIntakeInput, workflowId?: string | null) => void | Promise<void>
+  onStart: (config: ProjectResearchInitialIntakeInput, workflowId?: string | null) => Promise<boolean>
 }
 
 function copyDraft(draft: ResearchSetupDraft): ResearchSetupDraft {
@@ -254,9 +254,14 @@ export function ResearchSetupDialog({
 
   async function startResearch() {
     if (!ready || !canAct || busyAction !== null || draft.question_refine_skipped) return
+    // Keep the setup visible while the server creates the Workflow and its
+    // first Operation. Closing first made every failed start look like a
+    // successful one-frame dialog: the user's configuration disappeared and
+    // only a detached toast remained.
+    const started = await onStart(serializeResearchSetupDraft(draft), effectiveWorkflowId)
+    if (!started) return
     clearResearchSetupSession(projectId, sessionScope)
     onOpenChange(false)
-    onStart(serializeResearchSetupDraft(draft), effectiveWorkflowId)
   }
 
   /**

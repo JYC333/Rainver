@@ -249,7 +249,10 @@ export default function AskSpacePage() {
               placeholder="What do you want to know? e.g. What did we decide about credential channel isolation?"
               rows={3}
               onKeyDown={event => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') ask()
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+                  event.preventDefault()
+                  ask()
+                }
               }}
             />
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">

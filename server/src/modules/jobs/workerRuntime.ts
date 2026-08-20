@@ -24,6 +24,11 @@ import { finalizeChatTurn } from "../runs/chatTurnFinalizer";
 import type { ChatTurnFinalizerDeps } from "../runs/chatTurnFinalizer";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults";
 import { registerRuntimeContextCheckpointHandler } from "../runtimeContext/continuity/job";
+import { registerRoomConversationSummaryHandler } from "../rooms/conversationSummaryJob";
+import { registerRoomConversationTitleHandler } from "../rooms/conversationTitleJob";
+import { registerRoomDelegationCompletionRetryHandler } from "../agentGroups/delegationCompletionRetryJob";
+import { registerResearchAcquisitionPipelineHandler } from "../projectResearch/pipeline/researchAcquisitionPipelineJob";
+import { registerResearchOperationFailureNotifyHandler } from "../projectResearch/pipeline/researchOperationFailureNotifyJob";
 
 const POLL_INTERVAL_MS = 1_000;
 const RECLAIM_INTERVAL_MS = 120_000;
@@ -64,6 +69,11 @@ export function buildJobHandlerRegistry(
   registerExperimentReconcileHandler(registry, config);
   registerInquiryAdviceHandler(registry, config);
   registerRuntimeContextCheckpointHandler(registry, config);
+  registerRoomConversationSummaryHandler(registry, config);
+  registerRoomConversationTitleHandler(registry, config);
+  registerRoomDelegationCompletionRetryHandler(registry, config);
+  registerResearchAcquisitionPipelineHandler(registry, config);
+  registerResearchOperationFailureNotifyHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   return registry;
@@ -196,6 +206,20 @@ export async function reconcileTerminalChatRuns(
     } catch (error) {
       log?.warn(
         `[jobs-worker] chat Run ${item.id} completion deferred: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  const waitingForReview = await runs.listWaitingRoomChatRunsAwaitingReply();
+  for (const item of waitingForReview) {
+    const run = await runs.getRun(item.space_id, item.id);
+    if (!run || run.status !== "waiting_for_review") continue;
+    try {
+      await finalizeChatTurn(config, runs, run, finalizerDeps);
+    } catch (error) {
+      log?.warn(
+        `[jobs-worker] waiting Room Run ${item.id} reply deferred: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

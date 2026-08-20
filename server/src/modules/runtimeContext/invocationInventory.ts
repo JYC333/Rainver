@@ -54,6 +54,7 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("retrieval/rerankProvider/providerReranker.ts", "completeProviderText", 1, "bounded_provider_task", "retrieval", "provider_task"),
   providerCall("retrieval/rerankProvider/providerReranker.ts", "completeProviderRerank", 1, "bounded_provider_task", "retrieval", "provider_task"),
   providerCall("retrieval/synthesisProvider/providerSynthesizer.ts", "completeProviderText", 1, "bounded_provider_task", "retrieval", "provider_task"),
+  providerCall("rooms/conversationSummaryService.ts", "completeProviderMessages", 1, "bounded_provider_task", "rooms", "provider_task"),
   providerCall("runtimeContext/continuity/semanticExtractor.ts", "completeProviderText", 1, "bounded_provider_task", "runtimeContext", "provider_task"),
   providerCall("providers/commands/routes.ts", "completeProviderEmbedding", 1, "bounded_provider_task", "providers", "provider_task"),
   providerCall("providers/commands/routes.ts", "completeProviderRerank", 1, "bounded_provider_task", "providers", "provider_task"),

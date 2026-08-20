@@ -9,6 +9,7 @@ import {
   RuntimeToolPolicyRepository,
   type SpaceRuntimeToolPolicy,
 } from "./policies";
+import { SpaceAssistantService } from "../agents/spaceAssistantService";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -201,6 +202,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         default_version: defaultVersion,
         allowed_versions: nextAllowedVersions,
       });
+      await SpaceAssistantService.reconcileCliProfiles(db(context), context.config, identity.spaceId);
       return reply.send(policyEnvelope(statusForValidation, policy));
     } catch (error) {
       return sendDomainError(reply, error);
@@ -236,6 +238,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         activate: typeof body.activate === "boolean" ? body.activate : true,
         force: body.force === true,
       });
+      await SpaceAssistantService.reconcileCliProfilesForAllSpaces(db(context), context.config);
       return reply.code(201).send(result);
     } catch (error) {
       return sendDomainError(reply, error);
@@ -251,7 +254,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (typeof body.version !== "string" || body.version.trim() === "") {
         return reply.code(400).send({ detail: "version is required", error_code: "version_required" });
       }
-      return reply.send(await registry.activate(params(request).runtime ?? "", body.version));
+      const result = await registry.activate(params(request).runtime ?? "", body.version);
+      await SpaceAssistantService.reconcileCliProfilesForAllSpaces(db(context), context.config);
+      return reply.send(result);
     } catch (error) {
       return sendDomainError(reply, error);
     }

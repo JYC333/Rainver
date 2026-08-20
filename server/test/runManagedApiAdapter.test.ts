@@ -187,6 +187,10 @@ describe("executeManagedApiNoToolAdapter", () => {
       { executeRuntimeHost: executor },
     );
 
+    // system_prompt is checked separately below: it now carries a standing
+    // managed-action response policy suffix appended to every managed-API
+    // call, not just this base text.
+    expect(String(calls[0]?.system_prompt)).toContain("Be concise.");
     expect(calls).toMatchObject([
       {
         run_id: "run-1",
@@ -194,7 +198,6 @@ describe("executeManagedApiNoToolAdapter", () => {
         subject_user_id: "user-1",
         model_provider_id: "provider-1",
         model: "gpt-4o-mini",
-        system_prompt: "Be concise.",
         prompt: "Say hello",
         mode: "live",
         instruction: "Be concise.",
@@ -386,9 +389,12 @@ describe("executeManagedApiNoToolAdapter", () => {
       { executeRuntimeHost: executor },
     );
 
+    // system_prompt is not asserted here: it now carries a standing
+    // managed-action response policy appended to every managed-API call,
+    // not the empty string this run started with — covered separately by
+    // the "builds an explicit no-tool runtime-host request" test above.
     expect(calls).toEqual([
       expect.objectContaining({
-        system_prompt: "",
         prompt: "Say hello",
         messages: [
           { role: "user", content: "Earlier question" },
@@ -438,9 +444,12 @@ describe("executeManagedApiNoToolAdapter", () => {
       { executeRuntimeHost: executor },
     );
 
+    // system_prompt now carries a standing managed-action response policy
+    // appended after this base text, not just the base text alone.
+    expect(String((calls[0] as { system_prompt?: unknown })?.system_prompt))
+      .toContain("Be concise.\n\nRoom turn routing context.");
     expect(calls).toEqual([
       expect.objectContaining({
-        system_prompt: "Be concise.\n\nRoom turn routing context.",
         prompt: "Say hello",
       }),
     ]);

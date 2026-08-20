@@ -37,6 +37,11 @@ const overview = {
     created_by_user_id: "user-1",
     created_at: "2026-08-08T00:00:00.000Z",
   },
+  definition_status: {
+    status: "initialized",
+    basis: "published_brief_goal",
+    goal_or_problem: "Trace the evidence",
+  },
   mode_projection: {
     mode: "research",
     current_state_summary: "No research under way.",

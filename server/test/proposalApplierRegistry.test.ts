@@ -174,6 +174,31 @@ describe("proposal applier registry", () => {
     );
   });
 
+  it("registers and validates Inquiry Thread creation proposals", () => {
+    expect(createDefaultProposalApplierRegistry().registeredTypes()).toContain(
+      "inquiry_thread_create",
+    );
+    expect(() => validateProposalPayload("inquiry_thread_create", {
+      proposal_type: "inquiry_thread_create",
+      action_id: "inquiry.propose_thread",
+      project_id: "project-1",
+      kind: "question",
+      statement: "How should personal agent memory be evaluated?",
+    })).not.toThrow();
+  });
+
+  it("registers and validates Project definition proposals", () => {
+    expect(createDefaultProposalApplierRegistry().registeredTypes()).toContain(
+      "project_brief_publish",
+    );
+    expect(() => validateProposalPayload("project_brief_publish", {
+      proposal_type: "project_brief_publish",
+      action_id: "project.propose_definition",
+      project_id: "project-1",
+      goal: "Build a reliable personal memory MVP",
+    })).not.toThrow();
+  });
+
   it("blocks a project binding until its source activation dependency is accepted",async()=>{const db={query:async(sql:string)=>sql.includes("JOIN source_connections")?{rows:[],rowCount:0}:{rows:[],rowCount:0}};await expect(createDefaultProposalApplierRegistry().apply({config:loadConfig({SERVER_DATABASE_URL:"postgresql://server@db:5432/agent_space",SERVER_INTERNAL_TOKEN:"internal-token"}),db:db as never,proposal:proposal({proposal_type:"project_source_bind",project_id:"project-1",payload_json:{proposal_type:"project_source_bind",action_id:"project.source.propose_bind",project_id:"project-1",source_channel_id:"channel-1",depends_on_proposal_id:"activation-1"}}),userId:"user-1"})).rejects.toMatchObject({statusCode:409});});
 
   it("registers the Claim Candidate Packet applier", () => {

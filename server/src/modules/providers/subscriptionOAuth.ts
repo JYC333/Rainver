@@ -13,6 +13,7 @@ import { parseCodexManagedUsageResponse } from "./cli/codexUsageProbe";
 import type { QuotaResult } from "./cli/usageProbe";
 import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types";
 import { loadManagedOAuthFlow } from "./invocation/piAiChat";
+import { SpaceAssistantService } from "../agents/spaceAssistantService";
 import type {
   ManagedAuthEvent,
   ManagedAuthInteraction,
@@ -139,6 +140,7 @@ export async function disconnectManagedSubscription(
   } finally {
     client.release();
   }
+  await SpaceAssistantService.reconcileModelApiProfiles(pool, spaceId);
   return subscriptionProviderDto(pool, spaceId, userId, providerId, true);
 }
 
@@ -267,6 +269,7 @@ async function persistSubscription(
   } finally {
     client.release();
   }
+  await SpaceAssistantService.reconcileModelApiProfiles(pool, spaceId);
   return subscriptionProviderDto(pool, spaceId, userId, providerId);
 }
 

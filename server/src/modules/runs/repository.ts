@@ -231,6 +231,30 @@ export class PgRunRepository {
     return result.rows;
   }
 
+  async listWaitingRoomChatRunsAwaitingReply(
+    limit = 100,
+  ): Promise<Array<{ id: string; space_id: string }>> {
+    const result = await this.db.query<{ id: string; space_id: string }>(
+      `SELECT run_row.id, run_row.space_id
+         FROM runs run_row
+        WHERE run_row.status = 'waiting_for_review'
+          AND run_row.model_override_json->>'execution_mode' = 'room_conversation.v1'
+          AND run_row.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM messages message
+             WHERE message.space_id = run_row.space_id
+               AND message.session_id = run_row.session_id
+               AND message.role = 'assistant'
+               AND message.metadata_json->>'run_id' = run_row.id
+          )
+        ORDER BY run_row.updated_at ASC, run_row.id ASC
+        LIMIT $1`,
+      [Math.max(1, Math.min(500, Math.trunc(limit)))],
+    );
+    return result.rows;
+  }
+
   async createQueuedRun(input: RunCreateInput): Promise<RunRecord> {
     validateRunCreateInput(input);
     return this.createQueuedRunInternal(input);
@@ -286,8 +310,10 @@ export class PgRunRepository {
         capability_id: input.capability_id ?? null,
         capabilities_json: input.capabilities_json ?? null,
         model_override_json: input.model_override_json ?? null,
+        contract_snapshot: input.contract_snapshot,
         visibility: input.visibility,
         grantee_user_ids: input.grantee_user_ids,
+        allow_system_assistant: input.allow_system_assistant,
       },
       {
         root_run_id: input.root_run_id,
@@ -319,6 +345,9 @@ export class PgRunRepository {
     context_policy_json?: Record<string, unknown> | null;
     visibility?: "private" | "space_shared" | "selected_users";
     grantee_user_ids?: string[];
+    capabilities_json?: unknown[] | null;
+    scenario_tool_allowance?: readonly string[] | null;
+    allow_system_assistant?: boolean;
   }): Promise<RunRecord> {
     if (!input.parent_run_id || !input.root_run_id || !input.run_group_id) {
       throw new RunCreateValidationError("Grouped agent runs require parent, root, and group ids");
@@ -342,6 +371,9 @@ export class PgRunRepository {
         contract_snapshot: input.contract_snapshot,
         visibility: input.visibility,
         grantee_user_ids: input.grantee_user_ids,
+        capabilities_json: input.capabilities_json ?? null,
+        scenario_tool_allowance: input.scenario_tool_allowance ?? null,
+        allow_system_assistant: input.allow_system_assistant,
       },
       {
         root_run_id: input.root_run_id,
@@ -408,6 +440,12 @@ export class PgRunRepository {
         409,
       );
     }
+    if (agent.agent_kind === "system_assistant" && input.allow_system_assistant !== true) {
+      throw new RunCreateValidationError(
+        "The managed Assistant can only run through a Room conversation",
+        404,
+      );
+    }
     if (!agent.current_version_id) {
       throw new RunCreateValidationError(
         `Agent '${input.agent_id}' has no current version. Create an AgentVersion first.`,
@@ -455,16 +493,27 @@ export class PgRunRepository {
     const now = new Date().toISOString();
     const contractSnapshot = createRunContractSnapshot(input.contract_snapshot, now);
     const capabilitiesJson = normalizeRunCapabilitiesJson(input.capabilities_json);
+    // A scenario allowance replaces the Agent's own standing permissions as
+    // the allowance side of the intersection — the capability belongs to the
+    // place the Run was opened in, not to whichever Agent is standing there.
+    // The intersection and its fail-closed behaviour are untouched.
     const declaredToolGrants = await buildRunToolGrants(
       capabilitiesJson,
-      agentVersion.tool_permissions_json,
+      input.scenario_tool_allowance
+        ? { allowed_tools: [...input.scenario_tool_allowance] }
+        : agentVersion.tool_permissions_json,
     );
     const toolGrants = input.trigger_origin === "autonomous"
       ? declaredToolGrants.filter((grant) =>
           grant.action_id !== "authorization.request" && !grant.side_effecting
         )
       : declaredToolGrants;
-    const permissionSnapshotJson = JSON.stringify({ tool_grants: toolGrants });
+    const permissionSnapshotJson = JSON.stringify({
+      tool_grants: toolGrants,
+      ...(input.scenario_tool_allowance
+        ? { scenario_tool_allowance: [...input.scenario_tool_allowance] }
+        : {}),
+    });
     const runId = randomUUID();
     const modelOverride = {
       ...(input.model_override_json ?? {}),
@@ -627,6 +676,12 @@ export class PgRunRepository {
         409,
       );
     }
+    if (agent.agent_kind === "system_assistant") {
+      throw new RunCreateValidationError(
+        "The managed Assistant can only run through a Room conversation",
+        404,
+      );
+    }
     if (!agent.current_version_id) {
       throw new RunCreateValidationError(
         `Agent '${input.agent_id}' has no current version. Create an AgentVersion first.`,
@@ -720,15 +775,23 @@ export class PgRunRepository {
   private async getAgentForRun(
     spaceId: string,
     agentId: string,
-  ): Promise<{ id: string; status: string; current_version_id: string | null; visibility: string; access_level: string } | null> {
+  ): Promise<{
+    id: string;
+    status: string;
+    agent_kind: string;
+    current_version_id: string | null;
+    visibility: string;
+    access_level: string;
+  } | null> {
     const result = await this.db.query<{
       id: string;
       status: string;
+      agent_kind: string;
       current_version_id: string | null;
       visibility: string;
       access_level: string;
     }>(
-      `SELECT id, status, current_version_id, visibility, access_level
+      `SELECT id, status, agent_kind, current_version_id, visibility, access_level
          FROM agents
         WHERE space_id = $1 AND id = $2`,
       [spaceId, agentId],
@@ -845,6 +908,32 @@ export class PgRunRepository {
   }
 
   async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<RunRecord | null> {
+    const roomScope = await this.db.query<{ room_id: string | null; project_id: string | null }>(
+      `SELECT COALESCE(group_row.room_id, session_row.room_id) AS room_id,
+              COALESCE(group_row.project_id, session_row.project_id) AS project_id
+         FROM runs run_row
+         LEFT JOIN agent_run_groups group_row
+           ON group_row.id=run_row.run_group_id AND group_row.space_id=run_row.space_id
+         LEFT JOIN sessions session_row
+           ON session_row.id=run_row.session_id AND session_row.space_id=run_row.space_id
+        WHERE run_row.space_id=$1 AND run_row.id=$2`,
+      [spaceId, runId],
+    );
+    const roomId = roomScope.rows[0]?.room_id;
+    if (roomId) {
+      const readable = await this.db.query(
+        `SELECT 1
+           FROM rooms room
+           JOIN room_user_members member
+             ON member.space_id=room.space_id AND member.room_id=room.id
+            AND member.user_id=$3 AND member.status='active'
+          WHERE room.space_id=$1 AND room.id=$2 AND room.status='active'
+            AND ${projectReadAccessSql("room.space_id", "room.project_id", "$3")}
+          LIMIT 1`,
+        [spaceId, roomId, userId],
+      );
+      if (!readable.rows[0]) return null;
+    }
     const decision = await contentDecisionFromDb(
       this.db,
       { spaceId, userId },
@@ -870,6 +959,14 @@ export class PgRunRepository {
     addOptionalFilter(clauses, params, "capability_id", filters.capability_id);
     if (filters.run_role) addOptionalFilter(clauses, params, "run_role", filters.run_role);
     else clauses.push("run_role = 'execution'");
+    if (filters.exclude_system_assistants) {
+      clauses.push(`NOT EXISTS (
+        SELECT 1 FROM agents hidden_agent
+         WHERE hidden_agent.space_id = runs.space_id
+           AND hidden_agent.id = runs.agent_id
+           AND hidden_agent.agent_kind = 'system_assistant'
+      )`);
+    }
     params.push(filters.limit, filters.offset);
     const limitIndex = params.length - 1;
     const offsetIndex = params.length;
@@ -1573,7 +1670,19 @@ export class PgRunRepository {
       const row = selected.rows[0];
       if (!row) return null;
       const declared = Array.isArray(row.capabilities_json) ? row.capabilities_json : [];
-      const grants = await buildRunToolGrants(declared, row.tool_permissions_json);
+      // Work Context binding may change the selected AgentVersion, but a
+      // scenario allowance belongs to the place where the Run was opened.
+      // Preserve the snapshotted allowance instead of silently replacing it
+      // with the newly bound AgentVersion's standing permissions.
+      const scenarioToolAllowance = scenarioToolAllowanceFromSnapshot(
+        row.permission_snapshot_json,
+      );
+      const grants = await buildRunToolGrants(
+        declared,
+        scenarioToolAllowance !== undefined
+          ? { allowed_tools: scenarioToolAllowance }
+          : row.tool_permissions_json,
+      );
       const toolGrants = row.trigger_origin === "autonomous"
         ? grants.filter((grant) =>
             grant.action_id !== "authorization.request" && !grant.side_effecting
@@ -2702,4 +2811,17 @@ function normalizeRunCapabilitiesJson(value: unknown[] | null | undefined): stri
     throw new RunCreateValidationError("capabilities_json must contain non-empty strings");
   }
   return [...new Set(result)];
+}
+
+function scenarioToolAllowanceFromSnapshot(value: unknown): string[] | undefined {
+  const snapshot = recordValue(value);
+  if (!Object.hasOwn(snapshot, "scenario_tool_allowance")) return undefined;
+  const allowance = snapshot.scenario_tool_allowance;
+  // Once the snapshot says this Run is scenario-bound, malformed metadata
+  // fails closed. It must never fall back to an AgentVersion's broader grants.
+  if (!Array.isArray(allowance)) return [];
+  const normalized = allowance.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+  return normalized.length === allowance.length ? [...new Set(normalized)] : [];
 }

@@ -27,6 +27,7 @@ import type {
   CaptureRequest,
   CaptureResponse,
   ChatTurnAccepted,
+  ContinueRoomAfterProposalRequest,
   ClaimCandidatePacketCreateRequest,
   ClaimCandidatePacketCreateRequestInput,
   ClaimCandidatePacketCreateResponse,
@@ -59,6 +60,14 @@ import type {
   CreateAgentRunGroupRequest,
   CreateAgentRunGroupResponse,
   CreateRoomRequest,
+  CreateRoomResponse,
+  RoomAgentAddRequest,
+  RoomAgentCandidate,
+  RoomAgentCandidatesResponse,
+  RoomAgentMember,
+  RoomAgentMutationResponse,
+  RoomAgentPreset,
+  RoomAgentPresetRequest,
   CrossSpacePointer,
   CrossSpaceResolvedItem,
   CrossSpaceRetrievalRequest,
@@ -178,10 +187,18 @@ import type {
   RetrievalSearchResult,
   RetrievalToolMode,
   Room,
-  RoomAgentMember,
   RoomConversation,
+  RoomConversationSummary,
+  RoomConversationSummaryResponse,
   RoomDetail,
+  RoomInvitation,
+  RoomInvitationCreateRequest,
+  RoomInvitationDecisionRequest,
+  RoomInvitationListResponse,
+  RoomPendingApproval,
+  RoomPendingApprovalListResponse,
   RoomMessage,
+  RoomOwnerTransferRequest,
   RoomUserMember,
   RunDelegation,
   RuntimeRenderMode,
@@ -265,6 +282,7 @@ export type {
   CaptureRequest,
   CaptureResponse,
   ChatTurnAccepted,
+  ContinueRoomAfterProposalRequest,
   ClaimCandidatePacketCreateRequest,
   ClaimCandidatePacketCreateRequestInput,
   ClaimCandidatePacketCreateResponse,
@@ -297,6 +315,7 @@ export type {
   CreateAgentRunGroupRequest,
   CreateAgentRunGroupResponse,
   CreateRoomRequest,
+  CreateRoomResponse,
   CrossSpacePointer,
   CrossSpaceResolvedItem,
   CrossSpaceRetrievalRequest,
@@ -416,10 +435,25 @@ export type {
   RetrievalSearchResult,
   RetrievalToolMode,
   Room,
+  RoomAgentAddRequest,
+  RoomAgentCandidate,
+  RoomAgentCandidatesResponse,
   RoomAgentMember,
+  RoomAgentMutationResponse,
+  RoomAgentPreset,
+  RoomAgentPresetRequest,
   RoomConversation,
+  RoomConversationSummary,
+  RoomConversationSummaryResponse,
   RoomDetail,
+  RoomInvitation,
+  RoomInvitationCreateRequest,
+  RoomInvitationDecisionRequest,
+  RoomInvitationListResponse,
+  RoomPendingApproval,
+  RoomPendingApprovalListResponse,
   RoomMessage,
+  RoomOwnerTransferRequest,
   RoomUserMember,
   RunDelegation,
   RuntimeRenderMode,
@@ -2146,7 +2180,7 @@ export interface ChatTurnOut {
 export interface ChatActionPreview {
   action_id: string
   tool_call_id?: string | null
-  status: 'proposed' | 'auto_applied' | 'completed' | 'failed'
+  status: 'proposed' | 'auto_applied' | 'completed' | 'failed' | 'rejected'
   proposal_id?: string | null
   proposal_type?: string | null
   title?: string | null
@@ -3414,6 +3448,11 @@ export type ProjectFolderExecutionConfigUpdate = Partial<Omit<ProjectFolderExecu
 export interface ProjectOverview {
   project: Pick<Project, 'id' | 'name' | 'primary_mode' | 'status'>
   brief: ProjectBriefVersion | null
+  definition_status?: {
+    status: 'initialized' | 'needs_definition'
+    basis: 'published_brief_goal' | 'missing_published_brief_goal'
+    goal_or_problem: string | null
+  }
   mode_projection: {
     mode: ProjectPrimaryMode
     current_state_summary: string

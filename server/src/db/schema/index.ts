@@ -51,6 +51,8 @@ export * from "./providers";
 export * from "./relations";
 export * from "./routeDecisions";
 export * from "./rooms";
+export * from "./roomConversationSummaries";
+export * from "./roomCreationIdempotency";
 export * from "./retrieval";
 export * from "./runs";
 export * from "./runtimeTools";

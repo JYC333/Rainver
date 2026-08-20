@@ -28,7 +28,7 @@ describe('nextFocusDestination', () => {
     expect(nextFocusDestination('search_acquisition', context)).toEqual({
       kind: 'link',
       to: '/projects/project-1/research?research=new&thread=thread-1',
-      cta: 'Start evidence search',
+      cta: 'Set up evidence search',
     })
     expect(nextFocusDestination('search_acquisition', { ...context, startedWorkflow: workflow() })).toEqual({
       kind: 'link',

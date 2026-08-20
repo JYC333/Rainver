@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { SystemActionGateway } from "../src/modules/systemActions/gateway";
+import { proposalActionJsonSchema } from "../src/modules/systemActions/agentToolGateway";
+import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance";
 
 const context = {
   actor: { type: "agent" as const, space_id: "space-1", agent_id: "agent-1", run_id: "run-1" },
@@ -67,5 +69,45 @@ describe("SystemActionGateway", () => {
       { provider_key: "rss", name: "Feed", query: {}, endpoint_url: "https://example.test/feed" },
       context,
     )).rejects.toMatchObject({ code: "system_action_idempotency_required" });
+  });
+
+  it("exposes tool-call JSON schemas for the Room Inquiry proposal actions", () => {
+    const projectDefinition = proposalActionJsonSchema("project.propose_definition");
+    expect(projectDefinition.required).toEqual(["goal"]);
+    expect(projectDefinition.properties).toMatchObject({
+      goal: { type: "string" },
+      success_definition: { type: "string" },
+    });
+
+    const createThread = proposalActionJsonSchema("inquiry.propose_thread");
+    expect(createThread.required).toEqual(["statement"]);
+    expect(createThread.properties).toMatchObject({
+      kind: { type: "string" },
+      statement: { type: "string" },
+      resolution_criteria: { type: "string" },
+    });
+
+    const conclusion = proposalActionJsonSchema("inquiry.record_conclusion");
+    expect(conclusion.required).toEqual(["thread_id", "change_summary"]);
+    expect(conclusion.properties).toMatchObject({
+      thread_id: { type: "string" },
+      change_summary: { type: "string" },
+      evaluation_state: { type: "string" },
+      answer_state: { type: "string" },
+    });
+
+    const promote = proposalActionJsonSchema("inquiry.promote_knowledge");
+    expect(promote.required).toEqual(["thread_id", "candidate_kind", "proposed_title", "proposed_content"]);
+    expect(promote.properties).toMatchObject({
+      thread_id: { type: "string" },
+      candidate_kind: { type: "string" },
+      proposed_title: { type: "string" },
+      proposed_content: { type: "string" },
+    });
+  });
+
+  it("offers the proposal-gated Thread creation action to Room conversations", () => {
+    expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("project.propose_definition");
+    expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("inquiry.propose_thread");
   });
 });

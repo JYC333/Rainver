@@ -59,7 +59,7 @@ export function nextFocusDestination(
     case 'search_acquisition':
       return startedWorkflow
         ? { kind: 'link', to: `/projects/${projectId}/operations`, cta: 'Watch the running search' }
-        : { kind: 'link', to: `/projects/${projectId}/research?research=new&thread=${threadId}`, cta: 'Start evidence search' }
+        : { kind: 'link', to: `/projects/${projectId}/research?research=new&thread=${threadId}`, cta: 'Set up evidence search' }
     case 'read_evidence':
       return { kind: 'tab', tab: 'evidence', cta: 'Review this Thread’s evidence' }
     case 'synthesize':

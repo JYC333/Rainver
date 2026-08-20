@@ -4,17 +4,25 @@ import type {
   ConversationBackendOption,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+import {
+  isProviderEligibleForUser,
+  providerCredentialEligibilitySql,
+} from "../providers/eligibility";
 import type { Queryable } from "../routeUtils/common";
 
 interface BackendRow {
+  agent_kind: string;
   runtime_profile_id: string;
   name: string;
   adapter_type: string;
   model_name: string | null;
   model_provider_id: string | null;
+  provider_type: string | null;
   provider_enabled: boolean | null;
-  provider_credential_id: string | null;
-  provider_has_healthy_credential: boolean;
+  provider_grant_enabled: boolean | null;
+  provider_owner_user_id: string | null;
+  provider_credential_type: string | null;
+  provider_has_eligible_credential: boolean | null;
   is_default: boolean;
 }
 
@@ -33,6 +41,7 @@ interface CliCredentialAvailability {
 }
 
 interface BindingRow {
+  agent_kind: string;
   binding_id: string;
   runtime_profile_id: string;
   credential_profile_id: string | null;
@@ -47,6 +56,8 @@ interface BindingRow {
 }
 
 export interface ResolvedConversationBackend extends ConversationBackendBinding {
+  /** Present on persisted bindings; optional for legacy test/adaptor ports. */
+  agent_kind?: string;
   binding_id: string;
   runtime_state_key: string;
   runtime_session_id: string | null;
@@ -82,33 +93,37 @@ export class PgConversationBackendRepository {
   ): Promise<ConversationBackendOption[]> {
     const [profiles, credentials, availableCredentials] = await Promise.all([
       this.db.query<BackendRow>(
-        `SELECT profile.id AS runtime_profile_id, profile.name,
+        `SELECT agent.agent_kind,
+                profile.id AS runtime_profile_id, profile.name,
                 profile.adapter_type, profile.model_name,
                 profile.model_provider_id,
-                (provider.enabled AND provider_grant.enabled) AS provider_enabled,
-                provider.credential_id AS provider_credential_id,
-                EXISTS (
-                  SELECT 1
-                    FROM model_provider_credentials credential
-                   WHERE credential.provider_id = profile.model_provider_id
-                     AND credential.enabled = true
-                     AND credential.healthy = true
-                     AND (
-                       credential.cooldown_until IS NULL
-                       OR credential.cooldown_until <= now()
-                     )
-                ) AS provider_has_healthy_credential,
+                provider.provider_type,
+                provider.enabled AS provider_enabled,
+                provider_grant.enabled AS provider_grant_enabled,
+                provider.owner_user_id AS provider_owner_user_id,
+                provider_credential.credential_type AS provider_credential_type,
+                ${providerCredentialEligibilitySql("provider.id", "provider.credential_id", "provider_credential")}
+                  AS provider_has_eligible_credential,
                 profile.is_default
            FROM agent_runtime_profiles profile
+           JOIN agents agent
+             ON agent.id = profile.agent_id
+            AND agent.space_id = profile.space_id
            LEFT JOIN model_providers provider
              ON provider.id = profile.model_provider_id
            LEFT JOIN model_provider_space_grants provider_grant
-             ON provider_grant.provider_id = profile.model_provider_id
+            ON provider_grant.provider_id = profile.model_provider_id
             AND provider_grant.space_id = profile.space_id
+           LEFT JOIN credentials provider_credential
+             ON provider_credential.id = provider.credential_id
           WHERE profile.space_id = $1
             AND profile.agent_id = $2
             AND profile.enabled = true
-          ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC`,
+          ORDER BY CASE WHEN agent.agent_kind = 'system_assistant'
+                        THEN COALESCE(provider_grant.is_default, false)
+                        ELSE false END DESC,
+                   profile.is_default DESC,
+                   profile.created_at ASC, profile.id ASC`,
         [spaceId, agentId],
       ),
       this.db.query<CredentialRow>(
@@ -138,8 +153,7 @@ export class PgConversationBackendRepository {
       const requiresCliCredential = isLocalCliRuntimeAdapter(profile.adapter_type);
       const providerAvailable =
         profile.model_provider_id !== null &&
-        profile.provider_enabled === true &&
-        Boolean(profile.provider_credential_id || profile.provider_has_healthy_credential);
+        isProviderEligibleForUser(profile, userId);
       if (
         spec.credentials.credential_mode === "model_provider_api_key" &&
         !providerAvailable
@@ -198,13 +212,28 @@ export class PgConversationBackendRepository {
       input.agent_id,
     );
     const stored = input.requested ? null : existing;
-    const runtimeProfileId =
+    const storedOption = stored
+      ? options.find((candidate) => candidate.runtime_profile_id === stored.runtime_profile_id)
+      : null;
+    let runtimeProfileId =
       input.requested?.runtime_profile_id ??
-      stored?.runtime_profile_id ??
+      storedOption?.runtime_profile_id ??
+      (stored?.agent_kind === "system_assistant" ? options[0]?.runtime_profile_id : stored?.runtime_profile_id) ??
       options[0]?.runtime_profile_id;
-    const option = options.find(
+    let option = options.find(
       (candidate) => candidate.runtime_profile_id === runtimeProfileId,
     );
+    let recoveringManagedAssistant = false;
+    if (stored?.agent_kind === "system_assistant" && !input.requested) {
+      const storedCredentialAvailable = !stored.credential_profile_id || Boolean(
+        storedOption?.credential_profiles.some((credential) => credential.id === stored.credential_profile_id),
+      );
+      if (!storedOption || !storedCredentialAvailable) {
+        recoveringManagedAssistant = true;
+        runtimeProfileId = options[0]?.runtime_profile_id;
+        option = options.find((candidate) => candidate.runtime_profile_id === runtimeProfileId);
+      }
+    }
     if (!option) {
       throw new ConversationBackendError(
         stored
@@ -222,12 +251,12 @@ export class PgConversationBackendRepository {
 
     const requestedCredentialId =
       input.requested?.credential_profile_id ??
-      stored?.credential_profile_id ??
+      (recoveringManagedAssistant ? null : stored?.credential_profile_id) ??
       null;
     const selectedCredential = option.credential_profiles.find(
       (credential) => credential.id === requestedCredentialId,
     );
-    if (stored?.credential_profile_id && !selectedCredential) {
+    if (stored?.credential_profile_id && !selectedCredential && !recoveringManagedAssistant) {
       throw new ConversationBackendError(
         "The stored CLI credential is no longer eligible; select a new backend",
         409,
@@ -287,7 +316,8 @@ export class PgConversationBackendRepository {
     agentId: string,
   ): Promise<ResolvedConversationBackend | null> {
     const result = await this.db.query<BindingRow & { adapter_type: string }>(
-      `SELECT binding.id AS binding_id,
+      `SELECT agent.agent_kind,
+              binding.id AS binding_id,
               binding.runtime_profile_id, binding.credential_profile_id,
               binding.runtime_state_key, binding.runtime_session_id,
               binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
@@ -302,6 +332,9 @@ export class PgConversationBackendRepository {
            ON profile.id = binding.runtime_profile_id
           AND profile.space_id = binding.space_id
           AND profile.agent_id = binding.agent_id
+         JOIN agents agent
+           ON agent.id = binding.agent_id
+          AND agent.space_id = binding.space_id
         WHERE binding.space_id = $1
           AND binding.user_id = $2
           AND binding.session_id = $3

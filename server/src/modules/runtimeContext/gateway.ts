@@ -5,6 +5,7 @@ import type { Pool, Queryable } from "../routeUtils/common";
 import { HttpError } from "../routeUtils/common";
 import { loadProtocol } from "../providers/protocolRuntime";
 import { contentReadSql } from "../access/contentAccessSql";
+import { roomScopedAgentReadSql } from "./workContextService";
 import { contentResourceDefinition } from "../access/contentAccessRegistry";
 import { projectFolderReadAccessSql } from "../projectFolders/access";
 import { retrievalEgressAllowed, runtimeProviderEgressDestination, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy";
@@ -40,6 +41,7 @@ import { contextItemText } from "./itemNormalizer";
 import {
   createProductionRuntimeContextPlanningService,
   isRoomConversation,
+  loadAuthorizedCurrentContextMessage,
   renderCheckpointContinuity,
   roomRoutingInstruction,
 } from "./productionAcquisition";
@@ -347,8 +349,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
   ): Promise<string | null> {
     const viewerUserId = input.viewerUserId;
     if (!viewerUserId) throw new HttpError(403, "Invocation Delivery requires a live viewer authority");
-    const setup = await db.query<{ id: string; version: number; agent_id: string | null; project_id: string | null; project_folder_id: string | null }>(
-      `SELECT id,version,agent_id,project_id,project_folder_id FROM work_context_setups
+    const setup = await db.query<{ id: string; version: number; scope_kind: string; agent_id: string | null; project_id: string | null; project_folder_id: string | null }>(
+      `SELECT id,version,scope_kind,agent_id,project_id,project_folder_id FROM work_context_setups
         WHERE space_id=$1 AND work_context_scope_id=$2 AND user_id=$3
         ORDER BY version DESC LIMIT 1 FOR SHARE`,
       [input.spaceId, control.work_context_scope_id, viewerUserId],
@@ -365,18 +367,34 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const agent = await db.query<{ name: string | null }>(
       `SELECT agent.name FROM agents agent
         WHERE agent.id=$1 AND agent.space_id=$2 AND agent.status='active'
-          AND ${contentReadSql("agent", "agent", "$3")}
+          AND (
+            ${contentReadSql("agent", "agent", "$3")}
+            OR (
+              $5::varchar = 'room_recipient'
+              AND ${roomScopedAgentReadSql("agent", "$3", "$4")}
+            )
+          )
         FOR SHARE OF agent`,
-      [agentId, input.spaceId, viewerUserId],
+      [agentId, input.spaceId, viewerUserId, control.work_context_scope_id, row.scope_kind],
     );
     if (!agent.rows[0]) throw new HttpError(404, "Invocation Delivery Agent authority is no longer readable");
     await this.lockContentAclDependencies(db, input.spaceId, "agent", agentId, viewerUserId);
     const reauthorizedAgent = await db.query<{ name: string | null }>(
       `SELECT agent.name FROM agents agent
+        JOIN work_context_setups setup
+          ON setup.agent_id=agent.id AND setup.space_id=agent.space_id
+         AND setup.work_context_scope_id=$4 AND setup.user_id=$3
+         AND setup.version=$5
         WHERE agent.id=$1 AND agent.space_id=$2 AND agent.status='active'
-          AND ${contentReadSql("agent", "agent", "$3")}
+          AND (
+            ${contentReadSql("agent", "agent", "$3")}
+            OR (
+              setup.scope_kind = 'room_recipient'
+              AND ${roomScopedAgentReadSql("agent", "$3", "$4")}
+            )
+          )
         FOR SHARE OF agent`,
-      [agentId, input.spaceId, viewerUserId],
+      [agentId, input.spaceId, viewerUserId, control.work_context_scope_id, row.version],
     );
     if (!reauthorizedAgent.rows[0]) {
       throw new HttpError(404, "Invocation Delivery Agent authority is no longer readable");
@@ -780,21 +798,22 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     item: ContextItem,
     run: { session_id: string | null; model_override_json: unknown },
   ): Promise<void> {
+    if (!input.viewerUserId) throw new HttpError(403, "Invocation Delivery requires a live viewer authority");
     const currentRef = input.envelope.turn_request.current_message_ref;
     if (currentRef.type !== "message" || currentRef.id !== item.source_ref.id || !run.session_id) {
       throw new HttpError(409, "Invocation Delivery Message authority does not match the turn");
     }
     const session = await this.lockConversationSession(db, input, run.session_id);
-    const message = await db.query<{ content: string; metadata_run_id: string | null }>(
-      `SELECT content,metadata_json->>'run_id' AS metadata_run_id
-         FROM messages
-        WHERE id=$1 AND space_id=$2 AND session_id=$3 AND user_id=$4 AND role='user'
-        FOR SHARE`,
-      [item.source_ref.id, input.spaceId, run.session_id, input.viewerUserId],
-    );
-    const row = message.rows[0];
+    const row = await loadAuthorizedCurrentContextMessage(db, {
+      messageId: item.source_ref.id,
+      spaceId: input.spaceId,
+      sessionId: run.session_id,
+      userId: input.viewerUserId,
+      runId: input.invocationId,
+    });
     const canonicalMessageId = chatTurnMessageId(run.model_override_json);
     if (!row || canonicalMessageId !== item.source_ref.id || contextItemText(item) !== row.content.trim()
+      || item.trust !== (row.role === "system" ? "system_approved" : "user_confirmed")
       || (session.roomId === null && row.metadata_run_id !== input.invocationId)) {
       throw new HttpError(409, "Invocation Delivery Message changed or is no longer authoritative");
     }
@@ -816,12 +835,13 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
       `context-event:${input.spaceId}:${scopeId}`,
     ]);
-    const { messages, checkpoint } = await loadConversationContinuityThroughMessage(db, {
+    const planned = await loadConversationContinuityThroughMessage(db, {
       spaceId: input.spaceId,
       sessionId: run.session_id,
       workContextScopeId: scopeId,
       currentMessageId: currentRef.id,
     });
+    const { messages, checkpoint } = planned;
     const current = messages.find((message) => message.id === currentRef.id);
     if (!current) throw new HttpError(409, "Invocation Delivery continuity current Message is unavailable");
     if (checkpoint) {
@@ -833,6 +853,16 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
           FOR SHARE`,
         [checkpoint.id, input.spaceId, scopeId, checkpoint.version],
         "Invocation Delivery semantic checkpoint changed after planning",
+      );
+    }
+    if (planned.room_summary) {
+      await lockRequiredRow(
+        db,
+        `SELECT id FROM room_conversation_summary_versions
+          WHERE id=$1 AND space_id=$2 AND session_id=$3 AND version=$4 AND status='active'
+          FOR SHARE`,
+        [planned.room_summary.id, input.spaceId, run.session_id, planned.room_summary.version],
+        "Invocation Delivery Room summary changed after planning",
       );
     }
     const messageIds = messages.map((message) => message.id);
@@ -861,8 +891,12 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       canonical.messages,
       canonicalCurrent,
       canonical.checkpoint,
+      canonical.room_summary,
+      canonical.room_conversation,
     );
-    const expectedRef = canonical.checkpoint
+    const expectedRef = canonical.room_summary
+      ? { type: "room_conversation_summary", id: canonical.room_summary.id, version: String(canonical.room_summary.version) }
+      : canonical.checkpoint
       ? { type: "semantic_checkpoint", id: canonical.checkpoint.id, version: String(canonical.checkpoint.version) }
       : { type: "session", id: run.session_id, version: null };
     const decision = input.envelope.window_plan.decisions.find((entry) => entry.item_id === item.id);

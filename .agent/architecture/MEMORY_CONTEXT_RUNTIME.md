@@ -94,10 +94,30 @@ product table; Context Events store ordered refs and typed continuity facts.
   active Work Context's checkpoint-correction command route; the mutation
   transaction takes the Work Context version advisory lock, then revalidates
   and locks the active scope and Project ACL authority.
-- Conversation continuity combines the active Semantic Checkpoint with a
-  bounded canonical message tail through the exact current message.
+- Room conversation continuity combines the active append-only Room summary
+  (2,000-token budget) with only the uncaptured canonical message tail
+  (6,000-token budget) through the exact current message. The summary cursor is
+  exclusive, so ranges cannot overlap; the canonical transcript remains the
+  source of truth and is always available through paged history. Before an
+  active summary exists, the same complete-message assembler is used rather
+  than a separate fixed-count/truncating window. Prior messages larger than the
+  recent budget are omitted; only the triggering message is preserved intact.
+  Non-Room continuity retains the Semantic Checkpoint plus its bounded message
+  tail.
+- Room summaries are asynchronous API tasks charged to the active Room owner.
+  Scheduling waits for a 6,000-token raw uncompacted-prefix threshold and the
+  worker rechecks that the owner can still write the bound Project. The worker
+  accepts any eligible owner-usable API provider (including an eligible Space
+  grant), records tokenizer and prompt/schema provenance, and uses a 12,000
+  token source budget. Missing API configuration yields a visible
+  `waiting_provider` freshness state and never blocks message persistence or
+  conversation use. Retry failures use capped exponential backoff with jitter,
+  distinguish `retry_wait` from terminal `failed`, and never advance coverage
+  on malformed provider output.
 - CLI continuity stores an acknowledged cursor and rotates its private vendor
-  session when scope, generation, cursor, or replay authority is invalid. A
+  session when scope, generation, cursor, replay authority, or a bounded delta
+  overflow is detected. Overflow rotation bootstraps from the latest authorized
+  checkpoint and transfers the execution lease to the replacement binding. A
   successful bootstrap/delta phase advances that cursor before the current-user
   turn is sent, while the whole invocation Snapshot remains draft until its
   terminal acknowledgement.

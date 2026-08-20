@@ -90,6 +90,52 @@ const proposalInputs:Record<string,z.ZodType>={
   "source.channel.propose_activation":z.object({source_channel_id:z.string().min(1)}).passthrough(),
   "project.source.propose_bind":z.object({source_channel_id:z.string().min(1)}).passthrough(),
   "source.backfill.propose_start":z.object({source_channel_id:z.string().min(1),source_backfill_plan_id:z.string().min(1)}).passthrough(),
+  "project.propose_definition": z.object({
+    goal: z.string().trim().min(1),
+    scope_included: z.string().trim().min(1).optional(),
+    scope_excluded: z.string().trim().min(1).optional(),
+    success_definition: z.string().trim().min(1).optional(),
+    constraints: z.string().trim().min(1).optional(),
+    assumptions: z.string().trim().min(1).optional(),
+  }).strict(),
+  "inquiry.propose_thread": z.object({
+    kind: z.enum(["question", "hypothesis"]).default("question"),
+    statement: z.string().trim().min(1),
+    answerability: z.string().trim().min(1).optional(),
+    resolution_criteria: z.string().trim().min(1).optional(),
+    proposed_claim: z.string().trim().min(1).optional(),
+    predictions: z.string().trim().min(1).optional(),
+    falsification_criteria: z.string().trim().min(1).optional(),
+  }).strict(),
+  "inquiry.record_conclusion": z.object({
+    thread_id: z.string().min(1),
+    change_summary: z.string().min(1),
+    reasoning_summary: z.string().min(1).optional(),
+    // Question-kind cognitive fields.
+    answer_state: z.enum(["open", "partial", "answered", "unanswerable"]).optional(),
+    current_answer_summary: z.string().optional(),
+    known_gaps: z.string().optional(),
+    answerability: z.string().optional(),
+    // Hypothesis-kind cognitive fields.
+    evaluation_state: z.enum(["untested", "supported", "challenged", "contradicted", "inconclusive"]).optional(),
+    confidence: z.number().min(0).max(100).optional(),
+    confidence_method: z.string().optional(),
+    // Shared.
+    unresolved_gaps: z.string().optional(),
+    confirmed_next_focus: z.string().optional(),
+    next_focus_note: z.string().optional(),
+  }).passthrough(),
+  "inquiry.promote_knowledge": z.object({
+    thread_id: z.string().min(1),
+    candidate_kind: z.enum(["concept", "lesson", "procedure", "decision", "summary"]),
+    proposed_title: z.string().min(1),
+    proposed_content: z.string().min(1),
+    supersedes_knowledge_item_id: z.string().min(1).optional(),
+  }).passthrough(),
+  "research.start_acquisition": z.object({
+    thread_id: z.string().min(1),
+    intent_note: z.string().trim().min(1).max(2000).optional(),
+  }).strict(),
 };
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
@@ -114,6 +160,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   httpAction("policy.action_grant.revoke", "Revoke an action approval grant", "policy", "ActionApprovalGrantService.revoke", "policy.action_grant.revoke", "durable"),
   proposalAction("source.channel.propose_activation", "Propose Source Channel activation", "sources", "SourceChannelService.proposeActivation", "source.connection.manage", "source_channel_activation"),
   proposalAction("project.source.propose_bind", "Propose binding a Source to a Project", "projects", "ProjectSourceBindingService.proposeBind", "project.source.bind", "project_source_bind"),
+  proposalAction("project.propose_definition", "Propose the Project goal or core problem", "projects", "ProjectDefinitionProposalService.proposeDefinition", "project.brief.propose", "project_brief_publish"),
   httpAction("project.operation.read", "Read Project operation progress", "projects", "ProjectOperationService.get", "project.operation.manage", "none"),
   httpAction("project.operation.create", "Create a Project operation", "projects", "ProjectOperationService.create", "project.operation.manage", "durable"),
   httpAction("project.operation.cancel", "Cancel a Project operation", "projects", "ProjectOperationService.cancel", "project.operation.manage", "durable"),
@@ -131,6 +178,20 @@ export const SYSTEM_ACTION_REGISTRY = [
   objectAction("note.raise_as_question", "Raise a passage as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["note"]),
   objectAction("note.link_to_evidence", "Link a passage to evidence", "knowledge", "PgKnowledgeRepository.createNoteLink", "note.link.create", "durable", ["note"]),
   objectAction("source.raise_as_question", "Explore as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["source"]),
+  proposalAction("inquiry.propose_thread", "Propose creating an Inquiry Thread", "inquiry", "InquiryThreadProposalService.proposeThread", "inquiry.thread.propose", "inquiry_thread_create"),
+  proposalAction("inquiry.record_conclusion", "Propose recording an Inquiry Thread conclusion", "inquiry", "InquiryConclusionProposalService.proposeConclusion", "inquiry.iteration.propose", "inquiry_conclusion"),
+  // Runtime `proposal_type` is `knowledge_create` or `knowledge_update`
+  // (revalidation branch) depending on `supersedes_knowledge_item_id`;
+  // `knowledge_create` here is descriptive metadata only — nothing currently
+  // compares it for equality (see `acceptAgentProposalIfGranted`), and this
+  // action is not wired into that auto-apply path in this phase.
+  proposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create"),
+  // Direct execution, no proposal gate (room-advancement-reliability-plan
+  // Phase 4) — the Thread was already human-accepted at creation; starting
+  // acquisition on it is execution, not an agent-drafted structure/content
+  // write. The human confirmation gate is replaced by hard idempotency
+  // guards in the acquisition service.
+  agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable"),
 ] as const satisfies readonly SystemActionDefinition[];
 
 export type SystemActionId = (typeof SYSTEM_ACTION_REGISTRY)[number]["id"];

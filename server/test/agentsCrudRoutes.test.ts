@@ -527,7 +527,10 @@ describe("agents CRUD routes", () => {
     const pool = {
       connect: vi.fn(async () => client),
       query: vi.fn(async (sql: string) => {
-        const norm = sql.replace(/\s+/g, " ").trim();
+      const norm = sql.replace(/\s+/g, " ").trim();
+        if (norm.startsWith("SELECT id FROM agents WHERE space_id = $1 AND id = $2")) {
+          return { rows: [{ id: "agent-1" }], rowCount: 1 };
+        }
         if (norm.includes("FROM agents a") && norm.includes("JOIN agent_versions av")) {
           return { rows: [currentVersion], rowCount: 1 };
         }

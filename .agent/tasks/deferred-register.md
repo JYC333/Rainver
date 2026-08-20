@@ -1,6 +1,6 @@
 # Deferred Register
 
-Date: 2026-08-13
+Date: 2026-08-17
 Status: every item here waits on a recorded trigger.
 
 Merged on 2026-08-13 from three scattered registers — the Project / Inquiry defer
@@ -30,6 +30,12 @@ implemented, as expected for trigger-gated items.
 | Incident/Runbook aggregates | Demonstrated lifecycle is not owned by Tasks, Runs, Automations, or Activity | Operations |
 | Generic conditional branching + Checkpoint migration | A second domain needs runtime-conditional checkpoints | Workflow engine |
 | Move question refinement into a Model node | Pre-start refinement must become governed execution provenance | Project Research |
+
+## Rooms — continuation infrastructure
+
+| Item | Trigger | Owner |
+|---|---|---|
+| Promote domain-carried Room linkage to a rooms-owned event-expectation table (`(event_kind, event_key)` → room/session; domains emit completions without storing Room identifiers) | A third domain needs domain-completion → Room continuation (today: delegation carries its own linkage; research carries `origin_room_id`/`origin_session_id` in `project_operations.progress_json`) | Rooms / Proposals |
 
 ## Personal / team content boundary leftovers
 
@@ -226,6 +232,20 @@ differ, which is what the trigger provides.
 - Not introducing `execution_class` / `transport` on the adapter spec.
 
 ## Watch items
+
+## Rooms — product follow-ups
+
+These items are deliberately outside the first Room release. They are
+documented here so they cannot be mistaken for missing enforcement:
+
+| Item | Trigger | Owner |
+|---|---|---|
+| Managed Assistant identity, system prompt, and profile customization | Room usage demonstrates a concrete need for per-Room persona or prompt variation, with an explicit audit/ownership model for who may change it | Rooms + Agents |
+| Semantic search over the Room archive | A real Room transcript is large enough that bounded rolling summaries and cursor-based paging no longer answer member questions, and a Room-scoped retrieval contract can preserve the same Project/member boundary | Rooms + Retrieval |
+
+Until those triggers occur, the Manager remains system-controlled and Room
+archive access remains the bounded canonical transcript plus rolling summary;
+neither item is a hidden extension point in the current API.
 
 | Item | Trigger |
 |---|---|

@@ -5,7 +5,7 @@ import type { ReadStream } from "node:fs";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import type { Queryable } from "../proposals/repository";
-import { contentReadSql } from "../access/contentAccessSql";
+import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql";
 import { recordDetailRead } from "../contentAccess/audit";
 
 export interface ArtifactOut {
@@ -147,7 +147,8 @@ export class PgArtifactRepository {
       `${artifactSelectSql()}
         WHERE a.id = $1
           AND a.space_id = $2
-          AND ${contentReadSql("artifact", "a", "$3")}`,
+          AND ${contentReadSql("artifact", "a", "$3")}
+          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
       params,
     );
     const row = result.rows[0];
@@ -225,6 +226,7 @@ function buildWhere(
   const clauses = [
     `a.space_id = $1`,
     contentReadSql("artifact", "a", "$2"),
+    roomRunReadAccessSql("a.run_id", "a.space_id", "$2"),
   ];
   if (!filters.includeSystemArchives) clauses.push(`a.surface_role <> 'system_archive'`);
   if (filters.artifactType) clauses.push(`a.artifact_type = ${add(filters.artifactType)}`);

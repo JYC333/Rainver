@@ -30,6 +30,7 @@ import { providerVendor, type VendorDescriptor } from "../vendors";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth";
 import { resolveNetworkProfileRepository } from "../../networkProfiles";
 import { isSpaceOwnerOrAdmin } from "../../access/roles";
+import { SpaceAssistantService } from "../../agents/spaceAssistantService";
 import {
   recordAttributedUsageObservation,
   resolveUsageObservationAttribution,
@@ -144,6 +145,7 @@ const TASK_REQUIRED_CAPABILITY: Record<string, (vendor: VendorDescriptor) => boo
   retrieval_rerank: (vendor) => vendor.supportsRerank,
   retrieval_query_rewrite: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
   retrieval_synthesis: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
+  room_conversation_title: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
 };
 
 export function providerSupportsTask(task: string, providerType: string): boolean {
@@ -175,6 +177,22 @@ class PgProviderCommandStore implements ProviderCommandStore {
 
   private async masterKey(): Promise<Buffer> {
     return loadOrCreateModelProviderApiKeyMasterKey(this.config.agentSpaceHome);
+  }
+
+  private async reconcileManagedAssistantProfilesForSpace(spaceId: string): Promise<void> {
+    await SpaceAssistantService.reconcileModelApiProfiles(this.pool, spaceId);
+  }
+
+  private async reconcileManagedAssistantProfilesForProvider(providerId: string): Promise<void> {
+    const grants = await this.pool.query<{ space_id: string }>(
+      `SELECT DISTINCT space_id
+         FROM model_provider_space_grants
+        WHERE provider_id = $1`,
+      [providerId],
+    );
+    for (const grant of grants.rows) {
+      await this.reconcileManagedAssistantProfilesForSpace(grant.space_id);
+    }
   }
 
   private async providerById(spaceId: string, providerId: string): Promise<ProviderRow | null> {
@@ -455,6 +473,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     const row = await this.providerById(spaceId, providerId);
     if (!row) throw new Error("created provider was not readable");
+    await this.reconcileManagedAssistantProfilesForSpace(spaceId);
     return mapProviderRowToDto(row);
   }
 
@@ -567,6 +586,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       });
     }
     const row = await this.providerById(spaceId, providerId);
+    await this.reconcileManagedAssistantProfilesForProvider(providerId);
     if (!row) return mapProviderRowToDto(updated.rows[0]);
     return mapProviderRowToDto({ ...row, manageable: true });
   }
@@ -587,6 +607,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
         WHERE provider_id = $1`,
       [providerId, new Date()],
     );
+    await this.reconcileManagedAssistantProfilesForProvider(providerId);
   }
 
   private async userSpaceRole(userId: string, spaceId: string): Promise<string | null> {
@@ -699,6 +720,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
         input.network_profile_id !== undefined,
       ],
     );
+    await this.reconcileManagedAssistantProfilesForSpace(targetSpaceId);
     return grantOut(result.rows[0]);
   }
 
@@ -724,6 +746,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     if (result.rowCount === 0) {
       throw new ProviderCommandNotFoundError(`ModelProvider grant not found`);
     }
+    await this.reconcileManagedAssistantProfilesForSpace(grantSpaceId);
   }
 
   async getInvocationTarget(

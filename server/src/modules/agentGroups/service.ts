@@ -17,6 +17,21 @@ import {
 } from "../sessions/conversationRuntimeSessionRepository";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters";
 import {
+  loadRoomConversationReplayThroughMessage,
+} from "../runtimeContext/conversationContinuity";
+import {
+  assembleRoomConversationContext,
+  estimateRoomSummaryTokens,
+  ROOM_RECENT_TOKEN_BUDGET,
+} from "../rooms/conversationContext";
+import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../systemActions/scenarioToolAllowance";
+import {
+  ACTION_RESULT_REPORTING_POLICY,
+  DURABLE_ACTION_CLAIM_POLICY,
+  QUESTION_DECOMPOSITION_ACTION_POLICY,
+  RESEARCH_EXECUTION_POLICY,
+} from "../systemActions/conversationPolicy";
+import {
   type AgentCapabilitySnapshotRecord,
   type AgentRunGroupRecord,
   type AgentRunMessageRecord,
@@ -66,6 +81,16 @@ export interface SendAgentGroupMessageInput {
     runtime_profile_id: string;
     credential_profile_id?: string | null;
   }> | null;
+  /**
+   * Precomputed Project state context text (mode projection + attention),
+   * prefixed onto the assigned task for a Room-dispatched run (plan:
+   * `.agent/plans/project-conversational-advancement-plan.md`, Phase A
+   * decision 3). Built once per dispatch by the caller — not here — so a
+   * multi-recipient dispatch reads the Project once rather than per
+   * recipient. Domain-neutral: sourced from the generic Project Overview
+   * contract, never assembled from a specific domain's tables.
+   */
+  project_state_context?: string | null;
 }
 
 export interface AgentGroupMessageRecipientSegment {
@@ -132,7 +157,7 @@ export class AgentGroupRunService {
     members: AgentGroupTimeline["members"];
   }> {
     return withDbTransaction(this.pool, (client) =>
-      this.createGroupInTransaction(client, identity, input),
+      this.createGroupInTransaction(client, identity, input, { allowSystemAssistant: false }),
     );
   }
 
@@ -140,6 +165,7 @@ export class AgentGroupRunService {
     client: PoolClient,
     identity: AgentGroupIdentity,
     input: CreateAgentGroupInput,
+    options: { allowSystemAssistant?: boolean } = {},
   ): Promise<{
     group: AgentRunGroupRecord;
     members: AgentGroupTimeline["members"];
@@ -152,50 +178,57 @@ export class AgentGroupRunService {
     }
 
     const repos = this.repos(client);
-      await assertAgentsActive(repos.groups, input.space_id, identity.userId, memberAgentIds);
-      const capabilitySnapshots = new Map(
-        (await repos.groups.listAgentCapabilitySnapshots(input.space_id, identity.userId, memberAgentIds))
-          .map((snapshot) => [snapshot.id, snapshot]),
-      );
+    await assertAgentsActive(
+      repos.groups,
+      input.space_id,
+      identity.userId,
+      memberAgentIds,
+      options.allowSystemAssistant === true,
+      input.room_id ?? null,
+    );
+    const capabilitySnapshots = new Map(
+      (await repos.groups.listAgentCapabilitySnapshots(input.space_id, identity.userId, memberAgentIds, input.room_id ?? null))
+        .map((snapshot) => [snapshot.id, snapshot]),
+    );
 
-      const budgetLimits = delegationBudgetLimits(input.budget_json ?? {});
-      const policySnapshot = {
-        action: "run.spawn_child",
-        max_depth: budgetLimits.max_depth,
-        max_fanout: budgetLimits.max_fanout,
-        max_concurrency: budgetLimits.max_concurrency,
-        context_policy_json: input.context_policy_json ?? {},
-      };
-      const group = await repos.groups.createGroup({
+    const budgetLimits = delegationBudgetLimits(input.budget_json ?? {});
+    const policySnapshot = {
+      action: "run.spawn_child",
+      max_depth: budgetLimits.max_depth,
+      max_fanout: budgetLimits.max_fanout,
+      max_concurrency: budgetLimits.max_concurrency,
+      context_policy_json: input.context_policy_json ?? {},
+    };
+    const group = await repos.groups.createGroup({
+      space_id: input.space_id,
+      manager_user_id: identity.userId,
+      manager_agent_id: managerAgentId,
+      room_id: input.room_id ?? null,
+      session_id: input.session_id ?? null,
+      trigger_message_id: input.trigger_message_id ?? null,
+      project_id: input.project_id ?? null,
+      project_folder_id: input.project_folder_id ?? null,
+      title: requiredTrimmed(input.title, "title"),
+      goal: optionalTrimmed(input.goal),
+      budget_json: input.budget_json ?? {},
+      policy_snapshot_json: policySnapshot,
+    });
+
+    for (const agentId of memberAgentIds) {
+      await repos.groups.createMember({
         space_id: input.space_id,
-        manager_user_id: identity.userId,
-        manager_agent_id: managerAgentId,
-        room_id: input.room_id ?? null,
-        session_id: input.session_id ?? null,
-        trigger_message_id: input.trigger_message_id ?? null,
-        project_id: input.project_id ?? null,
-        project_folder_id: input.project_folder_id ?? null,
-        title: requiredTrimmed(input.title, "title"),
-        goal: optionalTrimmed(input.goal),
-        budget_json: input.budget_json ?? {},
-        policy_snapshot_json: policySnapshot,
+        group_id: group.id,
+        agent_id: agentId,
+        role: agentId === managerAgentId ? "manager" : "worker",
+        capabilities_json: memberCapabilitySnapshot(capabilitySnapshots.get(agentId)),
+        context_policy_json: input.context_policy_json ?? {},
       });
+    }
 
-      for (const agentId of memberAgentIds) {
-        await repos.groups.createMember({
-          space_id: input.space_id,
-          group_id: group.id,
-          agent_id: agentId,
-          role: agentId === managerAgentId ? "manager" : "worker",
-          capabilities_json: memberCapabilitySnapshot(capabilitySnapshots.get(agentId)),
-          context_policy_json: input.context_policy_json ?? {},
-        });
-      }
-
-      return {
-        group,
-        members: await repos.groups.listMembers(input.space_id, group.id),
-      };
+    return {
+      group,
+      members: await repos.groups.listMembers(input.space_id, group.id),
+    };
   }
 
   async listGroups(identity: AgentGroupIdentity, input: {
@@ -323,19 +356,24 @@ export class AgentGroupRunService {
           recipientAgentId,
           identity.userId,
           "recipient_segments.recipient_agent_ids",
+          roomAuthority,
         );
       }
       const recipientSnapshots = plannedRecipientRunCount > 1
         ? new Map(
-          (await repos.groups.listAgentCapabilitySnapshots(input.space_id, identity.userId, allRecipientAgentIds))
+          (await repos.groups.listAgentCapabilitySnapshots(input.space_id, identity.userId, allRecipientAgentIds, group.room_id))
             .map((snapshot) => [snapshot.id, snapshot]),
         )
         : new Map<string, AgentCapabilitySnapshotRecord>();
+      if (group.session_id && !group.room_id) {
+        throw new HttpError(409, "Room conversation is missing its Room authority");
+      }
       const backends = group.session_id
         ? await prepareRoomConversationBackends({
             config: this.config,
             db: client,
             identity,
+            roomId: group.room_id!,
             sessionId: group.session_id,
             projectId: group.project_id,
             messageCursorId: group.trigger_message_id,
@@ -343,6 +381,12 @@ export class AgentGroupRunService {
             requested: input.backends ?? [],
           })
         : new Map<string, PreparedRoomConversationBackend>();
+      // Advancing a Project by talking about it is a capability of the Room,
+      // not of whichever Agent its roster happens to name — a Room roster is
+      // fixed at creation, so binding these to the Agent would mean a Room
+      // built around a differently configured Agent silently does nothing.
+      // Non-Room groups keep the Agent's own standing permissions.
+      const roomToolAllowance = group.room_id ? ROOM_CONVERSATION_TOOL_ALLOWANCE : null;
       const roomRunGranteeUserIds = group.room_id
         ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
         : [];
@@ -380,7 +424,7 @@ export class AgentGroupRunService {
               project_folder_id: rootRun.project_folder_id,
               session_id: rootRun.session_id,
               project_id: rootRun.project_id,
-              prompt: roomRunPrompt(backends.get(recipientAgentId), segment.content),
+              prompt: roomRunPrompt(backends.get(recipientAgentId), segment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
               runtime_profile_id: backends.get(recipientAgentId)?.runtime_profile_id ?? null,
               model_override_json: roomRunModelOverride(backends.get(recipientAgentId), {
@@ -392,6 +436,9 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
+              capabilities_json: roomToolAllowance ? [...roomToolAllowance] : null,
+              scenario_tool_allowance: roomToolAllowance,
+              allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
               contract_snapshot: roomRunContract(group, backends.get(recipientAgentId)),
@@ -414,7 +461,7 @@ export class AgentGroupRunService {
           mode: "live",
           run_type: "agent",
           trigger_origin: "manual",
-              prompt: roomRunPrompt(backends.get(firstRecipientAgentId), firstSegment.content),
+              prompt: roomRunPrompt(backends.get(firstRecipientAgentId), firstSegment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
               session_id: group.session_id,
               project_id: group.project_id,
@@ -435,6 +482,9 @@ export class AgentGroupRunService {
           }),
           visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
+          capabilities_json: roomToolAllowance ? [...roomToolAllowance] : null,
+          scenario_tool_allowance: roomToolAllowance,
+          allow_system_assistant: Boolean(group.room_id),
         });
         const linkedRootRun = await repos.runs.linkRunToGroupRoot({
           space_id: input.space_id,
@@ -466,7 +516,7 @@ export class AgentGroupRunService {
               project_folder_id: linkedRootRun.project_folder_id,
               session_id: linkedRootRun.session_id,
               project_id: linkedRootRun.project_id,
-              prompt: roomRunPrompt(backends.get(recipientAgentId), segment.content),
+              prompt: roomRunPrompt(backends.get(recipientAgentId), segment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
               runtime_profile_id: backends.get(recipientAgentId)?.runtime_profile_id ?? null,
               model_override_json: roomRunModelOverride(backends.get(recipientAgentId), {
@@ -478,6 +528,9 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
+              capabilities_json: roomToolAllowance ? [...roomToolAllowance] : null,
+              scenario_tool_allowance: roomToolAllowance,
+              allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
               contract_snapshot: roomRunContract(group, backends.get(recipientAgentId)),
@@ -590,7 +643,7 @@ export class AgentGroupRunService {
       if (!parentRun || parentRun.run_group_id !== group.id) throw new HttpError(404, "Parent run not found in this agent group");
       if (parentRun.agent_id !== input.requesting_agent_id) throw new HttpError(403, "requesting_agent_id must match the parent run agent");
       if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) throw new HttpError(409, "Parent run does not belong to the group root lineage");
-      await assertAgentsExist(repos.groups, input.space_id, identity.userId, [input.requesting_agent_id, input.target_agent_id]);
+      await assertAgentsExist(repos.groups, input.space_id, identity.userId, [input.requesting_agent_id, input.target_agent_id], group.room_id);
       return this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
     });
   }
@@ -793,7 +846,7 @@ export class AgentGroupRunService {
     await assertAgentsExist(repos.groups, input.space_id, identity.userId, [
       input.requesting_agent_id,
       input.target_agent_id,
-    ]);
+    ], group.room_id);
     if (input.request_message_id) {
       const requestMessage = await repos.groups.getMessage(
         input.space_id,
@@ -907,11 +960,17 @@ export class AgentGroupRunService {
       project_folder_id: parentRun.project_folder_id,
       session_id: parentRun.session_id,
       project_id: parentRun.project_id,
+      prompt: group.room_id ? input.instruction : null,
       instruction: input.instruction,
+      model_override_json: group.room_id
+        ? delegatedRoomModelOverride(parentRun, input.target_agent_id)
+        : null,
+      contract_snapshot: group.room_id ? roomRunContract(group, undefined) : undefined,
       budget_json: input.budget_json ?? {},
       context_policy_json: input.context_policy_json ?? {},
       visibility: group.room_id ? "selected_users" : undefined,
       grantee_user_ids: roomRunGranteeUserIds,
+      allow_system_assistant: Boolean(group.room_id),
     });
     const queued = await repos.groups.updateDelegationAfterPolicy({
       space_id: input.space_id,
@@ -1045,13 +1104,18 @@ async function assertAgentsActive(
   spaceId: string,
   userId: string,
   agentIds: readonly string[],
+  allowSystemAssistant = false,
+  roomId?: string | null,
 ): Promise<void> {
-  const statuses = await repo.listAgentStatuses(spaceId, userId, agentIds);
-  const byId = new Map(statuses.map((row) => [row.id, row.status]));
+  const statuses = await repo.listAgentStatuses(spaceId, userId, agentIds, roomId);
+  const byId = new Map(statuses.map((row) => [row.id, row]));
   for (const agentId of agentIds) {
     const status = byId.get(agentId);
     if (!status) throw new HttpError(404, `Agent '${agentId}' not found in this space`);
-    if (status !== "active") {
+    if (status.agent_kind === "system_assistant" && !allowSystemAssistant) {
+      throw new HttpError(404, `Agent '${agentId}' not found in this space`);
+    }
+    if (status.status !== "active") {
       throw new HttpError(409, `Agent '${agentId}' is not active`);
     }
   }
@@ -1064,6 +1128,7 @@ async function assertActiveGroupMember(
   agentId: string,
   userId: string,
   fieldName: string,
+  allowSystemAssistant = false,
 ): Promise<void> {
   const member = await repo.getMemberWithAgentStatus({
     space_id: spaceId,
@@ -1080,6 +1145,9 @@ async function assertActiveGroupMember(
   if (member.agent_status !== "active") {
     throw new HttpError(409, `${fieldName} agent is not active`);
   }
+  if (member.agent_kind === "system_assistant" && !allowSystemAssistant) {
+    throw new HttpError(404, `${fieldName} must reference an ordinary Agent`);
+  }
 }
 
 async function assertAgentsExist(
@@ -1087,8 +1155,9 @@ async function assertAgentsExist(
   spaceId: string,
   userId: string,
   agentIds: readonly string[],
+  roomId?: string | null,
 ): Promise<void> {
-  const statuses = await repo.listAgentStatuses(spaceId, userId, uniqueIds(agentIds));
+  const statuses = await repo.listAgentStatuses(spaceId, userId, uniqueIds(agentIds), roomId);
   const existing = new Set(statuses.map((row) => row.id));
   for (const agentId of agentIds) {
     if (!existing.has(agentId)) {
@@ -1125,6 +1194,7 @@ function messageRecipientSegmentsForInput(
 }
 
 interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
+  room_id: string;
   session_id: string;
   user_id: string;
   project_id: string | null;
@@ -1141,6 +1211,7 @@ async function prepareRoomConversationBackends(input: {
   config: ServerConfig;
   db: PoolClient;
   identity: AgentGroupIdentity;
+  roomId: string;
   sessionId: string;
   projectId: string | null;
   messageCursorId: string | null;
@@ -1175,8 +1246,8 @@ async function prepareRoomConversationBackends(input: {
     input.agentIds,
   );
   const replayPrompt = renderRoomPromptMessages(
-    replayContext.messages,
-    null,
+    replayContext.recent_messages,
+    replayContext.summary_text,
   );
   const runtimeSessions = new PgConversationRuntimeSessionRepository(input.db);
   const resolved = new Map<string, PreparedRoomConversationBackend>();
@@ -1233,9 +1304,10 @@ async function prepareRoomConversationBackends(input: {
     const canResume = resumeMessages !== null;
     const incrementMessages = canResume
       ? messagesAfterCursor(resumeMessages, agentId, input.identity.userId)
-      : replayContext.messages;
+      : replayContext.recent_messages;
     resolved.set(agentId, {
       ...backend,
+      room_id: input.roomId,
       session_id: input.sessionId,
       user_id: input.identity.userId,
       project_id: input.projectId,
@@ -1276,6 +1348,7 @@ function roomRunModelOverride(
     chat_turn: {
       schema_version: "chat_turn.v1",
       session_id: backend.session_id,
+      room_id: backend.room_id,
       user_id: backend.user_id,
       user_message_id: backend.message_cursor_id,
       agent_id: turn.currentRecipientAgentId,
@@ -1290,8 +1363,30 @@ function roomRunModelOverride(
             runtime_state_key: runtime.runtime_state_key,
             runtime_session_id: resumeSessionId,
             context_fingerprint: backend.runtime_context_fingerprint,
-            replay_prompt: roomReplayPrompt(backend.replay_prompt, assignedTask),
+            replay_prompt: roomReplayPrompt(
+              backend.resume_runtime_session ? backend.increment_prompt : backend.replay_prompt,
+              assignedTask,
+            ),
             message_cursor_id: backend.message_cursor_id,
+          },
+        }
+      : {}),
+  };
+}
+
+function delegatedRoomModelOverride(
+  parentRun: Pick<RunRecord, "model_override_json">,
+  targetAgentId: string,
+): Record<string, unknown> {
+  const parent = recordValue(parentRun.model_override_json);
+  const parentTurn = recordValue(parent.chat_turn);
+  return {
+    execution_mode: "room_conversation.v1",
+    ...(parentTurn.schema_version === "chat_turn.v1"
+      ? {
+          chat_turn: {
+            ...parentTurn,
+            agent_id: targetAgentId,
           },
         }
       : {}),
@@ -1344,31 +1439,37 @@ async function listRoomReplayContext(
   sessionId: string,
   currentMessageId: string,
 ): Promise<{
-  messages: RoomPromptMessage[];
+  recent_messages: RoomPromptMessage[];
+  summary_text: string | null;
 }> {
-  const messages = await db.query<RoomPromptMessage>(
-    `WITH current_message AS (
-       SELECT created_at, id
-         FROM messages
-        WHERE space_id = $1 AND session_id = $2 AND id = $3
-     )
-     SELECT message.id, message.user_id, message.sender_agent_id,
-            message.role, message.content, message.created_at,
-            producer.instructed_by_user_id
-       FROM messages message
-       CROSS JOIN current_message current
-       LEFT JOIN runs producer
-         ON producer.space_id = message.space_id
-        AND producer.id = message.metadata_json->>'run_id'
-      WHERE message.space_id = $1
-        AND message.session_id = $2
-        AND (message.created_at, message.id) <= (current.created_at, current.id)
-      ORDER BY message.created_at DESC, message.id DESC
-      LIMIT 80`,
-    [spaceId, sessionId, currentMessageId],
-  );
+  const replay = await loadRoomConversationReplayThroughMessage(db, {
+    spaceId,
+    sessionId,
+    currentMessageId,
+  });
+  const currentMessage = replay.messages.find((message) => message.id === currentMessageId);
+  if (!currentMessage) {
+    throw new HttpError(409, "Room task trigger message is no longer available");
+  }
+  const context = assembleRoomConversationContext({
+    messages: replay.messages,
+    currentMessage,
+    summary: replay.summary,
+  });
   return {
-    messages: messages.rows.reverse(),
+    recent_messages: [
+      ...(context?.recent_messages ?? []),
+      currentMessage,
+    ].map((message) => ({
+      id: message.id,
+      user_id: message.user_id ?? null,
+      sender_agent_id: message.sender_agent_id ?? null,
+      role: message.role,
+      content: message.content,
+      created_at: message.created_at,
+      instructed_by_user_id: null,
+    })),
+    summary_text: context?.summary?.summary_text ?? null,
   };
 }
 
@@ -1410,14 +1511,22 @@ async function listRoomMessagesAfterCursor(
        LEFT JOIN runs producer
          ON producer.space_id = message.space_id
         AND producer.id = message.metadata_json->>'run_id'
-      ORDER BY message.created_at ASC NULLS LAST, message.id ASC NULLS LAST`,
+       ORDER BY message.created_at ASC NULLS LAST, message.id ASC NULLS LAST
+       LIMIT 2049`,
     [spaceId, sessionId, cursorId, currentMessageId],
   );
-  if (result.rows.length === 0) return null;
-  return result.rows
+  if (result.rows.length === 0 || result.rows.length > 2048) return null;
+  const messages = result.rows
     .filter((message): message is RoomPromptMessage & { cursor_exists: boolean } =>
       typeof message.id === "string"
     );
+  const tokenEstimate = messages.reduce(
+    (total, message) => total + estimateRoomSummaryTokens(message.content),
+    0,
+  );
+  // A stale/oversized CLI delta must rotate into the bounded Room replay
+  // path. The current trigger is still retained whole by that path.
+  return tokenEstimate <= ROOM_RECENT_TOKEN_BUDGET ? messages : null;
 }
 
 function messagesAfterCursor(
@@ -1481,8 +1590,21 @@ function roomRuntimeContextFingerprint(
 function roomRunPrompt(
   _backend: PreparedRoomConversationBackend | undefined,
   assignedTask: string,
+  projectStateContext?: string | null,
 ): string {
-  return assignedTask;
+  const executionRules = [
+    "[Room execution rules]",
+    DURABLE_ACTION_CLAIM_POLICY,
+    QUESTION_DECOMPOSITION_ACTION_POLICY,
+    RESEARCH_EXECUTION_POLICY,
+    ACTION_RESULT_REPORTING_POLICY,
+  ].join("\n");
+  return [
+    projectStateContext,
+    executionRules,
+    "[Assigned task for this Room turn]",
+    assignedTask,
+  ].filter(Boolean).join("\n\n");
 }
 
 function roomReplayPrompt(replayPrompt: string, assignedTask: string): string {

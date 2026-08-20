@@ -13,8 +13,11 @@ bounded-launch modes; see [autonomy.md](autonomy.md)).
 
 `information_digest` is also non-user-selectable. The scheduler's provisioning
 sweep creates a default 07:00 UTC daily schedule for every subscribed reader
-and active Project once an active attribution Agent exists. Reconciliation is
-idempotent and never rewrites an existing schedule. A member may fire only
+and active Project once an active non-Room attribution Agent exists. The
+managed Personal Assistant is never eligible: native digest execution is not a
+Room conversation. Reconciliation is idempotent, preserves an existing
+schedule's cadence and timezone, and repairs only a stale attribution Agent
+binding. A member may fire only
 their own personal schedule; the Project form additionally requires Project
 writer authority. Its handler performs deterministic ranking over already
 annotated rows and does not invoke the attribution Agent.

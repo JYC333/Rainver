@@ -165,7 +165,7 @@ export const ChatTurnCompletionSchema = z
         z.object({
           action_id: z.string(),
           tool_call_id: z.string().nullish(),
-          status: z.enum(["proposed", "auto_applied", "completed", "failed"]),
+          status: z.enum(["proposed", "auto_applied", "completed", "failed", "rejected"]),
           proposal_id: IdSchema.nullish(),
           proposal_type: z.string().nullish(),
           title: z.string().nullish(),

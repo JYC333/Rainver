@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
-import { ArrowRight, Ban, Check, Loader2 } from 'lucide-react'
+import { ArrowRight, Ban, Check, Circle, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSpaceNavigate } from '../../../core/spaceNav'
 import { inquiryApi } from '../../../api/client'
@@ -137,6 +137,14 @@ export function StageWorkspace({
   }
 
   async function go(kind: InquiryNextFocusKind) {
+    // Opening search setup is navigation, not a running background search.
+    // The Project Research start command records `search_acquisition` only
+    // after it has durably created the Workflow and Operation.
+    if (kind === 'search_acquisition' && !startedWorkflow) {
+      const destination = nextFocusDestination(kind, { projectId, threadId: detail.id, startedWorkflow })
+      if (destination.kind === 'link') navigate(destination.to)
+      return
+    }
     if (!(await start(kind))) return
     const destination = nextFocusDestination(kind, { projectId, threadId: detail.id, startedWorkflow })
     if (destination.kind === 'tab') onOpenTab(destination.tab)
@@ -162,7 +170,9 @@ export function StageWorkspace({
       ? 'Work running'
       : viewed.current
         ? 'Current stage'
-      : 'Not started this round'
+        : viewed.started
+          ? 'Worked on this round'
+          : 'Not started this round'
 
   function inspectStage(stage: StageId, focus = false) {
     setViewedStage(stage)
@@ -211,9 +221,11 @@ export function StageWorkspace({
               >
                 {stage.complete && <Check aria-hidden className="size-3" />}
                 {stage.running && <Loader2 aria-hidden className="size-3 animate-spin" />}
+                {stage.started && <Circle aria-hidden className="size-2 fill-current" />}
                 {STAGE_LABELS[stage.id]}
                 {stage.complete && <span className="sr-only"> — completed this round</span>}
                 {stage.running && <span className="sr-only"> — work running</span>}
+                {stage.started && <span className="sr-only"> — worked on this round</span>}
                 {stage.current && (
                   <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide">
                     Current
@@ -290,6 +302,7 @@ export function StageWorkspace({
             <div className="space-y-2">
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Actions in this stage</p>
               {stageActions.map((action, index) => {
+                const setupOnly = action.kind === 'search_acquisition' && startedWorkflow === null
                 const running = (detail.attention_state === 'focused' && detail.next_focus_kind === action.kind)
                   || (action.kind === 'search_acquisition' && startedWorkflow !== null)
                   || roundSteps.some(step => step.kind === action.kind && step.status === 'in_progress')
@@ -312,7 +325,9 @@ export function StageWorkspace({
                       disabled={busy || blocked}
                       onClick={() => void go(action.kind)}
                     >
-                      {running || blocked
+                      {setupOnly
+                        ? destination.cta
+                        : running || blocked
                         ? destination.cta
                         : detail.attention_state === 'focused'
                           ? destination.cta

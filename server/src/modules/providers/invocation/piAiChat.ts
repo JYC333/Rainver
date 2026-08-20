@@ -25,7 +25,7 @@ import type {
 } from "./invocation";
 import { ProviderInvocationError, structuredOutputFromText } from "./invocation";
 import type { ManagedAuthEvent, ManagedAuthPrompt, ManagedOAuthFlow } from "../managedOAuth";
-import { classifyProviderFailure } from "./resilience";
+import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience";
 
 type PiModule = typeof import("@earendil-works/pi-ai", { with: { "resolution-mode": "import" } });
 type PiCatalogModule = typeof import("@earendil-works/pi-ai/providers/all", { with: { "resolution-mode": "import" } });
@@ -385,6 +385,62 @@ function responseToolCalls(message: AssistantMessage, allowed: CanonicalToolDefi
   return calls.length ? calls : undefined;
 }
 
+/**
+ * How a stream that failed part-way through should be classified.
+ *
+ * The status line is only a verdict when the provider actually reached one.
+ * Once 2xx headers have arrived, the response is committed and a failure while
+ * reading the body is the transport dropping it — undici surfaces exactly that
+ * as a bare `terminated`. Classifying it from the 200 already in hand filed it
+ * as `permanent`, which fails immediately with no same-key retry and no
+ * provider fallback; the longest single generation on the platform (a whole
+ * research report in one structured response) therefore died for good every
+ * time its socket was cut.
+ *
+ * It is deliberately not `provider_network_error`: that code carries the
+ * larger retry budget meant for failures that cost nothing because no response
+ * ever started. A stream that died mid-body has already been paid for in full,
+ * so it takes the ordinary transient budget of one same-key retry before
+ * falling back.
+ *
+ * A non-2xx status is a real provider verdict streamed as an error body and
+ * keeps its own taxonomy; an aborted request is the run owner's decision and
+ * is never retried.
+ */
+function streamFailure(
+  responseStatus: number | null,
+  detail: string,
+  aborted: boolean,
+): { status: number; decision: ProviderResilienceDecision; code?: string } {
+  if (aborted) {
+    return {
+      status: 499,
+      decision: { failure_class: "permanent", actions: ["fail"] },
+      code: "provider_request_aborted",
+    };
+  }
+  if (responseStatus === null) {
+    return {
+      status: 502,
+      decision: { failure_class: "transient", actions: ["fallback_provider", "fail"] },
+      code: "provider_network_error",
+    };
+  }
+  if (responseStatus >= 200 && responseStatus < 300) {
+    return {
+      status: 502,
+      decision: { failure_class: "transient", actions: ["fallback_provider", "fail"] },
+      code: "provider_stream_terminated",
+    };
+  }
+  const decision = classifyProviderFailure(responseStatus, detail);
+  return {
+    status: 502,
+    decision,
+    code: decision.failure_class === "rate_limit" ? "provider_rate_limit" : undefined,
+  };
+}
+
 export async function completePiAiChat(
   provider: ProviderInfo,
   networkFetch: typeof globalThis.fetch,
@@ -464,17 +520,8 @@ export async function completePiAiChat(
   } catch (error) {
     if (error instanceof ProviderInvocationError) throw error;
     const detail = error instanceof Error ? error.message : "Provider request failed";
-    const status = responseStatus ?? (body.abort_signal?.aborted ? 499 : 502);
-    throw new ProviderInvocationError(
-      status === 499 ? 499 : 502,
-      detail,
-      status === 499
-        ? { failure_class: "permanent", actions: ["fail"] }
-        : responseStatus === null
-          ? { failure_class: "transient", actions: ["fallback_provider", "fail"] }
-          : classifyProviderFailure(responseStatus, detail),
-      status === 499 ? "provider_request_aborted" : responseStatus === null ? "provider_network_error" : undefined,
-    );
+    const failure = streamFailure(responseStatus, detail, body.abort_signal?.aborted === true);
+    throw new ProviderInvocationError(failure.status, detail, failure.decision, failure.code);
   }
 
   const providerSemanticStop = finalMessage.stopReason === "error" &&
@@ -484,24 +531,12 @@ export async function completePiAiChat(
     responseStatus < 300;
   if ((finalMessage.stopReason === "error" && !providerSemanticStop) || finalMessage.stopReason === "aborted") {
     const detail = finalMessage.errorMessage ?? "Provider request failed";
-    const status = responseStatus ?? (finalMessage.stopReason === "aborted" ? 499 : 502);
-    const decision = status === 499
-      ? { failure_class: "permanent" as const, actions: ["fail" as const] }
-      : responseStatus === null
-        ? { failure_class: "transient" as const, actions: ["fallback_provider" as const, "fail" as const] }
-        : classifyProviderFailure(status, detail);
-    throw new ProviderInvocationError(
-      status === 499 ? 499 : 502,
+    const failure = streamFailure(
+      responseStatus,
       detail,
-      decision,
-      status === 499
-        ? "provider_request_aborted"
-        : responseStatus === null
-          ? "provider_network_error"
-          : decision.failure_class === "rate_limit"
-            ? "provider_rate_limit"
-            : undefined,
+      finalMessage.stopReason === "aborted" || body.abort_signal?.aborted === true,
     );
+    throw new ProviderInvocationError(failure.status, detail, failure.decision, failure.code);
   }
 
   const text = responseText(finalMessage);

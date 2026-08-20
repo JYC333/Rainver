@@ -489,16 +489,20 @@ async function applyKnowledgeCreateProposal(
   }
 
   const requestedOwnerUserId = optionalString(payload.owner_user_id);
+  // Human-authored proposals use created_by_user_id. Agent-authored proposals
+  // retain Agent attribution and carry the instructing human in owner_user_id.
+  // Both are trusted proposal columns populated by server-side writers.
+  const proposalHumanOwner = proposalHumanOwnerId(context.proposal);
   if (
     requestedOwnerUserId !== null &&
-    context.proposal.created_by_user_id !== null &&
-    requestedOwnerUserId !== context.proposal.created_by_user_id
+    proposalHumanOwner !== null &&
+    requestedOwnerUserId !== proposalHumanOwner
   ) {
     throw new KnowledgeApplyValidationError("Knowledge owner must be the proposal creator");
   }
   if (
     (visibility === "private" || visibility === "selected_users") &&
-    context.proposal.created_by_user_id == null
+    proposalHumanOwner === null
   ) {
     throw new KnowledgeApplyValidationError("private or selected-user Knowledge requires a human owner");
   }
@@ -530,7 +534,7 @@ async function applyKnowledgeCreateProposal(
     title,
     summary: excerpt,
     visibility,
-    ownerUserId: requestedOwnerUserId ?? context.proposal.created_by_user_id,
+    ownerUserId: requestedOwnerUserId ?? proposalHumanOwner,
     primaryProjectId: projectId,
     projectFolderId,
     createdByUserId: context.proposal.created_by_user_id,
@@ -1435,10 +1439,14 @@ async function requireKnowledgeItem(
   if (row.status !== "active" && row.status !== "draft") {
     throw new KnowledgeApplyValidationError("target Knowledge item is not active");
   }
-  if (
-    !(await proposalCanReadSpaceObject(db, proposal, row.id))
-    || !canApplyKnowledgeMutation(row, proposal)
-  ) {
+  const humanOwnerId = proposalHumanOwnerId(proposal);
+  const canRead = humanOwnerId !== null && (await contentDecisionFromDb(
+    db,
+    { spaceId: proposal.space_id, userId: humanOwnerId },
+    "space_object",
+    row.id,
+  )) !== "deny";
+  if (!canRead || !isContentOwner(row, humanOwnerId)) {
     throw new KnowledgeApplyValidationError("Knowledge item not found or not editable");
   }
   return row;
@@ -2025,11 +2033,11 @@ function serializeObjectProfile(row: SpaceObjectProfileRow): Record<string, unkn
   };
 }
 
-function canApplyKnowledgeMutation(
-  item: KnowledgeItemRow,
+function proposalHumanOwnerId(
   proposal: ProposalApplyContext["proposal"],
-): boolean {
-  return item.space_id === proposal.space_id && isContentOwner(item, proposal.created_by_user_id);
+): string | null {
+  return proposal.created_by_user_id
+    ?? (proposal.created_by_agent_id ? proposal.owner_user_id ?? null : null);
 }
 
 function canApplyClaimMutation(

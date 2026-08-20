@@ -214,6 +214,57 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("1");
   });
 
+  it("leaves a non-retryable interactive chat failure terminal for its conversation reply", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    const runId = await seedRun({
+      max_attempts: 2,
+      model_override_json: {
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          session_id: "chat-session",
+          user_id: USER,
+          user_message_id: "chat-message",
+          agent_id: AGENT,
+          agent_version_id: VERSION,
+          project_id: null,
+        },
+      },
+    });
+    const repository = new PgRunRepository(pool);
+    await repository.markRunRunning({
+      run_id: runId,
+      space_id: SPACE,
+      started_at: new Date().toISOString(),
+    });
+    await repository.markRunTerminal({
+      run_id: runId,
+      space_id: SPACE,
+      status: "failed",
+      error_json: {
+        error_code: "run_orchestration_failed",
+        error_text: "Conversation context loading failed.",
+      },
+      completed_at: new Date().toISOString(),
+    });
+
+    const decision = await new PgRunSupervisor(pool).supervise({
+      run: (await repository.getRun(SPACE, runId))!,
+      evaluation: {
+        outcome_status: "failed",
+        failure_reason_code: "run_orchestration_failed",
+      },
+    });
+
+    expect(decision).toBeNull();
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
+    expect((await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM run_supervisor_decisions
+        WHERE space_id = $1 AND run_id = $2`,
+      [SPACE, runId],
+    )).rows[0]?.count).toBe("0");
+  });
+
   it("retries semantic rejection through RunEvaluation and honors the attempt cap", async (ctx) => {
     if (!available || !pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
@@ -971,6 +1022,7 @@ async function seedRun(contract: {
   max_cost?: number;
   trigger_origin?: "manual" | "job" | "system";
   policy_context_json?: Record<string, unknown>;
+  model_override_json?: Record<string, unknown>;
 } = {}): Promise<string> {
   const runId = randomUUID();
   const now = new Date().toISOString();
@@ -979,9 +1031,10 @@ async function seedRun(contract: {
        id, space_id, agent_id, agent_version_id, runtime_profile_id,
        run_type, trigger_origin, status, mode,
        adapter_type, instructed_by_user_id, owner_user_id,
-       required_sandbox_level, contract_snapshot_json, created_at, updated_at
+       required_sandbox_level, contract_snapshot_json, model_override_json,
+       created_at, updated_at
      ) VALUES ($1, $2, $3, $4, $5, 'agent', $7, 'queued', 'live',
-       'model_api', $6, $6, 'none', $8::jsonb, $9, $9)`,
+       'model_api', $6, $6, 'none', $8::jsonb, $9::jsonb, $10, $10)`,
     [
       runId,
       SPACE,
@@ -1000,6 +1053,7 @@ async function seedRun(contract: {
         max_cost: contract.max_cost ?? null,
         policy_context_json: contract.policy_context_json ?? null,
       }),
+      JSON.stringify(contract.model_override_json ?? {}),
       now,
     ],
   );

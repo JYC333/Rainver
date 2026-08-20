@@ -121,12 +121,22 @@ Rules (clean model — no old paths):
   A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL, named
   *Personal Assistant* in personal spaces and *Space Assistant* in shared ones, at most
   one active per space via partial-unique index `uq_agents_system_assistant_per_space`,
-  minted from the internal `personal_assistant` seed spec) can still exist per space, but
-  only as the anchor for the soft Assistant preferences below — it is not an execution
-  identity Chat routes through, and there is no route that auto-creates one. `GET
-  /api/v1/agents/default-assistant/settings` resolves an existing `system_assistant`
-  Agent if present; if none exists, preferences are still readable and writable with
-  `assistant_agent_id: null`.
+  minted lazily from the internal `personal_assistant` seed on the first Room creation)
+  is the immutable manager execution identity for Room turns. It is hidden from ordinary
+  Agent CRUD surfaces; `GET /api/v1/agents/default-assistant/settings` exposes only the
+  soft preference layer and points at the managed identity once provisioned. The shared
+  Run admission boundary rejects this identity for every non-Room run producer; only the
+  Room dispatch path supplies the internal Room authority marker for root, grouped, and
+  delegated Runs.
+
+Room-backed execution has one additional, deliberately narrow access path for
+private or `selected_users` specialist Agents. `room_agent_access_grants` is
+evaluated only when the Agent Group carries the matching `room_id`, the Agent
+is an active Room roster member, and the requesting user is an active member of
+that Room. It does not alter `contentReadSql`, ordinary Agent list/detail APIs,
+Project visibility, or non-Room Run authorization. A grant is revocable and is
+always rechecked at dispatch and Room runtime-context setup; Run snapshots
+preserve history after a specialist or human member is removed.
 - **Assistant preferences are a soft layer, never policy.** The
   `agent.default_assistant.settings` space-scoped setting
   (`GET`/`PATCH /api/v1/agents/default-assistant/settings`) holds
@@ -388,10 +398,10 @@ for use rather than authoring new ones).
 
 ## Built-in Templates (no built-in concrete agents)
 
-There are **no** seeded per-space concrete agents. The old built-in concrete
-agent seeder was
-**removed** — built-in product behavior comes from system **templates** (factories),
-and a concrete Agent is created only on demand via copy-on-create.
+There are no eagerly seeded per-space concrete Agents. The old boot-time
+concrete-agent seeder was removed. Built-in product behavior comes from system
+templates (factories), while the hidden Space Assistant is provisioned lazily
+and only when the first Project Room is created.
 
 Built-in **templates** (global factories, idempotent, seeded by the server agents module,
 seeded once in `bootstrap`). Five are **public** reusable specialized factories; the sixth,
@@ -402,8 +412,8 @@ user-instantiable.
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
   per-space `system_assistant`-kind Agent, which anchors Assistant preferences settings;
   dynamic per-invocation selection via Runtime Context; `chat_message` + proposal-only
-  task/idea/memory/knowledge. Not a reusable template; not created on demand — a space may
-  have none.
+  task/idea/memory/knowledge. Not a reusable template. Its concrete Space Assistant is
+  created transactionally on first Room creation, not during boot.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
   proposals + reflection summary; `classification_mode: model_selects`; proposal-only durables
 - `memory_reflector` (`memory`) — model-only; memory update/merge/delete proposals only (+ noop);
@@ -425,10 +435,13 @@ initially (future scope): `coding_task_agent`, `research_scout`, `source_process
 There is **no** single global "default agent" that runs implicitly. Every `Run` targets an
 explicit `Agent`, and execution config resolves from the Run's snapshotted runtime profile plus
 `Agent.current_version_id` → `AgentVersion`.
-A `system_assistant`-kind Agent (system-owned, at most one active per space) is not
-auto-created; a space may have none. When one exists, it is only the anchor for soft Assistant
-**preferences** (`agent.default_assistant.settings`), never the core prompt or hard policy, and
-it is not a Chat execution identity.
+A `system_assistant`-kind Agent is system-owned, hidden from ordinary Agent list/detail/create
+surfaces, and limited to one active instance per Space. Room creation lazily provisions it from
+the internal `personal_assistant` prompt seed and uses it as the immutable Room manager. Its
+runtime profiles remain shared definitions; the speaking user's API eligibility or CLI credential
+is resolved per conversation binding. It also anchors soft Assistant **preferences**
+(`agent.default_assistant.settings`) without allowing those preferences to change the core prompt
+or hard policy.
 
 Memory reflection (`POST /sessions/{id}/reflect`) is an explicit **internal service**
 (the memory consolidation/reflection path via the `memory.reflect` capability) — it does not run

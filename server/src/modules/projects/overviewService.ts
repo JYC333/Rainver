@@ -110,7 +110,12 @@ export class ProjectOverviewService {
       }>(
         `SELECT
            (SELECT count(*)::int FROM model_providers WHERE space_id = $1 AND enabled = true) AS provider_count,
-           (SELECT count(*)::int FROM agents WHERE space_id = $1 AND status = 'active' AND current_version_id IS NOT NULL) AS agent_count,
+           (SELECT count(*)::int
+              FROM agents
+             WHERE space_id = $1
+               AND status = 'active'
+               AND agent_kind <> 'system_assistant'
+               AND current_version_id IS NOT NULL) AS agent_count,
            (SELECT count(*)::int FROM project_source_bindings WHERE space_id = $1 AND project_id = $2 AND status = 'active') AS source_count,
            (SELECT count(*)::int FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active' AND execution_enabled = true) AS folder_count`,
         [identity.spaceId, projectId],
@@ -128,14 +133,28 @@ export class ProjectOverviewService {
     // its recommended sources — and both readings put the question to a
     // provenance record that could not answer it.
     const workflowSetupRequired = mode === "research";
+    // User-facing initialization means the Project has a formally published
+    // goal/problem definition. Audit metadata and downstream work are separate.
+    const goalOrProblem = typeof brief?.goal === "string" ? brief.goal.trim() : "";
+    const projectDefinition = goalOrProblem
+      ? {
+          status: "initialized" as const,
+          basis: "published_brief_goal" as const,
+          goal_or_problem: goalOrProblem,
+        }
+      : {
+          status: "needs_definition" as const,
+          basis: "missing_published_brief_goal" as const,
+          goal_or_problem: null,
+        };
     const setupChecklist = [
       {
         id: "brief",
-        label: "Project Brief goal",
+        label: "Project goal or problem",
         status: brief?.goal ? "ready" : "missing",
         required: true,
         href: `/projects/${projectId}/inquiry?setup=goal`,
-        detail: brief?.goal ? "Goal recorded" : "Add the intended outcome from the Inquiry Area",
+        detail: brief?.goal ? "Project initialized" : "Define the Project's goal or core problem",
       },
       {
         id: "provider",
@@ -206,6 +225,7 @@ export class ProjectOverviewService {
         status: project.status,
       },
       brief,
+      definition_status: projectDefinition,
       mode_projection: modeProjection,
       available_modes: availableModes,
       attention: attention.slice(0, 20),

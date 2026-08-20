@@ -208,6 +208,17 @@ export function providerVendor(id: string): VendorDescriptor | null {
   return BY_ID.get(id) ?? null;
 }
 
+export function providerSupportsChat(id: string): boolean {
+  return providerVendor(id)?.supportsChat === true;
+}
+
+export function providerCanRunWithoutCredential(id: string): boolean {
+  const vendor = providerVendor(id);
+  return vendor?.supportsChat === true &&
+    vendor.apiKeyRequired === false &&
+    vendor.subscriptionOnly === false;
+}
+
 /**
  * Resolution is deliberately strict. A row whose vendor is unknown cannot have
  * its protocol guessed — that guess is what the base-URL heuristic would have

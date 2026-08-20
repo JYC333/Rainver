@@ -191,6 +191,15 @@ switching Mode takes effect immediately and there is nothing to migrate.
 Creating a Project writes a name, an optional Brief, and `primary_mode`. It
 binds no Sources, creates no Workflow, and installs no starter content.
 
+User-visible Project initialization is complete when the active published
+Brief defines a Project goal or core problem. Publication/review metadata does
+not establish that state by itself, and downstream Inquiry Threads, Workflows,
+Runs, Sources, Providers, or Folders are not initialization prerequisites.
+Those records describe readiness or work progress after initialization. The
+Overview exposes this distinction as `definition_status`; a Project may be
+initialized while its Mode projection correctly reports that no work is under
+way yet.
+
 There was a **Project Template** here, and its removal is worth recording
 because the concept was rescued twice before it was retired. It began as a
 project type carrying `sections` and `starter_workflow_template_keys`; R1
@@ -1246,6 +1255,14 @@ target, on the same post-commit path that queues advice. Manual Steps have no
 such fact behind them and end when the round does. Open Steps are readable
 Project-wide, which is what lets the Area a user was sent to name the Thread
 that sent them and offer the way back.
+
+Opening initial-intake setup is not itself a search and creates no background
+Step. The setup dialog remains open until the start request succeeds, so a
+failed request preserves both the user's configuration and its error context.
+The Research start transaction creates/reuses the pinned Workflow, creates its
+first Operation, and only then starts the Thread's `search_acquisition` Step;
+all three facts commit or roll back together. Confirming the question closes
+the preceding clarification Step but does not claim that acquisition started.
 
 Rounds anchor to Iterations rather than to a separate counter. Recording an
 Iteration closes the round's open primary Step as `done` and stamps it with

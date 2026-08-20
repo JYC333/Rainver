@@ -49,6 +49,8 @@ describe("proposal apply service guards", () => {
   it("allows required approvers to reject proposals created by another user", () => {
     const ownerRequired = {
       created_by_user_id: "member-1",
+      owner_user_id: "member-1",
+      created_by_agent_id: null,
       required_approver_role: "owner",
     };
     expect(canRejectProposalWithRole(ownerRequired, "owner-1", "owner")).toBe(true);
@@ -57,9 +59,26 @@ describe("proposal apply service guards", () => {
 
     const noRequiredRole = {
       created_by_user_id: "member-1",
+      owner_user_id: "member-1",
+      created_by_agent_id: null,
       required_approver_role: null,
     };
     expect(canRejectProposalWithRole(noRequiredRole, "owner-1", "owner")).toBe(false);
     expect(canRejectProposalWithRole(noRequiredRole, "member-1", "member")).toBe(true);
+
+    const agentAuthored = {
+      created_by_user_id: null,
+      owner_user_id: "member-1",
+      created_by_agent_id: "agent-1",
+      required_approver_role: null,
+    };
+    expect(canRejectProposalWithRole(agentAuthored, "member-1", "member")).toBe(true);
+    expect(canRejectProposalWithRole(agentAuthored, "other-1", "member")).toBe(false);
+
+    const ownerWithoutAgentAttribution = {
+      ...agentAuthored,
+      created_by_agent_id: null,
+    };
+    expect(canRejectProposalWithRole(ownerWithoutAgentAttribution, "member-1", "member")).toBe(false);
   });
 });

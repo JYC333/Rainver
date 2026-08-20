@@ -1,22 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+import {
+  effectiveProviderDefault,
+  isProviderEligibleForUser,
+  providerCredentialEligibilitySql,
+  type ProviderEligibilityRow,
+} from "../providers/eligibility";
 import { contractRecord } from "../runs/contractSnapshot";
 import type { RunRecord } from "../runs/runRepositoryTypes";
 import type { Queryable } from "../routeUtils/common";
+import { loadSystemActionRegistry } from "../systemActions/registry";
 import { DeterministicRouteSelector, mergeRouteHints } from "./router";
 import type { RouteCandidate, RouteHints } from "./types";
 
-interface RuntimeCandidateRow {
+interface RuntimeCandidateRow extends ProviderEligibilityRow {
+  agent_kind: string;
   runtime_profile_id: string;
   profile_name: string;
   adapter_type: string;
   model_provider_id: string | null;
+  provider_type: string | null;
+  provider_credential_type: string | null;
   model_name: string | null;
   credential_profile_id: string | null;
   credential_profile_owner_id: string | null;
-  provider_enabled: boolean | null;
-  provider_credential_id: string | null;
-  provider_has_healthy_credential: boolean;
+  provider_is_default: boolean | null;
   enabled: boolean;
   is_default: boolean;
   runtime_config_json: unknown;
@@ -53,6 +61,7 @@ export class PgRouteDecisionRepository {
   async routeRun(run: RunRecord): Promise<RunRecord> {
     if (run.run_type === "system" || run.run_type === "validation") return run;
     const hints = routeHintsForRun(run);
+    const requiredCapabilities = await runtimeRequiredCapabilities(run.capabilities_json);
     const requestedCredentialProfileId = conversationCredentialProfileId(run.model_override_json);
     const candidates = await this.listCandidates(
       run.space_id,
@@ -67,7 +76,7 @@ export class PgRouteDecisionRepository {
       runtime_profile_is_explicit: run.runtime_profile_selection_source === "explicit",
       excluded_runtime_profile_ids: retryRoute?.excludedProfileIds,
       fallback_runtime_profile_ids: retryRoute?.fallbackProfileIds,
-      required_capabilities: stringArray(run.capabilities_json),
+      required_capabilities: requiredCapabilities,
       required_tools: [],
       required_sandbox_level: routeSandboxLevel(run.required_sandbox_level),
       execution_mode: run.mode === "dry_run" ? "dry_run" : "live",
@@ -264,17 +273,18 @@ export class PgRouteDecisionRepository {
             AND h.status IN ('succeeded', 'degraded', 'failed')
           GROUP BY h.adapter_type
        )
-      SELECT arp.id AS runtime_profile_id, arp.name AS profile_name,
+      SELECT a.agent_kind,
+             arp.id AS runtime_profile_id, arp.name AS profile_name,
               arp.adapter_type, arp.model_provider_id, arp.model_name,
               cp.id AS credential_profile_id, cp.owner_user_id AS credential_profile_owner_id,
-              (mp.enabled AND mpg.enabled) AS provider_enabled,
-              mp.credential_id AS provider_credential_id,
-              EXISTS (
-                SELECT 1 FROM model_provider_credentials mpc
-                 WHERE mpc.provider_id = arp.model_provider_id
-                   AND mpc.enabled = true AND mpc.healthy = true
-                   AND (mpc.cooldown_until IS NULL OR mpc.cooldown_until <= now())
-              ) AS provider_has_healthy_credential,
+              mp.provider_type,
+              mp.enabled AS provider_enabled,
+              mpg.enabled AS provider_grant_enabled,
+              mp.owner_user_id AS provider_owner_user_id,
+              provider_credential.credential_type AS provider_credential_type,
+              ${providerCredentialEligibilitySql("mp.id", "mp.credential_id", "provider_credential")}
+                AS provider_has_eligible_credential,
+              mpg.is_default AS provider_is_default,
               arp.enabled, arp.is_default, arp.runtime_config_json,
               arp.runtime_policy_json,
               CASE
@@ -301,6 +311,8 @@ export class PgRouteDecisionRepository {
          LEFT JOIN model_provider_space_grants mpg
            ON mpg.provider_id = arp.model_provider_id
           AND mpg.space_id = arp.space_id
+         LEFT JOIN credentials provider_credential
+           ON provider_credential.id = mp.credential_id
          LEFT JOIN LATERAL (
            SELECT profile.id, profile.owner_user_id
              FROM cli_credential_space_grants grant_row
@@ -324,7 +336,10 @@ export class PgRouteDecisionRepository {
            ON conformance.runtime_adapter_type = arp.adapter_type
           AND conformance.runtime_version = COALESCE(arp.runtime_config_json->>'runtime_tool_version', '')
         WHERE arp.space_id = $1 AND arp.agent_id = $2
-        ORDER BY arp.is_default DESC, arp.created_at ASC, arp.id ASC`,
+        ORDER BY CASE WHEN a.agent_kind = 'system_assistant'
+                      THEN COALESCE(mpg.is_default, false)
+                      ELSE false END DESC,
+                 arp.is_default DESC, arp.created_at ASC, arp.id ASC`,
       [spaceId, agentId, ownerUserId, requestedCredentialProfileId],
     );
     const hasCliCandidates = result.rows.some((row) =>
@@ -348,6 +363,7 @@ export class PgRouteDecisionRepository {
     const candidates = result.rows.map((row) =>
       candidateFromRow(
         row,
+        ownerUserId,
         !isLocalCliRuntimeAdapter(row.adapter_type) ||
           Boolean(row.credential_profile_id && loggedInCredentialIds?.has(row.credential_profile_id)),
       ));
@@ -454,21 +470,27 @@ export function routeHintsForRun(
 
 function candidateFromRow(
   row: RuntimeCandidateRow,
+  userId: string | null,
   cliCredentialLoggedIn = true,
 ): RouteCandidate {
   const spec = getRuntimeAdapterSpec(row.adapter_type);
   const runtimeConfig = record(row.runtime_config_json);
   const runtimePolicy = record(row.runtime_policy_json);
+  const providerAvailable = row.model_provider_id !== null &&
+    isProviderEligibleForUser(row, userId);
+  const isDefault = row.agent_kind === "system_assistant"
+    ? effectiveProviderDefault(row.provider_is_default, row.is_default)
+    : row.is_default;
   const credentialAvailable = spec?.credentials.credential_mode === "none"
     ? true
     : isLocalCliRuntimeAdapter(row.adapter_type)
       ? spec?.credentials.credential_mode === "cli_profile_or_model_provider"
         ? Boolean(
             (cliCredentialLoggedIn && row.credential_profile_id && row.credential_profile_owner_id) ||
-            (row.model_provider_id && row.provider_enabled && (row.provider_credential_id || row.provider_has_healthy_credential)),
+            providerAvailable,
           )
         : Boolean(cliCredentialLoggedIn && row.credential_profile_id && row.credential_profile_owner_id)
-      : Boolean(row.provider_enabled && (row.provider_credential_id || row.provider_has_healthy_credential));
+      : providerAvailable;
   return {
     runtime_profile_id: row.runtime_profile_id,
     profile_name: row.profile_name,
@@ -479,7 +501,7 @@ function candidateFromRow(
     runtime_config_json: runtimeConfig,
     runtime_policy_json: runtimePolicy,
     enabled: row.enabled && spec?.implementation_status === "implemented",
-    is_default: row.is_default,
+    is_default: isDefault,
     credential_available: credentialAvailable,
     capabilities: stringArray(row.capabilities_json),
     tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids ?? runtimePolicy.tools),
@@ -508,6 +530,19 @@ function conversationCredentialProfileId(value: unknown): string | null {
   return typeof credentialProfileId === "string" && credentialProfileId.trim()
     ? credentialProfileId
     : null;
+}
+export async function runtimeRequiredCapabilities(value: unknown): Promise<string[]> {
+  const declared = stringArray(value);
+  if (declared.length === 0) return declared;
+  const systemActions = await loadSystemActionRegistry();
+  const systemActionIds = new Set<string>(systemActions.keys());
+  // `runs.capabilities_json` currently carries both runtime capabilities and
+  // server-owned System Action declarations. System Actions execute through
+  // the AgentToolGateway and are authorized by `permission_snapshot_json`;
+  // they are not capabilities that a runtime profile must duplicate. Keeping
+  // them in the runtime hard filter makes a Room's own tool allowance reject
+  // every otherwise-valid candidate before the conversation can start.
+  return declared.filter((capability) => !systemActionIds.has(capability));
 }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []; }
 function unique(values: string[]): string[] { return [...new Set(values)]; }

@@ -64,6 +64,7 @@ describe('QuestionRefinementPanel', () => {
     vi.clearAllMocks()
     vi.restoreAllMocks()
     vi.spyOn(projectResearchApi, 'saveInitialIntakeDraft').mockResolvedValue({ id: 'workflow-1' } as never)
+    vi.spyOn(inquiryApi, 'updateWork').mockResolvedValue({} as never)
     vi.spyOn(projectResearchApi, 'questionAssessment').mockResolvedValue(null)
     vi.spyOn(projectResearchApi, 'questionAssessmentConfirmations').mockResolvedValue([])
     vi.spyOn(projectResearchApi, 'confirmQuestionAssessment').mockImplementation(async (_projectId, body) => ({
@@ -522,7 +523,7 @@ describe('QuestionRefinementPanel', () => {
     render(
       <QuestionRefinementPanel
         projectId="project-1"
-        thread={makeThread()}
+        thread={makeThread({ next_focus_kind: 'clarify_or_decompose' })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
         providerVendors={providerVendors}
@@ -547,6 +548,10 @@ describe('QuestionRefinementPanel', () => {
       research_context_version_id: 'confirmed-context-1',
       question_refine_skipped: false,
     }))
+    expect(inquiryApi.updateWork).toHaveBeenCalledWith('project-1', 'thread-1', {
+      next_focus_kind: null,
+      blocked_reason: null,
+    })
     expect(onChanged).toHaveBeenCalled()
   })
 

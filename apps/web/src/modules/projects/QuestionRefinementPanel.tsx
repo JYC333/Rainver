@@ -503,6 +503,23 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
       toast.error(`Assessment confirmed, but the research draft could not be saved: ${errMsg(error)}`)
     }
 
+    if (thread.next_focus_kind === 'clarify_or_decompose') {
+      try {
+        // Confirmation completes this explicit clarification action. It does
+        // not start a search by itself; back on Inquiry the now-confirmed
+        // question can offer Acquire as the next real action. Do not issue the
+        // generic clear command when no primary clarification is projected:
+        // that command also calls off a real background acquisition.
+        await inquiryApi.updateWork(projectId, thread.id, {
+          next_focus_kind: null,
+          blocked_reason: null,
+        })
+      } catch (error) {
+        followUpFailed = true
+        toast.error(`Assessment confirmed, but Inquiry could not advance to the next stage: ${errMsg(error)}`)
+      }
+    }
+
     try {
       await onChanged()
     } catch (error) {
@@ -833,7 +850,7 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
               value={composer}
               onChange={event => setComposer(event.target.value)}
               onKeyDown={event => {
-                if (event.key === 'Enter' && !event.shiftKey) {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                   event.preventDefault()
                   if (composer.trim()) submitComposer()
                 }

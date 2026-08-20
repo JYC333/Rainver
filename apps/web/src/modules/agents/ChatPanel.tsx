@@ -389,7 +389,9 @@ async function refreshActionPreviews(previews?: ChatActionPreview[]) {
         ? 'proposed'
         : proposal.status === 'accepted'
           ? 'completed'
-          : 'failed'
+          : proposal.status === 'rejected'
+            ? 'rejected'
+            : 'failed'
       return { ...preview, status }
     } catch {
       return preview

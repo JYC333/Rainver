@@ -1183,6 +1183,25 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "best_effort",
   },
   {
+    // Direct execution, no proposal gate (room-advancement-reliability-plan
+    // Phase 4): the Inquiry Thread was already human-accepted at creation,
+    // so starting acquisition on it is execution, not the agent-drafted
+    // structure/content write ADR 0003 gates. The human confirmation gate is
+    // replaced by hard idempotency guards in the acquisition service itself.
+    action: "research.acquisition.start",
+    resource_type: "inquiry_thread",
+    default_risk_level: "medium",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point: "server/src/modules/projectResearch/pipeline/researchAcquisitionService.ts",
+    description:
+      "Start a tracked background research-acquisition pipeline (question assessment, query planning, strategy activation, initial intake) for an accepted Inquiry Thread.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
+  {
     action: "retrieval.search",
     resource_type: "retrieval_tool",
     default_risk_level: "low",
@@ -1373,6 +1392,10 @@ export const POLICY_ACTION_REGISTRY = [
   { action:"source.backfill.start",resource_type:"source_backfill_plan",default_risk_level:"high",default_decision:"require_approval",audit_required:true,approval_capability:"approve_source_backfill",default_required_approver_role:"owner",current_enforcement_point:"server/src/modules/sources/sourceBackfillProposalApplier.ts",description:"Start an approved quota-controlled Source history import.",lifecycle_status:"wired_via_proposal",record_failure_mode:"fail_closed" },
   { action:"source.backfill.manage",resource_type:"source_backfill_plan",default_risk_level:"medium",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/sources/routes.ts",description:"Pause or resume a Source history import plan.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed" },
   { action:"task.plan.propose",resource_type:"plan",default_risk_level:"medium",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/systemActions/agentToolGateway.ts",description:"Submit an Agent-generated execution Plan for a source Task.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed" },
+  { action:"project.brief.propose",resource_type:"project_brief_version",default_risk_level:"medium",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/systemActions/agentToolGateway.ts",description:"Propose a formal Project goal or core problem for owner review.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed" },
+  { action:"inquiry.thread.propose",resource_type:"inquiry_thread",default_risk_level:"medium",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/systemActions/agentToolGateway.ts",description:"Propose an Agent-drafted Inquiry Thread for human review.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed" },
+  { action:"inquiry.iteration.propose",resource_type:"inquiry_thread",default_risk_level:"medium",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/systemActions/agentToolGateway.ts",description:"Propose an Agent-drafted Inquiry Thread conclusion (Iteration) for review.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed" },
+  { action:"inquiry.knowledge.promote",resource_type:"knowledge_promotion_candidate",default_risk_level:"medium",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/systemActions/agentToolGateway.ts",description:"Propose promoting a concluded Inquiry round to a Knowledge Item.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed" },
 ] as const satisfies readonly PolicyActionDefinition[];
 
 export type PolicyActionId = (typeof POLICY_ACTION_REGISTRY)[number]["action"];

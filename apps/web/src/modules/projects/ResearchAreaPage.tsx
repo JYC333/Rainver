@@ -180,7 +180,7 @@ export default function ResearchAreaPage() {
           canAct={research.project?.status === 'active'}
           onOpenChange={research.newSearch.setOpen}
           onSave={(config, dialogWorkflowId) => research.saveInitialIntake(config, dialogWorkflowId ?? null)}
-          onStart={(config, dialogWorkflowId) => { void research.startInitialIntake(config, dialogWorkflowId ?? null) }}
+          onStart={(config, dialogWorkflowId) => research.startInitialIntake(config, dialogWorkflowId ?? null)}
         />
       )}
     </div>

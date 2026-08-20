@@ -216,19 +216,21 @@ describe('InquiryAreaPage', () => {
     expect(screen.getByRole('region', { name: 'Backlog' })).toBeInTheDocument()
   })
 
-  it('turns a confirmed Next Focus into a direct call to action', async () => {
+  it('opens search setup without claiming that acquisition already started', async () => {
     vi.mocked(inquiryApi.getThread).mockResolvedValue({
       ...QUESTION_DETAIL, next_focus_kind: 'search_acquisition', next_focus_note: 'Start with 2020+ reviews',
     })
     renderPage()
 
-    // The actual stage remains explicit. Inspecting Acquire changes the panel,
-    // then its action starts the confirmed work.
+    // Inspecting Acquire changes the panel, but opening its setup is only
+    // navigation. The Research start command owns the eventual background
+    // Step once a Workflow and Operation actually exist.
     fireEvent.click(await screen.findByRole('tab', { name: /^Acquire/ }))
     expect(screen.getByText('Start with 2020+ reviews')).toBeInTheDocument()
-    fireEvent.click(await screen.findByRole('button', { name: 'Bring into Focus and start Search / acquisition' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up evidence search' }))
     await waitFor(() => expect(spaceNavigate)
       .toHaveBeenCalledWith('/projects/project-1/research?research=new&thread=thread-1'))
+    expect(inquiryApi.updateWork).not.toHaveBeenCalled()
   })
 
   it('sends search_acquisition to Operations once a search is actually running', async () => {
@@ -827,6 +829,28 @@ describe('InquiryAreaPage', () => {
     const refreshTick = interval.mock.calls.find(([, delay]) => delay === 5_000)?.[0]
     if (typeof refreshTick === 'function') refreshTick()
     await waitFor(() => expect(projectResearchApi.workflows).toHaveBeenCalledTimes(workflowReads + 1))
+    interval.mockRestore()
+  })
+
+  it('neither ticks nor spins a stage on a step only the user can end', async () => {
+    // The Clarify step stays open until the round closes. Reading it as
+    // completion ticked the stage on the click, and reading it as running left
+    // a spinner beside that tick with nothing able to stop it.
+    vi.mocked(inquiryApi.listSteps).mockResolvedValue([{
+      id: 'step-1', project_id: 'project-1', thread_id: 'thread-1',
+      kind: 'clarify_or_decompose', status: 'in_progress', slot: 'primary', note: null,
+      target_ref_kind: null, target_ref_id: null, iteration_id: null, origin: 'user',
+      started_at: '2026-07-23T00:00:00.000Z', completed_at: null,
+      created_at: '2026-07-23T00:00:00.000Z',
+    }])
+    const interval = vi.spyOn(window, 'setInterval')
+    renderPage()
+
+    const clarify = await screen.findByRole('tab', { name: /^Clarify/ })
+    expect(clarify).not.toHaveAccessibleName(/work running/)
+    expect(clarify).not.toHaveAccessibleName(/completed this round/)
+    expect(clarify).toHaveAccessibleName(/worked on this round/)
+    expect(interval).not.toHaveBeenCalledWith(expect.any(Function), 5_000)
     interval.mockRestore()
   })
 

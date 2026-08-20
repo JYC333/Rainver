@@ -129,6 +129,60 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
     });
   });
 
+  it("rotates an oversized delta and reconstructs from the bounded checkpoint", async () => {
+    if (!available || !pool) return;
+    const cli = new RuntimeContextCliContinuityService(pool);
+    const continuity = new RuntimeContextContinuityService(pool);
+    const binding = await cli.prepareBinding(bindingInput(control()));
+    await cli.recordVendorSession({
+      bindingId: binding.id,
+      runtimeStateKey: binding.runtime_state_key,
+      vendorSessionId: "thread-overflow",
+    });
+    let currentMessage = "";
+    for (let index = 0; index < 8; index += 1) {
+      currentMessage = await message(`overflow-${index}`, "x".repeat(1_200), "user");
+      await continuity.ingest({
+        invocation_id: RUN,
+        event_type: "user_message_received",
+        canonical_ref: { type: "message", id: currentMessage },
+        semantic_role: "user_input",
+        token_estimate: 1_200,
+      });
+    }
+    const scope = await pool.query<{ event_head_cursor: number }>(
+      `SELECT event_head_cursor FROM context_event_scopes WHERE space_id=$1 AND work_context_scope_id=$2`,
+      [SPACE, RUN],
+    );
+    const checkpointId = randomUUID();
+    await pool.query(
+      `INSERT INTO context_semantic_checkpoints (
+         id,space_id,work_context_scope_id,version,covered_cursor,status,
+         checkpoint_json,extractor_ref_json,created_at
+       ) VALUES ($1,$2,$3,1,$4,'active',$5::jsonb,$6::jsonb,now())`,
+      [checkpointId, SPACE, RUN, Number(scope.rows[0]?.event_head_cursor ?? 0),
+        JSON.stringify({ decisions: [{ text: "Bounded checkpoint" }] }),
+        JSON.stringify({ type: "provider_task", id: randomUUID(), version: "test.v1" })],
+    );
+    const delivery = await cli.prepareDelivery({
+      bindingId: binding.id,
+      spaceId: SPACE,
+      workContextScopeId: RUN,
+      invocationId: RUN,
+      currentMessageRef: { type: "message", id: currentMessage },
+      ownerUserId: USER,
+      authorizedSourceRefs: [{ type: "message", id: currentMessage }],
+    });
+    expect(delivery.mode).toBe("full");
+    expect(delivery.id).not.toBe(binding.id);
+    expect(delivery.rotation_reason).toBe("overflow_reconstruction");
+    expect(delivery.delta_item?.payload.text).toContain("Bounded checkpoint");
+    await expect(pool.query<{ status: string }>(
+      `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
+      [binding.id],
+    )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
+  });
+
   it("advances only accepted deltas and rotates hard authority or missing vendor state", async () => {
     if (!available || !pool) return;
     const cli = new RuntimeContextCliContinuityService(pool);

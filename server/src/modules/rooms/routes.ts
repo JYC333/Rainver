@@ -17,10 +17,23 @@ type RoomServicePort = Pick<
   | "createRoom"
   | "listRooms"
   | "getRoom"
+  | "listAgentCandidates"
+  | "addAgent"
+  | "addAgentPreset"
+  | "removeAgent"
+  | "inviteUser"
+  | "listInvitations"
+  | "listPendingApprovals"
+  | "decideInvitation"
+  | "removeUser"
+  | "transferOwner"
+  | "claimOwner"
   | "createConversation"
   | "listConversations"
   | "listMessages"
+  | "getConversationSummary"
   | "sendMessage"
+  | "continueAfterProposal"
 >;
 type RoomServiceFactory = (context: ModuleContext) => RoomServicePort;
 let serviceFactoryOverride: RoomServiceFactory | null = null;
@@ -42,7 +55,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const protocol = await loadProtocol();
       const body = protocol.CreateRoomRequestSchema.parse(jsonBody(request));
-      return reply.code(201).send(await service(context).createRoom(identity, body));
+      const rawIdempotencyKey = request.headers["idempotency-key"];
+      const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : null;
+      return reply.code(201).send(await service(context).createRoom(identity, {
+        ...body,
+        idempotency_key: idempotencyKey,
+      }));
     } catch (error) {
       return sendRoomError(reply, error);
     }
@@ -63,11 +81,160 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/rooms/pending-approvals", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).listPendingApprovals(
+        identity,
+        parsePage(query(request), 50),
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
   app.get("/api/v1/rooms/:roomId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       return reply.send(await service(context).getRoom(identity, roomId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/rooms/:roomId/agent-candidates", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).listAgentCandidates(
+        identity,
+        roomId(request),
+        parsePage(query(request), 50),
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/agents", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      return reply.code(201).send(await service(context).addAgent(
+        identity,
+        roomId(request),
+        protocol.RoomAgentAddRequestSchema.parse(jsonBody(request)),
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/agent-presets", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      const rawIdempotencyKey = request.headers["idempotency-key"];
+      const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : null;
+      return reply.code(201).send(await service(context).addAgentPreset(
+        identity,
+        roomId(request),
+        {
+          ...protocol.RoomAgentPresetRequestSchema.parse(jsonBody(request)),
+          idempotency_key: idempotencyKey,
+        },
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.delete("/api/v1/rooms/:roomId/agents/:agentId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).removeAgent(identity, roomId(request), agentId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/rooms/:roomId/invitations", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).listInvitations(
+        identity,
+        roomId(request),
+        parsePage(query(request), 50),
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/invitations", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      return reply.code(201).send(await service(context).inviteUser(
+        identity,
+        roomId(request),
+        protocol.RoomInvitationCreateRequestSchema.parse(jsonBody(request)),
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/invitations/:invitationId/decision", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      return reply.send(await service(context).decideInvitation(
+        identity,
+        roomId(request),
+        invitationId(request),
+        protocol.RoomInvitationDecisionRequestSchema.parse(jsonBody(request)),
+      ));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.delete("/api/v1/rooms/:roomId/members/:userId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).removeUser(identity, roomId(request), userId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/owner-transfer", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const protocol = await loadProtocol();
+      const body = protocol.RoomOwnerTransferRequestSchema.parse(jsonBody(request));
+      return reply.send(await service(context).transferOwner(identity, roomId(request), body.user_id));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/owner-claim", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).claimOwner(identity, roomId(request)));
     } catch (error) {
       return sendRoomError(reply, error);
     }
@@ -123,6 +290,23 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     },
   );
 
+  app.get(
+    "/api/v1/rooms/:roomId/conversations/:sessionId/summary",
+    async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply);
+      if (!identity) return reply;
+      try {
+        return reply.send(await service(context).getConversationSummary(
+          identity,
+          roomId(request),
+          sessionId(request),
+        ));
+      } catch (error) {
+        return sendRoomError(reply, error);
+      }
+    },
+  );
+
   app.post(
     "/api/v1/rooms/:roomId/conversations/:sessionId/messages",
     async (request, reply) => {
@@ -144,6 +328,28 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       }
     },
   );
+
+  app.post(
+    "/api/v1/rooms/:roomId/conversations/:sessionId/proposal-continuations",
+    async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply);
+      if (!identity) return reply;
+      try {
+        const protocol = await loadProtocol();
+        const body = protocol.ContinueRoomAfterProposalRequestSchema.parse(jsonBody(request));
+        return reply.code(201).send(
+          await service(context).continueAfterProposal(
+            identity,
+            roomId(request),
+            sessionId(request),
+            body,
+          ),
+        );
+      } catch (error) {
+        return sendRoomError(reply, error);
+      }
+    },
+  );
 }
 
 function roomId(request: FastifyRequest): string {
@@ -152,6 +358,18 @@ function roomId(request: FastifyRequest): string {
 
 function sessionId(request: FastifyRequest): string {
   return params(request).sessionId ?? "";
+}
+
+function agentId(request: FastifyRequest): string {
+  return params(request).agentId ?? "";
+}
+
+function userId(request: FastifyRequest): string {
+  return params(request).userId ?? "";
+}
+
+function invitationId(request: FastifyRequest): string {
+  return params(request).invitationId ?? "";
 }
 
 function sendRoomError(reply: Parameters<typeof sendRouteError>[0], error: unknown) {

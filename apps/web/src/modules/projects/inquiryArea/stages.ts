@@ -1,3 +1,7 @@
+import {
+  INQUIRY_STAGE_FOR_KIND, INQUIRY_STAGE_HELP, INQUIRY_STAGE_LABELS, INQUIRY_STAGE_ORDER, inquiryKindsInStage,
+  type InquiryStageId,
+} from '@agent-space/protocol'
 import type {
   InquiryEvidenceSignal, InquiryNextFocusKind, InquiryThreadDetail, InquiryThreadStep, ProjectResearchWorkflow,
 } from '../../../types/api'
@@ -11,63 +15,20 @@ import type {
  * Stages are derived, never stored. A stage field would be one more thing a
  * user has to maintain, which is the class of problem this surface exists to
  * remove.
+ *
+ * The kind→stage vocabulary itself (`StageId`, `STAGE_ORDER`, `STAGE_LABELS`,
+ * `STAGE_HELP`, `STAGE_FOR_KIND`, `kindsInStage`) lives in
+ * `@agent-space/protocol` (plan Phase B) so a future non-frontend consumer —
+ * today, none — shares this file's exact classification instead of a second
+ * copy. Everything below this point is this page's own derived-state
+ * presentation logic and stays here; only the static vocabulary moved.
  */
-export type StageId = 'clarify' | 'acquire' | 'digest' | 'conclude' | 'land'
-
-export const STAGE_ORDER: StageId[] = ['clarify', 'acquire', 'digest', 'conclude', 'land']
-
-export const STAGE_LABELS: Record<StageId, string> = {
-  clarify: 'Clarify',
-  acquire: 'Acquire',
-  digest: 'Digest',
-  conclude: 'Conclude',
-  land: 'Land',
-}
-
-/** What each stage is for, and what counts as being done with it. */
-export const STAGE_HELP: Record<StageId, { purpose: string; done: string }> = {
-  clarify: {
-    purpose: 'Pin down what you are actually asking, and split it if it hides several questions.',
-    done: 'The wording has been through the assessment workspace.',
-  },
-  acquire: {
-    purpose: 'Get evidence — find it in the literature, or produce it yourself with an experiment.',
-    done: 'Evidence has reached this Thread, or an acquisition step has finished.',
-  },
-  digest: {
-    purpose: 'Read what arrived and decide what it does to your position.',
-    done: 'Nothing is left waiting for review.',
-  },
-  conclude: {
-    purpose: 'Say where the evidence leaves you, even if the answer is still partial.',
-    done: 'The position has moved off its starting state.',
-  },
-  land: {
-    purpose: 'Put the conclusion somewhere it does work: reusable Knowledge, a decision, or a task.',
-    done: 'This round has been recorded.',
-  },
-}
-
-/**
- * Acquire holds two paths rather than two stages: find evidence externally, or
- * produce it. Questions lean to the first and Hypotheses to the second, but
- * either may take either. Land holds three exits and gets no special treatment
- * — one recommendation and two explained alternatives, like every other stage.
- */
-export const STAGE_FOR_KIND: Record<InquiryNextFocusKind, StageId> = {
-  clarify_or_decompose: 'clarify',
-  search_acquisition: 'acquire',
-  design_run_experiment: 'acquire',
-  read_evidence: 'digest',
-  synthesize: 'conclude',
-  promote_knowledge: 'land',
-  create_decision_case: 'land',
-  create_delivery_task: 'land',
-}
-
-export function kindsInStage(stage: StageId): InquiryNextFocusKind[] {
-  return (Object.keys(STAGE_FOR_KIND) as InquiryNextFocusKind[]).filter(kind => STAGE_FOR_KIND[kind] === stage)
-}
+export type StageId = InquiryStageId
+export const STAGE_ORDER = INQUIRY_STAGE_ORDER
+export const STAGE_LABELS = INQUIRY_STAGE_LABELS
+export const STAGE_HELP = INQUIRY_STAGE_HELP
+export const STAGE_FOR_KIND = INQUIRY_STAGE_FOR_KIND
+export const kindsInStage = inquiryKindsInStage
 
 export interface StageInput {
   detail: InquiryThreadDetail
@@ -118,12 +79,30 @@ function engagedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean {
     step.status !== 'abandoned' && STAGE_FOR_KIND[step.kind as InquiryNextFocusKind] === stage)
 }
 
+/**
+ * A system operation for this stage is running right now.
+ *
+ * Only background steps qualify. A primary step is the user's attention, not
+ * work in flight: nothing ends one until the round does, so a spinner on it
+ * could never stop — a Thread that had once opened Clarify sat ticked and
+ * spinning at the same time for the rest of the round. Where the user is
+ * standing is what the Current badge says.
+ */
 function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
-  return steps.some(step => step.status === 'in_progress' && STAGE_FOR_KIND[step.kind as InquiryNextFocusKind] === stage)
+  return steps.some(step =>
+    step.slot === 'background' && step.status === 'in_progress'
+    && STAGE_FOR_KIND[step.kind as InquiryNextFocusKind] === stage)
 }
 
 /**
- * A stage is complete when this round has produced what the stage exists for.
+ * This round produced what the stage exists for. Only this earns a tick.
+ *
+ * Where a stage has an observable product, that product is the test and the
+ * user's attention is not: Clarify counted a started step, so the tick landed
+ * the moment its action was launched, before the wording had been near the
+ * assessment workspace. Writing up and landing have no observable of their own
+ * — the user going and doing them is the only evidence there is — so those two
+ * still read the step.
  *
  * Everything here is measured against the current round. Reading all-time state
  * instead would make the row useless the moment a round closed: a Thread whose
@@ -131,21 +110,21 @@ function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
  * would open pinned at Land and recommend promoting Knowledge before any new
  * evidence had been gathered. The spiral has to actually come round.
  */
-function isStageComplete(stage: StageId, input: StageInput): boolean {
+function hasStageProduct(stage: StageId, input: StageInput): boolean {
   const { signals, pendingCandidateCount, questionRefined, roundSteps, roundStartedAt } = input
   switch (stage) {
     case 'clarify':
-      // Wording is the exception: once a question has been assessed it stays
-      // assessed, and re-clarifying every round would be busywork.
-      return questionRefined || engagedThisRound(roundSteps, 'clarify')
+      // Wording is the exception to the round window: once a question has been
+      // assessed it stays assessed, and re-clarifying every round would be
+      // busywork.
+      return questionRefined
     case 'acquire': {
       // A running search does not complete Acquire — it *is* Acquire, still
       // happening. Treating it as done pushed the Thread into Digest with
       // nothing to digest, and recommended reading evidence that had not
       // arrived.
-      // Acquire is the one stage judged on its product rather than on the
-      // user's attention: it exists to yield evidence, and a search still
-      // running has not yielded any.
+      // Acquire exists to yield evidence, and a search still running has not
+      // yielded any.
       const arrivedThisRound = signals.some(
         signal => !roundStartedAt || signal.created_at > roundStartedAt,
       )
@@ -166,9 +145,27 @@ function isStageComplete(stage: StageId, input: StageInput): boolean {
 
 export interface StageView {
   id: StageId
+  /** This round produced the stage's own outcome. */
   complete: boolean
+  /** Worked this round, with nothing yet to show for it — not the same claim. */
+  started: boolean
   current: boolean
+  /** A system operation for this stage is running now. */
   running: boolean
+}
+
+/**
+ * The round has stopped being held at this stage.
+ *
+ * Settling is not completing. Clarify settles on the user having done the
+ * work even when the wording never passed assessment, because skipping
+ * refinement is a legitimate choice and a stage that could never settle would
+ * pin the round to it forever — but a skipped assessment is not a produced
+ * one, so it moves the row on without ticking it.
+ */
+function isStageSettled(stage: StageId, input: StageInput): boolean {
+  return hasStageProduct(stage, input)
+    || (stage === 'clarify' && engagedThisRound(input.roundSteps, 'clarify'))
 }
 
 /**
@@ -178,25 +175,32 @@ export interface StageView {
  * loop working rather than a step backwards.
  */
 export function deriveStages(input: StageInput): { stages: StageView[]; current: StageId; round: number } {
-  const satisfied = STAGE_ORDER.map(stage => isStageComplete(stage, input))
-  const firstIncomplete = satisfied.findIndex(done => !done)
+  const settled = STAGE_ORDER.map(stage => isStageSettled(stage, input))
+  const firstUnsettled = settled.findIndex(done => !done)
   // A later stage cannot be finished while an earlier one is not. Jumping
   // straight to a Land action on an untouched Thread satisfies Land's own
   // condition, and showing that as a tick after two blank stages tells the
   // user the round is finished when it has not started.
-  const complete = satisfied.map((done, index) =>
-    done && (firstIncomplete === -1 || index < firstIncomplete))
-  // Every stage complete means the round is ready to be recorded, which is
+  const reached = (index: number) => firstUnsettled === -1 || index < firstUnsettled
+  // Every stage settled means the round is ready to be recorded, which is
   // Land's own work — so Land stays current rather than the row going nowhere.
-  const current = firstIncomplete === -1 ? 'land' : STAGE_ORDER[firstIncomplete]!
+  const current = firstUnsettled === -1 ? 'land' : STAGE_ORDER[firstUnsettled]!
 
   return {
-    stages: STAGE_ORDER.map((id, index) => ({
-      id,
-      complete: complete[index]!,
-      current: id === current,
-      running: isRunning(input.roundSteps, id) || (id === 'acquire' && input.startedWorkflow !== null),
-    })),
+    stages: STAGE_ORDER.map((id, index) => {
+      const running = isRunning(input.roundSteps, id) || (id === 'acquire' && input.startedWorkflow !== null)
+      const complete = reached(index) && hasStageProduct(id, input)
+      return {
+        id,
+        complete,
+        // Work the user did that has not shown a result yet. Said quietly and
+        // separately, because the alternative to saying it is a stage the
+        // user has worked looking untouched.
+        started: !complete && !running && engagedThisRound(input.roundSteps, id),
+        current: id === current,
+        running,
+      }
+    }),
     current,
     round: input.closedRounds + 1,
   }

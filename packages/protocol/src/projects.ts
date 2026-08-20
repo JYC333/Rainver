@@ -249,6 +249,11 @@ export const ProjectOverviewResponseSchema = z
       })
       .passthrough(),
     brief: ProjectBriefVersionSchema.nullable(),
+    definition_status: z.object({
+      status: z.enum(["initialized", "needs_definition"]),
+      basis: z.enum(["published_brief_goal", "missing_published_brief_goal"]),
+      goal_or_problem: z.string().nullable(),
+    }).strict(),
     mode_projection: ModeOverviewProjectionSchema,
     available_modes: z.array(ProjectPrimaryModeSchema),
     attention: z.array(ProjectAttentionItemSchema),

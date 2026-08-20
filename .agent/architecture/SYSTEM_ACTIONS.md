@@ -75,19 +75,111 @@ broker.
 for a managed run. Exposure requires all of:
 
 1. registry visibility includes `agent_tool` and actor type includes `agent`;
-2. the immutable AgentVersion `tool_permissions_json.allowed_tools` permits the
-   action and the action is present in `runs.capabilities_json`;
+2. the action is present in `runs.capabilities_json` **and** permitted by the
+   run's allowance — normally the immutable AgentVersion
+   `tool_permissions_json.allowed_tools`, or a scenario allowance where the
+   capability belongs to the place the Run was opened in rather than to the
+   Agent (see below);
 3. a call-time PolicyGateway decision allows the registered policy action.
 
-The currently enabled generic write-capable tools are proposal-only:
-`source.connection.propose_create`, `project.source.propose_bind`, and
-`source.backfill.propose_start`. They receive the run's space, agent, instructed
-user, run, and Project scope. Project-only actions reject an unscoped run;
-backfill proposal lookup also proves the plan belongs to that Project. Agents
-do not receive direct activation, proposal-apply, grant-management, credential,
-deployment, or memory-write actions.
+### Scenario tool allowances
 
-These three tools have concrete Zod input contracts and matching model-visible
+`buildRunToolGrants` intersects what a Run declares with what it is allowed,
+and fails closed when the allowance is missing or malformed. That allowance
+normally comes from the AgentVersion, which models a tool as a property of the
+Agent. Some capabilities are properties of a *place* instead:
+`modules/systemActions/scenarioToolAllowance.ts` declares
+`ROOM_CONVERSATION_TOOL_ALLOWANCE`, the actions an Agent may use because it was
+spoken to in a Room, and `RunCreateInput.scenario_tool_allowance` supplies it
+in place of the AgentVersion's for exactly those Runs.
+
+This is a change of scope, not of strength: the intersection is unchanged, an
+action outside the list is still denied, and the Run must still declare it.
+Most of the allowance is proposal-gated (`project.propose_definition`,
+`inquiry.propose_thread`, `inquiry.record_conclusion`,
+`inquiry.promote_knowledge`); `agent.delegate` and `research.start_acquisition`
+(room-advancement-reliability-plan Phase 4) are the two directly-executed
+exceptions — durable actions guarded by idempotency rather than a human
+accept/reject step, because delegating a specialist investigation and
+starting a tracked research acquisition are both execution on an
+already-accepted Thread, not the agent-drafted structure/content write ADR
+0003 gates. It exists because a Room's roster
+is fixed at creation and no product surface edits `tool_permissions_json` at
+all, so binding Room conversation to Agent permissions means a Room built
+around a differently configured Agent silently does nothing, with nowhere for
+the user to see why. Non-Room agent groups keep the AgentVersion allowance
+unchanged.
+
+The allowance is also written to the Run's `capabilities_json`, because the
+declaration side of the intersection has to be satisfied too. That field is
+overloaded and the coupling is load-bearing in two directions worth knowing
+about:
+
+- `explicitRetrievalToolDomainsFromRun` (`runs/managedRetrievalTools.ts`)
+  treats a retrieval action id in `capabilities_json` as the *enablement
+  switch* for that retrieval domain. **No retrieval action may be added to a
+  scenario allowance without solving viewer scope first**: retrieval runs
+  under `instructed_by_user_id` — the message sender, whose reads include
+  their own `private` content — while the Room reply is visible to every Room
+  member, so granting it would let one member's private material be surfaced
+  into a shared conversation by asking a question.
+- `capabilityIdsForRun` selects runtime-skill bindings from the same field, so
+  a Run carrying a scenario allowance selects bindings keyed on these action
+  ids rather than the AgentVersion's own capability list. Inert today (nothing
+  writes `agent_versions.capabilities_json` either), but it is why the two
+  concerns should be separated if either grows.
+
+The allowance and its resulting grants are persisted together in
+`permission_snapshot_json`. Production execution binds queued Runs to their
+effective Work Context before starting them; `bindRunToWorkContext` preserves
+the snapshotted scenario allowance while recomputing the intersection, rather
+than silently reverting a Room Run to the AgentVersion allowance.
+
+The Inquiry proposal executors also preserve the Room Run's visibility. A
+`selected_users` Run produces a `selected_users` Proposal and copies the
+Run's active grants in the same transaction. Knowledge promotion keeps its
+intermediate Candidate private to the instructing user; the reviewable
+Proposal is the Room-visible shared result. This is the direct-executor
+equivalent of Run materialization's derived-output clamp (B8A).
+
+The currently enabled generic write-capable tools are proposal-only:
+`source.channel.propose_activation`, `project.source.propose_bind`,
+`project.propose_definition`, `source.backfill.propose_start`, `task.plan.propose`,
+`inquiry.propose_thread`, `inquiry.record_conclusion`, and
+`inquiry.promote_knowledge` (plus
+`authorization.request`, which is not itself proposal-shaped). They receive
+the run's space, agent, instructed user, run, and Project scope. Project-only
+actions reject an unscoped run; backfill proposal lookup also proves the plan
+belongs to that Project. Agents do not receive direct activation, proposal-apply,
+grant-management, credential, deployment, or memory-write actions.
+`research.start_acquisition` is the one durable exception in the Room
+allowance to this proposal-only shape (see below).
+
+`inquiry.propose_thread`, `inquiry.record_conclusion`, and
+`inquiry.promote_knowledge` (plan:
+`.agent/plans/project-conversational-advancement-plan.md`, Phase A) let a
+Room-dispatched agent draft a new Inquiry Thread, draft an Inquiry Thread
+conclusion, or promote a concluded round to Knowledge, as a single reviewable
+Proposal the user accepts inline in the Room. `inquiry.propose_thread` creates
+the canonical Thread only after acceptance, under the accepting user's Project
+writer identity. `inquiry.record_conclusion`'s applier calls
+`InquiryIterationService.recordIteration` under the *accepting* user's
+identity at accept time — a second legitimate `trigger_kind` for the same
+write authority a direct user edit already uses, not a bypass of it.
+`inquiry.promote_knowledge` combines `KnowledgePromotionCandidateService
+.createFromThread` and an immediate `decideCandidate({decision:"promote"})`
+into one call so a conversational instruction produces one Proposal instead of
+a Candidate stranded pending a second manual visit to Knowledge Review; the
+two-hop Candidate design is unchanged for the manual review path.
+
+`project.propose_definition` is the Room action for formal Project
+initialization. It drafts a complete next Brief version (preserving omitted
+fields from the active Brief); accepting the owner-review Proposal creates,
+reviews, publishes, and activates that immutable version through
+`ProjectKernelService`. An Inquiry Thread is downstream work and is not used as
+the Project-initialization marker.
+
+These tools have concrete Zod input contracts and matching model-visible
 JSON schemas. Missing connection, plan, or required connection-draft fields are
 rejected before policy enforcement or executor dispatch.
 
@@ -221,6 +313,58 @@ ordinary `InquiryThreadService.createThread` path only after a user clicks;
 the engine never creates a Thread itself. The input carries a producer
 idempotency key, persisted under the Project on `inquiry_threads`, so browser
 retries return the same Thread and a conflicting replay fails closed.
+
+## `research.start_acquisition` (room-advancement-reliability-plan Phase 4)
+
+The Room's other research-execution tool alongside `agent.delegate`: given an
+accepted Inquiry Thread, it enqueues a background job
+(`research_pipeline_start`) that runs question assessment (reusing an
+existing passing assessment session when one exists) → `AdaptiveQueryOrchestrator
+.evaluate` → `ResearchMonitorMaterializer.materialize` (source-channel
+materialization plus strategy activation in one call) →
+`ProjectResearchOrchestrator.startInitialIntake`. Providers, candidate budget,
+and execution model are server-derived defaults, not caller-supplied — the
+action's only input is `thread_id` (plus an optional `intent_note`);
+auto-selecting these per invocation is a recorded follow-up
+(`.agent/plans/backlog.md` R1.2), not this phase. The Manager Agent chooses
+between `agent.delegate` (an ad hoc specialist investigation) and this action
+(a tracked, monitored acquisition Workflow) from context; the two are not
+mutually exclusive and no server code intercepts a phrasing to force one.
+
+Idempotency is layered: a pending/running pipeline job for the Thread is a
+no-op, and each pipeline stage checks persisted state before redoing it (an
+assessment session already passed, a strategy already materialized) so a
+retry after a mid-pipeline failure resumes rather than restarts. A second,
+fully-identical invocation coalesces onto the same Operation through
+`startInitialIntake`'s own idempotency-key fingerprint match; a *different*
+concurrent start on an already-active workflow surfaces as a reported stage
+failure instead of a duplicate Operation.
+
+Completion reports back through the `ConversationContinuationRegistry` event
+side (Phase 3): `research_pipeline_outcome` (keyed by thread id) covers
+acquisition started, the question failing its FINER assessment (a first-class
+outcome relayed to the user for question refinement, not an error), and a
+stage failure; `research_workflow_terminal` (keyed by operation id) covers
+the Operation's own later failure, posted from
+`ProjectResearchOrchestrator.failOperation`. The Operation's Room origin is a
+loose `origin_room_id`/`origin_session_id` pair written into
+`project_operations.progress_json` at intake time (the established
+non-FK-cross-domain-identifier pattern; `progress_json->>'workflow_id'`
+already carries a unique index this way) — terminal paths that find it
+notify the Room, paths that do not (every non-Room-originated research flow)
+stay silent. `research_workflow_terminal`'s `completed` and `waiting_review`
+(checkpoint pause) variants are not wired yet: the operations that reach
+`completed` status or create a checkpoint do so from the
+`screeningCoordinator`/`synthesisCoordinator`/`monitoringCoordinator`
+pipeline stages, which are deliberately built behind a `ports` abstraction
+with no `ServerConfig`/Room dependency, unlike `failOperation`
+(a `ProjectResearchOrchestrator` method with `this.config` already in scope).
+Wiring those two variants means extending those ports, not adding another
+one-line hook, and is scoped to the checkpoint-reform follow-up
+(`.agent/plans/backlog.md` R1.1) rather than this phase. Until then, a
+Room-started acquisition that reaches a checkpoint stalls silently from the
+Room's perspective; the user still sees and can act on it from the web UI's
+Operation surface.
 
 ## Invariants
 

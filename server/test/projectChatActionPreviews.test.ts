@@ -30,4 +30,25 @@ describe("loadProjectChatActionPreviews", () => {
     ]);
     expect(query).toHaveBeenCalledTimes(2);
   });
+
+  it("projects a rejected proposal as status 'rejected', not 'failed'", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM proposals")) {
+        return { rows: [{
+          id: "proposal-2",
+          proposal_type: "inquiry_conclusion",
+          title: "Record conclusion",
+          status: "rejected",
+          risk_level: "medium",
+          payload_json: { action_id: "inquiry.record_conclusion" },
+          action_idempotency_key: "call-3",
+        }] };
+      }
+      return { rows: [] };
+    });
+
+    await expect(loadProjectChatActionPreviews({ query } as unknown as Queryable, "space-1", "run-2")).resolves.toEqual([
+      expect.objectContaining({ proposal_id: "proposal-2", status: "rejected" }),
+    ]);
+  });
 });

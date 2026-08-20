@@ -206,7 +206,12 @@ export default function SessionsPage() {
             onChange={e => setMsgInput(e.target.value)}
             placeholder="Type a message…"
             className="mb-3"
-            onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) sendMessage() }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                e.preventDefault()
+                sendMessage()
+              }
+            }}
           />
           <div className="flex gap-2">
             <Button onClick={sendMessage} disabled={!msgInput.trim()}>Send</Button>

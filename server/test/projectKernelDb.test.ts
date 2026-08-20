@@ -857,6 +857,11 @@ describe("Project Kernel (real Postgres)", () => {
     const result = await overview.getOverview(ownerIdentity, project.id as string);
     expect(result.project).toMatchObject({ id: project.id, primary_mode: "research" });
     expect(result.brief).toMatchObject({ goal: "Ship the Project Kernel", version: "v2" });
+    expect(result.definition_status).toEqual({
+      status: "initialized",
+      basis: "published_brief_goal",
+      goal_or_problem: "Ship the Project Kernel",
+    });
     expect(result.mode_projection).toMatchObject({ mode: "research" });
     expect(result.available_modes).toEqual(["research"]);
     expect(result.attention).toEqual([]);
@@ -880,6 +885,11 @@ describe("Project Kernel (real Postgres)", () => {
     const project = await repo.create(ownerIdentity, { name: "Delivery Project", primary_mode: "delivery" });
 
     const result = await overview.getOverview(ownerIdentity, project.id as string);
+    expect(result.definition_status).toEqual({
+      status: "needs_definition",
+      basis: "missing_published_brief_goal",
+      goal_or_problem: null,
+    });
     expect(result.setup_checklist).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "provider", required: false }),
       expect.objectContaining({ id: "agent", required: false }),

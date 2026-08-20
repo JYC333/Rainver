@@ -311,6 +311,108 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect(stored.rows[0]!.pinned_source_ref_json).toMatchObject({ kind: "inquiry_thread_revision", thread_id: hypothesis.id });
   });
 
+  it("proposeFromThreadForAgent combines create+promote into one reviewable Proposal (inquiry.promote_knowledge, Phase A)", async () => {
+    if (!available || !pool || !container) return;
+    const threadSvc = new InquiryThreadService(pool);
+    const iterationSvc = new InquiryIterationService(pool);
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Does batching reduce write amplification?" });
+    await iterationSvc.recordIteration(identity, PROJECT, question.id as string, {
+      change_summary: "Confirmed via benchmark", answer_state: "answered",
+    });
+
+    const runId = randomUUID();
+    const now = new Date().toISOString();
+    await pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id)
+       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'selected_users','full',$7,$6)`,
+      [runId, SPACE, AGENT, AGENT_VERSION, now, OWNER, PROJECT],
+    );
+    await pool.query(
+      `INSERT INTO content_access_grants (
+         id, space_id, resource_type, resource_id, grantee_user_id,
+         granted_by_user_id, access_level, created_at, updated_at
+       ) VALUES ($1,$2,'run',$3,$4,$4,'full',$5,$5)`,
+      [randomUUID(), SPACE, runId, OWNER, now],
+    );
+
+    const candidates = new KnowledgePromotionCandidateService(pool);
+    const actor = {
+      agentId: AGENT,
+      runId,
+      idempotencyKey: "promote-1",
+      visibility: "selected_users" as const,
+    };
+    const result = await candidates.proposeFromThreadForAgent(identity, PROJECT, {
+      thread_id: question.id, candidate_kind: "lesson",
+      proposed_title: "Batching reduces write amplification (confirmed)",
+      proposed_content: "Benchmarked and confirmed: batching reduces write amplification.",
+    }, actor);
+
+    expect(result.proposal_id).toBeTruthy();
+    const proposalRow = await pool.query<{ status: string; created_by_run_id: string; created_by_agent_id: string; created_by_user_id: string | null; owner_user_id: string | null; visibility: string }>(
+      `SELECT status, created_by_run_id, created_by_agent_id, created_by_user_id, owner_user_id, visibility FROM proposals WHERE id=$1`,
+      [result.proposal_id],
+    );
+    expect(proposalRow.rows[0]).toMatchObject({
+      status: "pending",
+      created_by_run_id: runId,
+      created_by_agent_id: AGENT,
+      created_by_user_id: null,
+      owner_user_id: OWNER,
+      visibility: "selected_users",
+    });
+    const inheritedGrant = await pool.query(
+      `SELECT 1 FROM content_access_grants
+        WHERE space_id=$1 AND resource_type='proposal' AND resource_id=$2
+          AND grantee_user_id=$3 AND revoked_at IS NULL`,
+      [SPACE, result.proposal_id, OWNER],
+    );
+    expect(inheritedGrant.rowCount).toBe(1);
+    const candidateVisibility = await pool.query<{ visibility: string; owner_user_id: string | null }>(
+      `SELECT visibility, owner_user_id FROM knowledge_promotion_candidates WHERE id=$1`,
+      [result.candidate.id],
+    );
+    expect(candidateVisibility.rows[0]).toEqual({ visibility: "private", owner_user_id: OWNER });
+
+    // Idempotent retry: same actor.idempotencyKey returns the same proposal, no second Candidate.
+    const retry = await candidates.proposeFromThreadForAgent(identity, PROJECT, {
+      thread_id: question.id, candidate_kind: "lesson",
+      proposed_title: "A different draft title on retry",
+      proposed_content: "A different draft body on retry.",
+    }, actor);
+    expect(retry.proposal_id).toBe(result.proposal_id);
+    const candidateCount = await pool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM knowledge_promotion_candidates WHERE project_id=$1`, [PROJECT],
+    );
+    expect(candidateCount.rows[0]?.total).toBe("1");
+
+    const applied = await proposalApplyService().accept(result.proposal_id!, identity);
+    expect(applied?.proposal.status).toBe("accepted");
+    const knowledgeItemId = (applied!.result as { knowledge_item: { id: string } }).knowledge_item.id;
+
+    // The same Room action also supports revalidation. Its knowledge_update
+    // must authorize target access through the trusted Proposal owner while
+    // preserving Agent attribution.
+    const update = await candidates.proposeFromThreadForAgent(identity, PROJECT, {
+      thread_id: question.id,
+      candidate_kind: "lesson",
+      proposed_title: "Batching reduces write amplification (revalidated)",
+      proposed_content: "A second benchmark reproduced the result.",
+      supersedes_knowledge_item_id: knowledgeItemId,
+    }, { ...actor, idempotencyKey: "promote-2" });
+    const updateProposal = await pool.query<{ proposal_type: string; created_by_user_id: string | null; owner_user_id: string | null }>(
+      "SELECT proposal_type, created_by_user_id, owner_user_id FROM proposals WHERE id=$1",
+      [update.proposal_id],
+    );
+    expect(updateProposal.rows[0]).toEqual({
+      proposal_type: "knowledge_update",
+      created_by_user_id: null,
+      owner_user_id: OWNER,
+    });
+    const updateApplied = await proposalApplyService().accept(update.proposal_id!, identity);
+    expect(updateApplied?.proposal.status).toBe("accepted");
+  });
+
   it("promotes a Knowledge Candidate from a converted Experiment Interpretation only, never a draft one", async () => {
     if (!available || !pool || !container) return;
     const definitions = new ExperimentDefinitionService(pool);

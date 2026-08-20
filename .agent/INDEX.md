@@ -235,6 +235,7 @@ architecture and the defer register once nothing in it can be advanced.
 | [plans/backlog.md](plans/backlog.md) | Real work with no trigger condition, pulled on demand |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, the standing enablement gates, watch items, and parked ideas |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — a design, not a checklist |
+| [plans/project-conversational-advancement-plan.md](plans/project-conversational-advancement-plan.md) | Conversational Project advancement — Room as command surface, phased A–D |
 
 Do not create competing task files, and do not reintroduce a "current focus"
 document. One existed and was removed: a file whose job is to declare what is

@@ -244,8 +244,9 @@ describe('ResearchSetupDialog', () => {
     expect(researchDiscoveryApi.materialize).toHaveBeenCalled()
   })
 
-  it('preserves edited values across equivalent parent refreshes and starts with them', () => {
-    const onStart = vi.fn()
+  it('preserves edited values across equivalent parent refreshes and starts with them', async () => {
+    const onStart = vi.fn().mockResolvedValue(true)
+    const onOpenChange = vi.fn()
     const { rerender } = render(
       <ResearchSetupDialog
         open
@@ -255,7 +256,7 @@ describe('ResearchSetupDialog', () => {
         providerVendors={providerVendors}
         modelProviders={[]}
         canAct
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         onSave={vi.fn().mockResolvedValue(true)}
         onStart={onStart}
       />,
@@ -272,7 +273,7 @@ describe('ResearchSetupDialog', () => {
         providerVendors={providerVendors}
         modelProviders={[]}
         canAct
-        onOpenChange={vi.fn()}
+        onOpenChange={onOpenChange}
         onSave={vi.fn().mockResolvedValue(true)}
         onStart={onStart}
       />,
@@ -281,6 +282,32 @@ describe('ResearchSetupDialog', () => {
     expect(screen.getByRole('spinbutton')).toHaveValue(5)
     fireEvent.click(screen.getByRole('button', { name: /start initial research/i }))
 
-    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ max_items: 5 }), null)
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ max_items: 5 }), null))
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('keeps the setup dialog open when starting research fails', async () => {
+    const onStart = vi.fn().mockResolvedValue(false)
+    const onOpenChange = vi.fn()
+    render(
+      <ResearchSetupDialog
+        open
+        threadId="thread-1"
+        draft={initialDraft}
+        busyAction={null}
+        providerVendors={providerVendors}
+        modelProviders={[]}
+        canAct
+        onOpenChange={onOpenChange}
+        onSave={vi.fn().mockResolvedValue(true)}
+        onStart={onStart}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /start initial research/i }))
+
+    await waitFor(() => expect(onStart).toHaveBeenCalled())
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })

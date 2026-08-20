@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups";
+import type { ServerConfig } from "../src/config";
 import type { Pool, PoolClient } from "../src/db/pool";
 import type { RunRecord } from "../src/modules/runs/repository";
 import type {
@@ -454,7 +455,10 @@ class FakeClient {
 }
 
 function projectorFor(state: FakeState): AgentGroupRunLifecycleProjector {
-  return new AgentGroupRunLifecycleProjector(new FakePool(state) as unknown as Pool);
+  // Every fixture group in this file has room_id: null, so the Phase 3
+  // Room-notification path (which needs a real ServerConfig only to
+  // construct RoomService) always short-circuits before touching config.
+  return new AgentGroupRunLifecycleProjector(new FakePool(state) as unknown as Pool, {} as ServerConfig);
 }
 
 describe("AgentGroupRunLifecycleProjector", () => {

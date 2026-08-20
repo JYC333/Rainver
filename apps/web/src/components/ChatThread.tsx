@@ -103,7 +103,10 @@ export function ChatThread({
           value={input}
           onChange={(e) => onInputChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend() }
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+              e.preventDefault()
+              onSend()
+            }
           }}
           placeholder={placeholder}
           disabled={composerDisabled}

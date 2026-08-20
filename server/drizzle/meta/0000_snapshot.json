@@ -1,5 +1,5 @@
 {
-  "id": "c5ddcd93-aac2-467f-9de5-d500c64d0ba1",
+  "id": "062cedba-2d25-4a29-9e7d-9419cd9bee74",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -47267,6 +47267,226 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.room_agent_access_grants": {
+      "name": "room_agent_access_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grantee_user_id": {
+          "name": "grantee_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_by_user_id": {
+          "name": "granted_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_room_agent_access_grants_grantee": {
+          "name": "ix_room_agent_access_grants_grantee",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "grantee_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_room_agent_access_grants_agent": {
+          "name": "ix_room_agent_access_grants_agent",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_room_agent_access_grants_active": {
+          "name": "uq_room_agent_access_grants_active",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "grantee_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "revoked_at IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_agent_access_grants_room_scope_fkey": {
+          "name": "room_agent_access_grants_room_scope_fkey",
+          "tableFrom": "room_agent_access_grants",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_agent_access_grants_agent_scope_fkey": {
+          "name": "room_agent_access_grants_agent_scope_fkey",
+          "tableFrom": "room_agent_access_grants",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_agent_access_grants_grantee_user_fkey": {
+          "name": "room_agent_access_grants_grantee_user_fkey",
+          "tableFrom": "room_agent_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "grantee_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_agent_access_grants_granted_by_user_fkey": {
+          "name": "room_agent_access_grants_granted_by_user_fkey",
+          "tableFrom": "room_agent_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "granted_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "room_agent_access_grants_revoked_by_user_fkey": {
+          "name": "room_agent_access_grants_revoked_by_user_fkey",
+          "tableFrom": "room_agent_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.room_agent_members": {
       "name": "room_agent_members",
       "schema": "",
@@ -47421,6 +47641,493 @@
       },
       "isRLSEnabled": false
     },
+    "public.room_agent_preset_idempotencies": {
+      "name": "room_agent_preset_idempotencies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint": {
+          "name": "request_fingerprint",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "room_agent_preset_idempotencies_room_scope_fkey": {
+          "name": "room_agent_preset_idempotencies_room_scope_fkey",
+          "tableFrom": "room_agent_preset_idempotencies",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_agent_preset_idempotencies_agent_scope_fkey": {
+          "name": "room_agent_preset_idempotencies_agent_scope_fkey",
+          "tableFrom": "room_agent_preset_idempotencies",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_agent_preset_idempotencies_user_fkey": {
+          "name": "room_agent_preset_idempotencies_user_fkey",
+          "tableFrom": "room_agent_preset_idempotencies",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_agent_preset_idempotencies_caller_key": {
+          "name": "uq_room_agent_preset_idempotencies_caller_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "space_id",
+            "user_id",
+            "room_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.room_invitation_agent_approvals": {
+      "name": "room_invitation_agent_approvals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invitation_id": {
+          "name": "invitation_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_room_invitation_agent_approvals_owner": {
+          "name": "ix_room_invitation_agent_approvals_owner",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_invitation_agent_approvals_invitation_scope_fkey": {
+          "name": "room_invitation_agent_approvals_invitation_scope_fkey",
+          "tableFrom": "room_invitation_agent_approvals",
+          "tableTo": "room_user_invitations",
+          "columnsFrom": [
+            "invitation_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_invitation_agent_approvals_agent_scope_fkey": {
+          "name": "room_invitation_agent_approvals_agent_scope_fkey",
+          "tableFrom": "room_invitation_agent_approvals",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_invitation_agent_approvals_owner_user_fkey": {
+          "name": "room_invitation_agent_approvals_owner_user_fkey",
+          "tableFrom": "room_invitation_agent_approvals",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_invitation_agent_approvals_invitation_agent": {
+          "name": "uq_room_invitation_agent_approvals_invitation_agent",
+          "nullsNotDistinct": false,
+          "columns": [
+            "invitation_id",
+            "agent_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_room_invitation_agent_approvals_status": {
+          "name": "ck_room_invitation_agent_approvals_status",
+          "value": "status IN ('pending', 'approved', 'rejected', 'invalidated')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_user_invitations": {
+      "name": "room_user_invitations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invitee_user_id": {
+          "name": "invitee_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invited_by_user_id": {
+          "name": "invited_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "required_roster_revision": {
+          "name": "required_roster_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_room_user_invitations_invitee": {
+          "name": "ix_room_user_invitations_invitee",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invitee_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_room_user_invitations_room": {
+          "name": "ix_room_user_invitations_room",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_room_user_invitations_pending": {
+          "name": "uq_room_user_invitations_pending",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invitee_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_user_invitations_room_scope_fkey": {
+          "name": "room_user_invitations_room_scope_fkey",
+          "tableFrom": "room_user_invitations",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_user_invitations_invitee_user_fkey": {
+          "name": "room_user_invitations_invitee_user_fkey",
+          "tableFrom": "room_user_invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "invitee_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_user_invitations_invited_by_user_fkey": {
+          "name": "room_user_invitations_invited_by_user_fkey",
+          "tableFrom": "room_user_invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "invited_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_user_invitations_id_space": {
+          "name": "uq_room_user_invitations_id_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_room_user_invitations_status": {
+          "name": "ck_room_user_invitations_status",
+          "value": "status IN ('pending', 'active', 'rejected', 'expired', 'cancelled', 'invalidated')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.room_user_members": {
       "name": "room_user_members",
       "schema": "",
@@ -47498,6 +48205,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_room_user_members_owner": {
+          "name": "uq_room_user_members_owner",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "role = 'owner' AND status = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -47620,6 +48343,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "roster_revision": {
+          "name": "roster_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -47757,6 +48487,680 @@
           "value": "status IN ('active', 'archived')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.room_conversation_summary_states": {
+      "name": "room_conversation_summary_states",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "active_summary_id": {
+          "name": "active_summary_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_through_message_id": {
+          "name": "requested_through_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_through_created_at": {
+          "name": "requested_through_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_attempt_at": {
+          "name": "last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "varchar(2000)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_room_conversation_summary_states_due": {
+          "name": "ix_room_conversation_summary_states_due",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_conversation_summary_states_room_scope_fkey": {
+          "name": "room_conversation_summary_states_room_scope_fkey",
+          "tableFrom": "room_conversation_summary_states",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_states_session_scope_fkey": {
+          "name": "room_conversation_summary_states_session_scope_fkey",
+          "tableFrom": "room_conversation_summary_states",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_states_space_id_fkey": {
+          "name": "room_conversation_summary_states_space_id_fkey",
+          "tableFrom": "room_conversation_summary_states",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_states_active_summary_fkey": {
+          "name": "room_conversation_summary_states_active_summary_fkey",
+          "tableFrom": "room_conversation_summary_states",
+          "tableTo": "room_conversation_summary_versions",
+          "columnsFrom": [
+            "active_summary_id",
+            "session_id",
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "session_id",
+            "room_id",
+            "space_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_conversation_summary_states_session": {
+          "name": "uq_room_conversation_summary_states_session",
+          "nullsNotDistinct": false,
+          "columns": [
+            "session_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_room_conversation_summary_states_status": {
+          "name": "ck_room_conversation_summary_states_status",
+          "value": "status IN ('idle','queued','running','waiting_provider','retry_wait','failed')"
+        },
+        "ck_room_conversation_summary_states_retry": {
+          "name": "ck_room_conversation_summary_states_retry",
+          "value": "retry_count >= 0"
+        },
+        "ck_room_conversation_summary_states_lease": {
+          "name": "ck_room_conversation_summary_states_lease",
+          "value": "(lease_token IS NULL AND lease_expires_at IS NULL) OR (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_conversation_summary_versions": {
+      "name": "room_conversation_summary_versions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary_text": {
+          "name": "summary_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "covered_through_message_id": {
+          "name": "covered_through_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "covered_through_created_at": {
+          "name": "covered_through_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "covered_message_count": {
+          "name": "covered_message_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_token_estimate": {
+          "name": "source_token_estimate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary_token_estimate": {
+          "name": "summary_token_estimate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model": {
+          "name": "model",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usage_json": {
+          "name": "usage_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "audit_json": {
+          "name": "audit_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "system_prompt_version": {
+          "name": "system_prompt_version",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "supersedes_id": {
+          "name": "supersedes_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "uq_room_conversation_summary_versions_active": {
+          "name": "uq_room_conversation_summary_versions_active",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_room_conversation_summary_versions_room_created": {
+          "name": "ix_room_conversation_summary_versions_room_created",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_conversation_summary_versions_room_scope_fkey": {
+          "name": "room_conversation_summary_versions_room_scope_fkey",
+          "tableFrom": "room_conversation_summary_versions",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_versions_project_scope_fkey": {
+          "name": "room_conversation_summary_versions_project_scope_fkey",
+          "tableFrom": "room_conversation_summary_versions",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_versions_session_scope_fkey": {
+          "name": "room_conversation_summary_versions_session_scope_fkey",
+          "tableFrom": "room_conversation_summary_versions",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_versions_space_id_fkey": {
+          "name": "room_conversation_summary_versions_space_id_fkey",
+          "tableFrom": "room_conversation_summary_versions",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_versions_owner_user_id_fkey": {
+          "name": "room_conversation_summary_versions_owner_user_id_fkey",
+          "tableFrom": "room_conversation_summary_versions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "room_conversation_summary_versions_supersedes_id_fkey": {
+          "name": "room_conversation_summary_versions_supersedes_id_fkey",
+          "tableFrom": "room_conversation_summary_versions",
+          "tableTo": "room_conversation_summary_versions",
+          "columnsFrom": [
+            "supersedes_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_conversation_summary_versions_session_version": {
+          "name": "uq_room_conversation_summary_versions_session_version",
+          "nullsNotDistinct": false,
+          "columns": [
+            "session_id",
+            "version"
+          ]
+        },
+        "uq_room_conversation_summary_versions_scope": {
+          "name": "uq_room_conversation_summary_versions_scope",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "session_id",
+            "room_id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_room_conversation_summary_versions_status": {
+          "name": "ck_room_conversation_summary_versions_status",
+          "value": "status IN ('active','superseded')"
+        },
+        "ck_room_conversation_summary_versions_coverage": {
+          "name": "ck_room_conversation_summary_versions_coverage",
+          "value": "version >= 1 AND covered_message_count >= 1 AND source_token_estimate >= 0 AND summary_token_estimate >= 0 AND char_length(summary_text) >= 1"
+        },
+        "ck_room_conversation_summary_versions_json": {
+          "name": "ck_room_conversation_summary_versions_json",
+          "value": "jsonb_typeof(usage_json) = 'object' AND jsonb_typeof(audit_json) = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_creation_idempotencies": {
+      "name": "room_creation_idempotencies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint": {
+          "name": "request_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_room_creation_idempotency_room": {
+          "name": "ix_room_creation_idempotency_room",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_creation_idempotencies_space_fkey": {
+          "name": "room_creation_idempotencies_space_fkey",
+          "tableFrom": "room_creation_idempotencies",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_creation_idempotencies_user_fkey": {
+          "name": "room_creation_idempotencies_user_fkey",
+          "tableFrom": "room_creation_idempotencies",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_creation_idempotencies_room_fkey": {
+          "name": "room_creation_idempotencies_room_fkey",
+          "tableFrom": "room_creation_idempotencies",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_creation_idempotencies_conversation_fkey": {
+          "name": "room_creation_idempotencies_conversation_fkey",
+          "tableFrom": "room_creation_idempotencies",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "conversation_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_creation_idempotency_scope": {
+          "name": "uq_room_creation_idempotency_scope",
+          "nullsNotDistinct": false,
+          "columns": [
+            "space_id",
+            "user_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.retrieval_aliases": {
@@ -53431,6 +54835,39 @@
           "columns": [
             {
               "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_messages_space_session_created": {
+          "name": "ix_messages_space_session_created",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

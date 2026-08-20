@@ -198,6 +198,37 @@ describe("PgRunRepository SQL shape", () => {
     expect(runInsert!.params.slice(15, 18)).toEqual(["agent", "manual", "live"]);
   });
 
+  it("persists the scenario allowance with its derived tool grants", async () => {
+    const db = new RunCreateSqlShapeDb();
+    await new PgRunRepository(db).createQueuedRun({
+      agent_id: "agent-1",
+      space_id: "space-1",
+      user_id: "user-1",
+      mode: "live",
+      run_type: "agent",
+      trigger_origin: "manual",
+      prompt: "advance this Room",
+      capabilities_json: ["inquiry.record_conclusion", "inquiry.promote_knowledge"],
+      scenario_tool_allowance: ["inquiry.record_conclusion", "inquiry.promote_knowledge"],
+    });
+
+    const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
+    const snapshot = JSON.parse(String(runInsert!.params[35])) as {
+      tool_grants: Array<{ action_id: string }>;
+      scenario_tool_allowance: string[];
+    };
+    expect(snapshot.scenario_tool_allowance).toEqual([
+      "inquiry.record_conclusion",
+      "inquiry.promote_knowledge",
+    ]);
+    expect(snapshot.tool_grants.map((grant) => grant.action_id)).toEqual(
+      expect.arrayContaining([
+        "inquiry.record_conclusion",
+        "inquiry.promote_knowledge",
+      ]),
+    );
+  });
+
   it("persists an explicitly requested runtime profile without preselecting it", async () => {
     const db = new RunCreateSqlShapeDb();
     await new PgRunRepository(db).createQueuedRun({

@@ -128,7 +128,15 @@ describe("runtime tool routes", () => {
       }
       return { rows: [], rowCount: 0 };
     });
-    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    // The route also reconciles the space's managed-assistant CLI profiles
+    // after the policy write, which runs inside its own withTransaction
+    // (needs pool.connect(), not just pool.query()); the space lookup at
+    // the start of that reconciliation finds nothing against this mock's
+    // empty-row fallback, so it no-ops cleanly once connect() exists.
+    vi.mocked(getDbPool).mockReturnValue({
+      query,
+      connect: async () => ({ query, release: () => {} }),
+    } as never);
     app = buildServer(await config(), { logger: false });
 
     const res = await app.inject({
