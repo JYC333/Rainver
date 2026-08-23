@@ -197,7 +197,7 @@ what is installed.
 | Scoped settings | `ScopedSettingsStore` + typed descriptors | `server/src/modules/settings/` |
 | Recurring in-process work and its cursor state | `SchedulerRegistry` + `PgSchedulerTaskStore` (`scheduler_tasks`) | `server/src/modules/scheduler/` |
 | Durable async jobs and their retry/attempt semantics | `JobHandlerRegistry` + job worker | `server/src/modules/jobs/` |
-| Cron expressions and next-run computation | `computeNextRunAt` / `parseSchedule` | `server/src/modules/automations/schedule.ts` |
+| Cron expressions and next-run computation | `cron-parser`, confined to `schedule.ts`, behind the unchanged `computeNextRunAt` / `parseSchedule` / `InvalidScheduleError` façade — replaced a ~245-line hand-rolled parser/DST engine. Evaluated 2026-08-23: MIT, actively maintained, Node 24/ESM-CJS-compatible, adopted by `pg-boss` itself (`^5.7.0`); pulls in one transitive dep (`luxon`). Verified against the old implementation before the swap: day-of-month/day-of-week OR semantics match; the DST spring-forward gap does not — cron-parser/Luxon shift the instant forward by the gap length instead of skipping to the next valid day. That behavior change was evaluated and accepted (not preserved), confined to schedules whose configured minute falls inside a timezone's ~1hr yearly transition window; locked in by a regression test. | `server/src/modules/automations/schedule.ts` |
 | Proposal-gated writes | proposal applier registry | `server/src/modules/proposals/` |
 | Agent task/conversation context | `RuntimeContextGatewayPort` facade | `server/src/modules/runtimeContext/` |
 | Model invocation and provider credentials | `providers` (+ `runtimeHost` for server-owned execution) | `server/src/modules/providers/` |
@@ -209,7 +209,7 @@ what is installed.
 | PDF text extraction | `unpdf` — confined to the extractor | `server/src/modules/sources/pdfExtract.ts` |
 | YAML | `yaml` | catalog/manifest readers |
 | PTY | `node-pty` — confined to the CLI login engine | `server/src/modules/providers/cli/loginEngine.ts` |
-| Date/time | **no library by design** — native `Date`/`Intl`, `timestamptz` in Postgres, timezone-aware helpers in the owning module | `server/src/modules/automations/schedule.ts` |
+| Date/time | **no library by design** — native `Date`/`Intl`, `timestamptz` in Postgres, timezone-aware helpers in the owning module. Exception: cron next-run computation, which needs real calendar/DST arithmetic and uses `cron-parser` (see the row above) — everything else (storing, comparing, formatting an instant) stays native. | `server/src/modules/automations/schedule.ts` |
 
 ### Runtime / execution-host mechanisms
 

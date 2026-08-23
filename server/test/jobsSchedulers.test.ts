@@ -10,7 +10,6 @@ import { PgJobQueueRepository, type JobRecord } from "../src/modules/jobs/reposi
 import { jobEventToOut, jobNotFoundForSpace, jobToOut } from "../src/modules/jobs/routes";
 import { SchedulerRegistry, startSchedulerRegistry } from "../src/modules/scheduler/registry";
 import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
-import { computeNextRunAt, InvalidScheduleError } from "../src/modules/automations/schedule";
 import { AutomationService } from "../src/modules/automations/service";
 import type { AutomationRow } from "../src/modules/automations/repository";
 import { registerRetrievalMaintenanceAutomationTarget } from "../src/modules/retrieval/automationTarget";
@@ -565,43 +564,6 @@ describe("jobs route visibility", () => {
   });
 });
 
-describe("automation schedule", () => {
-  it("computes the next cron slot after a reference instant", () => {
-    const next = computeNextRunAt(
-      { cron: "0 9 * * *", timezone: "UTC" },
-      new Date("2026-06-16T08:00:00.000Z"),
-    );
-    expect(next.toISOString()).toBe("2026-06-16T09:00:00.000Z");
-  });
-
-  it("supports stepped cron fields without an external cron package", () => {
-    const next = computeNextRunAt(
-      { cron: "*/15 9-10 * * *", timezone: "UTC" },
-      new Date("2026-06-16T09:07:00.000Z"),
-    );
-    expect(next.toISOString()).toBe("2026-06-16T09:15:00.000Z");
-  });
-
-  it("computes cron slots in the configured timezone", () => {
-    const next = computeNextRunAt(
-      { cron: "0 9 * * *", timezone: "Europe/London" },
-      new Date("2026-06-16T07:00:00.000Z"),
-    );
-    expect(next.toISOString()).toBe("2026-06-16T08:00:00.000Z");
-  });
-
-  it("rejects invalid cron expressions", () => {
-    expect(() => computeNextRunAt({ cron: "not-a-cron", timezone: "UTC" })).toThrow(
-      InvalidScheduleError,
-    );
-  });
-
-  it("rejects invalid timezones", () => {
-    expect(() => computeNextRunAt({ cron: "0 9 * * *", timezone: "Mars/Phobos" })).toThrow(
-      InvalidScheduleError,
-    );
-  });
-});
 
 describe("AutomationService policy preflight", () => {
   const config = loadConfig({

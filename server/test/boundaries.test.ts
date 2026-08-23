@@ -49,6 +49,10 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   // query layer — repositories keep writing hand-written SQL through `pg`.
   // See .agent/architecture/DATABASE_AND_TRANSACTIONS.md, "Schema Authoring".
   ["drizzle-orm", join("src", "db", "schema")],
+  // Cron expression parsing and next-run computation — confined to the
+  // schedule façade so no second hand-rolled cron/DST implementation grows
+  // elsewhere. See REUSE_AND_DEPENDENCY_POLICY.md's canonical mechanism row.
+  ["cron-parser", join("src", "modules", "automations", "schedule.ts")],
 ]);
 
 /** Substrings that must never appear in any import specifier. */
