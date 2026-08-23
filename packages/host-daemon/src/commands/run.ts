@@ -1,5 +1,5 @@
 import { helloInfo } from "../api.js";
-import { requireConfig } from "../config.js";
+import { loadConfig, requireConfig } from "../config.js";
 import {
   handleLaunch,
   handleStdin,
@@ -38,7 +38,7 @@ export async function runService(options: { log?: (line: string) => void } = {})
 
   for (;;) {
     try {
-      await connectOnce(config.server_url, config.token, log, sink);
+      await connectOnce(config.server_url, config.token, log, sink, config.workspaces);
       reconnectDelay = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
       log(`connection lost: ${error instanceof Error ? error.message : String(error)}`);
@@ -53,7 +53,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink): Promise<void> {
+function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<void> {
   return new Promise((resolve, reject) => {
     const endpoint = wsUrl(serverUrl);
     log(`connecting to ${endpoint}`);
@@ -68,9 +68,10 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(payload));
     };
+    const currentWorkspaces = async () => (await loadConfig())?.workspaces ?? workspaces;
 
     socket.addEventListener("open", () => {
-      void helloInfo().then((info) => {
+      void currentWorkspaces().then(helloInfo).then((info) => {
         socket.send(JSON.stringify({ type: "hello", token, ...info }));
       });
     });
@@ -87,7 +88,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         sink.bind(sendOnThisConnection);
         log(`connected as host ${String(frame.host_id)}`);
         heartbeatTimer = setInterval(() => {
-          void helloInfo().then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
+          void currentWorkspaces().then(helloInfo).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
         }, HEARTBEAT_INTERVAL_MS);
         return;
       }
@@ -98,7 +99,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (frame.type === "launch" && typeof frame.run_id === "string" && Array.isArray(frame.argv)) {
         const launchFrame: LaunchFrame = {
           run_id: frame.run_id,
-          project_folder_id: String(frame.project_folder_id ?? ""),
+          workspace_location_id: typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : undefined,
+          project_folder_id: typeof frame.project_folder_id === "string" ? frame.project_folder_id : undefined,
           argv: frame.argv.map(String),
           stdin: typeof frame.stdin === "string" ? frame.stdin : null,
           timeout_seconds: typeof frame.timeout_seconds === "number" ? frame.timeout_seconds : null,

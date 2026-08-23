@@ -3,9 +3,9 @@ import { defineConfig } from "drizzle-kit";
 // Generator-only config: Drizzle schema is the authoring source, but
 // drizzle-kit is never used to apply migrations against a live database
 // (no `drizzle-kit migrate` / `push`). `schema:generate` always generates the
-// complete schema from an empty temporary snapshot, replaces `drizzle/` with
-// one deterministic baseline, and mirrors that SQL to
-// `server/migrations/0001_baseline.sql` for the server migrator.
+// complete schema from an empty temporary snapshot and replaces `drizzle/`
+// with one deterministic empty-database baseline. Runtime upgrade migrations
+// under `server/migrations/` are maintained separately and remain immutable.
 //
 // `generate`/`check` (the day-to-day and CI commands) are purely file-based
 // and never touch a database, so SERVER_DATABASE_URL is not required for them.

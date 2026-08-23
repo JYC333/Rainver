@@ -2,12 +2,14 @@
 
 Date: 2026-07-24
 Status: DEFERRED UNTIL CONTROLLED REAL-INTEGRATION SMOKE.
-**2026-08-21:** the missing entry evidence (a real CLI runtime installed and
-producing real Run failures) is expected to come from
-[plans/acp-runtime-replatform-plan.md](acp-runtime-replatform-plan.md)'s
-two-week real-usage acceptance gate (carried forward from the retired
-phase-1 and phase-2 plans), not from a separate smoke effort. Re-check the entry
-trigger after that gate passes rather than scheduling this plan independently.
+**2026-08-23 (re-pointed):** the missing entry evidence (a real CLI runtime
+installed and producing real Run failures) is expected to come from the
+execution-topology and Project control-plane plan's P1 real-usage window
+(Machine/ExecutionHost/WorkspaceLocation dispatch + Task spine, P0/P1 shipped
+2026-08-23; that plan is now retired, git history holds it — carried forward
+from the retired control-center and `acp-runtime-replatform-plan.md` lines,
+both complete/retired). Re-check the entry trigger after that window closes
+rather than scheduling this plan independently.
 
 ## Purpose
 

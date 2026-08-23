@@ -23,6 +23,7 @@ export interface HostThreadEvent {
   id: string;
   host_task_thread_id: string;
   run_id: string;
+  project_id: string;
   event_index: number;
   event_type: HostThreadEventType;
   text: string | null;
@@ -46,7 +47,7 @@ export interface NewHostThreadEvent {
   status?: string | null;
 }
 
-const COLUMNS = `id, host_task_thread_id, run_id, event_index, event_type,
+const COLUMNS = `id, host_task_thread_id, run_id, project_id, event_index, event_type,
   text, tool_call_id, tool_name, tool_input_summary, tool_kind, tool_result_summary, status, created_at`;
 
 export class PgHostThreadEventRepository {
@@ -88,12 +89,17 @@ export class PgHostThreadEventRepository {
       for (const event of events) {
         const result = await client.query<HostThreadEvent>(
           `INSERT INTO host_thread_events (
-             id, host_task_thread_id, run_id, event_index, event_type,
+             id, host_task_thread_id, run_id, project_id, event_index, event_type,
              text, tool_call_id, tool_name, tool_input_summary, tool_kind,
              tool_result_summary, status, created_at
            )
            VALUES (
              $1, $2, $3,
+             (SELECT pf.project_id
+                FROM host_task_threads t
+                JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+                JOIN project_folders pf ON pf.id = wl.project_folder_id
+               WHERE t.id = $2::varchar),
              (SELECT COALESCE(MAX(event_index) + 1, 0)
                 FROM host_thread_events
                WHERE host_task_thread_id = $2::varchar),

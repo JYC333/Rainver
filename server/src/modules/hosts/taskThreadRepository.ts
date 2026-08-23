@@ -3,11 +3,15 @@ import type { Queryable } from "../routeUtils/common";
 
 /**
  * ADR 0016 D14: a task thread pins a run-file-lifecycle conversation to one
- * (host, workspace) pair. See `server/src/db/schema/hostTaskThreads.ts` for
- * the invariants this row encodes.
+ * WorkspaceLocation (execution-topology-and-project-control-plane-plan.md
+ * P1 — previously a (host, project_folder) pair directly). See
+ * `server/src/db/schema/hostTaskThreads.ts` for the invariants this row
+ * encodes.
  */
 export interface HostTaskThread {
   id: string;
+  workspace_location_id: string;
+  /** Read-model joins retained for navigation; not stored on the thread row. */
   project_folder_id: string;
   host_id: string;
   adapter_type: string;
@@ -21,15 +25,14 @@ export interface HostTaskThread {
   queue_paused_at: string | null;
 }
 
-const COLUMNS = `id, project_folder_id, host_id, adapter_type, vendor_session_id,
+const COLUMNS = `id, workspace_location_id, adapter_type, vendor_session_id,
   last_run_id, status, created_by_user_id, created_at, updated_at, queue_paused_at`;
 
 export class PgHostTaskThreadRepository {
   constructor(private readonly db: Queryable) {}
 
   async create(input: {
-    projectFolderId: string;
-    hostId: string;
+    workspaceLocationId: string;
     adapterType: string;
     createdByUserId: string;
   }): Promise<HostTaskThread> {
@@ -37,19 +40,19 @@ export class PgHostTaskThreadRepository {
     const now = new Date().toISOString();
     const result = await this.db.query<HostTaskThread>(
       `INSERT INTO host_task_threads (
-         id, project_folder_id, host_id, adapter_type, status, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)
+         id, workspace_location_id, adapter_type, status, created_by_user_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, 'active', $4, $5, $5)
        RETURNING ${COLUMNS}`,
-      [id, input.projectFolderId, input.hostId, input.adapterType, input.createdByUserId, now],
+      [id, input.workspaceLocationId, input.adapterType, input.createdByUserId, now],
     );
     return result.rows[0]!;
   }
 
-  /** Scoped by `project_folder_id` so a thread cannot be resumed through a different Folder than it was created for. */
-  async getForFolder(threadId: string, projectFolderId: string): Promise<HostTaskThread | null> {
+  /** Scoped by `workspace_location_id` so a thread cannot be resumed through a different Location than it was created for. */
+  async getForLocation(threadId: string, workspaceLocationId: string): Promise<HostTaskThread | null> {
     const result = await this.db.query<HostTaskThread>(
-      `SELECT ${COLUMNS} FROM host_task_threads WHERE id = $1 AND project_folder_id = $2 LIMIT 1`,
-      [threadId, projectFolderId],
+      `SELECT ${COLUMNS} FROM host_task_threads WHERE id = $1 AND workspace_location_id = $2 LIMIT 1`,
+      [threadId, workspaceLocationId],
     );
     return result.rows[0] ?? null;
   }
@@ -66,15 +69,17 @@ export class PgHostTaskThreadRepository {
   /**
    * Every thread across every remote workspace in a Project — the read side
    * for the control center's work stream (grouped by thread, not bare run;
-   * ADR 0016 §7). Joins through `project_folders` since a thread has no
-   * `project_id` of its own.
+   * ADR 0016 §7). Joins through `workspace_locations` + `project_folders`
+   * since a thread has no `project_id` of its own.
    */
   async listForProject(spaceId: string, projectId: string): Promise<HostTaskThread[]> {
     const result = await this.db.query<HostTaskThread>(
-      `SELECT t.id, t.project_folder_id, t.host_id, t.adapter_type, t.vendor_session_id,
+      `SELECT t.id, t.workspace_location_id, wl.project_folder_id, wl.execution_host_id AS host_id,
+              t.adapter_type, t.vendor_session_id,
               t.last_run_id, t.status, t.created_by_user_id, t.created_at, t.updated_at, t.queue_paused_at
          FROM host_task_threads t
-         JOIN project_folders pf ON pf.id = t.project_folder_id
+         JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+         JOIN project_folders pf ON pf.id = wl.project_folder_id
         WHERE pf.space_id = $1 AND pf.project_id = $2
         ORDER BY t.updated_at DESC`,
       [spaceId, projectId],
@@ -105,11 +110,13 @@ export class PgHostTaskThreadRepository {
     limit: number,
   ): Promise<Array<HostTaskThread & { project_id: string; project_name: string; folder_name: string }>> {
     const result = await this.db.query<HostTaskThread & { project_id: string; project_name: string; folder_name: string }>(
-      `SELECT t.id, t.project_folder_id, t.host_id, t.adapter_type, t.vendor_session_id,
+      `SELECT t.id, t.workspace_location_id, wl.project_folder_id, wl.execution_host_id AS host_id,
+              t.adapter_type, t.vendor_session_id,
               t.last_run_id, t.status, t.created_by_user_id, t.created_at, t.updated_at, t.queue_paused_at,
               p.id AS project_id, p.name AS project_name, pf.name AS folder_name
          FROM host_task_threads t
-         JOIN project_folders pf ON pf.id = t.project_folder_id
+         JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+         JOIN project_folders pf ON pf.id = wl.project_folder_id
          JOIN projects p ON p.id = pf.project_id
          JOIN spaces s ON s.id = pf.space_id
         WHERE pf.space_id = $1

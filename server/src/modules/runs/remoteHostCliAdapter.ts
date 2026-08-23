@@ -80,7 +80,11 @@ export interface RemoteHostCliAdapterDeps {
 export async function executeRemoteHostCliAdapter(
   input: RemoteHostCliAdapterInput,
   hostId: string,
-  projectFolderId: string,
+  // execution-topology-and-project-control-plane-plan.md P1 / D2/D5: this is
+  // a WorkspaceLocation id. The daemon wire frame uses the same
+  // `workspace_location_id` field, and the daemon's local config maps that id
+  // to the real directory on the owning machine.
+  workspaceLocationId: string,
   deps: RemoteHostCliAdapterDeps = {},
 ): Promise<RunAdapterResultEnvelope> {
   const startedAt = new Date().toISOString();
@@ -171,7 +175,7 @@ export async function executeRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
-  const executor = deps.executor ?? new RemoteWsCliCommandExecutor(hostId, projectFolderId, registry);
+  const executor = deps.executor ?? new RemoteWsCliCommandExecutor(hostId, workspaceLocationId, input.run.project_folder_id, registry);
   const threadEvents = createThreadEventNormalizer();
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
   let stdoutText = "";
@@ -191,6 +195,23 @@ export async function executeRemoteHostCliAdapter(
       }
       const drafts = threadEvents.pushAcpProtocolEvent(event);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
+    },
+    // execution-topology-and-project-control-plane-plan.md P0.4/D7: makes
+    // the dispatch-preset pre-authorization a durable, visible fact on the
+    // thread this Run belongs to, rather than an invisible default. Reuses
+    // the existing `diagnostic` event type (§2.14's plan correction: not a
+    // new `host_thread_events` CHECK-constraint value) — kept human-readable
+    // (discovery review finding #3), not a serialized JSON blob, since
+    // `ThreadConversation.tsx`'s `DiagnosticsDrawer` renders every
+    // `diagnostic` line verbatim and this fires on essentially every
+    // tool-using turn.
+    on_permission_decision: (record) => {
+      void input.thread_event_sink?.([{
+        event_type: "diagnostic",
+        text: `Permission pre-authorized (${record.tool_kind ?? "tool"}): ${
+          record.decision.outcome === "selected" ? "allowed" : "cancelled"
+        }`,
+      }]);
     },
   });
   void input.thread_event_sink?.([{ event_type: "status", status: "run_started" }]);
@@ -336,7 +357,10 @@ function remoteFailure(
 export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
   constructor(
     private readonly hostId: string,
-    private readonly projectFolderId: string,
+    // A remote Run is pinned to this physical checkout, not merely to its
+    // logical Folder.
+    private readonly workspaceLocationId: string,
+    private readonly projectFolderId: string | null,
     private readonly registry: HostConnectionRegistry,
   ) {}
 
@@ -364,8 +388,20 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       protocolBuffer = records.pop() ?? "";
       for (const record of records) {
         if (!record.trim()) continue;
+        // `receive()` is declared `Promise<void>` only to match
+        // `CliStdioController`'s interface (localCliExecution.ts); this
+        // controller's body is fully synchronous, so the returned promise
+        // is already resolved by the time this call returns and needs no
+        // `await` — awaiting it here would only reintroduce a microtask hop
+        // this synchronous design exists to avoid. The `.catch()` below
+        // guards a different hazard: `async` turns even a synchronous
+        // internal throw into a rejected Promise instead of letting it
+        // reach this `try/catch`, so without it a future bug inside
+        // `receive()` would become an unhandled rejection rather than a
+        // contained Run failure (discovery review finding #2).
         try {
-          controller.receive(JSON.parse(record), sendToController, closeControllerStdin);
+          controller.receive(JSON.parse(record), sendToController, closeControllerStdin)
+            .catch(() => { controller.reject("CLI protocol emitted invalid JSON"); closeControllerStdin(); });
         } catch {
           controller.reject("CLI protocol emitted invalid JSON");
           closeControllerStdin();
@@ -384,7 +420,11 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       this.hostId,
       input.run_id,
       {
-        project_folder_id: this.projectFolderId,
+        workspace_location_id: this.workspaceLocationId,
+        // Dual-write the pre-P1 field during rolling upgrades. New daemons
+        // prefer the physical Location id; older paired daemons only know the
+        // logical Folder key and must still resolve their local checkout.
+        project_folder_id: this.projectFolderId ?? undefined,
         argv: input.command,
         stdin: controller ? null : input.stdin,
         timeout_seconds: input.timeout_seconds,

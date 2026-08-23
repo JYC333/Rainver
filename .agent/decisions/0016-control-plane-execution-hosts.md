@@ -1,14 +1,13 @@
 # Decision 0016: Control Plane and Execution Hosts, Two-Tier Trust
 
 Date: 2026-08-21
-Status: Accepted; phases 1 and 2 implemented and retired (plan documents
-deleted, execution ledgers in git history; current state in
-[modules/hosts.md](../modules/hosts.md)). The follow-on
-[plans/acp-runtime-replatform-plan.md](../plans/acp-runtime-replatform-plan.md)
-(P1-P5) is also complete: every conversation runtime speaks the Agent Client
-Protocol exclusively on both execution paths.
-Amended 2026-08-21 (daemon role) and again 2026-08-22 (runtime protocol
-transport) — see the amendment sections below.
+Status: Accepted; P1 topology and control-plane implementation is complete
+(commits `d0b6b3c5` P0, `0dcd91ca` P1). The phase-gated discovery/closure
+review and final integration gate are recorded in that plan's execution
+ledger — the plan itself is retired; git history holds it in full. P2 is
+deferred by decision; see
+[tasks/deferred-register.md](../tasks/deferred-register.md)'s "Project
+kernel — P2" section for what it covers and its trigger.
 
 ## Context
 
@@ -54,8 +53,24 @@ The control plane (the existing server) remains the sole owner of canonical
 state, orchestration, governance (proposals, policy, audit), and the
 Project/Run/Agent model. An **execution host** is a machine — the server
 itself, or a personal laptop/desktop the same user owns — that can actually
-run a coding agent against a workspace on disk. `hosts` is a new first-class
-table; every `project_folders` row is now bound to exactly one host.
+run a coding agent against a workspace on disk. The topology is
+`Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder`:
+
+- `machines` identifies a physical device and carries no path or runtime
+  state.
+- `hosts` identifies one execution environment on that device. The server has
+  one seeded Host; a personal device may expose multiple Hosts such as native
+  Windows and WSL. `machine_id` and `environment_kind` are required.
+- `project_folders` is the logical repository identity owned by one Project;
+  it no longer carries a physical host or filesystem path.
+- `workspace_locations` is a physical checkout of a Folder on one Host. A
+  Folder may have multiple Locations. A Location owns server `root_path`,
+  remote `display_path`, branch/head/dirty metadata, preferred selection, and
+  the persisted `execution_ready` fact.
+
+Runs and host task threads bind to a Location. `project_folder_id` remains a
+write-once logical denormalization, with composite database constraints
+preventing Location/Folder drift.
 
 ### 2. Two-tier trust, not one isolation model stretched thin
 
@@ -63,7 +78,8 @@ table; every `project_folders` row is now bound to exactly one host.
   [SECURITY_AND_ACCESS_BOUNDARIES.md](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)
   §10 (PathPolicy, forbidden path patterns, bounded diffs, rootless
   bubblewrap namespace, fail-closed preflight) continues to apply exactly as
-  today, to Project Folder rows whose `host_id` names the server host.
+  today, to server-host Locations. A remote Location is never passed through
+  the server sandbox path resolver.
 - **Remote (personal) host**: a new, deliberately weaker **trusted-host**
   mode. A thin daemon (`agent-space-host`) registers with the control plane
   over a private network (v1: the user's own Tailscale network; no public
@@ -80,16 +96,12 @@ multi-user host sharing in this decision.
 ### 3. Paths are host-owned, not control-plane authority
 
 The control plane never resolves, mounts, or opens a filesystem path on a
-remote host. `project_folders.root_path` is populated only for server-host
-rows (as today); remote (`host_kind = "remote"` — shipped as a write-once
-denormalized copy of `hosts.kind`, not the `origin` field this ADR originally
-named; the retired phase-1 plan's D4 amendment) rows carry no authoritative
-path at all, only a daemon-reported `display_path` used for UI labeling. This
-narrows, rather than contradicts, the existing "Project Folder filesystem
-paths are Server-Only" classification: the control plane still never accepts
-or exposes a raw path as identity — it now additionally never *possesses* the
-remote path at all. The daemon is the sole authority for translating a
-`project_folders.id` into a real directory on its own machine.
+remote host. `workspace_locations.root_path` is populated only for a
+server-host Location. A remote Location has no server root, only a daemon-
+reported `display_path` for UI labeling; the daemon is authoritative for the
+real directory on its machine. `execution_host_kind` is a constrained
+denormalized copy of `hosts.kind` so the database can enforce the remote-root
+invariant.
 
 ### 4. Credentials, egress, and continuity do not extend to remote hosts
 
@@ -122,6 +134,27 @@ thread, pinned to one (host, workspace) pair — task threads, documented in
   full local-first replication are all out of scope for this decision; see
   the multi-host section of
   [tasks/deferred-register.md](../tasks/deferred-register.md).
+
+### 6. Readiness and dispatch are separate from host liveness
+
+`hosts.status` and heartbeat staleness answer whether an ExecutionHost is
+reachable. The owning server probe or daemon heartbeat writes
+`workspace_locations.execution_ready` and branch/head/dirty metadata. Dispatch
+requires both a live remote Host and a ready Location; omitted remote reports
+mark Locations not ready. The server Host is online in-process and its
+preferred Location is refreshed through the local git helpers.
+
+The canonical user-session dispatch surfaces are
+`POST /api/v1/tasks/:taskId/runs` for an existing Task and
+`POST /api/v1/tasks/runs` for an auto-created lightweight coding Task. Both
+accept a Location, default to the Folder's preferred Location, enforce Project
+write access, Host ownership/capability/readiness, and enqueue the same agent
+job. The former `POST /api/v1/hosts/dispatch` route is removed.
+
+Every terminal Run flows through one shared Run-terminal → Task-status
+projection. A Task becomes `done` only after all linked Runs are hard-terminal
+and none failed, degraded, cancelled, or orphaned; otherwise it becomes
+`blocked`.
 
 ## Amended: daemon role (phase 2, 2026-08-21)
 
@@ -160,9 +193,9 @@ extension to the existing WebSocket protocol — and **one** server-side
 protocol client, rather than per-runtime endpoint adapters. This
 *strengthens* the principle above rather than bending it: under ACP the
 daemon does not need to understand even one protocol, only to relay bytes.
-The rejections in the previous paragraph are unchanged. Decision record:
-[plans/acp-runtime-replatform-plan.md](../plans/acp-runtime-replatform-plan.md)
-§2 (A1–A3).
+The rejections in the previous paragraph are unchanged. Decision record: the
+ACP runtime replatform plan (A1–A3), retired 2026-08-23; current state in
+[modules/hosts.md](../modules/hosts.md).
 
 ## Amendments to existing documents
 

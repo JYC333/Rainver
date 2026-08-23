@@ -11,6 +11,7 @@ vi.mock('sonner', () => ({
 vi.mock('../../api/client', () => ({
   projectFoldersApi: {
     get: vi.fn(),
+    locations: vi.fn(),
     update: vi.fn(),
   },
 }))
@@ -43,6 +44,23 @@ beforeEach(() => {
     snapshot_max_count: null,
     created_at: '2026-07-25T00:00:00.000Z',
   } as never)
+  vi.mocked(projectFoldersApi.locations).mockResolvedValue([{
+    id: 'location-1',
+    project_folder_id: 'folder-1',
+    execution_host_id: 'host-1',
+    execution_host_kind: 'server',
+    display_path: '/managed/source',
+    root_path: '/managed/source',
+    branch: 'main',
+    git_head: 'abc123',
+    dirty: false,
+    status: 'active',
+    preferred: true,
+    execution_ready: true,
+    last_seen_at: null,
+    created_at: '2026-07-25T00:00:00.000Z',
+    updated_at: '2026-07-25T00:00:00.000Z',
+  } as never])
 })
 
 describe('Project Folder settings route', () => {

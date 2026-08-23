@@ -44,15 +44,20 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE project_folders, projects, space_memberships, users, spaces, hosts CASCADE");
+  await pool.query("TRUNCATE workspace_locations, project_folders, projects, space_memberships, users, spaces, hosts, machines CASCADE");
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now())`,
     [USER],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
+    [HOST],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
@@ -72,25 +77,34 @@ beforeEach(async () => {
   );
 });
 
-function insertFolder(
+async function insertFolder(
   db: Pool,
   input: { id: string; spaceId?: string; projectId?: string; rootPath: string; primary?: boolean },
 ) {
-  return db.query(
+  await db.query(
     `INSERT INTO project_folders (
-       id, space_id, project_id, created_by_user_id, name, root_path, status,
-       kind, is_primary, execution_enabled, protected, system_managed,
-       host_id, host_kind, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$1,$5,'active','code',$6,true,false,false,$7,'server',now(),now())`,
+       id, space_id, project_id, created_by_user_id, name, status,
+       kind, is_primary, protected, system_managed, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$1,'active','code',$5,false,false,now(),now())`,
     [
       input.id,
       input.spaceId ?? SPACE,
       input.projectId ?? PROJECT,
       USER,
-      input.rootPath,
       input.primary ?? false,
-      HOST,
     ],
+  );
+  // Every folder this helper creates gets exactly one Location, so that
+  // Location is always `preferred` — distinct from `is_primary` above,
+  // which is a Folder/Project-level concept (a folder's primary-ness has
+  // no bearing on whether its own single Location is the one Runs resolve
+  // to; see workspaceLocations.ts's doc comment).
+  return db.query(
+    `INSERT INTO workspace_locations (
+       id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+       root_path, execution_ready, status, preferred, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'server',$5,true,'active',true,now(),now())`,
+    [randomUUID(), input.spaceId ?? SPACE, input.id, HOST, input.rootPath],
   );
 }
 
@@ -228,11 +242,11 @@ describe("Project Folder database invariants", () => {
     );
     const identity = { spaceId: SPACE, userId: USER };
     const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
-    const row = await pool.query<{ host_id: string; host_kind: string }>(
-      `SELECT host_id, host_kind FROM project_folders WHERE id = $1`,
+    const row = await pool.query<{ execution_host_id: string; execution_host_kind: string }>(
+      `SELECT execution_host_id, execution_host_kind FROM workspace_locations WHERE project_folder_id = $1`,
       [created.id],
     );
-    expect(row.rows[0]).toMatchObject({ host_id: HOST, host_kind: "server" });
+    expect(row.rows[0]).toMatchObject({ execution_host_id: HOST, execution_host_kind: "server" });
   });
 
   it("refuses local-filesystem reads and sandbox prep for a remote-host Folder (ADR 0016 B62-B64)", async (ctx) => {
@@ -243,11 +257,17 @@ describe("Project Folder database invariants", () => {
     const remoteFolderId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
     await pool.query(
       `INSERT INTO project_folders (
-         id, space_id, project_id, created_by_user_id, name, root_path, status,
-         kind, is_primary, execution_enabled, protected, system_managed,
-         registered_from, host_id, host_kind, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'Remote Folder',NULL,'active','code',false,true,false,false,'daemon_registered',$5,'remote',now(),now())`,
-      [remoteFolderId, SPACE, PROJECT, USER, issued.host_id],
+         id, space_id, project_id, created_by_user_id, name, status,
+         kind, is_primary, protected, system_managed, registered_from, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'Remote Folder','active','code',false,false,false,'daemon_registered',now(),now())`,
+      [remoteFolderId, SPACE, PROJECT, USER],
+    );
+    await pool.query(
+      `INSERT INTO workspace_locations (
+         id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+         root_path, execution_ready, status, preferred, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',true,now(),now())`,
+      [randomUUID(), SPACE, remoteFolderId, issued.host_id],
     );
     const repo = new PgProjectFolderRepository(
       pool,
@@ -276,14 +296,21 @@ describe("Project Folder database invariants", () => {
 
   it("rejects a remote-host Folder that carries a root_path at the database level", async (ctx) => {
     if (!available || !pool) return ctx.skip();
+    const folderId = randomUUID();
+    await pool.query(
+      `INSERT INTO project_folders (
+         id, space_id, project_id, created_by_user_id, name, status,
+         kind, is_primary, protected, system_managed, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'Bad Remote Folder','active','code',false,false,false,now(),now())`,
+      [folderId, SPACE, PROJECT, USER],
+    );
     await expect(
       pool.query(
-        `INSERT INTO project_folders (
-           id, space_id, project_id, created_by_user_id, name, root_path, status,
-           kind, is_primary, execution_enabled, protected, system_managed,
-           host_id, host_kind, created_at, updated_at
-         ) VALUES ($1,$2,$3,$4,'Bad Remote Folder','/should/not/exist','active','code',false,true,false,false,$5,'remote',now(),now())`,
-        [randomUUID(), SPACE, PROJECT, USER, HOST],
+        `INSERT INTO workspace_locations (
+           id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+           root_path, execution_ready, status, preferred, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,'remote','/should/not/exist',false,'active',true,now(),now())`,
+        [randomUUID(), SPACE, folderId, HOST],
       ),
     ).rejects.toMatchObject({ code: "23514" });
   });

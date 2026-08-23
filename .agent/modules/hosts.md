@@ -4,17 +4,17 @@ See [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-
 for the design decision this module implements. The phase-1 rollout plan
 (`control-center-plan.md`) is retired — execution ledger in git history, as is
 phase 2's (`control-center-phase2-plan.md`, which shipped the conversational
-thread surface, normalized event pipeline, and setup simplification). So is
-`plans/acp-runtime-replatform-plan.md` (P1-P5, 2026-08-22): every conversation
-runtime — `claude_code`, `codex_cli`, `opencode` — now speaks the Agent Client
-Protocol exclusively on both the server-host and remote-host execution paths;
-the self-maintained vendor CLI protocol implementations (stream-json argv,
-NDJSON-RPC) it replaced are deleted. **This document describes the ACP-based
-system as it stands today.**
+thread surface, normalized event pipeline, and setup simplification). So is the ACP runtime replatform plan (P1-P5, complete 2026-08-22, plan
+document retired 2026-08-23): every conversation runtime — `claude_code`,
+`codex_cli`, `opencode` — now speaks the Agent Client Protocol exclusively on
+both the server-host and remote-host execution paths; the self-maintained
+vendor CLI protocol implementations (stream-json argv, NDJSON-RPC) it
+replaced are deleted. **This document describes the ACP-based system as it
+stands today.**
 
 ## Purpose
 
-`hosts` is the control-plane registry of execution hosts: the server host
+`hosts` is the control-plane registry of ExecutionHosts: the server host
 (exactly one row, seeded automatically, `owner_user_id` NULL) and any
 personal machine a user has paired in trusted-host mode. It owns pairing,
 authentication, and liveness for hosts — it does not execute anything itself
@@ -22,7 +22,20 @@ and does not know any host's real filesystem paths.
 
 ## Data model
 
-`server/src/db/schema/hosts.ts` — one table, `hosts`:
+`server/src/db/schema/hosts.ts` and `server/src/db/schema/machines.ts` model
+the physical topology:
+
+- `machines` identifies a physical device. It has no filesystem path or
+  runtime capability state.
+- `hosts` identifies one execution environment on a Machine. The server has
+  exactly one seeded `server` Host; a personal Machine may have multiple
+  remote Hosts such as native Windows and WSL.
+- `workspace_locations` (in `projectFolders/workspaceLocations.ts`) binds a
+  logical Project Folder to one Host. A Folder may have several Locations;
+  Location owns path/display metadata, preferred selection, git observations,
+  and persisted `execution_ready`.
+
+`server/src/db/schema/hosts.ts` — Host fields:
 
 - `kind`: `server` (exactly one row ever, enforced by
   `uq_hosts_single_server`) or `remote`.
@@ -33,20 +46,15 @@ and does not know any host's real filesystem paths.
   in `pending_pairing` status; there is no separate pairing-code table.
 - `owner_user_id` is NULL only for the server host (`ck_hosts_server_no_owner`
   / `ck_hosts_remote_has_owner`); every remote host has exactly one owner.
-
-`project_folders` (`server/src/db/schema/projectFolders.ts`) carries `host_id`
-(FK, NOT NULL) and a write-once denormalized `host_kind` copy (a host's kind
-never changes, so this cannot drift) so filesystem-touching repository code
-can guard on it without a join. `display_path` is a daemon-reported,
-UI-only label; `root_path` is schema-forced NULL for every `host_kind =
-'remote'` row (`ck_project_folders_remote_no_root_path`) — the control plane
-never possesses a remote path (ADR 0016 B64).
+- `machine_id` and `environment_kind` are required. Location retains a
+  constrained `execution_host_kind` copy of `hosts.kind` for database-level
+  remote-root and scope invariants.
 
 ## Server-host guard (ADR 0016 B62)
 
-`assertServerHostFolder()` (`server/src/modules/projectFolders/repository.ts`)
-throws before any local-filesystem operation runs against a Folder whose
-`host_kind` is not `server`. It gates `getTree`, `getFile`, `getGitStatus`,
+`assertServerHostLocation()` (`server/src/modules/projectFolders/workspaceLocations.ts`)
+throws before any local-filesystem operation runs against a Location whose
+`execution_host_kind` is not `server`. It gates `getTree`, `getFile`, `getGitStatus`,
 `getGitDiff`, `PgRunSandboxManager.prepareRunWorkspace`
 (`server/src/modules/projectFolders/sandbox.ts`), code-patch proposal apply
 (`server/src/modules/projectFolders/codePatch.ts`), and code-patch rollback
@@ -80,44 +88,35 @@ user session — the daemon has no session to present):
 
 - `POST /api/v1/hosts/me/workspaces` — `{ project_id, name, display_path? }`,
   requires the host owner to hold Project write access
-  (`PgProjectFolderRepository.createRemoteWorkspace`); creates a `host_kind
-  = 'remote'`, `root_path = NULL` Folder row.
-- `GET /api/v1/hosts/me/workspaces` — every Folder registered under this host.
-- `DELETE /api/v1/hosts/me/workspaces/:folderId` — unregisters (never touches
-  the daemon's disk; the daemon owns that).
+  (`PgProjectFolderRepository.createRemoteWorkspace`); creates a logical
+  Folder plus a remote Location whose server `root_path` is NULL.
+- `GET /api/v1/hosts/me/workspaces` — every Location registered under this
+  Host.
+- `DELETE /api/v1/hosts/me/workspaces/:folderId` — unregisters a Location
+  (never touches the daemon's disk; the daemon owns that).
 - `POST /api/v1/hosts/me/runs/:runId/diff` / `.../outputs` — daemon uploads a
   completed run's git diff and `AGENT_SPACE_OUTPUT_DIR` contents as read-only
   artifacts (D7: never fed into code-patch proposal apply). Scoped by
-  `runOwnedByHost` — a host can only upload for a Run bound to its own Folder.
+  `runOwnedByHost` — a host can only upload for a Run bound to its own
+  Location.
   Size-capped server-side (`MAX_DIFF_BYTES`, `MAX_OUTPUT_FILE_BYTES`,
   `MAX_OUTPUT_FILES` in `repository.ts`) regardless of what the daemon sends.
 
-User-session authenticated, dispatch (D10 — bypasses route selection
-entirely):
+User-session authenticated dispatch is owned by the Tasks module, not this
+Host registry:
 
-- `POST /api/v1/hosts/dispatch` — `{ project_folder_id, adapter_type,
-  prompt, thread_id?, timeout_ms? }`. `agent_id` is gone from the request
-  contract entirely since the control-center phase-2 work (retired plan, git
-  history; its C8 decision) — see
-  "System remote-dispatch agent" below; every dispatch always resolves the
-  space's system agent, and a caller that still sends `agent_id` (the
-  frontend `DispatchComposer.tsx` does — its picker UI is unchanged, still
-  requires selecting one before Dispatch enables, per discovery review; P2
-  is server-scoped, so the picker's removal is left to P3's entry rework)
-  has it silently discarded, not read or validated. Guards in order: session auth →
-  Project write access → Folder must be `host_kind = 'remote'` (never a
-  server-host Folder — use the normal Run flow) → B63 host ownership
-  (`host.owner_user_id === caller`) → host online → implemented, ACP
-  runtime protocol → runtime capability match against the host's reported
-  `capabilities_json.runtimes`. Resolves/creates a task thread (D14, below);
-  an existing thread remains pinned to its original runtime adapter. Every
-  send — including the very first into a brand-new thread — goes through the
-  message queue (P2, C4, below): the endpoint enqueues a `host_thread_messages`
-  row, then immediately tries to advance the queue, so "dispatch now" and
-  "queue for later" are one code path. Response:
-  `{ message_id, thread_id, run_id: string | null, status: "dispatched" |
-  "queued" }` — `run_id` is only set when this specific message actually
-  dispatched.
+- `POST /api/v1/tasks/:taskId/runs` dispatches an existing coding Task and
+  accepts `workspace_location_id`; without one it uses the Folder's preferred
+  Location.
+- `POST /api/v1/tasks/runs` creates a lightweight coding Task and dispatches it
+  in the same request.
+
+Both routes enforce Project write access, Location/Folder/Space scope,
+execution readiness, remote Host ownership, implemented ACP adapter and host
+capability checks, then enqueue the durable agent job. The former
+`POST /api/v1/hosts/dispatch` route is removed; no compatibility route is
+registered by the server. Thread queue operations below remain under this
+module, but their thread is always Location-bound.
 - `POST /api/v1/hosts/threads/:threadId/messages/:messageId/withdraw` — pulls
   back a still-`queued` message before it ever becomes a Run; 409 if the
   message is already `dispatched` or `withdrawn`. Requires Project write
@@ -194,8 +193,12 @@ center work stream):
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
 `hello` (authenticates the bearer token, marks `online`, records
-capabilities) and `heartbeat` (refreshes `last_heartbeat_at` and reported
-capabilities). On socket close, the host is marked `offline` immediately.
+capabilities, and applies the daemon's complete workspace Location reports)
+and `heartbeat` (refreshes `last_heartbeat_at`, reported capabilities, and
+Location branch/head/dirty/readiness). A remote Location omitted from a
+heartbeat is marked `execution_ready = false`. On socket close, the host is
+marked `offline` immediately; Host liveness remains distinct from Location
+readiness.
 Heartbeat staleness (`HEARTBEAT_STALE_MS`, 45s) is computed at read time in
 `PgHostRepository`, not swept by a background job — a host that dies without
 closing its socket reports offline the next time anyone lists hosts.
@@ -208,7 +211,7 @@ seconds while mounted; it does not reload the page or trigger unrelated module
 queries. This is a component-scoped read refresh, not the planned general
 browser real-time event layer.
 
-Job dispatch/execution frames (P3, `RemoteHostExecutionAdapter` in
+Job dispatch/execution frames (`RemoteHostExecutionAdapter` in
 `server/src/modules/runs/remoteHostCliAdapter.ts`): `launch` (server → daemon,
 rendered argv + timeout), `stdin` (server → daemon, one frame per ACP
 JSON-RPC message — the ACP runtime replatform's P2 duplex extension to this
@@ -224,9 +227,8 @@ carries natively.
 
 The daemon-supervised HTTP/SSE runtime endpoints sketched in 2026-08-21 were
 superseded 2026-08-22 before anything was built, in favor of the duplex-frame
-ACP extension above; see
-[plans/acp-runtime-replatform-plan.md](../plans/acp-runtime-replatform-plan.md)
-(now complete, P1-P5).
+ACP extension above (the ACP runtime replatform plan, P1-P5, complete and
+retired 2026-08-23; ledger in git history).
 
 C5: the daemon also sends a live `stderr` frame per chunk (not only the
 `complete` frame's existing failure-tail), routed the same way as `output`
@@ -245,14 +247,14 @@ subsystem). See the deferred register.
 
 ## Task threads (D14, `server/src/modules/hosts/taskThreadRepository.ts`)
 
-A `host_task_threads` row pins a vendor-CLI conversation to one (host,
-workspace) pair for session resume via ACP's own `session/resume` (the
+A `host_task_threads` row pins a vendor-CLI conversation to one
+`workspace_location_id` for session resume via ACP's own `session/resume` (the
 general `AcpController` in `server/src/modules/runs/cliConversationProtocol.ts`
 drives this for every adapter now) — not server-side Runtime Context
 continuity (remote runs get none of that; see
-"No server-brokered Runtime Context" below). `getForFolder` is scoped by
-`project_folder_id` so a thread from one Folder can never be resumed against
-another. `recordRunOutcome` clears `vendor_session_id` outright (not
+"No server-brokered Runtime Context" below). `getForLocation` is scoped by
+`workspace_location_id` so a thread from one physical checkout can never be
+resumed against another. `recordRunOutcome` clears `vendor_session_id` outright (not
 COALESCE) whenever a resume degrades (`session_reset`) — retrying an already-
 broken vendor session id forever was a real P3 discovery-review bug, fixed
 before this landed. **Since the phase-2 event-pipeline work**, it is called
@@ -436,11 +438,12 @@ real local path is ever written down.
   no cross-space "my projects" picker exists yet.
 - `agent-space-host workspace list` / `workspace remove <id>`.
 - `agent-space-host run` — service mode: opens the WS connection, sends
-  `hello`, then `heartbeat` every 15s; reconnects with exponential backoff
+  `hello`, including workspace status reports, then `heartbeat` every 15s;
+  reconnects with exponential backoff
   (1s → 30s cap) on any disconnect. Handles `launch`/`terminate` frames
   (`src/execution.ts`): spawns the rendered argv in the local workspace path
   (resolved from the daemon's own `config.workspaces` map by
-  `project_folder_id` — the server never sees it), injects
+  `workspace_location_id` — the server never sees the real path), injects
   `AGENT_SPACE_OUTPUT_DIR` as a per-run directory outside the workspace
   (phase-1 substitute for Run Exchange), streams stdout as `output` frames,
   and on exit uploads the workspace's git diff (`src/gitDiff.ts` — unified
@@ -467,10 +470,10 @@ omitted, never installed or version-managed by the daemon (that stays a
 `runtimeTools`-style server concern for the server host only — trusted hosts
 use whatever the machine already has).
 
-## Known phase-1 gaps (not defects — accepted during the retired phase-1 plan)
+## Known P1 gaps (not defects — explicitly deferred)
 
-- No routing-location axis: dispatch to a specific host/workspace will be
-  explicit, not scored, when it lands in P3.
+- No scored multi-location routing or lease/scheduler: dispatch is explicit or
+  uses the Folder's preferred Location; richer routing remains P2.
 - No automated daemon-process-to-live-server integration test — the wire
   contract is verified from the server side (`server/test/hostsRoutes.test.ts`
   drives the real REST + WebSocket surface with the exact frame shapes the
@@ -486,11 +489,7 @@ use whatever the machine already has).
   to free the name (`revoke()` does not filter by current status, so this
   works even on a `pending_pairing` row); a scheduled sweep of expired
   `pending_pairing` rows is a reasonable P2+ addition, not required for P1.
-- **No DB-level trigger enforces `project_folders.host_kind` staying in sync
-  with `hosts.kind`.** It is a write-once denormalization upheld today only
-  by the two INSERT call sites (`create()` always writes `'server'`;
-  `createRemoteWorkspace()` always writes `'remote'`, correct because
-  `!host.owner_user_id` is equivalent to `host.kind !== 'server'` given the
-  schema's CHECK constraints); no UPDATE path touches either column. Correct
-  by inspection, but as more writers are added in P2/P3 a DB trigger (or a
-  generated column) would remove the need to keep re-verifying this by hand.
+- Remote proposal/apply governance, content synchronization, divergence
+  detection, quota probing, and real Windows-native/WSL hardware verification
+  remain deferred. Location `execution_ready` is persisted and heartbeat-
+  driven now; it is deliberately not inferred from Host liveness.

@@ -9,7 +9,9 @@ import { collectOutputFiles } from "./outputFiles.js";
 
 export interface LaunchFrame {
   run_id: string;
-  project_folder_id: string;
+  workspace_location_id?: string;
+  /** @deprecated pre-P1 wire/test alias; new frames use workspace_location_id. */
+  project_folder_id?: string;
   argv: string[];
   stdin?: string | null;
   timeout_seconds?: number | null;
@@ -137,7 +139,8 @@ export async function handleLaunch(
   log: (line: string) => void,
 ): Promise<void> {
   const config = await requireConfig();
-  const cwd = config.workspaces[frame.project_folder_id];
+  const workspaceId = frame.workspace_location_id ?? frame.project_folder_id ?? "";
+  const cwd = config.workspaces[workspaceId];
   if (!cwd) {
     send({
       type: "complete",

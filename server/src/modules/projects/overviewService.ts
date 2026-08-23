@@ -117,7 +117,7 @@ export class ProjectOverviewService {
                AND agent_kind <> 'system_assistant'
                AND current_version_id IS NOT NULL) AS agent_count,
            (SELECT count(*)::int FROM project_source_bindings WHERE space_id = $1 AND project_id = $2 AND status = 'active') AS source_count,
-           (SELECT count(*)::int FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active' AND execution_enabled = true) AS folder_count`,
+           (SELECT count(*)::int FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active') AS folder_count`,
         [identity.spaceId, projectId],
       ).then((result) => result.rows[0] ?? {
         provider_count: 0,

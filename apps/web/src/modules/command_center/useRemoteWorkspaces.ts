@@ -2,20 +2,19 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { hostsApi, projectFoldersApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, ProjectFolder } from '../../types/api'
+import type { Host, ProjectFolder, WorkspaceLocation } from '../../types/api'
 
 export interface RemoteWorkspace {
   folder: ProjectFolder
+  location: WorkspaceLocation
   host: Host | null
 }
 
 const REFRESH_INTERVAL_MS = 3_000
 
 /**
- * Every `host_kind: 'remote'` Folder in a Project, joined with its host row
- * (ADR 0016 D3: a Folder's `display_path`/`host_id` are already surfaced by
- * the existing folders endpoint — no new backend listing was needed beyond
- * that join happening here, client-side, per control-center-plan.md §7).
+ * Every remote WorkspaceLocation in a Project, joined with its logical Folder
+ * and ExecutionHost. A logical Folder can therefore appear more than once.
  *
  * Refreshes every 3s in the background (matching HostsPanel's own cadence)
  * so a workspace's joined host status — the exact fact `DispatchComposer`
@@ -39,14 +38,19 @@ export function useRemoteWorkspaces(projectId: string): { workspaces: RemoteWork
         projectFoldersApi.list(projectId, { status: 'active', limit: '200' }),
         hostsApi.list(),
       ])
-        .then(([folderPage, hostsResult]) => {
+        .then(async ([folderPage, hostsResult]) => {
           if (cancelled) return
           const hostsById = new Map(hostsResult.items.map(host => [host.id, host]))
-          setWorkspaces(
-            folderPage.items
-              .filter(folder => folder.host_kind === 'remote')
-              .map(folder => ({ folder, host: hostsById.get(folder.host_id) ?? null })),
-          )
+          const locations = await Promise.all(folderPage.items.map(async folder => ({
+            folder,
+            locations: await projectFoldersApi.locations(projectId, folder.id),
+          })))
+          if (cancelled) return
+          setWorkspaces(locations.flatMap(({ folder, locations: folderLocations }) =>
+            folderLocations
+              .filter(location => location.execution_host_kind === 'remote')
+              .map(location => ({ folder, location, host: hostsById.get(location.execution_host_id) ?? null })),
+          ))
         })
         // Background refreshes should not toast on every transient failure.
         .catch(error => { if (showLoading) toast.error(errMsg(error)) })
@@ -70,9 +74,9 @@ export function lastUsedWorkspaceId(projectId: string): string | null {
   }
 }
 
-export function rememberWorkspaceId(projectId: string, folderId: string): void {
+export function rememberWorkspaceId(projectId: string, locationId: string): void {
   try {
-    localStorage.setItem(LAST_WORKSPACE_KEY_PREFIX + projectId, folderId)
+    localStorage.setItem(LAST_WORKSPACE_KEY_PREFIX + projectId, locationId)
   } catch {
     // Best-effort only — a private-browsing session without storage access
     // just loses "last used", never breaks dispatch.

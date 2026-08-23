@@ -5,6 +5,7 @@ import { users } from "./auth";
 import { sessions } from "./sessions";
 import { spaces } from "./spaces";
 import { projectFolders } from "./projectFolders";
+import { workspaceLocations } from "./workspaceLocations";
 import { hostTaskThreads } from "./hostTaskThreads";
 import { modelProviders } from "./providers";
 import { agentRunGroups, runDelegations } from "./agentGroups";
@@ -24,7 +25,22 @@ export const runs = pgTable("runs", {
 	requestedRuntimeProfileId: varchar("requested_runtime_profile_id", { length: 36 }),
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
 	runtimeProfileSelectionSource: varchar("runtime_profile_selection_source", { length: 16 }),
+	// execution-topology-and-project-control-plane-plan.md P1 / D3: kept as a
+	// write-once denormalized copy of `workspace_location_id`'s own Folder —
+	// a Location's Folder never changes after creation, so this cannot drift,
+	// and a composite FK below enforces it at the database level. Read
+	// through this column when only the logical Folder matters (most
+	// queries); read `workspace_location_id` when the physical execution
+	// site matters.
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
+	// D3: where this Run actually executed. Null for a Run that predates P1
+	// or that was never bound to a specific Location. No `host_id` column —
+	// fully determined by the Location, which never changes host.
+	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
+	// D5: `sandboxed` (server host, full isolation) or `trusted_host`
+	// (personal machine, ADR 0016's trusted-host mode) — surfaced in the UI
+	// so a merged dispatch endpoint never leaves the trust model implicit.
+	trustMode: varchar("trust_mode", { length: 16 }),
 	// ADR 0016 D14: set only for a run dispatched into a host task thread
 	// (remote-host runs); null for every server-host run.
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }),
@@ -99,6 +115,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_runs_trigger_origin").using("btree", table.triggerOrigin.asc().nullsLast()),
 	index("ix_runs_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
+	index("ix_runs_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
 	index("ix_runs_host_task_thread_id").using("btree", table.hostTaskThreadId.asc().nullsLast()),
 	foreignKey({ columns: [table.workflowVersionId], foreignColumns: [evolvableAssetVersions.id], name: "runs_workflow_version_fkey" }),
 	foreignKey({
@@ -191,6 +208,16 @@ export const runs = pgTable("runs", {
 			foreignColumns: [projectFolders.id, projectFolders.spaceId],
 			name: "runs_project_folder_id_fkey"
 		}),
+	// D3: enforced at the database level, not just by convention — a Run's
+	// write-once `project_folder_id` must name the same Folder its
+	// `workspace_location_id` actually belongs to. Postgres skips a
+	// composite FK check when any column is NULL (MATCH SIMPLE), so this is
+	// inert for a Run with no Location.
+	foreignKey({
+			columns: [table.workspaceLocationId, table.projectFolderId],
+			foreignColumns: [workspaceLocations.id, workspaceLocations.projectFolderId],
+			name: "runs_workspace_location_id_fkey"
+		}),
 	foreignKey({
 			columns: [table.delegationId, table.spaceId],
 			foreignColumns: [runDelegations.id, runDelegations.spaceId],
@@ -238,6 +265,10 @@ export const runs = pgTable("runs", {
 	check("ck_runs_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
 	check("ck_runs_trigger_origin", sql`(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])`),
 	check("ck_runs_trust_level", sql`(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))`),
+	// D5: distinct from `trust_level` above (a data/provenance trust rating) —
+	// `trust_mode` names which ADR 0016 execution/isolation model this Run
+	// ran under.
+	check("ck_runs_trust_mode", sql`trust_mode IS NULL OR trust_mode IN ('sandboxed', 'trusted_host')`),
 	check("ck_runs_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_runs_runtime_profile_selection_source", sql`runtime_profile_selection_source IS NULL OR runtime_profile_selection_source IN ('explicit', 'default')`),
 	check("ck_runs_access_level", sql`access_level IN ('full', 'summary')`),

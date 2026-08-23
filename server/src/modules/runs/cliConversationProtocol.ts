@@ -3,7 +3,14 @@ import type {
   CanonicalModelUsage,
   CanonicalUsage,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
+// D6 (twice-corrected, execution-topology-and-project-control-plane-plan.md
+// §6): the phase dispatcher below stays hand-rolled — no SDK hook reproduces
+// its tested start()-independent, phase-named anomaly handling — but its
+// wire shapes are checked against the SDK's own authoritative schema types
+// here, rather than trusted by convention alone.
+import type { PermissionOption } from "@agentclientprotocol/sdk" with { "resolution-mode": "import" };
 import { usageFromAcp } from "./cliRuntimeMeasurement";
+import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy";
 
 type ConversationProtocolAdapter = "claude_code" | "codex_cli" | "opencode";
 
@@ -18,6 +25,15 @@ export function createCliConversationController(input: {
   before_next_prompt?: (sessionId: string) => Promise<void>;
   on_text_delta?: (delta: string) => void;
   on_protocol_event?: (event: Record<string, unknown>) => void;
+  /**
+   * execution-topology-and-project-control-plane-plan.md P0.4/D7: fired once
+   * per permission request, whatever the outcome, so a caller with a durable
+   * event stream (a remote dispatch's task thread) can record that this Run
+   * was pre-authorized rather than leaving it implicit. Callers with no such
+   * stream (a server-host sandboxed Run) may omit it; the decision itself is
+   * unaffected either way.
+   */
+  on_permission_decision?: (record: PermissionDecisionRecord) => void;
 }): CliStdioController | undefined {
   const prompts = input.prompts?.filter((prompt) => prompt.trim())
     ?? (input.prompt?.trim() ? [input.prompt] : []);
@@ -69,6 +85,7 @@ export class AcpController implements CliStdioController {
     before_next_prompt?: (sessionId: string) => Promise<void>;
     on_text_delta?: (delta: string) => void;
     on_protocol_event?: (event: Record<string, unknown>) => void;
+    on_permission_decision?: (record: PermissionDecisionRecord) => void;
   }) {}
 
   start(send: Send): void {
@@ -84,7 +101,15 @@ export class AcpController implements CliStdioController {
     });
   }
 
-  receive(message: Record<string, unknown>, send: Send, closeStdin: () => void): void {
+  // Async only to match `CliStdioController`'s interface (shared with
+  // `CodexQuotaController`'s unrelated app-server RPC, which does need it —
+  // see localCliExecution.ts). This body stays fully synchronous: every
+  // `send()` this method needs to produce still happens before it returns,
+  // preserving the ~58 existing synchronous test call sites that assert on
+  // `send()` output with no `await` at the call site (execution-topology-
+  // and-project-control-plane-plan.md §6 D6, twice-corrected there).
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async receive(message: Record<string, unknown>, send: Send, closeStdin: () => void): Promise<void> {
     if (message.jsonrpc !== "2.0") {
       this.fail(`${this.label()} ACP emitted a message without jsonrpc 2.0`, closeStdin);
       return;
@@ -334,12 +359,23 @@ export class AcpController implements CliStdioController {
       this.fail(`${this.label()} ACP requested permission for an out-of-scope session`, closeStdin);
       return;
     }
-    const options = Array.isArray(params.options) ? (params.options as unknown[]).map(record) : [];
-    const allowOption = options.find((option) =>
-      stringField(option, "kind") === "allow_once" && stringField(option, "optionId"))
-      ?? options.find((option) =>
-        stringField(option, "kind") === "allow_always" && stringField(option, "optionId"));
-    if (!allowOption) {
+    // Cast against the SDK's own `PermissionOption` schema type rather than
+    // trusting the wire shape by convention — `optionId`/`kind` still go
+    // through the same defensive `stringField` extraction as every other
+    // field on this generically-typed message, so a malformed entry behaves
+    // exactly as before, just checked against an authoritative shape.
+    const rawOptions = Array.isArray(params.options) ? (params.options as PermissionOption[]) : [];
+    const decision = decidePermission(rawOptions.map((option) => ({
+      option_id: stringField(record(option), "optionId"),
+      kind: stringField(record(option), "kind"),
+    })));
+    const toolKind = stringField(record(params.toolCall), "kind");
+    this.input.on_permission_decision?.({
+      tool_kind: toolKind,
+      decision: decision.outcome,
+      preauthorized_by: decision.preauthorized_by,
+    });
+    if (decision.outcome.outcome === "cancelled") {
       send({
         jsonrpc: "2.0",
         id: message.id,
@@ -351,7 +387,7 @@ export class AcpController implements CliStdioController {
     send({
       jsonrpc: "2.0",
       id: message.id,
-      result: { outcome: { outcome: "selected", optionId: stringField(allowOption, "optionId") } },
+      result: { outcome: { outcome: "selected", optionId: decision.outcome.option_id } },
     });
   }
 

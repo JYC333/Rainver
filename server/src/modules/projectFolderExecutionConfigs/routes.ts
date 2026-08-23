@@ -28,9 +28,6 @@ interface ProjectFolderExecutionConfigRow {
   build_commands_json: unknown;
   architecture_boundaries_json: unknown;
   validation_recipe_id: string | null;
-  cloud_allowed: boolean;
-  max_data_exposure_level: string | null;
-  min_observability_level: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -38,8 +35,7 @@ interface ProjectFolderExecutionConfigRow {
 const COLUMNS = `
   id, space_id, project_folder_id, repo_type, tech_stack_json, important_paths_json,
   forbidden_paths_json, test_commands_json, build_commands_json,
-  architecture_boundaries_json, validation_recipe_id, cloud_allowed, max_data_exposure_level,
-  min_observability_level, created_at, updated_at
+  architecture_boundaries_json, validation_recipe_id, created_at, updated_at
 `;
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -129,13 +125,12 @@ class ProjectFolderExecutionConfigRepository {
          id, space_id, project_folder_id, repo_type, tech_stack_json,
          important_paths_json, forbidden_paths_json, test_commands_json,
          build_commands_json, architecture_boundaries_json,
-         validation_recipe_id, cloud_allowed,
-         max_data_exposure_level, min_observability_level, created_at, updated_at
+         validation_recipe_id, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5::jsonb,
          $6::jsonb, $7::jsonb, $8::jsonb,
-         $9::jsonb, $10::jsonb, $11, $12,
-         $13, $14, $15, $15
+         $9::jsonb, $10::jsonb, $11,
+         $12, $12
        )
        RETURNING ${COLUMNS}`,
       [
@@ -150,9 +145,6 @@ class ProjectFolderExecutionConfigRepository {
         json(body.build_commands_json, []),
         json(body.architecture_boundaries_json, {}),
         optionalString(body.validation_recipe_id),
-        body.cloud_allowed === true,
-        optionalString(body.max_data_exposure_level),
-        optionalString(body.min_observability_level),
         now,
       ],
     );
@@ -179,10 +171,7 @@ class ProjectFolderExecutionConfigRepository {
               build_commands_json = CASE WHEN $13::boolean THEN $14::jsonb ELSE build_commands_json END,
               architecture_boundaries_json = CASE WHEN $15::boolean THEN $16::jsonb ELSE architecture_boundaries_json END,
               validation_recipe_id = CASE WHEN $17::boolean THEN $18 ELSE validation_recipe_id END,
-              cloud_allowed = COALESCE($19::boolean, cloud_allowed),
-              max_data_exposure_level = CASE WHEN $20::boolean THEN $21 ELSE max_data_exposure_level END,
-              min_observability_level = CASE WHEN $22::boolean THEN $23 ELSE min_observability_level END,
-              updated_at = $24
+              updated_at = $19
         WHERE project_folder_id = $1 AND space_id = $2
         RETURNING ${COLUMNS}`,
       [
@@ -204,11 +193,6 @@ class ProjectFolderExecutionConfigRepository {
         json(body.architecture_boundaries_json, {}),
         Object.hasOwn(body, "validation_recipe_id"),
         optionalString(body.validation_recipe_id),
-        typeof body.cloud_allowed === "boolean" ? body.cloud_allowed : null,
-        Object.hasOwn(body, "max_data_exposure_level"),
-        optionalString(body.max_data_exposure_level),
-        Object.hasOwn(body, "min_observability_level"),
-        optionalString(body.min_observability_level),
         now,
       ],
     );

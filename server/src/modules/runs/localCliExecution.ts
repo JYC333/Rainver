@@ -56,7 +56,15 @@ export interface CliRawStdioController {
 
 export interface CliStdioController {
   start(send: (message: Record<string, unknown>) => void): void;
-  receive(message: Record<string, unknown>, send: (message: Record<string, unknown>) => void, closeStdin: () => void): void;
+  /**
+   * Async by contract (execution-topology-and-project-control-plane-plan.md
+   * P0.2): an SDK-backed implementation's next `send()` can depend on a
+   * Promise resolving, which never happens synchronously within this call.
+   * `CodexQuotaController` (`providers/cli/codexUsageProbe.ts`) — the
+   * unrelated Codex app-server RPC controller sharing this interface — stays
+   * synchronous in effect by resolving immediately.
+   */
+  receive(message: Record<string, unknown>, send: (message: Record<string, unknown>) => void, closeStdin: () => void): Promise<void>;
   reject(message: string): void;
   result(): {
     completed: boolean;

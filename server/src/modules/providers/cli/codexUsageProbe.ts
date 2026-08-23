@@ -459,7 +459,12 @@ class CodexQuotaController implements CliStdioController {
     send({ id: 1, method: "initialize", params: { clientInfo: { name: "agent-space", version: "0.0.0" } } });
   }
 
-  receive(message: Record<string, unknown>, send: (message: Record<string, unknown>) => void, closeStdin: () => void): void {
+  // Synchronous in effect (this is Codex's own app-server rate-limit RPC,
+  // unrelated to ACP) — declared `async` only to satisfy the shared
+  // `CliStdioController` interface, which is async for the ACP controller's
+  // sake (P0.2).
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async receive(message: Record<string, unknown>, send: (message: Record<string, unknown>) => void, closeStdin: () => void): Promise<void> {
     const error = asRecord(message.error);
     if (error) {
       this.error = typeof error.message === "string" ? error.message : "Codex quota RPC failed.";

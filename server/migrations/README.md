@@ -1,13 +1,14 @@
 # Server Migrations
 
-Do not hand-edit migration SQL for schema changes.
+Schema authoring starts in `server/src/db/schema/`. Run `pnpm run
+schema:generate` from `server/` to regenerate the Drizzle authoring baseline
+under `server/drizzle/0000_baseline.sql`; it never rewrites numbered runtime
+migrations. Run `pnpm run schema:check` to verify the committed Drizzle
+snapshot matches the TypeScript schema and that the numbered migration chain is
+still present and immutable.
 
-Schema authoring starts in `server/src/db/schema/`. Run `pnpm run schema:generate`
-from `server/` to let Drizzle regenerate one baseline from an empty snapshot and
-mirror it to `0001_baseline.sql`; `ops/scripts/start.sh` also runs that command
-automatically before server image build and database migration. Run
-`pnpm run schema:check` to verify the committed Drizzle snapshot matches the
-TypeScript schema without touching the database or rewriting files.
-
-The runtime migration runner only applies the SQL committed here and records
-checksums in `public.server_schema_migrations`.
+Runtime upgrades are explicit, append-only SQL files under this directory
+(`0001_baseline.sql`, then the next numbered migration). The migration runner
+applies those files in order and records checksums in
+`public.server_schema_migrations`. The startup/migration scripts run the
+no-write schema check before applying the chain.

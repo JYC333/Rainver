@@ -421,12 +421,12 @@ describe("hosts routes", () => {
       headers: { authorization: `Bearer ${hostA.token}` },
       payload: { project_id: "upload-project", name: "mapping" },
     });
-    const folderId = created.json().id as string;
+    const locationId = created.json().id as string;
     const runId = "upload-run-1";
     await pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, project_folder_id, adapter_type, owner_user_id, created_at, updated_at)
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, workspace_location_id, adapter_type, owner_user_id, created_at, updated_at)
        VALUES ($1, 'upload-space', 'upload-agent', 'upload-agent-version', 'agent', 'manual', 'succeeded', 'live', $2, 'claude_code', $3, $4, $4)`,
-      [runId, folderId, OWNER, now],
+      [runId, locationId, OWNER, now],
     );
 
     const diffFromB = await app.inject({

@@ -154,6 +154,65 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(runtimeEvents).toEqual([]);
   });
 
+  it("records a permission pre-authorization as a human-readable diagnostic thread event (P0.4/D7)", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+    const threadDrafts: ThreadEventDraft[] = [];
+
+    const executePromise = executeRemoteHostCliAdapter(
+      {
+        run: run({ adapter_type: "opencode", prompt: "add a test" }),
+        prompt: "add a test",
+        model: null,
+        resume_session_id: null,
+        thread_event_sink: (drafts) => { threadDrafts.push(...drafts); },
+      },
+      "host-1",
+      "folder-1",
+      { connectionRegistry: registry },
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveLaunched("host-1", "run-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 92,
+      method: "session/request_permission",
+      params: {
+        sessionId: "session-1",
+        toolCall: { kind: "execute" },
+        options: [
+          { optionId: "reject", kind: "reject_once" },
+          { optionId: "allow", kind: "allow_once" },
+        ],
+      },
+    })}\n`);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(threadDrafts).toContainEqual({
+      event_type: "diagnostic",
+      text: "Permission pre-authorized (execute): allowed",
+    });
+
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`);
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+    await executePromise;
+  });
+
   it("reports the host offline without hanging when no connection is registered", async () => {
     const registry = new HostConnectionRegistry();
     const result = await executeRemoteHostCliAdapter(
@@ -186,7 +245,12 @@ describe("executeRemoteHostCliAdapter", () => {
     await Promise.resolve();
     expect(sink.sent).toHaveLength(1);
     const launchFrame = sink.sent[0]!;
-    expect(launchFrame).toMatchObject({ type: "launch", run_id: "run-1", project_folder_id: "folder-1" });
+    expect(launchFrame).toMatchObject({
+      type: "launch",
+      run_id: "run-1",
+      workspace_location_id: "folder-1",
+      project_folder_id: "folder-1",
+    });
     const argv = launchFrame.argv as string[];
     expect(argv).toEqual(["claude-agent-acp"]);
 

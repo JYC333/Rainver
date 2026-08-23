@@ -56,12 +56,17 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE context_checkpoint_corrections, context_semantic_checkpoints, context_micro_checkpoints, context_capture_gaps, context_events, context_event_scopes, sealed_invocation_payload_access_audits, sealed_invocation_payloads, invocation_snapshots, invocation_deliveries, context_window_reconciliations, execution_control_snapshots, users, spaces, hosts CASCADE");
+  await pool.query("TRUNCATE context_checkpoint_corrections, context_semantic_checkpoints, context_micro_checkpoints, context_capture_gaps, context_events, context_event_scopes, sealed_invocation_payload_access_audits, sealed_invocation_payloads, invocation_snapshots, invocation_deliveries, context_window_reconciliations, execution_control_snapshots, workspace_locations, users, spaces, hosts, machines CASCADE");
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
   await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
+    [HOST],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
   await pool.query(
@@ -1015,9 +1020,16 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await pool.query(
       `INSERT INTO project_folders (
          id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
-         execution_enabled,protected,system_managed,host_id,host_kind,created_at,updated_at
-       ) VALUES ($1,$2,$3,$4,'Delivery Folder','active','code',TRUE,TRUE,FALSE,FALSE,$5,'server',now(),now())`,
-      [FOLDER, SPACE, PROJECT, USER, HOST],
+         protected,system_managed,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,'Delivery Folder','active','code',TRUE,FALSE,FALSE,now(),now())`,
+      [FOLDER, SPACE, PROJECT, USER],
+    );
+    await pool.query(
+      `INSERT INTO workspace_locations (
+         id,space_id,project_folder_id,execution_host_id,execution_host_kind,
+         execution_ready,status,preferred,created_at,updated_at
+       ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'server',true,'active',true,now(),now())`,
+      [SPACE, FOLDER, HOST],
     );
     const instructionId = randomUUID();
     await pool.query(

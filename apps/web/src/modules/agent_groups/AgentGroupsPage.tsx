@@ -146,14 +146,13 @@ export default function AgentGroupsPage() {
       return
     }
     let cancelled = false
-    projectFoldersApi.list(draft.project_id, { status: 'active', limit: '100' })
+    projectFoldersApi.listExecutionReady(draft.project_id, { status: 'active', limit: '100' })
       .then(page => {
         if (cancelled) return
-        const executable = page.items.filter(folder => folder.execution_enabled)
-        setProjectFolders(executable)
+        setProjectFolders(page.items)
         setDraft(current => {
           if (current.project_id !== draft.project_id) return current
-          if (executable.some(folder => folder.id === current.project_folder_id)) return current
+          if (page.items.some(folder => folder.id === current.project_folder_id)) return current
           return { ...current, project_folder_id: '' }
         })
       })
@@ -251,7 +250,7 @@ export default function AgentGroupsPage() {
 
     const [folderPage, nextOverview] = await Promise.all([
       nextDetail.room.project_folder_id
-        ? projectFoldersApi.list(nextDetail.room.project_id, {
+        ? projectFoldersApi.listExecutionReady(nextDetail.room.project_id, {
             status: 'active',
             limit: String(LIST_PAGE_SIZE),
           })

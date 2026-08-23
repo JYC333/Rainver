@@ -9,6 +9,7 @@ import type { Queryable } from "../routeUtils/common";
 export interface HostThreadMessage {
   id: string;
   host_task_thread_id: string;
+  task_id: string;
   prompt: string;
   status: "queued" | "dispatched" | "withdrawn";
   run_id: string | null;
@@ -17,20 +18,20 @@ export interface HostThreadMessage {
   updated_at: string;
 }
 
-const COLUMNS = `id, host_task_thread_id, prompt, status, run_id, created_by_user_id, created_at, updated_at`;
+const COLUMNS = `id, host_task_thread_id, task_id, prompt, status, run_id, created_by_user_id, created_at, updated_at`;
 
 export class PgHostThreadMessageRepository {
   constructor(private readonly db: Queryable) {}
 
-  async enqueue(threadId: string, prompt: string, createdByUserId: string): Promise<HostThreadMessage> {
+  async enqueue(threadId: string, taskId: string, prompt: string, createdByUserId: string): Promise<HostThreadMessage> {
     const id = randomUUID();
     const now = new Date().toISOString();
     const result = await this.db.query<HostThreadMessage>(
       `INSERT INTO host_thread_messages (
-         id, host_task_thread_id, prompt, status, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, 'queued', $4, $5, $5)
+         id, host_task_thread_id, task_id, prompt, status, created_by_user_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $6)
        RETURNING ${COLUMNS}`,
-      [id, threadId, prompt, createdByUserId, now],
+      [id, threadId, taskId, prompt, createdByUserId, now],
     );
     return result.rows[0]!;
   }
@@ -88,6 +89,18 @@ export class PgHostThreadMessageRepository {
       [messageId, threadId],
     );
     return result.rows[0] ?? null;
+  }
+
+  /** Withdraw every still-queued admission for a Task on this thread. The
+   * queue lock is held by the caller when this is used for terminal-task or
+   * authority-loss reconciliation. */
+  async withdrawQueuedForTask(threadId: string, taskId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE host_thread_messages
+          SET status = 'withdrawn', updated_at = now()
+        WHERE host_task_thread_id = $1 AND task_id = $2 AND status = 'queued'`,
+      [threadId, taskId],
+    );
   }
 
   /** Every message ever sent into a thread, oldest first — the durable conversation record (`runs.prompt` is redacted on read). */

@@ -30,7 +30,7 @@ vi.mock('../../../api/client', () => ({
   },
   agentsApi: { list: vi.fn(), conversationBackends: vi.fn() },
   projectsApi: { list: vi.fn(), getOverview: vi.fn() },
-  projectFoldersApi: { list: vi.fn() },
+  projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
   roomsApi: {
     list: vi.fn(),
     get: vi.fn(),
@@ -187,6 +187,12 @@ describe('Rooms page', () => {
       limit: 100,
       offset: 0,
     })
+    vi.mocked(projectFoldersApi.listExecutionReady).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    } as never)
     vi.mocked(agentsApi.list).mockResolvedValue([{
       id: 'agent-1',
       name: 'Researcher',

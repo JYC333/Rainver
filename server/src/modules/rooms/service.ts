@@ -142,10 +142,10 @@ export class RoomService {
           input.project_id,
           input.project_folder_id,
         );
-        if (!folder || folder.status !== "active" || !folder.execution_enabled) {
+        if (!folder || folder.status !== "active") {
           throw new HttpError(
             422,
-            "project_folder_id must identify an active execution-enabled folder in this Project",
+            "project_folder_id must identify an active folder in this Project",
           );
         }
       }

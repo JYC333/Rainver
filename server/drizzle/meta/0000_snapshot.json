@@ -1,5 +1,5 @@
 {
-  "id": "44f7d773-0bd1-4f9a-b06e-8e399c0a08c3",
+  "id": "8d2fb60b-7335-4419-bb63-0b3b5c7fa251",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -52485,6 +52485,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "workspace_location_id": {
+          "name": "workspace_location_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trust_mode": {
+          "name": "trust_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "host_task_thread_id": {
           "name": "host_task_thread_id",
           "type": "varchar(36)",
@@ -53148,6 +53160,21 @@
           "method": "btree",
           "with": {}
         },
+        "ix_runs_workspace_location_id": {
+          "name": "ix_runs_workspace_location_id",
+          "columns": [
+            {
+              "expression": "workspace_location_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "ix_runs_host_task_thread_id": {
           "name": "ix_runs_host_task_thread_id",
           "columns": [
@@ -53420,6 +53447,21 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "runs_workspace_location_id_fkey": {
+          "name": "runs_workspace_location_id_fkey",
+          "tableFrom": "runs",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "workspace_location_id",
+            "project_folder_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_folder_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "fk_runs_delegation_same_space": {
           "name": "fk_runs_delegation_same_space",
           "tableFrom": "runs",
@@ -53556,6 +53598,10 @@
         "ck_runs_trust_level": {
           "name": "ck_runs_trust_level",
           "value": "(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))"
+        },
+        "ck_runs_trust_mode": {
+          "name": "ck_runs_trust_mode",
+          "value": "trust_mode IS NULL OR trust_mode IN ('sandboxed', 'trusted_host')"
         },
         "ck_runs_visibility": {
           "name": "ck_runs_visibility",
@@ -66741,6 +66787,85 @@
       },
       "isRLSEnabled": false
     },
+    "public.machines": {
+      "name": "machines",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_kind": {
+          "name": "device_kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_machines_owner_user_id": {
+          "name": "ix_machines_owner_user_id",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "machines_owner_user_id_fkey": {
+          "name": "machines_owner_user_id_fkey",
+          "tableFrom": "machines",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.hosts": {
       "name": "hosts",
       "schema": "",
@@ -66756,6 +66881,18 @@
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
+        },
+        "machine_id": {
+          "name": "machine_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_kind": {
+          "name": "environment_kind",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
         },
         "name": {
           "name": "name",
@@ -66861,6 +66998,21 @@
           "method": "btree",
           "with": {}
         },
+        "ix_hosts_machine_id": {
+          "name": "ix_hosts_machine_id",
+          "columns": [
+            {
+              "expression": "machine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "uq_hosts_single_server": {
           "name": "uq_hosts_single_server",
           "columns": [
@@ -66913,6 +67065,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "hosts_machine_id_fkey": {
+          "name": "hosts_machine_id_fkey",
+          "tableFrom": "hosts",
+          "tableTo": "machines",
+          "columnsFrom": [
+            "machine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -66922,6 +67087,14 @@
           "nullsNotDistinct": false,
           "columns": [
             "token_hash"
+          ]
+        },
+        "uq_hosts_id_kind": {
+          "name": "uq_hosts_id_kind",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "kind"
           ]
         }
       },
@@ -66935,6 +67108,10 @@
           "name": "ck_hosts_status",
           "value": "status IN ('pending_pairing', 'online', 'offline', 'revoked')"
         },
+        "ck_hosts_environment_kind": {
+          "name": "ck_hosts_environment_kind",
+          "value": "environment_kind IN ('windows_native', 'wsl', 'linux_native', 'macos_native', 'vm', 'container', 'server')"
+        },
         "ck_hosts_server_no_owner": {
           "name": "ck_hosts_server_no_owner",
           "value": "kind <> 'server' OR owner_user_id IS NULL"
@@ -66942,6 +67119,10 @@
         "ck_hosts_remote_has_owner": {
           "name": "ck_hosts_remote_has_owner",
           "value": "kind <> 'remote' OR owner_user_id IS NOT NULL"
+        },
+        "ck_hosts_server_environment": {
+          "name": "ck_hosts_server_environment",
+          "value": "kind <> 'server' OR environment_kind = 'server'"
         }
       },
       "isRLSEnabled": false
@@ -66956,14 +67137,8 @@
           "primaryKey": true,
           "notNull": true
         },
-        "project_folder_id": {
-          "name": "project_folder_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "host_id": {
-          "name": "host_id",
+        "workspace_location_id": {
+          "name": "workspace_location_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
@@ -67019,26 +67194,11 @@
         }
       },
       "indexes": {
-        "ix_host_task_threads_project_folder_id": {
-          "name": "ix_host_task_threads_project_folder_id",
+        "ix_host_task_threads_workspace_location_id": {
+          "name": "ix_host_task_threads_workspace_location_id",
           "columns": [
             {
-              "expression": "project_folder_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_host_task_threads_host_id": {
-          "name": "ix_host_task_threads_host_id",
-          "columns": [
-            {
-              "expression": "host_id",
+              "expression": "workspace_location_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -67051,41 +67211,28 @@
         }
       },
       "foreignKeys": {
-        "host_task_threads_project_folder_id_fkey": {
-          "name": "host_task_threads_project_folder_id_fkey",
+        "host_task_threads_workspace_location_id_fkey": {
+          "name": "host_task_threads_workspace_location_id_fkey",
           "tableFrom": "host_task_threads",
-          "tableTo": "project_folders",
+          "tableTo": "workspace_locations",
           "columnsFrom": [
-            "project_folder_id"
+            "workspace_location_id"
           ],
           "columnsTo": [
             "id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "host_task_threads_host_id_fkey": {
-          "name": "host_task_threads_host_id_fkey",
-          "tableFrom": "host_task_threads",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uq_host_task_threads_id_folder": {
-          "name": "uq_host_task_threads_id_folder",
+        "uq_host_task_threads_id_location": {
+          "name": "uq_host_task_threads_id_location",
           "nullsNotDistinct": false,
           "columns": [
             "id",
-            "project_folder_id"
+            "workspace_location_id"
           ]
         }
       },
@@ -67110,6 +67257,12 @@
         },
         "host_task_thread_id": {
           "name": "host_task_thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
@@ -67211,6 +67364,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_host_thread_events_project_id": {
+          "name": "ix_host_thread_events_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -67225,6 +67393,19 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_thread_events_project_id_fkey": {
+          "name": "host_thread_events_project_id_fkey",
+          "tableFrom": "host_thread_events",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "host_thread_events_run_id_fkey": {
@@ -67273,6 +67454,12 @@
         },
         "host_task_thread_id": {
           "name": "host_task_thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
@@ -67351,6 +67538,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_host_thread_messages_task_id": {
+          "name": "ix_host_thread_messages_task_id",
+          "columns": [
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -67373,6 +67575,19 @@
           "tableTo": "runs",
           "columnsFrom": [
             "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "host_thread_messages_task_id_fkey": {
+          "name": "host_thread_messages_task_id_fkey",
+          "tableFrom": "host_thread_messages",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id"
           ],
           "columnsTo": [
             "id"
@@ -67463,25 +67678,6 @@
         "validation_recipe_id": {
           "name": "validation_recipe_id",
           "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cloud_allowed": {
-          "name": "cloud_allowed",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "max_data_exposure_level": {
-          "name": "max_data_exposure_level",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "min_observability_level": {
-          "name": "min_observability_level",
-          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": false
         },
@@ -67584,16 +67780,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "ck_project_folder_execution_configs_max_data_exposure_level": {
-          "name": "ck_project_folder_execution_configs_max_data_exposure_level",
-          "value": "(max_data_exposure_level IS NULL) OR ((max_data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))"
-        },
-        "ck_project_folder_execution_configs_min_observability_level": {
-          "name": "ck_project_folder_execution_configs_min_observability_level",
-          "value": "(min_observability_level IS NULL) OR ((min_observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text]))"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.project_folders": {
@@ -67627,12 +67814,6 @@
         "description": {
           "name": "description",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "root_path": {
-          "name": "root_path",
-          "type": "varchar(1024)",
           "primaryKey": false,
           "notNull": false
         },
@@ -67685,13 +67866,6 @@
           "notNull": true,
           "default": false
         },
-        "execution_enabled": {
-          "name": "execution_enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "default_branch": {
           "name": "default_branch",
           "type": "varchar(256)",
@@ -67738,24 +67912,6 @@
         "snapshot_max_count": {
           "name": "snapshot_max_count",
           "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "host_kind": {
-          "name": "host_kind",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_path": {
-          "name": "display_path",
-          "type": "varchar(1024)",
           "primaryKey": false,
           "notNull": false
         }
@@ -67821,43 +67977,6 @@
           "method": "btree",
           "with": {}
         },
-        "ix_project_folders_host_id": {
-          "name": "ix_project_folders_host_id",
-          "columns": [
-            {
-              "expression": "host_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_project_folders_space_root_path": {
-          "name": "uq_project_folders_space_root_path",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "root_path",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "root_path IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "uq_project_folders_one_primary_per_project": {
           "name": "uq_project_folders_one_primary_per_project",
           "columns": [
@@ -67916,19 +68035,6 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
-        },
-        "project_folders_host_id_fkey": {
-          "name": "project_folders_host_id_fkey",
-          "tableFrom": "project_folders",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -67951,14 +68057,268 @@
         "ck_project_folders_status": {
           "name": "ck_project_folders_status",
           "value": "(status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text])"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workspace_locations": {
+      "name": "workspace_locations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
         },
-        "ck_project_folders_host_kind": {
-          "name": "ck_project_folders_host_kind",
-          "value": "host_kind IN ('server', 'remote')"
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
         },
-        "ck_project_folders_remote_no_root_path": {
-          "name": "ck_project_folders_remote_no_root_path",
-          "value": "host_kind <> 'remote' OR root_path IS NULL"
+        "project_folder_id": {
+          "name": "project_folder_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "execution_host_id": {
+          "name": "execution_host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "execution_host_kind": {
+          "name": "execution_host_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_path": {
+          "name": "display_path",
+          "type": "varchar(1024)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "root_path": {
+          "name": "root_path",
+          "type": "varchar(1024)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "branch": {
+          "name": "branch",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_head": {
+          "name": "git_head",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dirty": {
+          "name": "dirty",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_ready": {
+          "name": "execution_ready",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "preferred": {
+          "name": "preferred",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_workspace_locations_project_folder_id": {
+          "name": "ix_workspace_locations_project_folder_id",
+          "columns": [
+            {
+              "expression": "project_folder_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_workspace_locations_execution_host_id": {
+          "name": "ix_workspace_locations_execution_host_id",
+          "columns": [
+            {
+              "expression": "execution_host_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_workspace_locations_status": {
+          "name": "ix_workspace_locations_status",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_workspace_locations_one_preferred_per_folder": {
+          "name": "uq_workspace_locations_one_preferred_per_folder",
+          "columns": [
+            {
+              "expression": "project_folder_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "preferred",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_workspace_locations_space_root_path": {
+          "name": "uq_workspace_locations_space_root_path",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "root_path",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "root_path IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workspace_locations_space_id_fkey": {
+          "name": "workspace_locations_space_id_fkey",
+          "tableFrom": "workspace_locations",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workspace_locations_project_folder_id_fkey": {
+          "name": "workspace_locations_project_folder_id_fkey",
+          "tableFrom": "workspace_locations",
+          "tableTo": "project_folders",
+          "columnsFrom": [
+            "project_folder_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "workspace_locations_execution_host_id_fkey": {
+          "name": "workspace_locations_execution_host_id_fkey",
+          "tableFrom": "workspace_locations",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "execution_host_id",
+            "execution_host_kind"
+          ],
+          "columnsTo": [
+            "id",
+            "kind"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_workspace_locations_id_folder": {
+          "name": "uq_workspace_locations_id_folder",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_folder_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_workspace_locations_status": {
+          "name": "ck_workspace_locations_status",
+          "value": "status IN ('active', 'archived', 'stale')"
+        },
+        "ck_workspace_locations_execution_host_kind": {
+          "name": "ck_workspace_locations_execution_host_kind",
+          "value": "execution_host_kind IN ('server', 'remote')"
+        },
+        "ck_workspace_locations_remote_no_root_path": {
+          "name": "ck_workspace_locations_remote_no_root_path",
+          "value": "execution_host_kind <> 'remote' OR root_path IS NULL"
         }
       },
       "isRLSEnabled": false

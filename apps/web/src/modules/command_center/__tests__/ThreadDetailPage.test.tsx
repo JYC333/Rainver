@@ -29,7 +29,7 @@ const HOST = {
 const FOLDER = {
   id: 'folder-1', space_id: 'space-1', project_id: 'project-1', created_by_user_id: 'user-1',
   name: 'mapping', slug: null, description: null, kind: 'code' as const, is_primary: true,
-  execution_enabled: true, repo_url: null, root_path: null, default_branch: null, status: 'active' as const,
+  repo_url: null, root_path: null, default_branch: null, status: 'active' as const,
   protected: false, system_managed: false, registered_from: null, metadata_json: null,
   snapshot_retention_days: null, snapshot_max_count: null,
   host_id: 'host-1', host_kind: 'remote' as const, display_path: '/home/user/mapping',

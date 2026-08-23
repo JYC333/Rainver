@@ -242,11 +242,9 @@ architecture and the defer register once nothing in it can be advanced.
 
 | Document | Holds |
 |---|---|
-| [plans/acp-runtime-replatform-plan.md](plans/acp-runtime-replatform-plan.md) | **Active.** Replace every self-maintained vendor CLI protocol implementation with the Agent Client Protocol, across both the remote and server-host execution paths; carries the conversational surface's acceptance gate. (Control center phases 1 and 2 both shipped and their plans are retired; ledgers in git history, current state in modules/hosts.md + ADR 0016) |
 | [plans/backlog.md](plans/backlog.md) | Real work with no trigger condition, pulled on demand |
-| [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, the standing enablement gates, watch items, and parked ideas |
-| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — DEFERRED; entry evidence is expected to come from acp-runtime-replatform-plan.md's acceptance gate |
-| [plans/project-conversational-advancement-plan.md](plans/project-conversational-advancement-plan.md) | Conversational Project advancement — Room as command surface, phased A–D; **phases C/D suspended 2026-08-21**, re-evaluated after acp-runtime-replatform-plan.md's acceptance gate; Room narrowed to dispatch/supervision entry (never relays work turns) |
+| [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, the standing enablement gates, watch items, and parked ideas — including this repo's "Project kernel — P2" section: the Machine/ExecutionHost/WorkspaceLocation topology plan's deferred Project-control-plane decisions (`primary_mode` deletion, registry merge, Project Steward, Room). That plan's P0 (cleanup) and P1 (topology, Task-as-spine dispatch) shipped and are retired — commits `d0b6b3c5`, `0dcd91ca`. |
+| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — DEFERRED; entry evidence is expected to come from the retired execution-topology plan's P1 real-usage window |
 
 Do not create competing task files, and do not reintroduce a "current focus"
 document. One existed and was removed: a file whose job is to declare what is

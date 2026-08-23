@@ -20,7 +20,8 @@ import {
   PgProposalRepository,
 } from "./repository";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore";
-import { PgProjectFolderRepository, assertServerHostFolder, projectFolderAbsoluteRoot } from "../projectFolders/repository";
+import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations";
+import { PgProjectFolderRepository } from "../projectFolders/repository";
 import { validatePath } from "../projectFolders/pathPolicy";
 import { HttpError } from "../routeUtils/common";
 import type {
@@ -535,13 +536,14 @@ export class PgProposalApplyService {
         await client.query("ROLLBACK");
         throw new ProposalApplyHttpError(404, "Project Folder not found");
       }
+      let location;
       try {
-        assertServerHostFolder(folder);
+        location = await resolvePreferredServerHostLocation(client, identity.spaceId, p.project_folder_id);
       } catch (error) {
         await client.query("ROLLBACK");
         throw error instanceof HttpError ? new ProposalApplyHttpError(error.statusCode, error.message) : error;
       }
-      const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
+      const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
 
       // Restore files to pre-apply state
       const restoredPaths: string[] = [];

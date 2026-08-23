@@ -2,13 +2,14 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import DispatchComposer from '../DispatchComposer'
-import { hostsApi, projectFoldersApi, projectsApi } from '../../../api/client'
+import { hostsApi, projectFoldersApi, projectsApi, tasksApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../api/client', () => ({
-  hostsApi: { list: vi.fn(), dispatch: vi.fn(), listRuntimeAdapters: vi.fn() },
-  projectFoldersApi: { list: vi.fn() },
+  hostsApi: { list: vi.fn(), listRuntimeAdapters: vi.fn() },
+  projectFoldersApi: { list: vi.fn(), locations: vi.fn() },
   projectsApi: { list: vi.fn(), create: vi.fn() },
+  tasksApi: { createRunWithoutTask: vi.fn() },
 }))
 
 const REMOTE_HOST = {
@@ -21,11 +22,17 @@ const REMOTE_HOST = {
 const REMOTE_FOLDER = {
   id: 'folder-1', space_id: 'space-1', project_id: 'project-1', created_by_user_id: 'user-1',
   name: 'mapping', slug: null, description: null, kind: 'code' as const, is_primary: true,
-  execution_enabled: true, repo_url: null, root_path: null, default_branch: null, status: 'active' as const,
+  repo_url: null, root_path: null, default_branch: null, status: 'active' as const,
   protected: false, system_managed: false, registered_from: null, metadata_json: null,
   snapshot_retention_days: null, snapshot_max_count: null,
-  host_id: 'host-1', host_kind: 'remote' as const, display_path: '/home/user/mapping',
   created_at: '', updated_at: '',
+}
+
+const REMOTE_LOCATION = {
+  id: 'location-1', project_folder_id: 'folder-1', execution_host_id: 'host-1',
+  execution_host_kind: 'remote' as const, display_path: '/home/user/mapping', root_path: null,
+  branch: 'main', git_head: 'abc123', dirty: false, status: 'active' as const,
+  preferred: true, execution_ready: true, last_seen_at: '', created_at: '', updated_at: '',
 }
 
 const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true }
@@ -34,8 +41,9 @@ beforeEach(() => {
   vi.mocked(hostsApi.list).mockResolvedValue({ items: [REMOTE_HOST] })
   vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER] })
   vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [REMOTE_FOLDER], total: 1 } as never)
+  vi.mocked(projectFoldersApi.locations).mockResolvedValue([REMOTE_LOCATION] as never)
   vi.mocked(projectsApi.list).mockResolvedValue({ items: [{ id: 'project-1', name: 'Mapping' }], total: 1 } as never)
-  vi.mocked(hostsApi.dispatch).mockResolvedValue({ message_id: 'message-1', run_id: 'run-1', thread_id: 'thread-1', status: 'dispatched' })
+  vi.mocked(tasksApi.createRunWithoutTask).mockResolvedValue({ message_id: 'message-1', run_id: 'run-1', thread_id: 'thread-1', status: 'dispatched' } as never)
 })
 
 describe('DispatchComposer — follow-up (fixed thread)', () => {
@@ -57,8 +65,10 @@ describe('DispatchComposer — follow-up (fixed thread)', () => {
     await waitFor(() => expect(button).not.toBeDisabled())
     await userEvent.click(button)
 
-    await waitFor(() => expect(hostsApi.dispatch).toHaveBeenCalledWith({
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalledWith({
+      project_id: 'project-1',
       project_folder_id: 'folder-1',
+      workspace_location_id: 'location-1',
       adapter_type: 'claude_code',
       prompt: 'fix the bug',
       thread_id: 'thread-1',
@@ -115,8 +125,10 @@ describe('DispatchComposer — new conversation', () => {
     await waitFor(() => expect(button).not.toBeDisabled())
     await userEvent.click(button)
 
-    await waitFor(() => expect(hostsApi.dispatch).toHaveBeenCalledWith({
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalledWith({
+      project_id: 'project-1',
       project_folder_id: 'folder-1',
+      workspace_location_id: 'location-1',
       adapter_type: 'claude_code',
       prompt: 'start something new',
       thread_id: null,

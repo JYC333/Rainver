@@ -13,22 +13,24 @@ access, and Project membership is unaffected. See
 
 ## What is a Project Folder?
 
-A **Project Folder** is a file, code, and execution boundary.
-It is where agents inspect files, create sandboxes, run commands, collect diffs, and validate changes.
-Capability code belongs to a Project Folder.
+A **Project Folder** is the logical file/code identity owned by a Project.
+Physical checkouts are modeled separately as `workspace_locations`, each bound
+to one `hosts`/ExecutionHost. Server-host Locations are where agents inspect
+files, create sandboxes, run commands, collect diffs, and validate changes;
+remote trusted-host Locations run in the daemon-owned checkout. Capability
+code belongs to the logical Project Folder, not to one machine.
 
 ## Project vs Project Folder
 
 | Concern | Project | Project Folder |
 |---|---|---|
-| Purpose | Goal / knowledge / context | File / execution / sandbox |
-| Holds | Activities, artifacts, proposals, runs, memory | Files, repos, capability code |
-| Created by | User — named objective | User or system — maps to filesystem path |
-| Cardinality | One Project → zero or more Project Folders | One Project Folder → exactly one Project |
+| Purpose | Goal / knowledge / context | Logical file/repository identity |
+| Holds | Activities, artifacts, proposals, runs, memory | Repository identity and capability code |
+| Created by | User — named objective | User or system — registers a logical repository |
+| Cardinality | One Project → zero or more Project Folders | One Folder → one Project; one Folder → one or more Locations |
 | Capability outputs | Digests, artifacts, proposals, project memory | Capability code itself |
 
-A Project owns zero or more Project Folders directly (`project_folders.project_id`, non-null, single-owner FK) — there is no link/association table and no Folder role vocabulary.
-A physical Folder cannot be shared across Projects; multiple questions/features over one repository belong in one Project as Threads, Tasks, Decisions, Experiments, or Workflows.
+A Project owns zero or more Project Folders directly (`project_folders.project_id`, non-null, single-owner FK) — there is no link/association table and no Folder role vocabulary. A Folder may have several physical Locations, but a Location belongs to exactly one Folder and one ExecutionHost. A physical checkout cannot be shared across Projects; multiple questions/features over one repository belong in one Project as Threads, Tasks, Decisions, Experiments, or Workflows.
 Capability code lives in a Project Folder; its outputs (digests, artifacts, proposals, memory) belong to a Project.
 
 ## Information flow
@@ -84,11 +86,11 @@ draft saves, research-question changes, and incremental-trigger consumption use
 the same fence. The aggregate lock order is Project, then Operation/Automation,
 then Research Workflow.
 
-### ProjectFolder (owned, not linked)
+### ProjectFolder (logical, owned, not linked)
 
-A Project Folder is a registered persistent physical folder/repository owned
-by exactly one Project — there is no association/link table and no Folder
-role vocabulary. `project_folders.project_id` is a direct, non-null,
+A Project Folder is a registered logical repository identity owned by exactly
+one Project — there is no association/link table and no Folder role
+vocabulary. `project_folders.project_id` is a direct, non-null,
 single-owner FK.
 
 | Field | Type | Notes |
@@ -98,12 +100,19 @@ single-owner FK.
 | `space_id` | string | Must match the owning Project's space |
 | `kind` | string | `code` \| `data` \| `docs` |
 | `is_primary` | boolean | At most one primary Folder per Project |
-| `execution_enabled` | boolean | |
 | `protected` | boolean | Safety flag gating destructive path operations; not an ACL |
-| `root_path`, `repo_url`, `default_branch` | string \| null | |
+| `repo_url`, `default_branch` | string \| null | Logical repository metadata |
 | `snapshot_retention_days`, `snapshot_max_count` | int \| null | Code-patch rollback snapshot policy; falls back to the Space default |
-| `status` | string | `active` \| `archived` |
+| `status` | string | `active` \| `archived` \| `stale` |
 | `created_at` / `updated_at` | datetime | |
+
+### WorkspaceLocation (physical checkout)
+
+`workspace_locations` binds a Folder to one ExecutionHost. It carries the
+server-only `root_path` or remote display label, preferred selection,
+branch/head/dirty observations, and the persisted `execution_ready` fact. A
+remote Location never carries a server path. Runs and host task threads bind to
+this row when physical execution matters.
 
 A Folder has no separate owner, visibility, membership, or access-level
 authority — it inherits its owning Project's ACL completely. Unregistering a

@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { projectFoldersApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { FileContent, FileNode, GitChangedFile, GitStatus, ProjectFolder } from '../../types/api'
+import type { FileContent, FileNode, GitChangedFile, GitStatus, ProjectFolder, WorkspaceLocation } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Select } from '../../components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
@@ -29,6 +29,7 @@ export default function ProjectFilesPage() {
 
   const [folders, setFolders] = useState<ProjectFolder[]>([])
   const [selectedFolder, setSelectedFolder] = useState<ProjectFolder | null>(null)
+  const [locations, setLocations] = useState<WorkspaceLocation[]>([])
   const [foldersLoading, setFoldersLoading] = useState(true)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [folderToUnregister, setFolderToUnregister] = useState<ProjectFolder | null>(null)
@@ -97,13 +98,25 @@ export default function ProjectFilesPage() {
     }
   }, [projectId])
 
+  const loadLocations = useCallback(async (folder: ProjectFolder) => {
+    try {
+      setLocations(await projectFoldersApi.locations(projectId, folder.id))
+    } catch {
+      setLocations([])
+    }
+  }, [projectId])
+
   useEffect(() => {
-    if (!selectedFolder) return
+    if (!selectedFolder) {
+      setLocations([])
+      return
+    }
     setCenterView({ mode: 'empty' })
     setSelectedFilePath(null)
+    void loadLocations(selectedFolder)
     void loadTree(selectedFolder)
     void loadGitStatus(selectedFolder)
-  }, [selectedFolder, loadTree, loadGitStatus])
+  }, [selectedFolder, loadLocations, loadTree, loadGitStatus])
 
   async function handleFileSelect(path: string) {
     if (!selectedFolder) return
@@ -138,6 +151,7 @@ export default function ProjectFilesPage() {
     ;(gitGroups[f.status] ??= []).push(f)
   }
   const gitGroupOrder = ['modified', 'added', 'deleted', 'untracked', 'renamed'] as const
+  const selectedLocation = locations.find(location => location.preferred) ?? locations[0] ?? null
 
   if (!foldersLoading && folders.length === 0) {
     return (
@@ -201,9 +215,9 @@ export default function ProjectFilesPage() {
           </div>
         )}
 
-        {selectedFolder?.root_path && (
+        {(selectedLocation?.root_path ?? selectedLocation?.display_path) && (
           <span className="text-[10px] text-muted-foreground font-mono hidden sm:block truncate max-w-[260px]">
-            {selectedFolder.root_path}
+            {selectedLocation?.root_path ?? selectedLocation?.display_path}
           </span>
         )}
 

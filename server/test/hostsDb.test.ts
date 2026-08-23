@@ -62,8 +62,8 @@ describe("hosts repository", () => {
     await repo.ensureServerHostId();
     await expect(
       pool.query(
-        `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-         VALUES ($1, NULL, 'server-2', 'server', 'online', now(), now())`,
+        `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+         VALUES ($1, NULL, (SELECT machine_id FROM hosts WHERE kind = 'server' LIMIT 1), 'server-2', 'server', 'server', 'online', now(), now())`,
         [randomUUID()],
       ),
     ).rejects.toMatchObject({ code: "23505" });
@@ -208,18 +208,24 @@ describe("hosts repository", () => {
 
   it("rejects a remote host row with no owner and a server host row with an owner at the database level", async (ctx) => {
     if (!available || !pool) return ctx.skip();
+    const machineId = randomUUID();
+    await pool.query(
+      `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+       VALUES ($1, NULL, 'Validation machine', 'desktop', now(), now())`,
+      [machineId],
+    );
     await expect(
       pool.query(
-        `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-         VALUES ($1, NULL, 'Orphan Remote', 'remote', 'offline', now(), now())`,
-        [randomUUID()],
+        `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+         VALUES ($1, NULL, $2, 'Orphan Remote', 'remote', 'linux_native', 'offline', now(), now())`,
+        [randomUUID(), machineId],
       ),
     ).rejects.toMatchObject({ code: "23514" });
     await expect(
       pool.query(
-        `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-         VALUES ($1, $2, 'Owned Server', 'server', 'online', now(), now())`,
-        [randomUUID(), OWNER],
+        `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Owned Server', 'server', 'server', 'online', now(), now())`,
+        [randomUUID(), OWNER, machineId],
       ),
     ).rejects.toMatchObject({ code: "23514" });
   });

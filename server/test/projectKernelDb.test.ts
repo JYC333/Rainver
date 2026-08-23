@@ -49,14 +49,20 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE project_operations, projects, space_memberships, users, spaces, hosts CASCADE");
+  await pool.query("TRUNCATE project_operations, workspace_locations, projects, space_memberships, users, spaces, hosts, machines CASCADE");
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`,
     [SPACE, now],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at) VALUES ($1, NULL, 'server', 'server', 'online', $2, $2)`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, NULL, 'Test server', 'server', $2, $2)`,
+    [HOST, now],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', $2, $2)`,
     [HOST, now],
   );
   await pool.query(
@@ -285,10 +291,18 @@ describe("Project Kernel (real Postgres)", () => {
     await pool.query(
       `INSERT INTO project_folders
          (id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
-          execution_enabled,protected,system_managed,host_id,host_kind,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,'Bound Folder','active','code',false,true,false,false,$7,'server',$6,$6),
-              ($5,$2,$3,$4,'Other Folder','active','code',false,true,false,false,$7,'server',$6,$6)`,
-      [boundFolderId, SPACE, project.id, OWNER, otherFolderId, new Date().toISOString(), HOST],
+          protected,system_managed,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'Bound Folder','active','code',false,false,false,$6,$6),
+              ($5,$2,$3,$4,'Other Folder','active','code',false,false,false,$6,$6)`,
+      [boundFolderId, SPACE, project.id, OWNER, otherFolderId, new Date().toISOString()],
+    );
+    await pool.query(
+      `INSERT INTO workspace_locations (
+         id,space_id,project_folder_id,execution_host_id,execution_host_kind,
+         execution_ready,status,preferred,created_at,updated_at
+       ) VALUES (gen_random_uuid()::varchar,$1,$2,$4,'server',true,'active',true,now(),now()),
+                (gen_random_uuid()::varchar,$1,$3,$4,'server',true,'active',true,now(),now())`,
+      [SPACE, boundFolderId, otherFolderId, HOST],
     );
     const otherPrivateAgentId = randomUUID();
     await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Other Private Agent','active',$4,$4,'private','full')`, [otherPrivateAgentId, SPACE, OWNER, new Date().toISOString()]);

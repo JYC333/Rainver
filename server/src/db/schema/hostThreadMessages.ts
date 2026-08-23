@@ -2,6 +2,7 @@ import { pgTable, index, check, foreignKey, varchar, text, timestamp, type PgTab
 import { sql } from "drizzle-orm";
 import { hostTaskThreads } from "./hostTaskThreads";
 import { runs } from "./runs";
+import { tasks } from "./tasks";
 
 /**
  * control-center-phase2-plan.md P2 (C4): the durable record of every
@@ -19,6 +20,15 @@ import { runs } from "./runs";
 export const hostThreadMessages = pgTable("host_thread_messages", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }).notNull(),
+	/**
+	 * execution-topology-and-project-control-plane-plan.md P1.7: which Task
+	 * this message dispatches under — write-once, set at enqueue time and
+	 * carried onto the Run `advanceThreadQueue` creates for it (`task_runs`,
+	 * budget admission). A thread has no `task_id` of its own (it can outlive
+	 * any one Task across P1.7's queue-continuation use), so each message
+	 * fixes this at the moment it is queued, not the thread at creation.
+	 */
+	taskId: varchar("task_id", { length: 36 }).notNull(),
 	prompt: text().notNull(),
 	status: varchar({ length: 16 }).notNull().default('queued'),
 	runId: varchar("run_id", { length: 36 }),
@@ -28,6 +38,7 @@ export const hostThreadMessages = pgTable("host_thread_messages", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_host_thread_messages_thread_id").using("btree", table.hostTaskThreadId.asc().nullsLast(), table.createdAt.asc().nullsLast()),
 	index("ix_host_thread_messages_run_id").using("btree", table.runId.asc().nullsLast()),
+	index("ix_host_thread_messages_task_id").using("btree", table.taskId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.hostTaskThreadId],
 			foreignColumns: [hostTaskThreads.id],
@@ -37,6 +48,11 @@ export const hostThreadMessages = pgTable("host_thread_messages", {
 			columns: [table.runId],
 			foreignColumns: [runs.id],
 			name: "host_thread_messages_run_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.taskId],
+			foreignColumns: [tasks.id],
+			name: "host_thread_messages_task_id_fkey"
 		}),
 	check("ck_host_thread_messages_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('dispatched'::character varying)::text, ('withdrawn'::character varying)::text])`),
 	check("ck_host_thread_messages_run_id_consistency", sql`(status = 'dispatched') = (run_id IS NOT NULL)`),

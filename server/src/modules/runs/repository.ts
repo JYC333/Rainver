@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock";
@@ -144,7 +145,8 @@ export class PgRunRepository {
       error_code: "orphaned",
       error_text: "Run was still running after the server lost its execution registry",
     });
-    const result = await this.db.query<{ id: string }>(
+    return withQueryableTransaction(this.db, async (db) => {
+    const result = await db.query<{ id: string; space_id: string }>(
       `WITH orphaned_runs AS (
          UPDATE runs
             SET status = 'orphaned',
@@ -193,7 +195,11 @@ export class PgRunRepository {
         JSON.stringify(errorJson),
       ],
     );
+    for (const row of result.rows) {
+      await projectTaskStatusFromRun(db, row.space_id, row.id);
+    }
     return result.rowCount ?? result.rows.length;
+    });
   }
 
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
@@ -464,6 +470,7 @@ export class PgRunRepository {
       );
     }
     await this.assertOptionalSpaceRef("project_folders", input.project_folder_id, input.space_id, "Project Folder");
+    await this.assertOptionalSpaceRef("workspace_locations", input.workspace_location_id, input.space_id, "Workspace Location");
     await this.assertOptionalSpaceRef("sessions", input.session_id, input.space_id, "Session");
     await this.assertOptionalSpaceRef("projects", input.project_id, input.space_id, "Project");
     if (input.parent_run_id) {
@@ -536,14 +543,14 @@ export class PgRunRepository {
                   capabilities_json, model_provider_id, model_override_json, runtime_profile_snapshot_json,
                   required_sandbox_level, owner_user_id, visibility, access_level, project_id,
                   contract_snapshot_json, workflow_version_id, source, runtime_profile_selection_source,
-                  permission_snapshot_json
+                  permission_snapshot_json, workspace_location_id, trust_mode
        )
        VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
           $11, $12, $13, $14, $15, $16, $17, 'queued', $18, $19, $20, $21, $22, $22,
           $23, $24, $25::jsonb, $26, $27::jsonb, $28::jsonb, $29,
           $14, $30, $31, $32, $33::jsonb, $34, 'managed', $35,
-          $36::jsonb
+          $36::jsonb, $37, $38
        )
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
@@ -558,7 +565,7 @@ export class PgRunRepository {
                  started_at, ended_at, created_at, updated_at,
                  owner_user_id, visibility, access_level, contract_snapshot_json,
                  workflow_version_id, route_decision_id, runtime_profile_selection_source,
-                 permission_snapshot_json`,
+                 permission_snapshot_json, workspace_location_id, trust_mode`,
       [
         runId,
         input.space_id,
@@ -597,6 +604,8 @@ export class PgRunRepository {
         input.workflow_version_id ?? null,
         runtimeProfileSelectionSource,
         permissionSnapshotJson,
+        input.workspace_location_id ?? null,
+        input.trust_mode ?? null,
       ],
     );
     const row = result.rows[0];
@@ -855,7 +864,7 @@ export class PgRunRepository {
   }
 
   private async assertOptionalSpaceRef(
-    table: "project_folders" | "sessions" | "projects",
+    table: "project_folders" | "workspace_locations" | "sessions" | "projects",
     id: string | null | undefined,
     spaceId: string,
     label: string,
@@ -882,7 +891,7 @@ export class PgRunRepository {
               r.runtime_profile_id, r.runtime_profile_selection_source,
               av.system_prompt AS system_prompt,
               r.run_type, r.status, r.mode, r.prompt,
-              r.instruction, r.project_folder_id, r.host_task_thread_id, r.session_id, r.parent_run_id,
+              r.instruction, r.project_folder_id, r.workspace_location_id, r.trust_mode, r.host_task_thread_id, r.session_id, r.parent_run_id,
               r.root_run_id, r.run_group_id, r.delegation_id,
               r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.capabilities_json, r.model_provider_id, r.model_override_json, r.required_sandbox_level,
@@ -973,7 +982,7 @@ export class PgRunRepository {
     const result = await this.db.query<RunRecord>(
       `SELECT id, space_id, agent_id, agent_version_id, run_role,
               requested_runtime_profile_id, runtime_profile_id, runtime_profile_selection_source,
-              run_type, status, mode, prompt, instruction, project_folder_id, host_task_thread_id,
+              run_type, status, mode, prompt, instruction, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id,
               session_id, parent_run_id, root_run_id, run_group_id, delegation_id,
               project_id, scheduled_at, adapter_type,
               capability_id, capabilities_json, model_provider_id, model_override_json,
@@ -1566,7 +1575,7 @@ export class PgRunRepository {
           WHERE space_id = $1 AND id = $2 AND status = 'queued'
           RETURNING id, space_id, agent_id, agent_version_id, runtime_profile_id,
                     runtime_profile_snapshot_json, run_type, status, mode,
-                    prompt, instruction, project_folder_id, host_task_thread_id, session_id, project_id,
+                    prompt, instruction, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id, session_id, project_id,
                     parent_run_id, root_run_id, run_group_id, delegation_id,
                     adapter_type, capability_id, capabilities_json, model_provider_id,
                     model_override_json, permission_snapshot_json,
@@ -1770,7 +1779,6 @@ export class PgRunRepository {
                  AND execution_folder.space_id = $1
                  AND execution_folder.project_id = $3
                  AND execution_folder.status = 'active'
-                 AND execution_folder.execution_enabled = TRUE
             )
           )
         ) AS allowed`,
@@ -1837,7 +1845,8 @@ export class PgRunRepository {
       ? recordValue(errorJson).error_code as string
       : null;
     const replacementStateKey = randomUUID();
-    const result = await this.db.query<RunRecord>(
+    return withQueryableTransaction(this.db, async (db) => {
+    const result = await db.query<RunRecord>(
       `WITH candidate AS (
          SELECT id
            FROM runs
@@ -1966,7 +1975,16 @@ export class PgRunRepository {
         executionOwner,
       ],
     );
-    return result.rows[0] ?? null;
+    const terminal = result.rows[0] ?? null;
+    if (terminal) {
+      // Every terminal mutation (worker success/failure, direct execution,
+      // queued cancellation, and retry exhaustion) passes through this
+      // repository method. Keep Task status projection here so no caller can
+      // accidentally leave a linked Task in `in_progress`.
+      await projectTaskStatusFromRun(db, terminal.space_id, terminal.id);
+    }
+    return terminal;
+    });
   }
 
   async getLatestRunAttempt(spaceId: string, runId: string): Promise<RunAttemptRecord | null> {
@@ -2411,7 +2429,7 @@ export class PgRunRepository {
               r.runtime_profile_id,
               av.system_prompt AS system_prompt,
               r.run_type, r.status, r.mode, r.prompt,
-              r.instruction, r.project_folder_id, r.session_id, r.parent_run_id,
+              r.instruction, r.project_folder_id, r.workspace_location_id, r.trust_mode, r.session_id, r.parent_run_id,
               r.root_run_id, r.run_group_id, r.delegation_id,
               r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.capabilities_json, r.model_provider_id, r.model_override_json, r.required_sandbox_level,
@@ -2612,7 +2630,8 @@ export class PgRunRepository {
       error_text: input.error_message,
       ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
     });
-    const result = await this.db.query<RunRecord>(
+    return withQueryableTransaction(this.db, async (db) => {
+    const result = await db.query<RunRecord>(
       `UPDATE runs
           SET status = 'degraded',
               error_json = COALESCE(error_json, '{}'::jsonb) || $3::jsonb,
@@ -2635,7 +2654,10 @@ export class PgRunRepository {
         redactEvidenceText(input.error_message),
       ],
     );
-    return result.rows[0] ?? null;
+    const degraded = result.rows[0] ?? null;
+    if (degraded) await projectTaskStatusFromRun(db, degraded.space_id, degraded.id);
+    return degraded;
+    });
   }
 
   async appendRunEvent(input: RunEventInput): Promise<RunEventRecord> {

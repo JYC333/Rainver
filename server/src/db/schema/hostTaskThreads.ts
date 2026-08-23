@@ -1,22 +1,22 @@
 import { pgTable, index, unique, check, foreignKey, varchar, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { hosts } from "./hosts";
-import { projectFolders } from "./projectFolders";
+import { workspaceLocations } from "./workspaceLocations";
 
 /**
  * ADR 0016 D14: a task thread pins a run-file-lifecycle conversation to one
- * (host, workspace) pair — the vendor CLI's own session store lives on that
- * host's disk, so continuity cannot cross hosts. The first dispatch in a
- * thread starts a fresh vendor session; a follow-up dispatch passes this
- * thread's id and resumes `vendor_session_id`. `status` flips to
- * `session_reset` (from `active`) when the daemon reports the vendor session
- * is gone and the run had to restart fresh — the UI surfaces this rather
- * than silently resuming into a new, unrelated session.
+ * WorkspaceLocation (execution-topology-and-project-control-plane-plan.md
+ * P1 — previously a (host, project_folder) pair) — the vendor CLI's own
+ * session store lives on that Location's disk, so continuity cannot cross
+ * Locations. The first dispatch in a thread starts a fresh vendor session;
+ * a follow-up dispatch passes this thread's id and resumes
+ * `vendor_session_id`. `status` flips to `session_reset` (from `active`)
+ * when the daemon reports the vendor session is gone and the run had to
+ * restart fresh — the UI surfaces this rather than silently resuming into a
+ * new, unrelated session.
  */
 export const hostTaskThreads = pgTable("host_task_threads", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
-	projectFolderId: varchar("project_folder_id", { length: 36 }).notNull(),
-	hostId: varchar("host_id", { length: 36 }).notNull(),
+	workspaceLocationId: varchar("workspace_location_id", { length: 36 }).notNull(),
 	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
 	vendorSessionId: varchar("vendor_session_id", { length: 256 }),
 	lastRunId: varchar("last_run_id", { length: 36 }),
@@ -34,18 +34,12 @@ export const hostTaskThreads = pgTable("host_task_threads", {
 	// message goes out.
 	queuePausedAt: timestamp("queue_paused_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
-	index("ix_host_task_threads_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
-	index("ix_host_task_threads_host_id").using("btree", table.hostId.asc().nullsLast()),
-	unique("uq_host_task_threads_id_folder").on(table.id, table.projectFolderId),
+	index("ix_host_task_threads_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
+	unique("uq_host_task_threads_id_location").on(table.id, table.workspaceLocationId),
 	foreignKey({
-			columns: [table.projectFolderId],
-			foreignColumns: [projectFolders.id],
-			name: "host_task_threads_project_folder_id_fkey"
+			columns: [table.workspaceLocationId],
+			foreignColumns: [workspaceLocations.id],
+			name: "host_task_threads_workspace_location_id_fkey"
 		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.hostId],
-			foreignColumns: [hosts.id],
-			name: "host_task_threads_host_id_fkey"
-		}),
 	check("ck_host_task_threads_status", sql`status IN ('active', 'session_reset')`),
 ]);

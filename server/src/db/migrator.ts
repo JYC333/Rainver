@@ -2,15 +2,13 @@
  * server migration runner.
  *
  * Runtime PostgreSQL schema evolution is applied through explicit ops
- * commands. `server/migrations/0001_baseline.sql` is the current consolidated
- * generated baseline for empty database bootstrap; applied schema versions are
- * immutable for any database that has recorded them.
+ * commands. `server/migrations/0001_baseline.sql` is the immutable pre-P1
+ * bootstrap baseline; later schema changes are numbered upgrade migrations.
+ * Applied schema versions are immutable for any database that has recorded them.
  *
- * During the consolidated-baseline phase, `pnpm run schema:generate`
- * (drizzle-kit diffing `server/src/db/schema/` against `server/drizzle/meta/`)
- * merges generated SQL into `0001_baseline.sql` instead of creating a new
- * migration file. This runner doesn't care which produced a file; it only reads
- * ordered `.sql` files from disk.
+ * `pnpm run schema:generate` maintains the empty-database Drizzle baseline in
+ * `server/drizzle/`; it does not rewrite numbered runtime migrations. This
+ * runner only reads ordered `.sql` files from disk.
  *
  * Design:
  * - Migrations are ordered `.sql` files named `NNNN_name.sql` under a directory;

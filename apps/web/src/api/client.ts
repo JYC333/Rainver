@@ -125,7 +125,6 @@ import type {
   FileNode,
   GitStatus,
   Host,
-  HostDispatchRequest,
   HostDispatchResponse,
   HostPairingCode,
   HostRecentThread,
@@ -133,6 +132,7 @@ import type {
   HostTaskThread,
   HostThreadEvent,
   HostThreadMessage,
+  WorkspaceLocation,
   HomeSummaryOut,
   InformationDigest,
   InquiryCandidate,
@@ -1051,7 +1051,9 @@ export const tasksApi = {
   update: (id: string, data: Record<string, unknown>) =>
     patch<Task>(`/tasks/${id}`, data),
   createRun: (taskId: string, body: TaskRunCreateBody = {}) =>
-    post<Run>(`/tasks/${taskId}/runs`, body),
+    post<Run | HostDispatchResponse>(`/tasks/${taskId}/runs`, body),
+  createRunWithoutTask: (body: TaskRunCreateBody) =>
+    post<Run | HostDispatchResponse>('/tasks/runs', body),
   runs:   (taskId: string, params: Record<string, string> = {}) =>
     get<Page<TaskRunListItem>>(`/tasks/${taskId}/runs?` + new URLSearchParams(params)),
   artifacts: (taskId: string, params: Record<string, string> = {}) =>
@@ -1799,12 +1801,22 @@ export const automationsApi = {
 export const projectFoldersApi = {
   list:    (projectId: string, params: Record<string, string> = {}) =>
     get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params)),
+  listExecutionReady: async (projectId: string, params: Record<string, string> = {}) => {
+    const page = await get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params))
+    const ready = (await Promise.all(page.items.map(async folder => {
+      const locations = await get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folder.id}/locations`)
+      return locations.some(location => location.execution_ready) ? folder : null
+    }))).filter((folder): folder is ProjectFolder => folder !== null)
+    return { ...page, items: ready, total: ready.length }
+  },
   create:  (projectId: string, data: ProjectFolderCreateBody) =>
     post<ProjectFolder>(`/projects/${projectId}/folders`, data),
   scan:    (projectId: string) =>
     post<{ items: ProjectFolderScanCandidate[] }>(`/projects/${projectId}/folders/scan`),
   get:     (projectId: string, folderId: string) =>
     get<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`),
+  locations: (projectId: string, folderId: string) =>
+    get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folderId}/locations`),
   update:  (projectId: string, folderId: string, data: ProjectFolderUpdateBody) =>
     patch<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`, data),
   archive: (projectId: string, folderId: string) =>
@@ -1829,7 +1841,6 @@ export const hostsApi = {
   list: () => get<{ items: Host[] }>('/hosts'),
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
   revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
-  dispatch: (data: HostDispatchRequest) => post<HostDispatchResponse>('/hosts/dispatch', data),
   listThreads: (projectId: string) =>
     get<{ items: HostTaskThread[] }>(`/hosts/threads?project_id=${encodeURIComponent(projectId)}`),
   /** Cross-project landing read (C10) — Project is a filter the caller applies via `listThreads`, not a precondition. */

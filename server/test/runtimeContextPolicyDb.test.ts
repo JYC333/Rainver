@@ -49,16 +49,21 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(`TRUNCATE runtime_context_policy_audits, runtime_context_policy_bindings,
-    runtime_context_policy_versions, agents, project_folders, project_members, projects,
-    policy_decision_records, space_memberships, users, spaces, hosts CASCADE`);
+    runtime_context_policy_versions, agents, workspace_locations, project_folders, project_members, projects,
+    policy_decision_records, space_memberships, users, spaces, hosts, machines CASCADE`);
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Team', 'household', now(), now())`,
     [SPACE],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
+    [HOST],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
   for (const id of [OWNER, ADMIN, MEMBER, OTHER]) {
@@ -88,10 +93,16 @@ beforeEach(async () => {
   await pool.query(
     `INSERT INTO project_folders (
        id, space_id, project_id, name, status, created_at, updated_at, kind,
-       is_primary, execution_enabled, protected, system_managed, allow_external_root,
-       host_id, host_kind
-     ) VALUES ($1,$2,$3,'Folder','active',now(),now(),'code',true,true,false,false,false,$4,'server')`,
-    [FOLDER, SPACE, PROJECT, HOST],
+       is_primary, protected, system_managed, allow_external_root
+     ) VALUES ($1,$2,$3,'Folder','active',now(),now(),'code',true,false,false,false)`,
+    [FOLDER, SPACE, PROJECT],
+  );
+  await pool.query(
+    `INSERT INTO workspace_locations (
+       id,space_id,project_folder_id,execution_host_id,execution_host_kind,
+       execution_ready,status,preferred,created_at,updated_at
+     ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'server',true,'active',true,now(),now())`,
+    [SPACE, FOLDER, HOST],
   );
   await pool.query(
     `INSERT INTO agents (

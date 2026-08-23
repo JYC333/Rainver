@@ -6,19 +6,20 @@ import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContex
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository";
 import { PgProjectFolderRepository } from "../projectFolders/repository";
-import { HttpError } from "../routeUtils/common";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations";
+import { HttpError, withDbTransaction } from "../routeUtils/common";
 import type { Pool } from "../../db/pool";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry";
 import { PgHostTaskThreadRepository } from "./taskThreadRepository";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository";
-import { advanceThreadQueue } from "./queueAdvance";
+import { advanceThreadQueue, HOST_THREAD_QUEUE_LOCK_PREFIX } from "./queueAdvance";
 import { assertProjectWriter, assertProjectReadable } from "../projects/access";
-import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
 import { getDbPool } from "../../db/pool";
 import { PgHostThreadEventRepository } from "./threadEventRepository";
 import { commandServices } from "../runs/routes";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults";
 import { listRuntimeAdapterSpecs } from "../runtimeAdapters";
+import { settleTaskAfterQueuedMessageWithdrawal } from "../tasks/taskRunStatusProjection";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -59,7 +60,8 @@ async function requireThreadProjectWriter(
   const row = await pool.query<{ space_id: string; project_id: string }>(
     `SELECT pf.space_id, pf.project_id
        FROM host_task_threads t
-       JOIN project_folders pf ON pf.id = t.project_folder_id
+       JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+       JOIN project_folders pf ON pf.id = wl.project_folder_id
       WHERE t.id = $1
       LIMIT 1`,
     [threadId],
@@ -76,6 +78,20 @@ async function requireThreadProjectWriter(
 }
 
 function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
+  const workspaceReports = Array.isArray(payload.workspace_reports)
+    ? payload.workspace_reports.flatMap((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+        const report = value as Record<string, unknown>;
+        if (typeof report.location_id !== "string" || typeof report.execution_ready !== "boolean") return [];
+        return [{
+          location_id: report.location_id,
+          branch: typeof report.branch === "string" ? report.branch : null,
+          git_head: typeof report.git_head === "string" ? report.git_head : null,
+          dirty: typeof report.dirty === "boolean" ? report.dirty : null,
+          execution_ready: report.execution_ready,
+        }];
+      })
+    : null;
   return {
     platform: typeof payload.platform === "string" ? payload.platform : null,
     arch: typeof payload.arch === "string" ? payload.arch : null,
@@ -84,6 +100,8 @@ function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
       payload.capabilities_json && typeof payload.capabilities_json === "object" && !Array.isArray(payload.capabilities_json)
         ? (payload.capabilities_json as Record<string, unknown>)
         : null,
+    environment_kind: typeof payload.environment_kind === "string" ? payload.environment_kind : null,
+    workspace_reports: workspaceReports,
   };
 }
 
@@ -292,28 +310,28 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
     const hosts = hostRepositoryFromConfig(context.config);
-    const folders = PgProjectFolderRepository.fromConfig(context.config);
-    if (!hosts) {
+    if (!hosts || !context.config.databaseUrl) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
     const host = await authenticateHost(request, hosts);
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
-    return reply.send({ items: await folders.listForHost(host.id) });
+    const locations = new PgWorkspaceLocationRepository(getDbPool(context.config.databaseUrl));
+    return reply.send({ items: await locations.listForHost(host.id) });
   });
 
   app.delete("/api/v1/hosts/me/workspaces/:folderId", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
     const hosts = hostRepositoryFromConfig(context.config);
-    const folders = PgProjectFolderRepository.fromConfig(context.config);
-    if (!hosts) {
+    if (!hosts || !context.config.databaseUrl) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
     const host = await authenticateHost(request, hosts);
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
-    const folderId = params(request).folderId;
-    if (!folderId) return reply.code(400).send({ detail: "folderId is required" });
-    const removed = await folders.unregisterForHost(host.id, folderId);
+    const locationId = params(request).folderId;
+    if (!locationId) return reply.code(400).send({ detail: "folderId is required" });
+    const locations = new PgWorkspaceLocationRepository(getDbPool(context.config.databaseUrl));
+    const removed = await locations.unregisterForHost(host.id, locationId);
     if (!removed) return reply.code(404).send({ detail: "Workspace not found" });
     return reply.code(204).send();
   });
@@ -366,134 +384,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(201).send(result);
   });
 
-  // Dispatch (D10): creates and immediately executes a Run against an
-  // explicit (workspace, runtime, prompt) tuple, bypassing route selection
-  // entirely — a remote-host Run is never something the deterministic
-  // router should be re-deciding. User-session authenticated (the person
-  // dispatching, not the daemon).
-  app.post("/api/v1/hosts/dispatch", async (request, reply) => {
-    const requestId = resolveRequestId(request);
-    reply.header(REQUEST_ID_HEADER, requestId);
-    const auth = authRepositoryFromConfig(context.config);
-    const hosts = hostRepositoryFromConfig(context.config);
-    if (!auth || !hosts || !context.config.databaseUrl) {
-      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
-    if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
-
-    const payload = body<{
-      project_folder_id: string;
-      adapter_type: string;
-      prompt: string;
-      thread_id?: string | null;
-      timeout_ms?: number | null;
-    }>(request);
-    if (typeof payload.project_folder_id !== "string" || !payload.project_folder_id) {
-      return reply.code(422).send({ detail: "project_folder_id is required" });
-    }
-    if (typeof payload.adapter_type !== "string" || !payload.adapter_type) {
-      return reply.code(422).send({ detail: "adapter_type is required" });
-    }
-    if (typeof payload.prompt !== "string" || !payload.prompt.trim()) {
-      return reply.code(422).send({ detail: "prompt is required" });
-    }
-
-    const target = await hosts.resolveDispatchTarget(payload.project_folder_id);
-    if (!target) return reply.code(404).send({ detail: "Project Folder not found" });
-    const pool = getDbPool(context.config.databaseUrl);
-    // Authorization (write access) is checked before anything about the
-    // Folder's topology is revealed — a caller with no access to the
-    // underlying Project must not learn whether a given folder id is
-    // server- or remote-hosted from the response.
-    try {
-      await assertProjectWriter(pool, target.space_id, target.project_id, user.id);
-    } catch (error) {
-      if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
-      throw error;
-    }
-    if (target.host_kind !== "remote") {
-      return reply.code(422).send({ detail: "This Project Folder is bound to the server host; use the existing Run creation flow instead of dispatch." });
-    }
-    // B63: a host accepts Runs only from its own registered owner.
-    if (target.host_owner_user_id !== user.id) {
-      return reply.code(403).send({ detail: "This workspace's host does not belong to you" });
-    }
-    if (!target.host_online) {
-      return reply.code(409).send({ detail: "Host is offline" });
-    }
-    const spec = getLocalCliRuntimeAdapterSpec(payload.adapter_type);
-    if (!spec) return reply.code(422).send({ detail: `Unknown runtime adapter '${payload.adapter_type}'` });
-    if (
-      spec.implementation_status !== "implemented"
-      || spec.invocation.protocol !== "acp"
-    ) {
-      return reply.code(422).send({ detail: `Runtime adapter '${payload.adapter_type}' is not supported for remote dispatch` });
-    }
-    const reportedRuntimes = Array.isArray((target.capabilities_json as { runtimes?: unknown })?.runtimes)
-      ? ((target.capabilities_json as { runtimes: unknown[] }).runtimes as unknown[])
-      : [];
-    // ACP runtime replatform P3: an ACP adapter's own executable (e.g.
-    // `codex-acp`) is our pinned client, not something a trusted host
-    // installs — capability discovery probes for the vendor CLI it drives
-    // instead (`remote_capability_probe`, unset when the two are the same).
-    const capabilityProbeCommand = spec.invocation.remote_capability_probe ?? spec.executable.command;
-    if (!reportedRuntimes.includes(capabilityProbeCommand)) {
-      return reply.code(422).send({ detail: `Host does not report '${capabilityProbeCommand}' as an installed runtime` });
-    }
-
-    // control-center-phase2-plan.md P2 (C8): the caller no longer names an
-    // Agent — the remote-conversation selection unit is (host, workspace,
-    // runtime), and D1 already strips every server-Agent input (runtime
-    // context, provider resolution, credentials) from a remote run, so
-    // requiring one was pure ceremony. `createAndQueueRun` resolves the
-    // space's system remote-dispatch agent instead (`remoteDispatchAgent.ts`).
-    const threads = new PgHostTaskThreadRepository(pool);
-    let thread = payload.thread_id
-      ? await threads.getForFolder(payload.thread_id, payload.project_folder_id)
-      : null;
-    if (payload.thread_id && !thread) return reply.code(404).send({ detail: "Task thread not found for this Folder" });
-    if (thread && thread.adapter_type !== payload.adapter_type) {
-      return reply.code(409).send({ detail: "Task thread is pinned to a different runtime adapter" });
-    }
-    if (!thread) {
-      thread = await threads.create({
-        projectFolderId: payload.project_folder_id,
-        hostId: target.host_id,
-        adapterType: payload.adapter_type,
-        createdByUserId: user.id,
-      });
-    }
-
-    // control-center-phase2-plan.md P2 (C4): every send goes through the
-    // queue, even the first one into an idle thread — `advanceThreadQueue`
-    // immediately pops it back off and dispatches when nothing is blocking,
-    // so "dispatch now" and "queue for later" are the same code path rather
-    // than two that could drift. `host_thread_messages` is also the durable,
-    // readable record of what was said (`runs.prompt` is redacted on read).
-    const messages = new PgHostThreadMessageRepository(pool);
-    const message = await messages.enqueue(thread.id, payload.prompt, user.id);
-    const advance = await advanceThreadQueue(pool, thread.id, {
-      messageId: message.id,
-      timeoutMs: payload.timeout_ms ?? null,
-    });
-    // advanceThreadQueue pops the *oldest* queued message, which is only
-    // guaranteed to be the one just enqueued above if nothing else was
-    // already ahead of it — a caller sending into a thread with a backlog
-    // can have their own message land as "queued" here even though this
-    // same call advanced the queue for a different, earlier message
-    // (discovery review, P2). Report this request's actual message, not
-    // whatever advanced.
-    const thisMessageDispatched = advance.advanced && advance.message_id === message.id;
-
-    return reply.code(201).send({
-      message_id: message.id,
-      thread_id: thread.id,
-      run_id: thisMessageDispatched ? advance.run_id : null,
-      status: thisMessageDispatched ? "dispatched" : "queued",
-    });
-  });
-
   // Withdraw a still-queued message before it is ever dispatched — a
   // message already turned into a Run cannot be pulled back (Cancel is the
   // only way to stop work already in flight).
@@ -513,14 +403,23 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const projectAccess = await requireThreadProjectWriter(pool, threadId, user.id);
     if ("error" in projectAccess) return reply.code(projectAccess.statusCode).send({ detail: projectAccess.detail });
 
-    const messages = new PgHostThreadMessageRepository(pool);
-    const withdrawn = await messages.withdraw(threadId, messageId);
-    if (!withdrawn) {
-      const existing = await messages.get(threadId, messageId);
+    const result = await withDbTransaction(pool, async (client) => {
+      // Keep withdrawal and Task settlement in the same serialization domain
+      // as queue advancement. If advancement wins this lock, the message is
+      // dispatched and correctly becomes non-withdrawable instead.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${HOST_THREAD_QUEUE_LOCK_PREFIX}${threadId}`]);
+      const messages = new PgHostThreadMessageRepository(client);
+      const withdrawn = await messages.withdraw(threadId, messageId);
+      if (!withdrawn) return { withdrawn: null, existing: await messages.get(threadId, messageId) };
+      await settleTaskAfterQueuedMessageWithdrawal(client, projectAccess.spaceId, threadId, messageId);
+      return { withdrawn, existing: null };
+    });
+    if (!result.withdrawn) {
+      const existing = result.existing;
       if (!existing) return reply.code(404).send({ detail: "Message not found" });
       return reply.code(409).send({ detail: `Message is already ${existing.status}, not withdrawable` });
     }
-    return reply.send(withdrawn);
+    return reply.send(result.withdrawn);
   });
 
   // Explicit resume after a pause (C4) — the only way a paused queue
@@ -623,7 +522,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const projectRow = await pool.query<{ project_id: string }>(
       `SELECT pf.project_id
          FROM host_task_threads t
-         JOIN project_folders pf ON pf.id = t.project_folder_id
+         JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+         JOIN project_folders pf ON pf.id = wl.project_folder_id
         WHERE t.id = $1 AND pf.space_id = $2
         LIMIT 1`,
       [threadId, identity.spaceId],
@@ -669,7 +569,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const projectRow = await pool.query<{ project_id: string }>(
       `SELECT pf.project_id
          FROM host_task_threads t
-         JOIN project_folders pf ON pf.id = t.project_folder_id
+         JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+         JOIN project_folders pf ON pf.id = wl.project_folder_id
         WHERE t.id = $1 AND pf.space_id = $2
         LIMIT 1`,
       [threadId, identity.spaceId],

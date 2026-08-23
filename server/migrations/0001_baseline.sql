@@ -5715,14 +5715,9 @@ CREATE TABLE "project_folder_execution_configs" (
 	"build_commands_json" jsonb,
 	"architecture_boundaries_json" jsonb,
 	"validation_recipe_id" varchar(36),
-	"cloud_allowed" boolean DEFAULT false NOT NULL,
-	"max_data_exposure_level" varchar(64),
-	"min_observability_level" varchar(64),
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
-	CONSTRAINT "uq_project_folder_execution_configs_project_folder" UNIQUE("project_folder_id"),
-	CONSTRAINT "ck_project_folder_execution_configs_max_data_exposure_level" CHECK ((max_data_exposure_level IS NULL) OR ((max_data_exposure_level)::text = ANY (ARRAY[('local_only'::character varying)::text, ('model_provider'::character varying)::text, ('vendor_platform'::character varying)::text, ('third_party_tools'::character varying)::text, ('unknown'::character varying)::text]))),
-	CONSTRAINT "ck_project_folder_execution_configs_min_observability_level" CHECK ((min_observability_level IS NULL) OR ((min_observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text])))
+	CONSTRAINT "uq_project_folder_execution_configs_project_folder" UNIQUE("project_folder_id")
 );
 --> statement-breakpoint
 CREATE TABLE "project_folders" (
@@ -5740,7 +5735,6 @@ CREATE TABLE "project_folders" (
 	"slug" varchar(256),
 	"kind" varchar(16) NOT NULL,
 	"is_primary" boolean DEFAULT false NOT NULL,
-	"execution_enabled" boolean DEFAULT true NOT NULL,
 	"default_branch" varchar(256),
 	"protected" boolean NOT NULL,
 	"system_managed" boolean NOT NULL,

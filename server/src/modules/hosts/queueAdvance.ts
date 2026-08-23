@@ -1,19 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "../../db/pool";
-import type { Queryable } from "../routeUtils/common";
+import { HttpError, type Queryable } from "../routeUtils/common";
 import { withDbTransaction } from "../routeUtils/common";
-import { PgHostRepository } from "./repository";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations";
 import { PgHostTaskThreadRepository } from "./taskThreadRepository";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository";
 import { ensureRemoteDispatchAgent } from "./remoteDispatchAgent";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { isTerminalRunStatus } from "../runs/orchestrationResults";
+import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access";
+import { assertBudgetSourcesAvailable, RunBudgetExceededError } from "../runs/budgetEnforcement";
+import { budgetSourcesFromPolicy, createRunContractSnapshot, type RunBudgetSource } from "../runs/contractSnapshot";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
+import {
+  settleTaskAfterQueuedMessageWithdrawal,
+  withdrawQueuedTaskMessages,
+} from "../tasks/taskRunStatusProjection";
 
-const LOCK_PREFIX = "host_thread_queue:";
+export const HOST_THREAD_QUEUE_LOCK_PREFIX = "host_thread_queue:";
 
 export type AdvanceResult =
   | { advanced: true; run_id: string; message_id: string }
-  | { advanced: false; reason: "thread_not_found" | "paused" | "run_active" | "host_offline" | "queue_empty" };
+  | { advanced: false; reason: "thread_not_found" | "paused" | "run_active" | "host_offline" | "queue_empty" | "task_missing" | "task_not_runnable" | "task_authority_lost" | "task_budget_exhausted" };
 
 /**
  * control-center-phase2-plan.md P2 (C4): pops and dispatches the oldest
@@ -67,13 +75,13 @@ export async function advanceThreadQueue(
   const thread = await threads.getById(threadId);
   if (!thread) return { advanced: false, reason: "thread_not_found" };
 
-  const hosts = new PgHostRepository(pool);
-  const target = await hosts.resolveDispatchTarget(thread.project_folder_id);
-  if (!target || !target.host_online) return { advanced: false, reason: "host_offline" };
-  const agent = await ensureRemoteDispatchAgent(pool, target.space_id);
+  const locations = new PgWorkspaceLocationRepository(pool);
+  const initialTarget = await locations.resolveDispatchTarget(thread.workspace_location_id);
+  if (!initialTarget || !initialTarget.host_online || !initialTarget.execution_ready) return { advanced: false, reason: "host_offline" };
+  const agent = await ensureRemoteDispatchAgent(pool, initialTarget.space_id);
 
   return withDbTransaction(pool, async (client) => {
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${LOCK_PREFIX}${threadId}`]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${HOST_THREAD_QUEUE_LOCK_PREFIX}${threadId}`]);
 
     // Re-read pause state and the latest run's status under the lock — both
     // could have changed since the reads above, by the very race this lock
@@ -97,23 +105,159 @@ export async function advanceThreadQueue(
     if (latestStatus && !isTerminalRunStatus(latestStatus)) return { advanced: false, reason: "run_active" };
 
     const messages = new PgHostThreadMessageRepository(client);
-    const next = await messages.nextQueued(threadId);
-    if (!next) return { advanced: false, reason: "queue_empty" };
+    for (;;) {
+      const next = await messages.nextQueued(threadId);
+      if (!next) return { advanced: false, reason: "queue_empty" };
+
+    // The preflight target was read before this transaction. Re-resolve it
+    // here so a location becoming unready, a host going offline, or a
+    // topology change between enqueue and queue advancement cannot result in
+    // a Run being admitted against stale execution state.
+    const target = await new PgWorkspaceLocationRepository(client).resolveDispatchTarget(freshThread.workspace_location_id);
+    if (!target || !target.host_online || !target.execution_ready) return { advanced: false, reason: "host_offline" };
+
+    // Capability state is a heartbeat fact just like readiness. Recheck it at
+    // the point where the queued message becomes a Run, because the runtime
+    // may have disappeared after the request enqueued the message.
+    const adapter = getLocalCliRuntimeAdapterSpec(freshThread.adapter_type);
+    const reportedRuntimes = Array.isArray((target.capabilities_json as { runtimes?: unknown })?.runtimes)
+      ? ((target.capabilities_json as { runtimes: unknown[] }).runtimes as unknown[])
+      : [];
+    const capabilityProbeCommand = adapter?.invocation.remote_capability_probe ?? adapter?.executable.command;
+    if (!adapter || adapter.implementation_status !== "implemented" || adapter.invocation.protocol !== "acp"
+      || (capabilityProbeCommand && !reportedRuntimes.includes(capabilityProbeCommand))) {
+      return { advanced: false, reason: "host_offline" };
+    }
+
+    // Read the Task without taking its row lock first. Project -> Task is the
+    // lock order for Project-owned mutations; taking Task first would allow a
+    // concurrent archive/dispatch cycle to deadlock.
+    const task = await client.query<{
+      project_id: string | null;
+      project_folder_id: string | null;
+      max_runs: number | null;
+      max_cost: number | null;
+      max_duration_seconds: number | null;
+      policy_json: unknown;
+      status: string;
+    }>(
+      `SELECT project_id, project_folder_id, max_runs, max_cost, max_duration_seconds, policy_json, status
+         FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
+      [next.task_id, target.space_id],
+    );
+    const taskPreview = task.rows[0];
+    if (!taskPreview || taskPreview.project_folder_id !== target.project_folder_id || taskPreview.project_id !== target.project_id) {
+      await messages.withdraw(freshThread.id, next.id);
+      continue;
+    }
+    try {
+      await lockActiveProjectForMutation(client, target.space_id, target.project_id);
+      await assertProjectWriterForMutation(client, target.space_id, target.project_id, next.created_by_user_id);
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      await messages.withdrawQueuedForTask(freshThread.id, next.task_id);
+      await settleTaskAfterQueuedMessageWithdrawal(client, target.space_id, freshThread.id, next.id);
+      return { advanced: false, reason: "task_authority_lost" };
+    }
+
+    const lockedTask = await client.query<{
+      project_id: string | null;
+      project_folder_id: string | null;
+      max_runs: number | null;
+      max_cost: number | null;
+      max_duration_seconds: number | null;
+      policy_json: unknown;
+      status: string;
+    }>(
+      `SELECT project_id, project_folder_id, max_runs, max_cost, max_duration_seconds, policy_json, status
+         FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+      [next.task_id, target.space_id],
+    );
+    const taskRow = lockedTask.rows[0];
+    if (!taskRow || taskRow.project_folder_id !== target.project_folder_id || taskRow.project_id !== target.project_id) {
+      await messages.withdraw(freshThread.id, next.id);
+      continue;
+    }
+    if (["done", "cancelled", "blocked"].includes(taskRow.status)) {
+      // The Task row is locked, so another queue cannot pass its own locked
+      // reread and dispatch this Task until this transaction commits. That
+      // makes it safe to withdraw queued messages on every thread without
+      // taking those other advisory locks here (which would invert the
+      // queue->Task lock order and permit a cross-thread deadlock).
+      await withdrawQueuedTaskMessages(client, target.space_id, [next.task_id]);
+      continue;
+    }
+    const runCount = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM task_runs WHERE task_id = $1 AND space_id = $2`,
+      [next.task_id, target.space_id],
+    );
+    if (taskRow.max_runs !== null && Number(runCount.rows[0]?.count ?? "0") >= taskRow.max_runs) {
+      await client.query(
+        `UPDATE tasks SET status = 'blocked', blocked_reason = 'Task run limit reached', updated_at = now()
+          WHERE id = $1 AND space_id = $2 AND status NOT IN ('done', 'cancelled')`,
+        [next.task_id, target.space_id],
+      );
+      await withdrawQueuedTaskMessages(client, target.space_id, [next.task_id]);
+      return { advanced: false, reason: "task_budget_exhausted" };
+    }
+
+    const policy = taskRow.policy_json && typeof taskRow.policy_json === "object" && !Array.isArray(taskRow.policy_json)
+      ? taskRow.policy_json as Record<string, unknown>
+      : {};
+    const budgetSources: RunBudgetSource[] = [
+      {
+        source: { kind: "task", id: next.task_id },
+        precedence: typeof policy.budget_precedence === "number" ? policy.budget_precedence : null,
+        max_runs: taskRow.max_runs,
+        max_cost: taskRow.max_cost,
+        max_duration_seconds: taskRow.max_duration_seconds,
+        max_attempts: typeof policy.max_attempts === "number" && Number.isInteger(policy.max_attempts) && policy.max_attempts > 0
+          ? policy.max_attempts
+          : null,
+      },
+      ...budgetSourcesFromPolicy(policy.budget_sources),
+    ];
+    try {
+      await assertBudgetSourcesAvailable(client, target.space_id, budgetSources);
+    } catch (error) {
+      // Keep the message queued when an inherited Automation/Workflow cap was
+      // consumed while it waited behind another Run. The next explicit retry
+      // can advance it after the governing budget changes.
+      if (error instanceof RunBudgetExceededError) {
+        return { advanced: false, reason: "task_budget_exhausted" };
+      }
+      throw error;
+    }
 
     const { runId } = await createAndQueueRun(client, {
       spaceId: target.space_id,
       projectId: target.project_id,
-      projectFolderId: freshThread.project_folder_id,
+      projectFolderId: target.project_folder_id,
+      workspaceLocationId: target.location_id,
+      trustMode: target.execution_host_kind === "server" ? "sandboxed" : "trusted_host",
       threadId: freshThread.id,
+      taskId: next.task_id,
       adapterType: freshThread.adapter_type,
       prompt: next.prompt,
       resumeSessionId: freshThread.vendor_session_id,
       userId: next.created_by_user_id,
       agent,
+      contractSnapshot: {
+        source: { kind: "task", id: next.task_id },
+        project_id: target.project_id,
+        project_folder_id: target.project_folder_id,
+        risk_level: null,
+        max_runs: taskRow.max_runs,
+        max_cost: taskRow.max_cost,
+        max_duration_seconds: taskRow.max_duration_seconds,
+        budget_precedence: typeof policy.budget_precedence === "number" ? policy.budget_precedence : null,
+        budget_sources: budgetSources,
+      },
       timeoutMs: timeoutMsForNewMessage?.messageId === next.id ? timeoutMsForNewMessage.timeoutMs : null,
     });
     await messages.markDispatched(next.id, runId);
     return { advanced: true, run_id: runId, message_id: next.id };
+    }
   });
 }
 
@@ -130,25 +274,30 @@ async function createAndQueueRun(db: Queryable, params: {
   spaceId: string;
   projectId: string;
   projectFolderId: string;
+  workspaceLocationId: string;
+  trustMode: "sandboxed" | "trusted_host";
   threadId: string;
+  taskId: string;
   adapterType: string;
   prompt: string;
   resumeSessionId: string | null;
   userId: string;
   agent: { id: string; current_version_id: string };
+  contractSnapshot: Parameters<typeof createRunContractSnapshot>[0];
   timeoutMs: number | null;
 }): Promise<{ runId: string }> {
   const runId = randomUUID();
   const now = new Date().toISOString();
+  const contractSnapshot = createRunContractSnapshot(params.contractSnapshot, now);
   await db.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-       project_id, project_folder_id, host_task_thread_id, adapter_type, required_sandbox_level,
+       project_id, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id, adapter_type, required_sandbox_level, contract_snapshot_json,
        prompt, owner_user_id, instructed_by_user_id, created_at, updated_at
      ) VALUES (
        $1, $2, $3, $4, 'system', 'manual', 'queued', 'live',
-       $5, $6, $7, $8, 'none',
-       $9, $10, $10, $11, $11
+       $5, $6, $7, $8, $9, $10, 'none', $11::jsonb,
+       $12, $13, $13, $14, $14
      )`,
     [
       runId,
@@ -157,12 +306,27 @@ async function createAndQueueRun(db: Queryable, params: {
       params.agent.current_version_id,
       params.projectId,
       params.projectFolderId,
+      params.workspaceLocationId,
+      params.trustMode,
       params.threadId,
       params.adapterType,
+      JSON.stringify(contractSnapshot),
       params.prompt,
       params.userId,
       now,
     ],
+  );
+  // D4: the Run this thread just produced belongs to whichever Task its
+  // enqueued message named (`host_thread_messages.task_id`) — mirrors
+  // `PgTaskRepository.createTaskRun`'s own `task_runs` insert exactly,
+  // including the same `ON CONFLICT (task_id, run_id) DO NOTHING`
+  // idempotency, so the two Run-creation paths stay a single invariant
+  // rather than two independently-maintained copies of it.
+  await db.query(
+    `INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
+     VALUES ($1, $2, $3, $4, 'primary', $5)
+     ON CONFLICT (task_id, run_id) DO NOTHING`,
+    [randomUUID(), params.spaceId, params.taskId, runId, now],
   );
 
   const queue = new PgJobQueueRepository(db);

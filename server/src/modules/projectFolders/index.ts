@@ -13,5 +13,13 @@ export {
 export { PgRunSandboxManager } from "./sandbox";
 export type { RunSandboxManagerPort, PreparedRunSandbox } from "./sandbox";
 export { PgCodePatchCollector, registerProjectFolderProposalAppliers } from "./codePatch";
-export { PgProjectFolderRepository, projectFolderAbsoluteRoot } from "./repository";
+export { PgProjectFolderRepository } from "./repository";
 export type { ProjectFolderRow, ProjectFolderOut } from "./repository";
+export {
+  PgWorkspaceLocationRepository,
+  assertServerHostLocation,
+  locationAbsoluteRoot,
+  resolvePreferredServerHostLocation,
+  resolveServerHostLocationForRun,
+} from "./workspaceLocations";
+export type { WorkspaceLocationRow, WorkspaceLocationOut } from "./workspaceLocations";

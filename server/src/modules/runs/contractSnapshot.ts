@@ -137,6 +137,23 @@ export function contractRouteHints(value: unknown): unknown {
   return record.route_hints_json ?? record.route_hints ?? null;
 }
 
+/** Shared by every admission path (`PgTaskRepository.createTaskRun`, `hosts/queueAdvance.ts`) that reads a Task's `policy_json.budget_sources`. */
+export function budgetSourcesFromPolicy(value: unknown): RunBudgetSource[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is RunBudgetSource => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const source = (item as { source?: unknown }).source;
+    if (!source || typeof source !== "object" || Array.isArray(source)) return false;
+    const kind = (source as { kind?: unknown }).kind;
+    return kind === "direct"
+      || kind === "task"
+      || kind === "automation"
+      || kind === "workflow"
+      || kind === "delegation"
+      || kind === "plan";
+  });
+}
+
 function cloneJson(value: unknown): unknown {
   if (value === undefined) return null;
   return JSON.parse(JSON.stringify(value)) as unknown;

@@ -59,13 +59,13 @@ export default function ExperimentAreaPage() {
         projectsApi.get(projectId),
         experimentsApi.listDefinitions(projectId),
         inquiryApi.listThreads(projectId),
-        projectFoldersApi.list(projectId, { status: 'active', limit: '100' }),
+        projectFoldersApi.listExecutionReady(projectId, { status: 'active', limit: '100' }),
         agentsApi.list({ status: 'active' }),
       ])
       setProject(projectResult)
       setDefinitions(definitionResult)
       setThreads(threadResult.filter(thread => thread.kind === 'hypothesis'))
-      setFolders(folderResult.items.filter(folder => folder.execution_enabled))
+      setFolders(folderResult.items)
       setAgents(agentResult.filter(agent => agent.status === 'active' && agent.current_version_id))
       setSelectedId(current => current ?? definitionResult[0]?.id ?? null)
     } catch (error) {

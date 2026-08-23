@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Copy } from 'lucide-react'
 import { hostsApi } from '../../api/client'
@@ -32,6 +32,14 @@ export default function HostsPanel() {
   const [pairingName, setPairingName] = useState('')
   const [issuing, setIssuing] = useState(false)
   const [runtimeAdapters, setRuntimeAdapters] = useState<HostRuntimeAdapterOption[]>([])
+  const machineGroups = useMemo(() => {
+    const groups = new Map<string, Host[]>()
+    for (const host of hosts) {
+      const machineId = host.machine_id ?? host.id
+      groups.set(machineId, [...(groups.get(machineId) ?? []), host])
+    }
+    return [...groups.entries()]
+  }, [hosts])
 
   useEffect(() => {
     hostsApi.listRuntimeAdapters().then(result => setRuntimeAdapters(result.items)).catch(error => toast.error(errMsg(error)))
@@ -124,14 +132,18 @@ export default function HostsPanel() {
       ) : hosts.length === 0 ? (
         <Card><EmptyState title="No hosts registered yet" /></Card>
       ) : (
-        <div className="space-y-2">
-          {hosts.map(host => (
-            <Card key={host.id} className="p-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-4">
+          {machineGroups.map(([machineId, machineHosts]) => (
+            <section key={machineId} className="space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Machine · {machineHosts[0]?.machine_name ?? machineId}</h3>
+              {machineHosts.map(host => (
+                <Card key={host.id} className="p-3 flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{host.name}</span>
                   <Badge variant={HOST_STATUS_VARIANT[host.status]}>{host.status}</Badge>
                   <Badge variant="outline">{host.kind}</Badge>
+                  <Badge variant="outline">{host.environment_kind ?? host.platform ?? 'unknown environment'}</Badge>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {host.kind === 'server'
@@ -157,7 +169,9 @@ export default function HostsPanel() {
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <Button size="sm" variant="destructive" onClick={() => revoke(host.id)}>Revoke</Button>
               )}
-            </Card>
+                </Card>
+              ))}
+            </section>
           ))}
         </div>
       )}

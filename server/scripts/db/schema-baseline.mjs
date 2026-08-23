@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const drizzleDir = join(serverRoot, "drizzle");
 const migrationDir = join(serverRoot, "migrations");
-const baselineMigration = join(migrationDir, "0001_baseline.sql");
+const firstMigration = join(migrationDir, "0001_baseline.sql");
 const generatedSqlName = "0000_baseline.sql";
 const databaseFeatures = JSON.parse(
   readFileSync(join(serverRoot, "src", "db", "schema", "database-features.json"), "utf8"),
@@ -97,10 +97,12 @@ function assertSingleBaseline(root) {
   }
 }
 
-function assertSingleMigration() {
-  const files = readdirSync(migrationDir).filter((name) => /^\d+_.+\.sql$/.test(name));
-  if (files.length !== 1 || files[0] !== "0001_baseline.sql") {
-    throw new Error("server/migrations must contain only 0001_baseline.sql");
+function assertMigrationChain() {
+  const files = readdirSync(migrationDir)
+    .filter((name) => /^\d+_.+\.sql$/.test(name))
+    .sort();
+  if (!files.includes("0001_baseline.sql")) {
+    throw new Error("server/migrations must retain immutable 0001_baseline.sql");
   }
 }
 
@@ -112,10 +114,9 @@ function generate() {
     generateInto(drizzleDir);
     assertSingleBaseline(drizzleDir);
     preserveUnchangedMetadata(previous, drizzleDir);
-    copyFileSync(join(drizzleDir, generatedSqlName), baselineMigration);
-    assertSingleMigration();
+    assertMigrationChain();
     rmSync(previous, { recursive: true, force: true });
-    console.log("schema-baseline: rebuilt drizzle/0000_baseline.sql and migrations/0001_baseline.sql");
+    console.log("schema-baseline: rebuilt drizzle/0000_baseline.sql; numbered migrations remain immutable");
   } catch (error) {
     rmSync(drizzleDir, { recursive: true, force: true });
     if (existsSync(previous)) renameSync(previous, drizzleDir);
@@ -124,11 +125,11 @@ function generate() {
 }
 
 function check() {
-  if (!existsSync(drizzleDir) || !existsSync(baselineMigration)) {
+  if (!existsSync(drizzleDir) || !existsSync(firstMigration)) {
     throw new Error("Generated schema baseline is missing; run pnpm run schema:generate");
   }
   assertSingleBaseline(drizzleDir);
-  assertSingleMigration();
+  assertMigrationChain();
   const tempRoot = mkdtempSync(join(tmpdir(), "agent-space-schema-check-"));
   try {
     generateInto(tempRoot, { reportOutput: false });
@@ -143,10 +144,7 @@ function check() {
     if (expectedSql !== normalizedSql(join(drizzleDir, generatedSqlName))) {
       throw new Error("Committed Drizzle SQL does not match server/src/db/schema");
     }
-    if (expectedSql !== normalizedSql(baselineMigration)) {
-      throw new Error("migrations/0001_baseline.sql is not the generated Drizzle baseline");
-    }
-    console.log("schema-baseline: schema, Drizzle, and migrations/0001_baseline.sql are in sync");
+    console.log("schema-baseline: schema and Drizzle baseline are in sync; numbered migrations are immutable");
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }

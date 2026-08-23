@@ -248,12 +248,12 @@ successful commit and never participate in the critical write outcome.
 - Local PostgreSQL containers have stable mode-specific names:
   `agent-space-dev-postgres`, `agent-space-test-postgres`, and `agent-space-prod-postgres`.
 - Schema authoring is owned by Drizzle definitions under `server/src/db/schema/`.
-  `server/drizzle/` stores Drizzle's generated snapshot/migration metadata, and
-  `server/migrations/` stores the generated SQL artifacts that the server
-  migration runner applies. During the consolidated-baseline phase, generated
-  SQL is merged into `server/migrations/0001_baseline.sql` rather than leaving
-  a new `0002_*` file. Do not hand-edit migration SQL for schema changes; edit
-  the Drizzle schema and run `pnpm run schema:generate`.
+  `server/drizzle/` stores the empty-database generated snapshot, and
+  `server/migrations/` stores immutable SQL history applied by the server
+  migration runner. `0001_baseline.sql` is the pre-P1 bootstrap; subsequent
+  schema changes use numbered upgrade migrations. Do not rewrite an applied
+  migration; edit the Drizzle schema, generate the empty-database baseline,
+  and add a numbered upgrade migration with any required backfill.
   `ops/scripts/start.sh` also runs `pnpm run schema:generate` from `server/`
   before building the server image or applying migrations, so startup keeps the
   generated artifacts in sync with TypeScript schema files.
@@ -487,18 +487,16 @@ changes.
 - `server/drizzle/` (generator output + `meta/` snapshots) is **committed to
   git**: the snapshots are the state `generate` diffs against on every
   machine/CI run, not disposable build output.
-- `server/scripts/db/schema-sync.mjs` bridges generated SQL into the applied
-  migration directory. During the consolidated-baseline phase, every
-  non-bootstrap journal entry in `server/drizzle/meta/_journal.json` must have
-  a content-matching body inside `server/migrations/0001_baseline.sql`, and
-  migration version prefixes must be unique.
+- `server/scripts/db/schema-baseline.mjs` keeps the committed empty-database
+  Drizzle snapshot/SQL in sync with `server/src/db/schema/`; numbered runtime
+  migrations remain separately owned and their version prefixes must be unique.
 
 **Changing a table:**
 1. Edit the relevant file under `src/db/schema/`.
-2. `pnpm run schema:generate` (from `server/`) — runs `drizzle-kit generate`,
-   then merges the generated SQL from `server/drizzle/` into
-   `server/migrations/0001_baseline.sql`. Drizzle's own internal numbering
-   starts at 0000 and is never used directly by the runtime migrator.
+2. `pnpm run schema:generate` (from `server/`) — runs `drizzle-kit generate`
+   for the empty-database baseline in `server/drizzle/`. Add a new numbered
+   runtime migration for upgrades; Drizzle's internal 0000 numbering is never
+   used directly by the runtime migrator.
    `ops/scripts/start.sh` runs this automatically before image build and
    migration; run it manually when you want to review generated files before
    starting the stack.

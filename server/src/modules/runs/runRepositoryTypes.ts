@@ -29,6 +29,8 @@ export interface RunRecord {
   prompt: string | null;
   instruction: string | null;
   project_folder_id: string | null;
+  workspace_location_id?: string | null;
+  trust_mode?: string | null;
   host_task_thread_id?: string | null;
   session_id: string | null;
   parent_run_id?: string | null;
@@ -230,6 +232,8 @@ export interface RunCreateInput {
   trigger_origin: string;
   session_id?: string | null;
   project_folder_id?: string | null;
+  workspace_location_id?: string | null;
+  trust_mode?: "sandboxed" | "trusted_host" | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;

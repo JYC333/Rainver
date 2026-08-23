@@ -76,7 +76,13 @@ export async function renderCliCommand(
   const redacted = renderTemplate(template, { ...values, prompt: "[REDACTED_PROMPT]" });
 
   const extraArgs: string[] = [];
-  if (input.model && spec.invocation.argument_rendering_strategy !== "ndjson_rpc") {
+  // Model selection for an ACP adapter happens over the protocol
+  // (`session/set_config_option`), never via a CLI arg — equivalent to the
+  // former `argument_rendering_strategy !== "ndjson_rpc"` check (deleted:
+  // execution-topology-and-project-control-plane-plan.md P0.6 — every
+  // current adapter's `ndjson_rpc` rendering strategy coincided exactly
+  // with `protocol: "acp"`, so the field only ever restated this).
+  if (input.model && spec.invocation.protocol !== "acp") {
     if (!spec.model.supports_model_override || !spec.model.model_arg_template) {
       throw new CliRenderError("model_override_not_supported", `adapter_type '${spec.adapter_type}' does not support model override`);
     }
@@ -98,11 +104,12 @@ export async function renderCliCommand(
     redacted.splice(redactedInsertAt >= 0 ? redactedInsertAt : redacted.length, 0, ...extraArgs);
   }
 
-  const stdin = spec.invocation.argument_rendering_strategy === "stdin" ? input.prompt : null;
+  // No current adapter ever set `argument_rendering_strategy: "stdin"` (the
+  // deleted field's third value) — the prompt always stays an argv token.
   return {
-    argv: stdin === null ? argv : argv.filter((arg) => arg !== input.prompt),
-    redacted_argv: stdin === null ? redacted : redacted.filter((arg) => arg !== "[REDACTED_PROMPT]"),
-    stdin,
+    argv,
+    redacted_argv: redacted,
+    stdin: null,
     permission_bypass_used:
       input.permission_bypass &&
       (spec.permissions.permission_bypass_arg_template ?? []).every((arg) => argv.includes(arg)),

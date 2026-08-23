@@ -14,7 +14,7 @@ vi.mock('../../../api/client', () => ({
   inquiryApi: {
     listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn() },
   agentsApi: { list: vi.fn() },
-  projectFoldersApi: { list: vi.fn() },
+  projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
   experimentsApi: {
     listDefinitions: vi.fn(),
     createDefinition: vi.fn(),
@@ -50,6 +50,7 @@ beforeEach(() => {
   vi.mocked(inquiryApi.listThreads).mockResolvedValue([])
   vi.mocked(agentsApi.list).mockResolvedValue([])
   vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
+  vi.mocked(projectFoldersApi.listExecutionReady).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 } as never)
   vi.mocked(experimentsApi.listDefinitions).mockResolvedValue([DEFINITION])
   vi.mocked(experimentsApi.getDefinition).mockResolvedValue({ ...DEFINITION, versions: [] })
   vi.mocked(experimentsApi.listRuns).mockResolvedValue([])
@@ -112,8 +113,8 @@ describe('ExperimentAreaPage', () => {
   })
 
   it('selects managed execution resources by user-facing names', async () => {
-    vi.mocked(projectFoldersApi.list).mockResolvedValue({
-      items: [{ id: 'folder-1', name: 'Analysis repo', execution_enabled: true, is_primary: true } as never],
+    vi.mocked(projectFoldersApi.listExecutionReady).mockResolvedValue({
+      items: [{ id: 'folder-1', name: 'Analysis repo', is_primary: true } as never],
       total: 1, limit: 100, offset: 0,
     })
     vi.mocked(agentsApi.list).mockResolvedValue([

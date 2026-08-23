@@ -1,12 +1,18 @@
 # Capability Shrink Plan
 
 Date: 2026-08-13; revised 2026-08-14
-Status: **PAUSED 2026-08-21** — items 1–6 below remain unscheduled and stay
-unscheduled while the control-center line is the active plan (now
-[plans/acp-runtime-replatform-plan.md](acp-runtime-replatform-plan.md); the
-retired phase-1 plan's D2/D12 froze the knowledge/capability half of the
-system to keep attention on one active line of work). Resume as a cleanup
-batch after the phase-2 acceptance gate, not before.
+Status: **PAUSED 2026-08-21**, re-pointed 2026-08-23 — items 1–6 below remain
+unscheduled and stay unscheduled while the execution-topology and Project
+control-plane work (Machine/ExecutionHost/WorkspaceLocation dispatch + Task
+spine; P0/P1 shipped 2026-08-23, that plan now retired — git history holds
+it) is the active line of work (the retired phase-1 control-center plan's
+D2/D12 froze the knowledge/capability half of the system to keep attention on
+one active line; that constraint carries forward). `acp-runtime-replatform-plan.md`,
+this plan's prior resume condition, is retired — its remaining ACP-cleanup
+scope was completed and narrowed inside that plan's P0. Resume this plan as a
+cleanup batch after that P1 work's real-usage window closes, not before (see
+[tasks/deferred-register.md](../tasks/deferred-register.md)'s "Project
+kernel — P2" section).
 
 ## Execution status
 

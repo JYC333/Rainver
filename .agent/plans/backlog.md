@@ -343,6 +343,30 @@ part of what the delivery renders, not a mutation applied after it.
   items collapse the implementation to
   `SkillPackage + SkillBinding + SkillPolicy`.
 
+## 8. Execution Runtime
+
+### pg-boss for the `jobs` module
+
+Recorded during the execution-topology and Project control-plane plan's P0
+reuse evaluation (2026-08-23; that plan is now retired, git history holds it): `PgJobQueueRepository` + the job worker
+(~800 lines, `server/src/modules/jobs/`) is a real candidate for replacement
+by `pg-boss`, a mature Postgres-backed job queue. Not pulled into that plan
+because it replaces an already-working internal canonical mechanism the
+execution-topology work doesn't touch, not a broken or duplicated one — no
+urgency, real payoff. `queueAdvance.ts`'s own pg-advisory-lock serialization
+(the "one active Run per thread" invariant) is a separate concern this
+migration would not remove.
+
+### Interactive permission gate for headless dispatch
+
+`RunPermissionPolicy` (`server/src/modules/runs/runPermissionPolicy.ts`,
+landed in the same P0) always pre-authorizes, because every current dispatch
+path is headless — no human is present mid-run to answer a prompt. A gate
+that can actually suspend a Run for a human decision needs suspend/notify/
+resume machinery this policy does not have, and would change the product
+surface (a Run can sit "waiting for permission" instead of running to
+completion or failing). Not scoped into any current plan.
+
 ## Completion and retirement
 
 Remove an item once it is implemented and recorded in current-state

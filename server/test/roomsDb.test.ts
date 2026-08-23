@@ -176,7 +176,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query("TRUNCATE spaces, users, hosts CASCADE");
+  await pool.query("TRUNCATE workspace_locations, spaces, users, hosts, machines CASCADE");
   await syncBuiltinPrompts(pool, CATALOG_ROOT);
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
@@ -251,19 +251,30 @@ beforeEach(async () => {
     [now],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-     VALUES ('host-1', NULL, 'server', 'server', 'online', $1, $1)`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ('machine-1', NULL, 'Test server', 'server', $1, $1)`,
+    [now],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ('host-1', NULL, 'machine-1', 'server', 'server', 'server', 'online', $1, $1)`,
     [now],
   );
   await pool.query(
     `INSERT INTO project_folders (
        id, space_id, project_id, name, status, created_by_user_id, kind,
-       is_primary, execution_enabled, protected, system_managed,
-       host_id, host_kind, created_at, updated_at
+       is_primary, protected, system_managed, created_at, updated_at
      ) VALUES (
        'folder-1', 'space-1', 'project-1', 'Room Folder', 'active', 'user-1',
-       'code', true, true, false, false, 'host-1', 'server', $1, $1
+       'code', true, false, false, $1, $1
      )`,
+    [now],
+  );
+  await pool.query(
+    `INSERT INTO workspace_locations (
+       id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+       execution_ready, status, preferred, created_at, updated_at
+     ) VALUES ('location-1','space-1','folder-1','host-1','server',true,'active',true,$1,$1)`,
     [now],
   );
   await pool.query(
@@ -861,7 +872,7 @@ describe("Room workflow (real Postgres)", () => {
       .resolves.toEqual({ allowed: true });
     await pool.query(
       `UPDATE project_folders
-          SET execution_enabled = FALSE, updated_at = now()
+          SET status = 'archived', updated_at = now()
         WHERE space_id = 'space-1' AND id = 'folder-1'`,
     );
     await expect(runRepository.checkRunExecutionAuthorization(queuedRun!))
@@ -871,7 +882,7 @@ describe("Room workflow (real Postgres)", () => {
       });
     await pool.query(
       `UPDATE project_folders
-          SET execution_enabled = TRUE, updated_at = now()
+          SET status = 'active', updated_at = now()
         WHERE space_id = 'space-1' AND id = 'folder-1'`,
     );
     await pool.query(

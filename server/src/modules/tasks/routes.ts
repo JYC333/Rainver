@@ -113,6 +113,38 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  // Composer convenience route: the control plane still records a real Task
+  // before dispatching, even when the caller has not named one yet.
+  app.post("/api/v1/tasks/runs", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const rawBody = jsonBody(request);
+      const folderId = optionalString(rawBody.project_folder_id);
+      let projectId = optionalString(rawBody.project_id);
+      if (folderId && !projectId) {
+        const folder = await dbPool(context.config).query<{ project_id: string }>(
+          `SELECT project_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
+          [folderId, identity.spaceId],
+        );
+        if (!folder.rows[0]) return reply.code(404).send({ detail: "Project Folder not found" });
+        projectId = folder.rows[0].project_id;
+      }
+      // A lightweight dispatch creates a space-shared Task and can enqueue
+      // execution immediately. Resolve the Project creation context first so
+      // a Project reader cannot use this convenience route as a write path.
+      const creation = await resolveContentCreationContext(dbPool(context.config), {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId,
+      });
+      const body = applyContentCreationContext(rawBody, creation);
+      return reply.code(201).send(await repository().createLightweightTaskAndRun(identity, body));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/me/tasks", myTasksHandler(context, repository));
   app.get("/api/v1/me/tasks/", myTasksHandler(context, repository));
 

@@ -22,6 +22,7 @@ import { PluginHost } from "./modules/plugins/host";
 import { BUILT_IN_PLUGINS } from "./modules/plugins/builtInPlugins";
 import { runBuiltInSeeds } from "./db/seeds";
 import { getDbPool } from "./db/pool";
+import { PgWorkspaceLocationRepository } from "./modules/projectFolders/workspaceLocations";
 
 async function main(): Promise<void> {
   let config;
@@ -94,7 +95,11 @@ async function main(): Promise<void> {
   }
 
   if (config.databaseUrl) {
-    void runBuiltInSeeds(getDbPool(config.databaseUrl), {
+    const db = getDbPool(config.databaseUrl);
+    await new PgWorkspaceLocationRepository(db).refreshServerLocations(config.workspaceRoot).catch((err) => {
+      app.log.error(err, "[workspace-locations] server Location refresh failed");
+    });
+    void runBuiltInSeeds(db, {
       info: (msg) => app.log.info(msg),
     }, config.catalogRoot).catch((err) => app.log.error(err, "[seeds] built-in seed failed"));
   }

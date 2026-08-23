@@ -603,6 +603,8 @@ export interface ContentAccessPolicy {
   visibility: ContentVisibility
   access_level: ContentAccessLevel
   project_folder_id: string | null
+  workspace_location_id?: string | null
+  trust_mode?: 'sandboxed' | 'trusted_host' | null
   project_id: string | null
   grants: ContentAccessGrantOut[]
 }
@@ -2278,7 +2280,13 @@ export interface TaskRunCreateBody {
   run_type?: string
   trigger_origin?: string
   session_id?: string | null
+  workspace_location_id?: string | null
+  project_id?: string | null
   project_folder_id?: string | null
+  adapter_type?: string
+  thread_id?: string | null
+  timeout_ms?: number | null
+  task_title?: string | null
   prompt?: string | null
   instruction?: string | null
   set_task_in_progress?: boolean
@@ -2326,6 +2334,8 @@ export interface Run {
   runtime_profile_selection_source?: 'explicit' | 'default' | null
   active_route_decision_id?: string | null
   project_folder_id: string | null
+  workspace_location_id?: string | null
+  trust_mode?: 'sandboxed' | 'trusted_host' | null
   /** ADR 0016 D14: set only for a run dispatched to a remote host. */
   host_task_thread_id?: string | null
   session_id: string | null
@@ -3387,9 +3397,9 @@ export interface ProjectFolder {
   description: string | null
   kind: ProjectFolderKind
   is_primary: boolean
-  execution_enabled: boolean
   repo_url: string | null
-  root_path: string | null
+  /** Deprecated compatibility field; use WorkspaceLocation.root_path. */
+  root_path?: string | null
   default_branch: string | null
   status: ProjectFolderStatus
   protected: boolean
@@ -3398,11 +3408,25 @@ export interface ProjectFolder {
   metadata_json: Record<string, unknown> | null
   snapshot_retention_days: number | null
   snapshot_max_count: number | null
-  /** ADR 0016: which execution host this workspace lives on. */
-  host_id: string
-  host_kind: 'server' | 'remote'
-  /** Daemon-reported, display-only (ADR 0016 D3) — never an access path. */
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceLocation {
+  id: string
+  project_folder_id: string
+  execution_host_id: string
+  execution_host_kind: 'server' | 'remote'
   display_path: string | null
+  /** Deprecated compatibility field; physical paths now live on locations. */
+  root_path?: string | null
+  branch: string | null
+  git_head: string | null
+  dirty: boolean | null
+  status: 'active' | 'archived' | 'stale'
+  preferred: boolean
+  execution_ready: boolean
+  last_seen_at: string | null
   created_at: string
   updated_at: string
 }
@@ -3420,7 +3444,6 @@ export interface ProjectFolderCreateBody {
 
 export type ProjectFolderUpdateBody = Partial<Omit<ProjectFolderCreateBody, 'repo_url'>> & {
   status?: ProjectFolderStatus
-  execution_enabled?: boolean
   snapshot_retention_days?: number | null
   snapshot_max_count?: number | null
 }
@@ -3440,6 +3463,9 @@ export interface HostCapabilities {
 export interface Host {
   id: string
   owner_user_id: string | null
+  machine_id?: string
+  machine_name?: string | null
+  environment_kind?: string
   name: string
   kind: 'server' | 'remote'
   status: 'pending_pairing' | 'online' | 'offline' | 'revoked'
@@ -3460,6 +3486,7 @@ export interface HostPairingCode {
 
 export interface HostTaskThread {
   id: string
+  workspace_location_id?: string
   project_folder_id: string
   host_id: string
   adapter_type: string
@@ -3485,6 +3512,7 @@ export type HostThreadMessageStatus = 'queued' | 'dispatched' | 'withdrawn'
 export interface HostThreadMessage {
   id: string
   host_task_thread_id: string
+  task_id?: string
   prompt: string
   status: HostThreadMessageStatus
   run_id: string | null
@@ -3529,18 +3557,6 @@ export interface HostRuntimeAdapterOption {
   remote_eligible: boolean
 }
 
-export interface HostDispatchRequest {
-  project_folder_id: string
-  // control-center-phase2-plan.md P2 (C8): the server no longer requires
-  // (or reads) an Agent selection for a remote dispatch — kept optional,
-  // not removed, so existing callers that still send one keep compiling.
-  agent_id?: string
-  adapter_type: string
-  prompt: string
-  thread_id?: string | null
-  timeout_ms?: number | null
-}
-
 export interface HostDispatchResponse {
   // control-center-phase2-plan.md P2 (C4): every send goes through the
   // per-thread message queue — `message_id` always identifies the sent
@@ -3565,9 +3581,6 @@ export interface ProjectFolderExecutionConfig {
   build_commands_json: unknown[]
   architecture_boundaries_json: Record<string, unknown>
   validation_recipe_id: string | null
-  cloud_allowed: boolean
-  max_data_exposure_level: string | null
-  min_observability_level: string | null
   created_at: string
   updated_at: string
 }

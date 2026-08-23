@@ -1222,6 +1222,18 @@ class MaintenanceAutomationFakePool implements Queryable {
     if (sql.includes("INSERT INTO automation_runs")) {
       return { rowCount: 1, rows: [] };
     }
+    if (sql.includes("SELECT DISTINCT task_id") && sql.includes("FROM task_runs")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("SELECT DISTINCT m.host_task_thread_id")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("pg_advisory_xact_lock")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("WITH linked_tasks AS") && sql.includes("UPDATE tasks t")) {
+      return { rowCount: 0, rows: [] };
+    }
     if (sql.includes("UPDATE runs")) {
       this.terminalStatuses.push(String(params[2]));
       return {

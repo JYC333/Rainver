@@ -256,8 +256,15 @@ export interface RunExecutionAdapterDeps {
   processRegistry?: CliProcessRegistry;
   routeResolver?: RunRouteResolverPort;
   runExchange?: RunExchangePort;
-  /** ADR 0016 P2: resolves a Project Folder's `host_kind` for per-run `HostExecutionPort` selection. */
-  hostKindResolver?: (projectFolderId: string, spaceId: string) => Promise<{ hostKind: HostKind; hostId: string }>;
+  /**
+   * ADR 0016 P2 / execution-topology-and-project-control-plane-plan.md P1
+   * (D3): resolves a Run's execution site for `HostExecutionPort` selection.
+   * `workspaceLocationId` is authoritative when present (every Run dispatched
+   * through the merged endpoint carries one); `projectFolderId` is the
+   * fallback for a Run that predates it, resolved via that Folder's
+   * `preferred` Location.
+   */
+  hostKindResolver?: (input: { workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string }>;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
   conversationRuntimeSessions?: {
     record(input: {
@@ -307,23 +314,21 @@ export interface RunCodePatchCollectorPort {
 export type HostKind = "server" | "remote";
 
 /**
- * ADR 0016 / control-center-plan.md P2: the run-file-lifecycle seam a Run's
+ * ADR 0016 / execution-topology plan P1: the run-file-lifecycle seam a Run's
  * execution is bound to — prepare/cleanup the workspace, run exchange, and
- * code-patch collection — selected once per run from its Project Folder's
- * `host_kind` (`resolveExecutionPort`, below). Phase 2 has exactly one
- * implementation (`ServerHostExecutionAdapter`, wrapping the existing
- * sandbox/exchange/code-patch pieces verbatim — no behavior changes);
- * `RemoteHostExecutionAdapter` is P3. The CLI process executor
- * (`CliCommandExecutor`) and artifact materialization are deliberately not
- * part of this port yet: P3's remote adapter dispatches over the daemon
- * protocol and collects uploaded payloads rather than swapping
- * implementations of these same interfaces, so there is nothing to
- * genuinely abstract here until that lands.
+ * code-patch collection — selected once per run from its Location's Host
+ * kind (`resolveExecutionPort`, below). `ServerHostExecutionAdapter` wraps
+ * the existing sandbox/exchange/code-patch pieces; `RemoteHostExecutionAdapter`
+ * dispatches over the daemon and collects uploaded payloads. The CLI process
+ * executor (`CliCommandExecutor`) and artifact materialization remain outside
+ * this seam because both host adapters share those higher-level services.
  */
 export interface HostExecutionPort {
   readonly hostKind: HostKind;
   /** Set only for a remote port — which daemon connection to dispatch to. */
   readonly hostId?: string;
+  /** Set only for a remote port — which WorkspaceLocation this Run executes in (D3). */
+  readonly workspaceLocationId?: string;
   readonly workspaceManager?: RunSandboxManagerPort;
   readonly codePatchCollector?: RunCodePatchCollectorPort;
   readonly runExchange: RunExchangePort;
@@ -339,7 +344,7 @@ export class ServerHostExecutionAdapter implements HostExecutionPort {
 }
 
 /**
- * ADR 0016 P3: a remote run always dispatches with `required_sandbox_level:
+ * ADR 0016 P1: a remote run always dispatches with `required_sandbox_level:
  * "none"` (the dispatch endpoint's job), so `workingDirScopeForLevel`
  * naturally skips every local-filesystem branch in `prepareRuntimeContext` —
  * `sandbox_cwd`/`cleanup`/`exchange` never get set, so `workspaceManager`/
@@ -358,7 +363,10 @@ export class RemoteHostExecutionAdapter implements HostExecutionPort {
     collect: () => { throw new Error("RemoteHostExecutionAdapter: Run Exchange has no meaning on a remote host (D7)."); },
     cleanup: () => { throw new Error("RemoteHostExecutionAdapter: Run Exchange has no meaning on a remote host (D7)."); },
   };
-  constructor(readonly hostId: string) {}
+  constructor(
+    readonly hostId: string,
+    readonly workspaceLocationId: string,
+  ) {}
 }
 
 export interface RunExecutionInput extends RunExecuteRequest {
@@ -509,7 +517,7 @@ export class RunOrchestrationService {
     NonNullable<RunExecutionAdapterDeps["ensureWorkContextSetup"]> | null;
   private readonly cliContinuity: RuntimeContextCliContinuityService | null;
   private readonly serverExecutionPort: ServerHostExecutionAdapter;
-  private readonly hostKindResolver: ((projectFolderId: string, spaceId: string) => Promise<{ hostKind: HostKind; hostId: string }>) | null;
+  private readonly hostKindResolver: ((input: { workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string }>) | null;
 
   constructor(
     private readonly config: ServerConfig,
@@ -537,13 +545,25 @@ export class RunOrchestrationService {
     );
     this.hostKindResolver = adapters.hostKindResolver
       ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? async (projectFolderId, spaceId) => {
-            const result = await getDbPool(config.databaseUrl!).query<{ host_kind: string; host_id: string }>(
-              `SELECT host_kind, host_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
-              [projectFolderId, spaceId],
-            );
+        ? async ({ workspaceLocationId, projectFolderId, spaceId }) => {
+            const pool = getDbPool(config.databaseUrl!);
+            const result = workspaceLocationId
+              ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
+                  `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE id = $1 AND space_id = $2 LIMIT 1`,
+                  [workspaceLocationId, spaceId],
+                )
+              : projectFolderId
+                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
+                    `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND preferred = true AND status = 'active' LIMIT 1`,
+                    [projectFolderId, spaceId],
+                  )
+                : { rows: [] as Array<{ id: string; execution_host_kind: string; execution_host_id: string }> };
             const row = result.rows[0];
-            return { hostKind: (row?.host_kind as HostKind | undefined) ?? "server", hostId: row?.host_id ?? "" };
+            return {
+              hostKind: (row?.execution_host_kind as HostKind | undefined) ?? "server",
+              hostId: row?.execution_host_id ?? "",
+              workspaceLocationId: row?.id ?? "",
+            };
           }
         : null);
     this.usageRecorder = adapters.usageRecorder
@@ -1978,21 +1998,23 @@ export class RunOrchestrationService {
   }
 
   /**
-   * ADR 0016 P2/P3: a run with no Project Folder has never been anything but
-   * server-host (ephemeral/no-folder runs predate this concept entirely),
-   * so it resolves to the server port without a lookup. A run bound to a
-   * Folder resolves that Folder's `host_kind`; `remote` returns a
-   * `RemoteHostExecutionAdapter` carrying the target host id (consumed by
-   * `invokeAdapterUnbounded`'s remote branch, not by anything in this
-   * function — the dispatch endpoint is expected to set
-   * `required_sandbox_level: "none"` for a remote run, which already makes
-   * every local-filesystem branch below a no-op).
+   * ADR 0016 P1: a run with no Project Folder has always been server-host
+   * (ephemeral/no-folder runs predate this topology), so it resolves to the
+   * server port without a lookup. A Location-bound run resolves its
+   * Location's Host; `remote` returns a `RemoteHostExecutionAdapter` carrying
+   * both the daemon Host id and the physical Location id. Remote dispatch
+   * uses `required_sandbox_level: "none"`, so local filesystem branches are
+   * fail-closed and never touch a remote path.
    */
   private async resolveExecutionPort(run: RunRecord): Promise<HostExecutionPort> {
-    if (!run.project_folder_id || !this.hostKindResolver) return this.serverExecutionPort;
-    const resolved = await this.hostKindResolver(run.project_folder_id, run.space_id);
+    if ((!run.project_folder_id && !run.workspace_location_id) || !this.hostKindResolver) return this.serverExecutionPort;
+    const resolved = await this.hostKindResolver({
+      workspaceLocationId: run.workspace_location_id ?? null,
+      projectFolderId: run.project_folder_id ?? null,
+      spaceId: run.space_id,
+    });
     if (resolved.hostKind === "server") return this.serverExecutionPort;
-    return new RemoteHostExecutionAdapter(resolved.hostId);
+    return new RemoteHostExecutionAdapter(resolved.hostId, resolved.workspaceLocationId);
   }
 
   private async prepareRuntimeContext(
@@ -2388,7 +2410,7 @@ export class RunOrchestrationService {
           process_registry: this.adapters.processRegistry,
         },
         input.execution_port.hostId!,
-        run.project_folder_id!,
+        input.execution_port.workspaceLocationId!,
       );
     }
     return RUNTIME_EXECUTORS[spec.executor_family](this.config, run, input, this.adapters);

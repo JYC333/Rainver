@@ -6,12 +6,8 @@ import { HttpError, type Queryable } from "../routeUtils/common";
 import type { RunRecord } from "../runs/repository";
 import { gitOutput, isGitRepo, runGit } from "./git";
 import { isInside } from "./pathPolicy";
-import {
-  PgProjectFolderRepository,
-  assertServerHostFolder,
-  projectFolderAbsoluteRoot,
-  type ProjectFolderRow,
-} from "./repository";
+import { PgProjectFolderRepository, type ProjectFolderRow } from "./repository";
+import { resolveServerHostLocationForRun, locationAbsoluteRoot } from "./workspaceLocations";
 
 export interface PreparedRunSandbox {
   sandbox_cwd: string | null;
@@ -66,20 +62,26 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
       throw new HttpError(422, `Unsupported sandbox level ${JSON.stringify(level)}`);
     }
 
-    if (!run.project_folder_id) {
+    const projectFolderId = run.project_folder_id;
+    if (!projectFolderId) {
       return this.preparePlainWorkdir(run);
     }
 
     const folder = await new PgProjectFolderRepository(this.db, this.config)
-      .getFolder(run.space_id, run.project_folder_id, true);
+      .getFolder(run.space_id, projectFolderId, true);
     if (!folder) {
       throw new HttpError(404, "Project Folder not found");
     }
-    // ADR 0016: P1 sandbox provisioning (worktree/read-only/managed dir) is
-    // server-host-only. Remote-host Runs get their own `HostExecutionPort`
-    // adapter in P3, not this local-filesystem path.
-    assertServerHostFolder(folder);
-    const folderRoot = await this.validateFolderRoot(folder);
+    // ADR 0016 P1: sandbox provisioning (worktree/read-only/managed dir) is
+    // server-host-only. Resolve the Run-bound Location, not the Folder's
+    // mutable preferred Location; remote-host Runs are rejected before any
+    // local filesystem path is resolved.
+    const location = await resolveServerHostLocationForRun(this.db, {
+      space_id: run.space_id,
+      project_folder_id: projectFolderId,
+      workspace_location_id: run.workspace_location_id,
+    });
+    const folderRoot = await this.validateFolderRoot(folder, location);
     if (level === "read_only") {
       const contextCwd = this.readOnlyContextPath(run.space_id, run.id);
       await rm(contextCwd, { recursive: true, force: true });
@@ -211,8 +213,8 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     return path;
   }
 
-  private async validateFolderRoot(folder: ProjectFolderRow): Promise<string> {
-    const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
+  private async validateFolderRoot(folder: ProjectFolderRow, location: Parameters<typeof locationAbsoluteRoot>[0]): Promise<string> {
+    const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
     const info = await stat(root).catch(() => null);
     if (!info?.isDirectory()) {
       throw new HttpError(404, "Project Folder directory not found on disk");

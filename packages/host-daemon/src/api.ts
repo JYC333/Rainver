@@ -1,5 +1,6 @@
 import { arch, platform } from "node:os";
 import { detectCapabilities, type DaemonCapabilities } from "./capabilities.js";
+import { collectWorkspaceStatus, type WorkspaceStatusReport } from "./workspaceStatus.js";
 
 const DAEMON_VERSION = "0.1.0";
 
@@ -33,9 +34,27 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
-async function helloInfo(): Promise<{ platform: string; arch: string; daemon_version: string; capabilities_json: DaemonCapabilities }> {
+async function helloInfo(workspaces: Record<string, string> = {}): Promise<{
+  platform: string;
+  arch: string;
+  daemon_version: string;
+  environment_kind: string;
+  capabilities_json: DaemonCapabilities;
+  workspace_reports: WorkspaceStatusReport[];
+}> {
   const capabilities = await detectCapabilities();
-  return { platform: platform(), arch: arch(), daemon_version: DAEMON_VERSION, capabilities_json: capabilities };
+  const currentPlatform = platform();
+  const environment_kind = currentPlatform === "win32"
+    ? "windows_native"
+    : currentPlatform === "darwin" ? "macos_native" : "linux_native";
+  return {
+    platform: currentPlatform,
+    arch: arch(),
+    daemon_version: DAEMON_VERSION,
+    environment_kind,
+    capabilities_json: capabilities,
+    workspace_reports: await collectWorkspaceStatus(workspaces),
+  };
 }
 
 export interface RegisterResult {

@@ -45,7 +45,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE runs, project_folders, agent_versions, agents, projects, hosts, spaces, users CASCADE");
+  await pool.query("TRUNCATE runs, workspace_locations, project_folders, agent_versions, agents, projects, hosts, machines, spaces, users CASCADE");
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Owner', 'active', $3, $3), ($2, 'Member', 'active', $3, $3)`,
@@ -64,18 +64,30 @@ beforeEach(async () => {
     [SPACE, PROJECT, MEMBER, now],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at) VALUES
-       ($1, $3, 'Host A', 'remote', 'online', $4, $4),
-       ($2, $3, 'Host B', 'remote', 'online', $4, $4)`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at) VALUES
+       ($1, $3, 'Machine A', 'desktop', $4, $4),
+       ($2, $3, 'Machine B', 'desktop', $4, $4)`,
+    [HOST_A, HOST_B, OWNER, now],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at) VALUES
+       ($1, $3, $1, 'Host A', 'remote', 'linux_native', 'online', $4, $4),
+       ($2, $3, $2, 'Host B', 'remote', 'linux_native', 'online', $4, $4)`,
     [HOST_A, HOST_B, OWNER, now],
   );
   await pool.query(
     `INSERT INTO project_folders (
-       id, space_id, project_id, name, root_path, status, kind,
-       is_primary, execution_enabled, protected, system_managed,
-       host_id, host_kind, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Folder A', NULL, 'active', 'code', false, true, false, false, $4, 'remote', $5, $5)`,
-    [FOLDER_A, SPACE, PROJECT, HOST_A, now],
+       id, space_id, project_id, name, status, kind,
+       is_primary, protected, system_managed, created_at, updated_at
+     ) VALUES ($1, $2, $3, 'Folder A', 'active', 'code', false, false, false, $4, $4)`,
+    [FOLDER_A, SPACE, PROJECT, now],
+  );
+  await pool.query(
+    `INSERT INTO workspace_locations (
+       id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+       execution_ready, status, preferred, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'remote',true,'active',true,$5,$5)`,
+    ["location-a", SPACE, FOLDER_A, HOST_A, now],
   );
   await pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, current_version_id, visibility, created_at, updated_at)
@@ -89,9 +101,10 @@ beforeEach(async () => {
   );
   await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
   await pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, project_folder_id, adapter_type, owner_user_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'claude_code', $6, $7, $7)`,
-    [RUN_A, SPACE, AGENT, AGENT_VERSION, FOLDER_A, OWNER, now],
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+       project_folder_id, workspace_location_id, trust_mode, adapter_type, owner_user_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $6, 'trusted_host', 'claude_code', $7, $8, $8)`,
+    [RUN_A, SPACE, AGENT, AGENT_VERSION, FOLDER_A, "location-a", OWNER, now],
   );
 });
 

@@ -1297,9 +1297,9 @@ describe("RunOrchestrationService", () => {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
       workspaceManager,
-      hostKindResolver: async (projectFolderId, spaceId) => {
-        hostKindCalls.push({ projectFolderId, spaceId });
-        return { hostKind: "remote", hostId: "host-1" };
+      hostKindResolver: async ({ projectFolderId, spaceId }) => {
+        hostKindCalls.push({ projectFolderId: projectFolderId ?? "", spaceId });
+        return { hostKind: "remote", hostId: "host-1", workspaceLocationId: "location-1" };
       },
       vendorCli: {
         credentialBroker: {
@@ -1356,7 +1356,7 @@ describe("RunOrchestrationService", () => {
       policyEnforcer: allowPolicy,
       runtimeToolVersionResolver: async () => "test-version",
       workspaceManager,
-      hostKindResolver: async () => ({ hostKind: "remote", hostId: "host-2" }),
+      hostKindResolver: async () => ({ hostKind: "remote", hostId: "host-2", workspaceLocationId: "location-2" }),
     });
     const result = await service.executeRun({
       run_id: "run-1",

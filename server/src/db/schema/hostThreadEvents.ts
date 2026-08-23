@@ -2,6 +2,7 @@ import { pgTable, index, unique, check, foreignKey, varchar, text, integer, time
 import { sql } from "drizzle-orm";
 import { hostTaskThreads } from "./hostTaskThreads";
 import { runs } from "./runs";
+import { projects } from "./projects";
 
 /**
  * control-center-phase2-plan.md P1 (C2): the normalized conversation event
@@ -21,6 +22,13 @@ import { runs } from "./runs";
 export const hostThreadEvents = pgTable("host_thread_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }).notNull(),
+	// execution-topology-and-project-control-plane-plan.md P1: write-once,
+	// denormalized from the thread's Location's Folder's Project at the
+	// moment this event is written — a thread's Project never changes, so
+	// this cannot drift. Without it, the Project timeline (which scans this
+	// table, not `host_task_threads`, since this is the higher-volume one)
+	// would need a three-hop join per row.
+	projectId: varchar("project_id", { length: 36 }).notNull(),
 	runId: varchar("run_id", { length: 36 }).notNull(),
 	eventIndex: integer("event_index").notNull(),
 	eventType: varchar("event_type", { length: 32 }).notNull(),
@@ -49,12 +57,18 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_host_thread_events_thread_id").using("btree", table.hostTaskThreadId.asc().nullsLast()),
 	index("ix_host_thread_events_run_id").using("btree", table.runId.asc().nullsLast()),
+	index("ix_host_thread_events_project_id").using("btree", table.projectId.asc().nullsLast()),
 	unique("uq_host_thread_events_thread_event_index").on(table.hostTaskThreadId, table.eventIndex),
 	foreignKey({
 			columns: [table.hostTaskThreadId],
 			foreignColumns: [hostTaskThreads.id],
 			name: "host_thread_events_thread_id_fkey"
 		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.projectId],
+			foreignColumns: [projects.id],
+			name: "host_thread_events_project_id_fkey"
+		}),
 	foreignKey({
 			columns: [table.runId],
 			foreignColumns: [runs.id],

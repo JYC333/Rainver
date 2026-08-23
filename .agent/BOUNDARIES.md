@@ -240,7 +240,7 @@ context outputs or sources of truth.
 
 **B18** — Sandboxes are short-lived execution areas. Long-term records are: artifacts, diffs, logs, and approved proposals. Sandbox directories may be cleaned up after artifact collection.
 
-**B19** — Agents do not directly modify a real Project Folder. Read-only work uses an OS-enforced `read_only` namespace; mutation uses `Project Folder → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`. **Amended 2026-08-21 ([ADR 0016](decisions/0016-control-plane-execution-hosts.md)):** this governed sequence describes the server host and any host under code-patch proposal governance. A Project Folder row bound to a remote trusted host is the deliberate exception — the agent runs in-place on the real directory and there is no worktree/apply-patch stage; see B65.
+**B19** — Agents do not directly modify a server-host real checkout. Read-only work uses an OS-enforced `read_only` namespace; mutation uses `logical Project Folder → server WorkspaceLocation → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`. **Amended 2026-08-21 ([ADR 0016](decisions/0016-control-plane-execution-hosts.md)):** this governed sequence describes the server host and any host under code-patch proposal governance. A Project Folder's remote trusted WorkspaceLocation is the deliberate exception — the agent runs in-place on the daemon-owned directory and there is no worktree/apply-patch stage; see B65.
 
 **B19A** — Files & Code reads are policy-gated. `project_folder.read` is enforced for tree, file, git status, and git diff. Protected-Folder, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
 
@@ -291,22 +291,26 @@ implementation state and must not be extended as the target skill model.
 
 See [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md).
 
-**B62** — An instance is one control plane plus N execution hosts. The server
-host keeps the existing strict isolation model (bubblewrap, PathPolicy,
+**B62** — An instance is one control plane plus N execution hosts, modeled as
+Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder. The
+server host keeps the existing strict isolation model (bubblewrap, PathPolicy,
 mount containment) unchanged; a remote (personal) host runs in trusted-host
 mode — native process spawn, no sandbox, the machine's own login state — and
-is not held to the server host's isolation invariants. Do not weaken the
-server host's isolation to make the two hosts look uniform, and do not claim
-remote execution carries the same isolation guarantees it does not have.
+is not held to the server host's isolation invariants. Host liveness and
+Location `execution_ready` are separate facts. Do not weaken the server host's
+isolation to make the two hosts look uniform, and do not claim remote
+execution carries the same isolation guarantees it does not have.
 
 **B63** — A host accepts Runs only from its own registered owner. There is no
 multi-user host sharing. A dispatch to a host whose `owner_user_id` does not
 match the caller must be rejected before any job is sent.
 
 **B64** — The control plane never resolves, mounts, or reads a filesystem
-path on a remote host. A remote Project Folder row's `root_path` stays null;
+path on a remote host. A remote WorkspaceLocation's `root_path` stays null;
 only a daemon-reported `display_path` may be stored, and it is UI-display
-data, never used for access control, mount resolution, or identity.
+data, never used for access control, mount resolution, or identity. A Folder
+is logical and may have multiple Locations; no old Folder host/path column may
+be reintroduced.
 
 **B65** — Remote in-place execution's propose→apply governance (review before
 changes land, rollback semantics) is an open design question, not settled by

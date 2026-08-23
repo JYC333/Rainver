@@ -50,7 +50,6 @@ export interface RuntimeAdapterSpec {
     headless_command_template: string[];
     resume_command_template?: string[];
     interactive_command_template?: string[];
-    argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
     protocol?: "acp";
     /**
      * ACP runtime replatform P3: the daemon-probed vendor binary name to
@@ -94,10 +93,8 @@ export interface RuntimeAdapterSpec {
     usage_accuracy: "precise" | "estimated" | "unknown";
     supports_usage_probe: boolean;
     usage_probe_kind?: string;
-    usage_parser_type: string;
   };
   output: {
-    output_parser_type: "plain_text" | "generic";
     patch_strategy: "none" | "git_diff";
     artifact_path_strategy: "none";
   };
@@ -117,7 +114,6 @@ export interface LocalCliRuntimeAdapterSpec extends RuntimeAdapterSpec {
     headless_command_template: string[];
     resume_command_template?: string[];
     interactive_command_template?: string[];
-    argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
     protocol?: "acp";
     remote_capability_probe?: string;
   };
@@ -172,10 +168,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "unknown",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "generic",
       patch_strategy: "none",
       artifact_path_strategy: "none",
     },
@@ -209,10 +203,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "estimated",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "plain_text",
       patch_strategy: "none",
       artifact_path_strategy: "none",
     },
@@ -249,10 +241,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "estimated",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "plain_text",
       patch_strategy: "none",
       artifact_path_strategy: "none",
     },
@@ -286,7 +276,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     invocation: {
       headless_command_template: ["{executable}"],
       resume_command_template: ["{executable}"],
-      argument_rendering_strategy: "ndjson_rpc",
       protocol: "acp",
       remote_capability_probe: "claude",
     },
@@ -315,10 +304,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       usage_accuracy: "precise",
       supports_usage_probe: false,
       usage_probe_kind: "cached_claude_quota",
-      usage_parser_type: "acp",
     },
     output: {
-      output_parser_type: "generic",
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
@@ -355,7 +342,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     executable: { command: "codex-acp", allow_path_override: true },
     invocation: {
       headless_command_template: ["{executable}"],
-      argument_rendering_strategy: "ndjson_rpc",
       protocol: "acp",
       remote_capability_probe: "codex",
     },
@@ -375,10 +361,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "precise",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "generic",
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
@@ -422,7 +406,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
         "--cwd",
         "{sandbox_cwd}",
       ],
-      argument_rendering_strategy: "ndjson_rpc",
       protocol: "acp",
     },
     credentials: {
@@ -442,10 +425,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "precise",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "generic",
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
@@ -471,7 +452,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     executable: { command: "gemini", allow_path_override: true },
     invocation: {
       headless_command_template: [],
-      argument_rendering_strategy: "argv_template",
     },
     credentials: {
       credential_mode: "cli_profile",
@@ -487,10 +467,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "unknown",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "generic",
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
@@ -530,10 +508,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     usage: {
       usage_accuracy: "unknown",
       supports_usage_probe: false,
-      usage_parser_type: "generic",
     },
     output: {
-      output_parser_type: "generic",
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },

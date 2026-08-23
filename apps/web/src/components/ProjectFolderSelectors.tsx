@@ -60,7 +60,7 @@ export function ProjectFolderSelectors({
 
   useEffect(() => {
     if (!projectId || foldersByProject[projectId]) return
-    Promise.resolve().then(() => projectFoldersApi.list(projectId, { status: 'active', limit: '200' }))
+    Promise.resolve().then(() => projectFoldersApi.listExecutionReady(projectId, { status: 'active', limit: '200' }))
       .then(page => setFoldersByProject(current => ({ ...current, [projectId]: page.items })))
       .catch(error => toast.error(errMsg(error)))
   }, [foldersByProject, projectId])
@@ -88,7 +88,7 @@ export function ProjectFolderSelectors({
           onChange={onFolderChange}
           options={[
             { value: '', label: projectId ? 'No Project Folder' : 'Select a Project first' },
-            ...folders.map(folder => ({ value: folder.id, label: `${folder.name}${folder.execution_enabled ? ' · execution enabled' : ''}` })),
+            ...folders.map(folder => ({ value: folder.id, label: folder.name })),
           ]}
         />
       </div>

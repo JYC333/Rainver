@@ -49,7 +49,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    "TRUNCATE project_folder_execution_configs, project_folders, projects, users, spaces, hosts CASCADE",
+    "TRUNCATE project_folder_execution_configs, workspace_locations, project_folders, projects, users, spaces, hosts, machines CASCADE",
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
@@ -58,8 +58,13 @@ beforeEach(async () => {
     [USER, VIEWER],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
+    [HOST],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
@@ -81,9 +86,16 @@ beforeEach(async () => {
     [PROJECT, SPACE, USER, OTHER_PROJECT],
   );
   await pool.query(
-    `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, execution_enabled, protected, system_managed, host_id, host_kind, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'Folder','active','code',true,true,false,false,$5,'server',now(),now())`,
-    [FOLDER, SPACE, PROJECT, USER, HOST],
+    `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'Folder','active','code',true,false,false,now(),now())`,
+    [FOLDER, SPACE, PROJECT, USER],
+  );
+  await pool.query(
+    `INSERT INTO workspace_locations (
+       id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+       execution_ready, status, preferred, created_at, updated_at
+     ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'server',true,'active',true,now(),now())`,
+    [SPACE, FOLDER, HOST],
   );
   await pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)

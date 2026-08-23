@@ -264,13 +264,35 @@ async function connectAndRun(host: string, port: number, request: SandboxLaunchR
           if (controller) {
             protocolBuffer += frame.value;
             const records = protocolBuffer.split(/\r?\n/); protocolBuffer = records.pop() ?? "";
-            for (const record of records) try { controller.receive(JSON.parse(record), (value) => send({ type: "stdin", value: `${JSON.stringify(value)}\n` }), () => send({ type: "stdin_close" })); } catch { controller.reject("CLI protocol emitted invalid JSON"); send({ type: "stdin_close" }); }
+            for (const record of records) {
+              // See the doc comment on `remoteHostCliAdapter.ts`'s
+              // `RemoteWsCliCommandExecutor.onOutput`: `receive()`'s
+              // `Promise<void>` return type matches `CliStdioController`
+              // (localCliExecution.ts) but its body is synchronous, so no
+              // `await` is needed here. The `.catch()` below is not for that
+              // synchronous body: an `async` function converts even a
+              // synchronous internal throw into a rejected Promise rather
+              // than letting it propagate to this `try/catch`, so without it
+              // a future bug inside `receive()` would become an unhandled
+              // rejection instead of a contained Run failure (discovery
+              // review finding #2).
+              try {
+                controller.receive(JSON.parse(record), (value) => send({ type: "stdin", value: `${JSON.stringify(value)}\n` }), () => send({ type: "stdin_close" }))
+                  .catch(() => { controller.reject("CLI protocol emitted invalid JSON"); send({ type: "stdin_close" }); });
+              } catch {
+                controller.reject("CLI protocol emitted invalid JSON");
+                send({ type: "stdin_close" });
+              }
+            }
           }
         } else if (frame.type === "stderr") { stderr = appendOutput(stderr, frame.value); registry?.touchActivity?.(request.run_id); }
         else if (frame.type === "error") finish({ ...unavailable(frame.message), failure_code: frame.code === "sandbox_namespace_unavailable" ? "sandbox_namespace_unavailable" : "sandbox_runner_unavailable" });
         else if (frame.type === "exit") {
           if (controller && protocolBuffer.trim()) {
-            try { controller.receive(JSON.parse(protocolBuffer), () => {}, () => {}); }
+            try {
+              controller.receive(JSON.parse(protocolBuffer), () => {}, () => {})
+                .catch(() => { controller.reject("CLI protocol emitted invalid JSON"); });
+            }
             catch { controller.reject("CLI protocol emitted invalid JSON"); }
             protocolBuffer = "";
           }

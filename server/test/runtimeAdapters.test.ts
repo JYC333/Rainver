@@ -64,7 +64,6 @@ describe("runtime adapter catalog", () => {
       implementation_status: "implemented",
       invocation: {
         headless_command_template: ["{executable}", "acp", "--cwd", "{sandbox_cwd}"],
-        argument_rendering_strategy: "ndjson_rpc",
         protocol: "acp",
       },
       subagent_disable_config: {

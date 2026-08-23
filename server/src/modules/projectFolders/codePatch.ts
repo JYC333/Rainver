@@ -21,7 +21,8 @@ import type {
 } from "../proposals/applierRegistry";
 import { runGit, gitOutput } from "./git";
 import { validatePath } from "./pathPolicy";
-import { PgProjectFolderRepository, assertServerHostFolder, projectFolderAbsoluteRoot } from "./repository";
+import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations";
+import { PgProjectFolderRepository } from "./repository";
 import { insertProposalRow } from "../proposals/reviewPackets";
 
 const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
@@ -329,8 +330,8 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
   const folder = await new PgProjectFolderRepository(context.db, context.config)
     .getFolder(proposal.space_id, proposal.project_folder_id, true);
   if (!folder) throw new HttpError(404, "Project Folder not found");
-  assertServerHostFolder(folder);
-  const root = projectFolderAbsoluteRoot(folder, context.config.workspaceRoot);
+  const location = await resolvePreferredServerHostLocation(context.db, proposal.space_id, proposal.project_folder_id);
+  const root = locationAbsoluteRoot(location, context.config.workspaceRoot);
   const payload = recordValue(proposal.payload_json);
   const patch = recordValue(payload.patch);
   const operations = arrayValue(patch.operations).map(parseOperation);

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Plus, Check, X } from 'lucide-react'
-import { hostsApi, projectsApi } from '../../api/client'
+import { hostsApi, projectsApi, tasksApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type { Host, HostRuntimeAdapterOption } from '../../types/api'
 import { ProjectSelector } from '../../components/ProjectFolderSelectors'
@@ -94,7 +94,7 @@ export default function DispatchComposer({
   const isNewConversation = !fixedThreadId
   const [hostId, setHostId] = useState('')
   const [projectId, setProjectId] = useState(initialProjectId)
-  const [folderId, setFolderId] = useState(fixedFolderId ?? initialFolderId)
+  const [locationId, setLocationId] = useState('')
   const [adapterType, setAdapterType] = useState(fixedAdapterType ?? '')
   const [prompt, setPrompt] = useState(initialPrompt)
   const [hosts, setHosts] = useState<Host[]>([])
@@ -147,23 +147,25 @@ export default function DispatchComposer({
   }, [isNewConversation, adapterType, eligibleAdapters])
 
   useEffect(() => {
-    if (fixedFolderId || !projectId || workspaces.length === 0) return
-    if (workspaces.some(w => w.folder.id === folderId)) return
+    if (!projectId || workspaces.length === 0) return
+    if (workspaces.some(w => w.location.id === locationId)) return
     const remembered = lastUsedWorkspaceId(projectId)
     const preferred =
-      workspaces.find(w => w.folder.id === remembered && (!hostId || w.host?.id === hostId)) ??
-      workspaces.find(w => w.folder.is_primary && (!hostId || w.host?.id === hostId)) ??
+      workspaces.find(w => w.location.id === remembered && (!hostId || w.host?.id === hostId)) ??
+      workspaces.find(w => w.folder.id === (fixedFolderId ?? initialFolderId) && (!hostId || w.host?.id === hostId)) ??
+      workspaces.find(w => w.location.preferred && (!hostId || w.host?.id === hostId)) ??
       workspaces.find(w => !hostId || w.host?.id === hostId) ??
       null
-    if (preferred) setFolderId(preferred.folder.id)
-  }, [projectId, workspaces, folderId, fixedFolderId, hostId])
+    if (preferred) setLocationId(preferred.location.id)
+  }, [projectId, workspaces, locationId, fixedFolderId, initialFolderId, hostId])
 
   const workspacesForHost = useMemo(
     () => (hostId ? workspaces.filter(w => w.host?.id === hostId) : workspaces),
     [workspaces, hostId],
   )
-  const selected = useMemo(() => workspaces.find(w => w.folder.id === folderId) ?? null, [workspaces, folderId])
-  const hostOnline = selected?.host?.status === 'online'
+  const selected = useMemo(() => workspaces.find(w => w.location.id === locationId) ?? null, [workspaces, locationId])
+  const hostOnline = selected?.host?.status === 'online' && selected.location.execution_ready
+  const selectedTrustMode = selected?.location.execution_host_kind === 'remote' ? 'trusted_host' : selected ? 'sandboxed' : null
   const selectedAdapter = useMemo(
     () => runtimeAdapters.find(a => a.adapter_type === (fixedAdapterType ?? adapterType)) ?? null,
     [runtimeAdapters, fixedAdapterType, adapterType],
@@ -184,25 +186,27 @@ export default function DispatchComposer({
   const workspaceOptions = [
     { value: '', label: workspacesLoading ? 'Loading workspaces…' : (projectId ? 'No workspace registered for this project yet' : 'Select a project first') },
     ...workspacesForHost.map(w => ({
-      value: w.folder.id,
-      label: `${w.host?.name ?? 'Unknown host'} · ${w.folder.name}${w.folder.is_primary ? ' (primary)' : ''}`,
+      value: w.location.id,
+      label: `${w.host?.name ?? 'Unknown host'} · ${w.folder.name}${w.location.preferred ? ' (preferred)' : ''}${w.location.branch ? ` · ${w.location.branch}` : ''}${w.location.dirty ? ' · dirty' : ''}`,
     })),
   ]
 
   async function dispatch() {
     const effectiveAdapterType = fixedAdapterType ?? adapterType
-    if (!folderId || !effectiveAdapterType || !prompt.trim()) return
+    if (!selected || !effectiveAdapterType || !prompt.trim()) return
     setBusy(true)
     try {
-      const result = await hostsApi.dispatch({
-        project_folder_id: folderId,
+      const result = await tasksApi.createRunWithoutTask({
+        project_id: projectId,
+        project_folder_id: selected.folder.id,
+        workspace_location_id: selected.location.id,
         adapter_type: effectiveAdapterType,
         prompt: prompt.trim(),
         thread_id: fixedThreadId ?? null,
       })
-      if (!fixedFolderId) rememberWorkspaceId(projectId, folderId)
+      if (!fixedFolderId) rememberWorkspaceId(projectId, selected.location.id)
       setPrompt('')
-      onDispatched(result)
+      if ('thread_id' in result && result.thread_id) onDispatched(result)
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -217,17 +221,17 @@ export default function DispatchComposer({
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <Label>Host</Label>
-              <Select value={hostId} onChange={id => { setHostId(id); setFolderId('') }} options={hostOptions} />
+              <Select value={hostId} onChange={id => { setHostId(id); setLocationId('') }} options={hostOptions} />
             </div>
             <div>
-              <ProjectSelector key={projectListKey} value={projectId} onChange={id => { setProjectId(id); setFolderId('') }} optional={false} />
-              <NewProjectInline onCreated={id => { setProjectId(id); setFolderId(''); setProjectListKey(k => k + 1) }} />
+              <ProjectSelector key={projectListKey} value={projectId} onChange={id => { setProjectId(id); setLocationId('') }} optional={false} />
+              <NewProjectInline onCreated={id => { setProjectId(id); setLocationId(''); setProjectListKey(k => k + 1) }} />
             </div>
           </div>
 
           <div>
             <Label>Workspace</Label>
-            <Select value={folderId} onChange={setFolderId} disabled={!projectId} options={workspaceOptions} />
+            <Select value={locationId} onChange={setLocationId} disabled={!projectId} options={workspaceOptions} />
             {projectId && workspacesForHost.length === 0 && !workspacesLoading && (
               <p className="mt-1 text-xs text-muted-foreground">
                 No workspace is registered yet{hostId ? ' for this host and project' : ''}. On the target machine, run:{' '}
@@ -262,14 +266,17 @@ export default function DispatchComposer({
       {selected && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <Badge variant={hostOnline ? 'success' : 'muted'}>{selected.host?.name ?? 'Unknown host'} · {hostOnline ? 'online' : 'offline'}</Badge>
+          <Badge variant={selectedTrustMode === 'trusted_host' ? 'warning' : 'secondary'}>
+            {selectedTrustMode === 'trusted_host' ? 'trusted host' : 'sandboxed'}
+          </Badge>
           {selectedAdapter && (
             <Badge variant={runtimeInstalled ? 'secondary' : 'destructive'}>
               {selectedAdapter.capability_probe} {runtimeInstalled ? 'installed' : 'not installed on this host'}
             </Badge>
           )}
-          {selected.folder.display_path && (
-            <span className="text-muted-foreground truncate">{selected.folder.display_path}</span>
-          )}
+          <span className="text-muted-foreground truncate">
+            {selected.location.branch ?? 'no branch'} · {selected.location.dirty ? 'dirty' : 'clean'} · {selected.location.execution_ready ? 'ready' : 'not ready'}
+          </span>
         </div>
       )}
 
@@ -286,7 +293,7 @@ export default function DispatchComposer({
       <div className="flex justify-end">
         <Button
           onClick={dispatch}
-          disabled={busy || !folderId || !(fixedAdapterType ?? adapterType) || !prompt.trim() || !hostOnline || !runtimeInstalled}
+          disabled={busy || !selected || !(fixedAdapterType ?? adapterType) || !prompt.trim() || !hostOnline || !runtimeInstalled}
         >
           {busy ? 'Sending…' : fixedThreadId ? 'Send' : 'Start conversation'}
         </Button>

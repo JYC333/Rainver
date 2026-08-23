@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import type { Queryable } from "../routeUtils/common";
+import { PgMachineRepository } from "./machineRepository";
+import type { WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations";
 
 /**
  * ADR 0016: an execution host is the server host (exactly one row, seeded,
@@ -18,6 +20,9 @@ const PAIRING_CODE_TTL_MS = 10 * 60_000;
 export interface HostRow {
   id: string;
   owner_user_id: string | null;
+  machine_id: string;
+  machine_name?: string | null;
+  environment_kind: string;
   name: string;
   kind: string;
   status: string;
@@ -35,6 +40,9 @@ export interface HostRow {
 export interface HostOut {
   id: string;
   owner_user_id: string | null;
+  machine_id: string;
+  machine_name: string | null;
+  environment_kind: string;
   name: string;
   kind: string;
   status: string;
@@ -57,6 +65,23 @@ export interface DaemonHelloInfo {
   arch?: string | null;
   daemon_version?: string | null;
   capabilities_json?: Record<string, unknown> | null;
+  /**
+   * D1: which execution environment this is, distinct from `platform`
+   * (Node's `process.platform`, which cannot tell WSL apart from native
+   * Linux — both report `"linux"`). Not yet auto-detected by the daemon
+   * (a real, deliberately deferred gap — see `environmentKindFromPlatform`);
+   * a future daemon version can report it explicitly here without a
+   * protocol change.
+   */
+  environment_kind?: string | null;
+  workspace_reports?: WorkspaceLocationHeartbeat[] | null;
+}
+
+/** Safe default when a daemon does not (yet) report `environment_kind` explicitly. */
+export function environmentKindFromPlatform(platform: string | null): string {
+  if (platform === "win32") return "windows_native";
+  if (platform === "darwin") return "macos_native";
+  return "linux_native";
 }
 
 function hashToken(raw: string): string {
@@ -73,7 +98,7 @@ function rawPairingCode(): string {
   return randomBytes(9).toString("base64url").replace(/[-_]/g, "").slice(0, 10).toUpperCase();
 }
 
-function isStale(lastHeartbeatAt: string | null): boolean {
+export function isStale(lastHeartbeatAt: string | null): boolean {
   if (!lastHeartbeatAt) return true;
   return Date.now() - new Date(lastHeartbeatAt).getTime() > HEARTBEAT_STALE_MS;
 }
@@ -90,6 +115,9 @@ function hostOut(row: HostRow): HostOut {
   return {
     id: row.id,
     owner_user_id: row.owner_user_id,
+    machine_id: row.machine_id,
+    machine_name: row.machine_name ?? null,
+    environment_kind: row.environment_kind,
     name: row.name,
     kind: row.kind,
     status,
@@ -103,7 +131,7 @@ function hostOut(row: HostRow): HostOut {
   };
 }
 
-const HOST_COLUMNS = `id, owner_user_id, name, kind, status, token_hash, pairing_code_expires_at,
+const HOST_COLUMNS = `id, owner_user_id, machine_id, environment_kind, name, kind, status, token_hash, pairing_code_expires_at,
   last_heartbeat_at, platform, arch, daemon_version, capabilities_json, created_at, updated_at`;
 
 export class PgHostRepository {
@@ -113,14 +141,15 @@ export class PgHostRepository {
   async ensureServerHostId(): Promise<string> {
     const existing = await this.pool.query<{ id: string }>(`SELECT id FROM hosts WHERE kind = 'server' LIMIT 1`);
     if (existing.rows[0]) return existing.rows[0].id;
+    const machineId = await new PgMachineRepository(this.pool).ensureServerMachineId();
     const id = randomUUID();
     const now = new Date().toISOString();
     const inserted = await this.pool.query<{ id: string }>(
-      `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
-       VALUES ($1, NULL, 'server', 'server', 'online', $2, $2)
+      `INSERT INTO hosts (id, owner_user_id, machine_id, environment_kind, name, kind, status, created_at, updated_at)
+       VALUES ($1, NULL, $2, 'server', 'server', 'server', 'online', $3, $3)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [id, now],
+      [id, machineId, now],
     );
     if (inserted.rows[0]) return inserted.rows[0].id;
     // Lost the race against a concurrent bootstrap; the winner's row exists now.
@@ -129,20 +158,44 @@ export class PgHostRepository {
     return winner.rows[0].id;
   }
 
-  async issuePairingCode(ownerUserId: string, name: string): Promise<{ host_id: string; pairing_code: string; expires_at: string } | HostFailure> {
+  /**
+   * `machineId` names an *existing* Machine this host should join (the
+   * Windows-native + WSL case: two hosts, one physical device) — omitted,
+   * a fresh Machine is auto-created and named after the host, matching the
+   * common case where each personal host is its own device. There is no
+   * "pick or create a Machine" UI yet (P1.10 is grouping/display only, per
+   * the plan); this parameter exists so that flow has somewhere to land
+   * without a further schema change.
+   */
+  async issuePairingCode(
+    ownerUserId: string,
+    name: string,
+    machineId?: string | null,
+  ): Promise<{ host_id: string; pairing_code: string; expires_at: string } | HostFailure> {
     const trimmed = name.trim();
     if (!trimmed) return { statusCode: 422, detail: "name is required" };
     const id = randomUUID();
     const code = rawPairingCode();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + PAIRING_CODE_TTL_MS).toISOString();
+    // Keep the newly-created Machine available for cleanup if the Host insert
+    // loses the owner/name uniqueness race. A caller-supplied Machine is not
+    // ours to delete.
+    const createdMachine = machineId
+      ? null
+      : await new PgMachineRepository(this.pool).create(ownerUserId, trimmed, null);
+    const createdMachineId = createdMachine?.id ?? null;
+    const hostMachineId = machineId ?? createdMachine!.id;
     try {
       await this.pool.query(
-        `INSERT INTO hosts (id, owner_user_id, name, kind, status, token_hash, pairing_code_expires_at, created_at, updated_at)
-         VALUES ($1, $2, $3, 'remote', 'pending_pairing', $4, $5, $6, $6)`,
-        [id, ownerUserId, trimmed, hashToken(code), expiresAt, now.toISOString()],
+        `INSERT INTO hosts (id, owner_user_id, machine_id, environment_kind, name, kind, status, token_hash, pairing_code_expires_at, created_at, updated_at)
+         VALUES ($1, $2, $3, 'linux_native', $4, 'remote', 'pending_pairing', $5, $6, $7, $7)`,
+        [id, ownerUserId, hostMachineId, trimmed, hashToken(code), expiresAt, now.toISOString()],
       );
     } catch (error) {
+      if (createdMachineId) {
+        await this.pool.query(`DELETE FROM machines WHERE id = $1 AND owner_user_id = $2`, [createdMachineId, ownerUserId]);
+      }
       if (isUniqueViolation(error)) {
         return { statusCode: 409, detail: `A host named '${trimmed}' already exists` };
       }
@@ -168,7 +221,8 @@ export class PgHostRepository {
       `UPDATE hosts
           SET token_hash = $2, pairing_code_expires_at = NULL, status = 'offline',
               platform = $3, arch = $4, daemon_version = $5, capabilities_json = $6::jsonb,
-              updated_at = $7
+              environment_kind = $7,
+              updated_at = $8
         WHERE token_hash = $1 AND status = 'pending_pairing' AND pairing_code_expires_at > now()
         RETURNING id, name`,
       [
@@ -178,6 +232,7 @@ export class PgHostRepository {
         info.arch ?? null,
         info.daemon_version ?? null,
         JSON.stringify(info.capabilities_json ?? {}),
+        info.environment_kind ?? environmentKindFromPlatform(info.platform ?? null),
         new Date().toISOString(),
       ],
     );
@@ -221,6 +276,10 @@ export class PgHostRepository {
         info.capabilities_json ? JSON.stringify(info.capabilities_json) : null,
       ],
     );
+    if (info.workspace_reports) {
+      const { PgWorkspaceLocationRepository } = await import("../projectFolders/workspaceLocations.js");
+      await new PgWorkspaceLocationRepository(this.pool).recordDaemonHeartbeat(hostId, info.workspace_reports);
+    }
   }
 
   async markOffline(hostId: string): Promise<void> {
@@ -236,9 +295,10 @@ export class PgHostRepository {
   async listVisibleTo(ownerUserId: string): Promise<HostOut[]> {
     await this.ensureServerHostId();
     const result = await this.pool.query<HostRow>(
-      `SELECT ${HOST_COLUMNS} FROM hosts
-        WHERE kind = 'server' OR owner_user_id = $1
-        ORDER BY (kind = 'server') DESC, created_at ASC`,
+      `SELECT h.*, m.display_name AS machine_name FROM hosts h
+       JOIN machines m ON m.id = h.machine_id
+        WHERE h.kind = 'server' OR h.owner_user_id = $1
+        ORDER BY (h.kind = 'server') DESC, h.created_at ASC`,
       [ownerUserId],
     );
     return result.rows.map(hostOut);
@@ -268,33 +328,22 @@ export class PgHostRepository {
    * upload endpoints need (ADR 0016 P3): the bearer token already proves
    * "this daemon", this proves "for one of its own Runs".
    */
+  /**
+   * execution-topology-and-project-control-plane-plan.md P1 / D3: a Run
+   * binds to a Location, not a Folder — the JOIN goes through
+   * `workspace_locations` (a Location has exactly one host) rather than
+   * `project_folders` (which, after P1, no longer names one at all).
+   */
   async runOwnedByHost(hostId: string, runId: string): Promise<RunForUpload | null> {
     const result = await this.pool.query<RunForUpload>(
       `SELECT r.id, r.space_id, r.owner_user_id, r.project_id, r.project_folder_id
          FROM runs r
-         JOIN project_folders pf ON pf.id = r.project_folder_id
-        WHERE r.id = $1 AND pf.host_id = $2
+         JOIN workspace_locations wl ON wl.id = r.workspace_location_id
+        WHERE r.id = $1 AND wl.execution_host_id = $2
         LIMIT 1`,
       [runId, hostId],
     );
     return result.rows[0] ?? null;
-  }
-
-  /** Everything the dispatch endpoint needs to authorize a dispatch, in one query. */
-  async resolveDispatchTarget(projectFolderId: string): Promise<DispatchTarget | null> {
-    const result = await this.pool.query<DispatchTargetRow>(
-      `SELECT pf.id AS project_folder_id, pf.space_id, pf.project_id, pf.host_kind,
-              h.id AS host_id, h.owner_user_id AS host_owner_user_id, h.status AS host_status,
-              h.last_heartbeat_at, h.capabilities_json
-         FROM project_folders pf
-         JOIN hosts h ON h.id = pf.host_id
-        WHERE pf.id = $1
-        LIMIT 1`,
-      [projectFolderId],
-    );
-    const row = result.rows[0];
-    if (!row) return null;
-    return { ...row, host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at) };
   }
 
   /**
@@ -401,23 +450,6 @@ export interface RunForUpload {
   owner_user_id: string | null;
   project_id: string | null;
   project_folder_id: string;
-}
-
-interface DispatchTargetRow {
-  project_folder_id: string;
-  space_id: string;
-  project_id: string;
-  host_kind: string;
-  host_id: string;
-  host_owner_user_id: string | null;
-  host_status: string;
-  last_heartbeat_at: string | null;
-  capabilities_json: Record<string, unknown> | null;
-}
-
-export interface DispatchTarget extends DispatchTargetRow {
-  /** Status corrected for heartbeat staleness — see `HEARTBEAT_STALE_MS`. */
-  host_online: boolean;
 }
 
 const MAX_DIFF_BYTES = 1_048_576;

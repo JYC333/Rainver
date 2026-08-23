@@ -17,12 +17,22 @@ import {
 import { PgRunRepository } from "../runs/repository";
 import { PgJobQueueRepository } from "../jobs/repository";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
-import { contractRouteHints, type RunBudgetSource } from "../runs/contractSnapshot";
+import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot";
 import { runToOut } from "../runs/runReadModel";
 import { PgUsageRepository } from "../usage/repository";
 import { contentReadSql } from "../access/contentAccessSql";
 import { recordDetailRead } from "../contentAccess/audit";
 import { isContentVisibility } from "../access/contentAccessTypes";
+import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations";
+import { PgHostTaskThreadRepository } from "../hosts/taskThreadRepository";
+import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository";
+import { advanceThreadQueue } from "../hosts/queueAdvance";
+import {
+  lockTaskQueueForTerminalMutation,
+  withdrawQueuedTaskMessages,
+} from "./taskRunStatusProjection";
 import {
   bounded01,
   boardColumnOut,
@@ -41,6 +51,7 @@ const DEFAULT_TASK_LIMITS = {
   maxDurationSeconds: 3600,
 } as const;
 const TASK_STATUSES = new Set(["inbox", "ready", "in_progress", "blocked", "done", "cancelled"]);
+const TASK_EXECUTION_TERMINAL_STATUSES = new Set(["blocked", "done", "cancelled"]);
 import {
   BOARD_COLUMNS,
   BOARD_COLUMN_COLUMNS,
@@ -308,6 +319,49 @@ export class PgTaskRepository {
     return taskOut(result.rows[0]!);
   }
 
+  /** Creates the smallest durable Task needed when a composer has no task id. */
+  async createLightweightTaskAndRun(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    const prompt = optionalString(body.prompt);
+    if (!prompt) throw new HttpError(422, "prompt is required");
+    const admission = await withDbTransaction(this.pool, async (client) => {
+      const projectFolderId = optionalString(body.project_folder_id);
+      let projectId = optionalString(body.project_id);
+      let admissionBody = body;
+      if (projectFolderId) {
+        const folder = await client.query<{ project_id: string }>(
+          `SELECT project_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
+          [projectFolderId, identity.spaceId],
+        );
+        if (!folder.rows[0]) throw new HttpError(404, "Project Folder not found");
+        if (projectId && folder.rows[0].project_id !== projectId) {
+          throw new HttpError(409, "Project Folder does not belong to the selected Project");
+        }
+        projectId = folder.rows[0].project_id;
+      }
+      // The route performs a fast preflight, but the durable Task + Run write
+      // must re-check authority while holding the Project aggregate lock. This
+      // closes the revoke/archive race between authorization and admission.
+      if (projectId) {
+        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
+        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+        admissionBody = { ...body, project_id: projectId, visibility: "space_shared" };
+      }
+      const title = optionalString(body.task_title) ?? prompt.slice(0, 120);
+      const task = await this.createTask(identity, {
+        title: title || "Workspace task",
+        description: optionalString(body.task_description),
+        project_folder_id: projectFolderId,
+        project_id: projectId,
+        task_type: "coding",
+        status: "ready",
+        visibility: "space_shared",
+        assigned_agent_id: optionalString(body.agent_id),
+      }, client);
+      return this.createTaskRunAdmission(identity, task.id, admissionBody, client);
+    });
+    return this.finishTaskRunAdmission(admission);
+  }
+
   async getTask(identity: SpaceUserIdentity, taskId: string) {
     const row = await getVisibleTaskRow(this.pool, identity, taskId);
     if (!row) return null;
@@ -336,7 +390,12 @@ export class PgTaskRepository {
       if (currentTask.task_role === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
     }
     const now = new Date().toISOString();
-    await this.pool.query(
+    const requestedStatus = taskStatus(body.status);
+    await withDbTransaction(this.pool, async (client) => {
+      if (requestedStatus && TASK_EXECUTION_TERMINAL_STATUSES.has(requestedStatus)) {
+        await lockTaskQueueForTerminalMutation(client, identity.spaceId, [taskId]);
+      }
+      await client.query(
       `UPDATE tasks SET
          title = COALESCE($3, title),
          description = CASE WHEN $4::boolean THEN $5 ELSE description END,
@@ -389,7 +448,7 @@ export class PgTaskRepository {
         Object.hasOwn(body, "parent_task_id"),
         optionalString(body.parent_task_id),
         optionalString(body.task_type),
-        taskStatus(body.status),
+        requestedStatus,
         optionalString(body.priority),
         optionalString(body.risk_level),
         Object.hasOwn(body, "assigned_user_id"),
@@ -435,23 +494,49 @@ export class PgTaskRepository {
         Object.hasOwn(body, "deleted_at"),
         toDbDate(body.deleted_at),
         now,
-      ],
-    );
+        ],
+      );
+      if (requestedStatus && TASK_EXECUTION_TERMINAL_STATUSES.has(requestedStatus)) {
+        await withdrawQueuedTaskMessages(client, identity.spaceId, [taskId]);
+      }
+    });
     return (await this.getTask(identity, taskId))!;
   }
 
   async createTaskRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    return withDbTransaction(this.pool, async (client) => {
+    const admission = await this.createTaskRunAdmission(identity, taskId, body);
+    return this.finishTaskRunAdmission(admission);
+  }
+
+  private async createTaskRunAdmission(
+    identity: SpaceUserIdentity,
+    taskId: string,
+    body: Record<string, unknown>,
+    transactionClient?: Queryable,
+  ) {
+    const execute = async (client: Queryable) => {
       const task = await getVisibleTaskRow(client, identity, taskId);
       if (!task) throw new HttpError(404, "Task not found");
+      if (task.project_id) {
+        // Every Task-owned Run, regardless of whether its adapter is server
+        // or remote, is a Project mutation. Recheck the writer after the
+        // request-level read gate and hold the Project lock through admission.
+        await lockActiveProjectForMutation(client, identity.spaceId, task.project_id);
+        await assertProjectWriterForMutation(client, identity.spaceId, task.project_id, identity.userId);
+      }
       // Serialize admissions for this task. The max_runs check and the
       // task_runs insert must observe one state, otherwise two concurrent
       // requests can both pass the preflight check.
-      const lockedTask = await client.query<{ max_runs: number | null }>(
-        `SELECT max_runs FROM tasks WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+      const lockedTask = await client.query<{ max_runs: number | null; status: string }>(
+        `SELECT max_runs, status FROM tasks WHERE space_id = $1 AND id = $2 FOR UPDATE`,
         [identity.spaceId, taskId],
       );
-      const maxRuns = lockedTask.rows[0] ? lockedTask.rows[0].max_runs : task.max_runs;
+      const currentTask = lockedTask.rows[0];
+      if (!currentTask) throw new HttpError(404, "Task not found");
+      if (TASK_EXECUTION_TERMINAL_STATUSES.has(currentTask.status)) {
+        throw new HttpError(409, `Task is ${currentTask.status} and cannot be dispatched`);
+      }
+      const maxRuns = currentTask.max_runs;
       const taskPolicy = objectValue(task.policy_json);
       const budgetSources: RunBudgetSource[] = [
         {
@@ -468,10 +553,34 @@ export class PgTaskRepository {
       // either the Run or its task_runs link. Dispatch must never be the first
       // place that discovers an Automation/Workflow cap.
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSources);
+
+      const locations = new PgWorkspaceLocationRepository(client);
+      const namedLocationId = optionalString(body.workspace_location_id);
+      const preferred = !namedLocationId && task.project_folder_id
+        ? await locations.getPreferred(task.project_folder_id)
+        : null;
+      const target = namedLocationId
+        ? await locations.resolveDispatchTarget(namedLocationId)
+        : preferred
+          ? await locations.resolveDispatchTarget(preferred.id)
+          : null;
+      if (namedLocationId && !target) throw new HttpError(404, "Workspace Location not found");
+      if (task.project_folder_id && !target) {
+        throw new HttpError(409, "Task Project Folder has no active preferred Workspace Location");
+      }
+      if (target && (target.space_id !== identity.spaceId || target.project_folder_id !== task.project_folder_id || target.project_id !== task.project_id)) {
+        throw new HttpError(409, "Workspace Location does not belong to this Task's Project Folder");
+      }
+      if (target?.execution_host_kind === "remote") {
+        const remote = await this.prepareRemoteTaskRun(client, identity, task, target, body);
+        return { kind: "remote" as const, remote };
+      }
+      if (target && !target.execution_ready) {
+        throw new HttpError(409, "Workspace Location is not execution-ready");
+      }
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
       await assertRunnableAgent(client, identity.spaceId, agentId);
-      const projectFolderId = optionalString(body.project_folder_id) ?? task.project_folder_id;
       const run = await new PgRunRepository(client).createQueuedRun({
         agent_id: agentId,
         space_id: identity.spaceId,
@@ -480,7 +589,9 @@ export class PgTaskRepository {
         run_type: optionalString(body.run_type) ?? "agent",
         trigger_origin: optionalString(body.trigger_origin) ?? "manual",
         session_id: optionalString(body.session_id),
-        project_folder_id: projectFolderId,
+        project_folder_id: task.project_folder_id,
+        workspace_location_id: target?.location_id ?? null,
+        trust_mode: target ? "sandboxed" : null,
         project_id: task.project_id,
         prompt: optionalString(body.prompt),
         instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
@@ -489,7 +600,7 @@ export class PgTaskRepository {
         contract_snapshot: {
           source: { kind: "task", id: task.id },
           project_id: task.project_id,
-          project_folder_id: projectFolderId,
+          project_folder_id: task.project_folder_id,
           acceptance_criteria_json: task.acceptance_criteria_json,
           definition_of_done: task.definition_of_done,
           required_outputs_json: task.required_outputs_json,
@@ -510,11 +621,115 @@ export class PgTaskRepository {
          ON CONFLICT (task_id, run_id) DO NOTHING`,
         [randomUUID(), identity.spaceId, taskId, run.id, optionalString(body.role) ?? "primary", now],
       );
-      if (body.set_task_in_progress !== false && !["done", "cancelled"].includes(task.status)) {
+      await new PgJobQueueRepository(client).ensureAgentRunJob({
+        job_type: "agent_run",
+        space_id: identity.spaceId,
+        user_id: identity.userId,
+        agent_id: agentId,
+        project_folder_id: task.project_folder_id,
+        payload: { run_id: run.id },
+      });
+      if (body.set_task_in_progress !== false) {
         await client.query(`UPDATE tasks SET status = 'in_progress', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, taskId, now]);
       }
-      return runToOut(run);
+      return { kind: "server" as const, run: runToOut(run) };
+    };
+    return transactionClient ? execute(transactionClient) : withDbTransaction(this.pool, execute);
+  }
+
+  private async finishTaskRunAdmission(
+    admission: Awaited<ReturnType<PgTaskRepository["createTaskRunAdmission"]>>,
+  ) {
+    if (admission.kind === "server") return admission.run;
+    const advance = await advanceThreadQueue(this.pool, admission.remote.threadId, {
+      messageId: admission.remote.messageId,
+      timeoutMs: admission.remote.timeoutMs,
     });
+    if (!advance.advanced && advance.reason === "task_authority_lost") {
+      throw new HttpError(409, "Project authority changed before dispatch; queued Task message was withdrawn");
+    }
+    const dispatched = advance.advanced && advance.message_id === admission.remote.messageId;
+    return {
+      message_id: admission.remote.messageId,
+      thread_id: admission.remote.threadId,
+      run_id: dispatched ? advance.run_id : null,
+      status: dispatched ? "dispatched" : "queued",
+    };
+  }
+
+  /**
+   * The remote-host half of the merged dispatch endpoint (D5) — what used
+   * to be the former host-dispatch route. Unlike the server-host branch
+   * above, this never creates a Run synchronously: it enqueues a message on
+   * the Task's HostTaskThread for `target.location_id` and lets
+   * `advanceThreadQueue` create the Run (and this Task's `task_runs` link)
+   * once nothing blocks it, exactly as the old route did — merging the
+   * routes did not merge the two adapters' execution shape (D5), only where
+   * a caller reaches them from.
+   */
+  private async prepareRemoteTaskRun(
+    client: Queryable,
+    identity: SpaceUserIdentity,
+    task: TaskRow,
+    target: NonNullable<Awaited<ReturnType<PgWorkspaceLocationRepository["resolveDispatchTarget"]>>>,
+    body: Record<string, unknown>,
+  ) {
+    // The merged task-run admission gate above already locked the active
+    // Project and verified the caller's writer access before either adapter
+    // branch was selected. Keep this method focused on remote topology and
+    // runtime validation.
+    if (!task.project_id) throw new HttpError(409, "Remote dispatch requires a Task Project");
+    if (target.host_owner_user_id !== identity.userId) {
+      throw new HttpError(403, "This workspace's host does not belong to you");
+    }
+    if (!target.host_online) throw new HttpError(409, "Host is offline");
+    if (!target.execution_ready) throw new HttpError(409, "Workspace Location is not execution-ready");
+
+    const adapterType = optionalString(body.adapter_type);
+    if (!adapterType) throw new HttpError(422, "adapter_type is required for a remote Workspace Location");
+    const spec = getLocalCliRuntimeAdapterSpec(adapterType);
+    if (!spec) throw new HttpError(422, `Unknown runtime adapter '${adapterType}'`);
+    if (spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
+      throw new HttpError(422, `Runtime adapter '${adapterType}' is not supported for remote dispatch`);
+    }
+    const reportedRuntimes = Array.isArray((target.capabilities_json as { runtimes?: unknown })?.runtimes)
+      ? ((target.capabilities_json as { runtimes: unknown[] }).runtimes as unknown[])
+      : [];
+    const capabilityProbeCommand = spec.invocation.remote_capability_probe ?? spec.executable.command;
+    if (!reportedRuntimes.includes(capabilityProbeCommand)) {
+      throw new HttpError(422, `Host does not report '${capabilityProbeCommand}' as an installed runtime`);
+    }
+    const prompt = optionalString(body.prompt);
+    if (!prompt) throw new HttpError(422, "prompt is required");
+
+    const threads = new PgHostTaskThreadRepository(client);
+    const threadId = optionalString(body.thread_id);
+    let thread = threadId ? await threads.getForLocation(threadId, target.location_id) : null;
+    if (threadId && !thread) throw new HttpError(404, "Task thread not found for this Workspace Location");
+    if (thread && thread.adapter_type !== adapterType) {
+      throw new HttpError(409, "Task thread is pinned to a different runtime adapter");
+    }
+    if (!thread) {
+      thread = await threads.create({
+        workspaceLocationId: target.location_id,
+        adapterType,
+        createdByUserId: identity.userId,
+      });
+    }
+
+    const messages = new PgHostThreadMessageRepository(client);
+    const message = await messages.enqueue(thread.id, task.id, prompt, identity.userId);
+    if (body.set_task_in_progress !== false) {
+      await client.query(
+        `UPDATE tasks SET status = 'in_progress', updated_at = now() WHERE space_id = $1 AND id = $2`,
+        [identity.spaceId, task.id],
+      );
+    }
+    return {
+      messageId: message.id,
+      threadId: thread.id,
+      timeoutMs: numberValue(body.timeout_ms) ?? null,
+    };
   }
 
   async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
@@ -615,7 +830,7 @@ export class PgTaskRepository {
       `SELECT tr.id AS task_run_id, tr.space_id AS task_run_space_id, tr.task_id AS task_run_task_id,
               tr.run_id AS task_run_run_id, tr.role AS task_run_role, tr.created_at AS task_run_created_at,
               r.id, r.space_id, r.agent_id, r.agent_version_id, r.run_type,
-              r.status, r.mode, r.prompt, r.instruction, r.project_folder_id, r.session_id,
+              r.status, r.mode, r.prompt, r.instruction, r.project_folder_id, r.workspace_location_id, r.trust_mode, r.session_id,
               r.parent_run_id, r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.model_provider_id, r.model_override_json, r.required_sandbox_level,
               r.contract_snapshot_json, r.workflow_version_id, r.trigger_origin,
@@ -791,22 +1006,6 @@ export class PgTaskRepository {
     );
     return { ...boardOut(board), columns: columns.rows.map(boardColumnOut) };
   }
-}
-
-function budgetSourcesFromPolicy(value: unknown): RunBudgetSource[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is RunBudgetSource => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    const source = (item as { source?: unknown }).source;
-    if (!source || typeof source !== "object" || Array.isArray(source)) return false;
-    const kind = (source as { kind?: unknown }).kind;
-    return kind === "direct"
-      || kind === "task"
-      || kind === "automation"
-      || kind === "workflow"
-      || kind === "delegation"
-      || kind === "plan";
-  });
 }
 
 async function getVisibleTaskRow(db: Queryable, identity: SpaceUserIdentity, taskId: string): Promise<TaskRow | null> {

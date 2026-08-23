@@ -26,7 +26,7 @@ interface ProjectFolderServices {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
-  >;
+  > & Partial<Pick<PgProjectFolderRepository, "listLocations">>;
 }
 
 type ProjectFolderServicesFactory = (context: ModuleContext) => ProjectFolderServices;
@@ -124,6 +124,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const folder = await services(context).repository.get(id, projectId(request), folderId(request));
       if (!folder) return reply.code(404).send({ detail: "Project Folder not found" });
       return reply.send(folder);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/folders/:folderId/locations", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const service = services(context).repository;
+      const listLocations = service.listLocations;
+      if (!listLocations) return reply.code(501).send({ detail: "Workspace Location listing is unavailable" });
+      return reply.send(await listLocations.call(service, id, projectId(request), folderId(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }

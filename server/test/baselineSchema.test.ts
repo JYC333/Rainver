@@ -10,9 +10,10 @@ import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { loadMigrations, migrate } from "../src/db/migrator";
 
-// Empty-DB migration test. Applies the committed consolidated baseline
-// (`server/migrations/0001_baseline.sql`) to a fresh Postgres via the server
-// migration runner and asserts it applies cleanly and idempotently.
+// Empty-DB migration test. Applies the immutable pre-P1 baseline plus the
+// numbered execution-topology upgrade to a fresh Postgres via the server
+// migration runner and asserts the resulting schema applies cleanly and
+// idempotently.
 //
 // Verifies the runner creates representative server-owned tables from the
 // baseline. Skips gracefully without Docker.
@@ -114,11 +115,17 @@ function tableDefinition(sql: string, table: string): string {
 }
 
 describe("server runner applies the baseline schema", () => {
-  it("keeps 0001_baseline.sql as the consolidated baseline for a fresh database", () => {
+  it("keeps 0001_baseline.sql immutable and chains the P1 upgrade", () => {
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter((name) => /^\d+_.+\.sql$/.test(name))
       .sort();
-    expect(migrationFiles).toEqual(["0001_baseline.sql"]);
+    expect(migrationFiles).toEqual(["0001_baseline.sql", "0002_execution_topology.sql"]);
+  });
+
+  it("preserves legacy Project Folder IDs as Workspace Location IDs", () => {
+    const upgrade = readFileSync(join(MIGRATIONS_DIR, "0002_execution_topology.sql"), "utf8");
+    expect(upgrade).toMatch(/SELECT pf\.id, pf\.space_id, pf\.id, pf\.host_id, pf\.host_kind/);
+    expect(upgrade).toContain("-- One old Folder row maps to exactly one Location");
   });
 
   // B12D/B12E: domain lifecycle state belongs to the owning extension table,
@@ -328,6 +335,7 @@ describe("server runner applies the baseline schema", () => {
     const result = await migrate(pool, MIGRATIONS_DIR);
     expect(result.all).toEqual(expectedVersions);
     expect(result.applied).toContain("0001");
+    expect(result.applied).toContain("0002");
 
     const recorded = await pool.query(
       `SELECT version FROM public.${RUNNER_TABLE} WHERE version = '0001'`,
@@ -338,6 +346,38 @@ describe("server runner applies the baseline schema", () => {
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }
+  }, 120_000);
+
+  it("upgrades the immutable baseline into the P1 execution topology", async () => {
+    if (!available || !pool) return;
+    await migrate(pool, MIGRATIONS_DIR);
+    const topology = await pool.query<{ table_name: string }>(
+      `SELECT table_name
+         FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = ANY($1::text[])`,
+      [["machines", "workspace_locations"]],
+    );
+    expect(topology.rows.map((row) => row.table_name).sort()).toEqual(["machines", "workspace_locations"]);
+    const columns = await pool.query<{ table_name: string; column_name: string }>(
+      `SELECT table_name, column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND ((table_name = 'project_folders' AND column_name = ANY($1::text[]))
+            OR (table_name = 'host_task_threads' AND column_name = 'workspace_location_id')
+            OR (table_name = 'runs' AND column_name = ANY($2::text[])))`,
+      [["host_id", "host_kind", "root_path", "display_path"], ["workspace_location_id", "trust_mode"]],
+    );
+    expect(columns.rows).toEqual(expect.arrayContaining([
+      { table_name: "host_task_threads", column_name: "workspace_location_id" },
+      { table_name: "runs", column_name: "workspace_location_id" },
+      { table_name: "runs", column_name: "trust_mode" },
+    ]));
+    expect(columns.rows.some((row) => row.table_name === "project_folders" && ["host_id", "host_kind", "root_path", "display_path"].includes(row.column_name))).toBe(false);
+    const applied = await pool.query<{ version: string }>(
+      `SELECT version FROM public.${RUNNER_TABLE} WHERE version IN ('0001', '0002') ORDER BY version`,
+    );
+    expect(applied.rows.map((row) => row.version)).toEqual(["0001", "0002"]);
   }, 120_000);
 
   it("rejects unknown user states, and constrains object_type by format only", async () => {

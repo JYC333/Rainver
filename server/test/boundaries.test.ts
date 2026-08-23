@@ -41,6 +41,10 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   // hello/heartbeat channel — confined here so a second module cannot grow
   // its own ad hoc realtime transport.
   ["@fastify/websocket", join("src", "modules", "hosts", "routes.ts")],
+  // The official ACP SDK — confined to the one module that owns the
+  // protocol lifecycle so a second hand-rolled implementation cannot grow
+  // elsewhere. See REUSE_AND_DEPENDENCY_POLICY.md's canonical mechanism row.
+  ["@agentclientprotocol/sdk", join("src", "modules", "runs", "cliConversationProtocol.ts")],
   // drizzle-orm is schema-declaration only (server/src/db/schema/), never a
   // query layer — repositories keep writing hand-written SQL through `pg`.
   // See .agent/architecture/DATABASE_AND_TRANSACTIONS.md, "Schema Authoring".

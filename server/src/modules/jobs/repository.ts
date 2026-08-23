@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import type { Queryable } from "../routeUtils/common";
+import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection";
+import { withQueryableTransaction } from "../routeUtils/common";
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,
@@ -421,7 +423,8 @@ export class PgJobQueueRepository {
     workerId: string | null,
     now: Date = new Date(),
   ): Promise<boolean> {
-    const result = await this.db.query(
+    return withQueryableTransaction(this.db, async (db) => {
+    const result = await db.query<{ id: string; run_id: string | null; run_space_id: string | null }>(
       `WITH cancelled_job AS (
          UPDATE jobs
             SET status = 'cancelled',
@@ -431,7 +434,7 @@ export class PgJobQueueRepository {
           WHERE id = $1
             AND status IN ('pending', 'claimed', 'running')
             AND (CAST($3 AS text) IS NULL OR claimed_by = $3)
-          RETURNING id, job_type, payload_json
+         RETURNING id, job_type, payload_json, space_id
        ),
        cancelled_run AS (
          UPDATE runs
@@ -444,12 +447,18 @@ export class PgJobQueueRepository {
           WHERE cancelled_job.job_type = 'agent_run'
             AND runs.id::text = cancelled_job.payload_json->>'run_id'
             AND runs.status <> ALL($4::text[])
-          RETURNING runs.id
+           RETURNING runs.id, runs.space_id
        )
-       SELECT id FROM cancelled_job`,
+       SELECT cancelled_job.id, cancelled_run.id AS run_id, cancelled_run.space_id AS run_space_id
+         FROM cancelled_job
+         LEFT JOIN cancelled_run ON true`,
       [jobId, now.toISOString(), workerId, TERMINAL_RUN_STATES],
     );
+    for (const row of result.rows) {
+      if (row.run_id && row.run_space_id) await projectTaskStatusFromRun(db, row.run_space_id, row.run_id);
+    }
     return (result.rowCount ?? 0) > 0;
+    });
   }
 
   async touchHeartbeat(
@@ -501,9 +510,11 @@ export class PgJobQueueRepository {
     const cutoff = new Date(now.getTime() - stuckAfterSeconds * 1000).toISOString();
     await this.deleteOrphanRunExecutionLocks(cutoff);
 
-    const result = await this.db.query<{
+    const result = await withQueryableTransaction(this.db, async (db) => {
+      const result = await db.query<{
       reclaimed_count: string | number;
       exhausted_jobs: JobReclaimResult["exhausted_jobs"] | null;
+      failed_run_refs: Array<{ id: string; space_id: string }> | null;
     }>(
       `WITH retryable AS (
          UPDATE jobs
@@ -551,7 +562,7 @@ export class PgJobQueueRepository {
            FROM exhausted_agent_runs
           WHERE runs.id::text = exhausted_agent_runs.run_id
             AND runs.status <> ALL($3::text[])
-          RETURNING runs.id
+           RETURNING runs.id, runs.space_id
        )
        SELECT
          (SELECT COUNT(*) FROM retryable) + (SELECT COUNT(*) FROM failed)
@@ -566,9 +577,18 @@ export class PgJobQueueRepository {
               'max_attempts', max_attempts
             )) FROM failed),
            '[]'::jsonb
-         ) AS exhausted_jobs`,
+         ) AS exhausted_jobs,
+         COALESCE(
+           (SELECT jsonb_agg(jsonb_build_object('id', id, 'space_id', space_id)) FROM failed_runs),
+           '[]'::jsonb
+         ) AS failed_run_refs`,
       [now.toISOString(), cutoff, TERMINAL_RUN_STATES],
-    );
+      );
+      for (const run of result.rows[0]?.failed_run_refs ?? []) {
+        await projectTaskStatusFromRun(db, run.space_id, run.id);
+      }
+      return result;
+    });
     const count = result.rows[0]?.reclaimed_count ?? 0;
     return {
       reclaimed_count: Number(count),

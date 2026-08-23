@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { projectFoldersApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { MemberRole, ProjectFolder } from '../../types/api'
+import type { MemberRole, ProjectFolder, WorkspaceLocation } from '../../types/api'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -27,6 +27,7 @@ export default function ProjectFolderSettingsPage() {
   const manageable = canManageSpace(activeSpace?.role)
 
   const [folder, setFolder] = useState<ProjectFolder | null>(null)
+  const [locations, setLocations] = useState<WorkspaceLocation[]>([])
   const [loading, setLoading] = useState(true)
   const [retentionDays, setRetentionDays] = useState('')
   const [maxCount, setMaxCount] = useState('')
@@ -36,8 +37,12 @@ export default function ProjectFolderSettingsPage() {
     if (!projectId || !folderId) return
     setLoading(true)
     try {
-      const f = await projectFoldersApi.get(projectId, folderId)
+      const [f, folderLocations] = await Promise.all([
+        projectFoldersApi.get(projectId, folderId),
+        projectFoldersApi.locations(projectId, folderId),
+      ])
       setFolder(f)
+      setLocations(folderLocations)
       setRetentionDays(f.snapshot_retention_days !== null ? String(f.snapshot_retention_days) : '')
       setMaxCount(f.snapshot_max_count !== null ? String(f.snapshot_max_count) : '')
     } catch (e) {
@@ -117,12 +122,25 @@ export default function ProjectFolderSettingsPage() {
                 <span className="text-muted-foreground w-24 shrink-0 mt-0.5">ID</span>
                 <span className="font-mono text-xs text-muted-foreground break-all">{folder.id}</span>
               </div>
-              {folder.root_path && (
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground w-24 shrink-0 mt-0.5">Path</span>
-                  <span className="font-mono text-xs text-muted-foreground break-all">{folder.root_path}</span>
+            </div>
+          </Card>
+
+          <Card>
+            <CardTitle>Workspace Locations</CardTitle>
+            <div className="space-y-2 text-sm">
+              {locations.length === 0 && <p className="text-muted-foreground">No execution location registered.</p>}
+              {locations.map(location => (
+                <div key={location.id} className="rounded border border-border p-2 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={location.execution_ready ? 'success' : 'muted'}>{location.execution_ready ? 'ready' : 'not ready'}</Badge>
+                    <Badge variant="outline">{location.execution_host_kind}</Badge>
+                    {location.preferred && <Badge variant="secondary">preferred</Badge>}
+                    {location.dirty !== null && <span className="text-xs text-muted-foreground">{location.dirty ? 'dirty' : 'clean'}</span>}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{location.branch ?? 'no branch'} · {location.git_head ?? 'no git head'}</div>
+                  {location.display_path && <div className="font-mono text-xs text-muted-foreground break-all">{location.display_path}</div>}
                 </div>
-              )}
+              ))}
             </div>
           </Card>
 
