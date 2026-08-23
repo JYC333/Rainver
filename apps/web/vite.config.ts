@@ -124,6 +124,15 @@ export default defineConfig({
         target: apiProxyTarget,
         changeOrigin: true,
       },
+      // The trusted-host daemon uses the internal WebSocket endpoint directly
+      // from the host machine during dev. Keep it on the same public dev
+      // origin as the REST registration flow, and explicitly enable WS
+      // upgrade forwarding.
+      '/internal': {
+        target: apiProxyTarget,
+        changeOrigin: true,
+        ws: true,
+      },
     },
     watch: {
       // polling needed in WSL2/Docker — inotify events don't propagate reliably

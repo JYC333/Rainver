@@ -3,6 +3,13 @@
 > How to add or change backend modules. Current module inventory lives in
 > [`MODULES.md`](MODULES.md). Architectural invariants live in
 > [`../BOUNDARIES.md`](../BOUNDARIES.md).
+>
+> **Before any of this**, run the pre-implementation search in
+> [`REUSE_AND_DEPENDENCY_POLICY.md`](REUSE_AND_DEPENDENCY_POLICY.md): the module
+> you are about to add may not need to exist, and the mechanism you are about to
+> build probably already does. That document is the source of truth for the
+> reuse ladder, third-party evaluation, and the canonical mechanism index; the
+> sections below are its module-shaped application, not a second rule set.
 
 ## What Counts As A Module
 
@@ -71,7 +78,10 @@ import { InternalHelper } from "../providers/internalHelper"; // avoid in peer m
 ```
 
 If a needed facade export is missing, add a narrow export instead of adding a deep-import
-allowlist entry. The deep-import allowlist should stay empty by default.
+allowlist entry. The deep-import allowlist should stay empty by default. Copying the
+implementation into your module to avoid the boundary is never the answer — see
+[`REUSE_AND_DEPENDENCY_POLICY.md`](REUSE_AND_DEPENDENCY_POLICY.md) §6 for the three
+permitted resolutions.
 
 Keep facades narrow so tests and peer modules do not couple to internal helpers.
 
@@ -130,7 +140,9 @@ not add disposal handles until a genuinely runtime-dynamic contribution exists.
 
 New modules must reuse the shared infrastructure for sparse settings and
 recurring scheduler cursors. Do not create one settings table or one scheduler
-state table per feature.
+state table per feature. These are the two concerns this repository has seen
+duplicated most often; the general rule behind them is
+[`REUSE_AND_DEPENDENCY_POLICY.md`](REUSE_AND_DEPENDENCY_POLICY.md) §5 and §8.
 
 ### Adding Settings
 
@@ -225,7 +237,9 @@ Use a `Protocol`/`ABC` when callers need substitution or tests need a fake. Exis
 | Policy gateway | `server/src/modules/policy` |
 
 Do not add ports for their own sake. A facade export is enough for a single concrete service
-with no substitution need.
+with no substitution need. A port over a third-party package — as with the managed agent loop
+over `@earendil-works/pi-agent-core` — is how an adopted dependency stays replaceable without
+every caller naming it.
 
 ## Guardrails
 

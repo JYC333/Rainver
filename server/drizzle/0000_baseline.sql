@@ -258,7 +258,7 @@ CREATE TABLE "agents" (
 	"visibility" varchar(32) NOT NULL,
 	"access_level" varchar(16) DEFAULT 'full' NOT NULL,
 	CONSTRAINT "uq_agents_space_id_id" UNIQUE("id","space_id"),
-	CONSTRAINT "ck_agents_agent_kind" CHECK ((agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])),
+	CONSTRAINT "ck_agents_agent_kind" CHECK ((agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text, ('system_remote_dispatch'::character varying)::text])),
 	CONSTRAINT "ck_agents_status" CHECK ((status)::text = ANY (ARRAY[('active'::character varying)::text, ('inactive'::character varying)::text, ('archived'::character varying)::text, ('disabled'::character varying)::text])),
 	CONSTRAINT "ck_agents_visibility" CHECK (visibility IN ('private', 'space_shared', 'selected_users')),
 	CONSTRAINT "ck_agents_access_level" CHECK (access_level IN ('full', 'summary')),
@@ -4473,6 +4473,7 @@ CREATE TABLE "runs" (
 	"runtime_profile_id" varchar(36),
 	"runtime_profile_selection_source" varchar(16),
 	"project_folder_id" varchar(36),
+	"host_task_thread_id" varchar(36),
 	"session_id" varchar(36),
 	"parent_run_id" varchar(36),
 	"root_run_id" varchar(36),
@@ -5633,6 +5634,75 @@ CREATE TABLE "usage_import_batches" (
 	CONSTRAINT "ck_usage_import_batches_status" CHECK ((status)::text = ANY (ARRAY[('previewed'::character varying)::text, ('importing'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text]))
 );
 --> statement-breakpoint
+CREATE TABLE "hosts" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"owner_user_id" varchar(36),
+	"name" varchar(120) NOT NULL,
+	"kind" varchar(16) NOT NULL,
+	"status" varchar(24) NOT NULL,
+	"token_hash" varchar(128),
+	"pairing_code_expires_at" timestamp with time zone,
+	"last_heartbeat_at" timestamp with time zone,
+	"platform" varchar(64),
+	"arch" varchar(32),
+	"daemon_version" varchar(32),
+	"capabilities_json" jsonb,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_hosts_token_hash" UNIQUE("token_hash"),
+	CONSTRAINT "ck_hosts_kind" CHECK (kind IN ('server', 'remote')),
+	CONSTRAINT "ck_hosts_status" CHECK (status IN ('pending_pairing', 'online', 'offline', 'revoked')),
+	CONSTRAINT "ck_hosts_server_no_owner" CHECK (kind <> 'server' OR owner_user_id IS NULL),
+	CONSTRAINT "ck_hosts_remote_has_owner" CHECK (kind <> 'remote' OR owner_user_id IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "host_task_threads" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"project_folder_id" varchar(36) NOT NULL,
+	"host_id" varchar(36) NOT NULL,
+	"adapter_type" varchar(64) NOT NULL,
+	"vendor_session_id" varchar(256),
+	"last_run_id" varchar(36),
+	"status" varchar(24) DEFAULT 'active' NOT NULL,
+	"created_by_user_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	"queue_paused_at" timestamp with time zone,
+	CONSTRAINT "uq_host_task_threads_id_folder" UNIQUE("id","project_folder_id"),
+	CONSTRAINT "ck_host_task_threads_status" CHECK (status IN ('active', 'session_reset'))
+);
+--> statement-breakpoint
+CREATE TABLE "host_thread_events" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"host_task_thread_id" varchar(36) NOT NULL,
+	"run_id" varchar(36) NOT NULL,
+	"event_index" integer NOT NULL,
+	"event_type" varchar(32) NOT NULL,
+	"text" text,
+	"tool_call_id" varchar(128),
+	"tool_name" varchar(128),
+	"tool_input_summary" text,
+	"tool_kind" varchar(32),
+	"tool_result_summary" text,
+	"status" varchar(32),
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_host_thread_events_thread_event_index" UNIQUE("host_task_thread_id","event_index"),
+	CONSTRAINT "ck_host_thread_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "host_thread_messages" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"host_task_thread_id" varchar(36) NOT NULL,
+	"prompt" text NOT NULL,
+	"status" varchar(16) DEFAULT 'queued' NOT NULL,
+	"run_id" varchar(36),
+	"created_by_user_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_host_thread_messages_status" CHECK ((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('dispatched'::character varying)::text, ('withdrawn'::character varying)::text])),
+	CONSTRAINT "ck_host_thread_messages_run_id_consistency" CHECK ((status = 'dispatched') = (run_id IS NOT NULL))
+);
+--> statement-breakpoint
 CREATE TABLE "project_folder_execution_configs" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -5679,9 +5749,14 @@ CREATE TABLE "project_folders" (
 	"allow_external_root" boolean DEFAULT false NOT NULL,
 	"snapshot_retention_days" integer,
 	"snapshot_max_count" integer,
+	"host_id" varchar(36) NOT NULL,
+	"host_kind" varchar(16) NOT NULL,
+	"display_path" varchar(1024),
 	CONSTRAINT "uq_project_folders_space_id_id" UNIQUE("id","space_id"),
 	CONSTRAINT "ck_project_folders_kind" CHECK (kind IN ('code', 'data', 'docs')),
-	CONSTRAINT "ck_project_folders_status" CHECK ((status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text]))
+	CONSTRAINT "ck_project_folders_status" CHECK ((status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text])),
+	CONSTRAINT "ck_project_folders_host_kind" CHECK (host_kind IN ('server', 'remote')),
+	CONSTRAINT "ck_project_folders_remote_no_root_path" CHECK (host_kind <> 'remote' OR root_path IS NULL)
 );
 --> statement-breakpoint
 ALTER TABLE "academic_papers" ADD CONSTRAINT "academic_papers_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -6569,6 +6644,7 @@ ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_project_id_projects" FOREIGN KEY ("pr
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_version_id_fkey" FOREIGN KEY ("agent_version_id","agent_id","space_id") REFERENCES "public"."agent_versions"("id","agent_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_delegation_id_fkey" FOREIGN KEY ("delegation_id") REFERENCES "public"."run_delegations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runs" ADD CONSTRAINT "runs_host_task_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_instructed_by_agent_id_fkey" FOREIGN KEY ("instructed_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_instructed_by_user_id_fkey" FOREIGN KEY ("instructed_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -6788,12 +6864,20 @@ ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_project_fold
 ALTER TABLE "token_usage_events" ADD CONSTRAINT "token_usage_events_import_batch_id_fkey" FOREIGN KEY ("import_batch_id") REFERENCES "public"."usage_import_batches"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_target_space_id_fkey" FOREIGN KEY ("target_space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "hosts" ADD CONSTRAINT "hosts_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_task_threads" ADD CONSTRAINT "host_task_threads_project_folder_id_fkey" FOREIGN KEY ("project_folder_id") REFERENCES "public"."project_folders"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_task_threads" ADD CONSTRAINT "host_task_threads_host_id_fkey" FOREIGN KEY ("host_id") REFERENCES "public"."hosts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_validation_recipe_id_fkey" FOREIGN KEY ("validation_recipe_id") REFERENCES "public"."validation_recipes"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_folders" ADD CONSTRAINT "project_folders_host_id_fkey" FOREIGN KEY ("host_id") REFERENCES "public"."hosts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "ix_academic_papers_space_id" ON "academic_papers" USING btree ("space_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_academic_papers_space_doi" ON "academic_papers" USING btree ("space_id","doi") WHERE (doi IS NOT NULL);--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_academic_papers_space_arxiv_id" ON "academic_papers" USING btree ("space_id","arxiv_id") WHERE (arxiv_id IS NOT NULL);--> statement-breakpoint
@@ -6857,6 +6941,7 @@ CREATE UNIQUE INDEX "uq_agents_system_assistant_per_space" ON "agents" USING btr
 CREATE UNIQUE INDEX "uq_agents_system_source_post_processor_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_agents_system_source_annotator_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_source_annotator'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_agents_system_research_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_agents_system_remote_dispatch_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_remote_dispatch'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
 CREATE INDEX "ix_cli_credential_events_run_id" ON "cli_credential_events" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_cli_credential_events_space_id" ON "cli_credential_events" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_cli_credential_profiles_owner_user_id" ON "cli_credential_profiles" USING btree ("owner_user_id");--> statement-breakpoint
@@ -7574,6 +7659,7 @@ CREATE INDEX "ix_runs_space_id" ON "runs" USING btree ("space_id");--> statement
 CREATE INDEX "ix_runs_status" ON "runs" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_runs_trigger_origin" ON "runs" USING btree ("trigger_origin");--> statement-breakpoint
 CREATE INDEX "ix_runs_project_folder_id" ON "runs" USING btree ("project_folder_id");--> statement-breakpoint
+CREATE INDEX "ix_runs_host_task_thread_id" ON "runs" USING btree ("host_task_thread_id");--> statement-breakpoint
 CREATE INDEX "ix_task_evaluations_run_evaluation_id" ON "task_evaluations" USING btree ("run_evaluation_id");--> statement-breakpoint
 CREATE INDEX "ix_task_evaluations_run_id" ON "task_evaluations" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_task_evaluations_space_id" ON "task_evaluations" USING btree ("space_id");--> statement-breakpoint
@@ -7788,11 +7874,22 @@ CREATE INDEX "ix_token_usage_events_import_batch_id" ON "token_usage_events" USI
 CREATE INDEX "ix_usage_import_batches_instance_id" ON "usage_import_batches" USING btree ("instance_id");--> statement-breakpoint
 CREATE INDEX "ix_usage_import_batches_target_space_id" ON "usage_import_batches" USING btree ("target_space_id");--> statement-breakpoint
 CREATE INDEX "ix_usage_import_batches_owner_user_id" ON "usage_import_batches" USING btree ("owner_user_id");--> statement-breakpoint
+CREATE INDEX "ix_hosts_owner_user_id" ON "hosts" USING btree ("owner_user_id");--> statement-breakpoint
+CREATE INDEX "ix_hosts_status" ON "hosts" USING btree ("status");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_hosts_single_server" ON "hosts" USING btree ("kind") WHERE kind = 'server';--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_hosts_owner_name" ON "hosts" USING btree ("owner_user_id","name") WHERE owner_user_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "ix_host_task_threads_project_folder_id" ON "host_task_threads" USING btree ("project_folder_id");--> statement-breakpoint
+CREATE INDEX "ix_host_task_threads_host_id" ON "host_task_threads" USING btree ("host_id");--> statement-breakpoint
+CREATE INDEX "ix_host_thread_events_thread_id" ON "host_thread_events" USING btree ("host_task_thread_id");--> statement-breakpoint
+CREATE INDEX "ix_host_thread_events_run_id" ON "host_thread_events" USING btree ("run_id");--> statement-breakpoint
+CREATE INDEX "ix_host_thread_messages_thread_id" ON "host_thread_messages" USING btree ("host_task_thread_id","created_at");--> statement-breakpoint
+CREATE INDEX "ix_host_thread_messages_run_id" ON "host_thread_messages" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folder_execution_configs_space_id" ON "project_folder_execution_configs" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folder_execution_configs_project_folder_id" ON "project_folder_execution_configs" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folders_slug" ON "project_folders" USING btree ("slug");--> statement-breakpoint
 CREATE INDEX "ix_project_folders_project_id" ON "project_folders" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folders_space_id" ON "project_folders" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folders_status" ON "project_folders" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "ix_project_folders_host_id" ON "project_folders" USING btree ("host_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_project_folders_space_root_path" ON "project_folders" USING btree ("space_id","root_path") WHERE root_path IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_project_folders_one_primary_per_project" ON "project_folders" USING btree ("project_id") WHERE is_primary;

@@ -40,79 +40,10 @@ export function normalizeVendorEvents(
   events: Record<string, unknown>[],
   completedAt: string,
 ): RuntimeSemanticEvent[] {
-  const normalized: RuntimeSemanticEvent[] = [];
-  for (const event of events) {
+  return events.flatMap((event) => {
     const native = normalizeNativeProtocolEvent(adapterType, event, completedAt);
-    if (native) {
-      normalized.push(native);
-      continue;
-    }
-    const type = stringValue(event.type)?.toLowerCase() ?? "";
-    const item = recordValue(event.item);
-    const message = recordValue(event.message);
-    const content = Array.isArray(message.content) ? message.content : [];
-    const toolBlock = content
-      .map(recordValue)
-      .find((block) => block.type === "tool_use" || block.type === "tool_result");
-    const semanticType = [
-      type,
-      stringValue(event.subtype)?.toLowerCase() ?? "",
-      stringValue(item.type)?.toLowerCase() ?? "",
-      stringValue(toolBlock?.type)?.toLowerCase() ?? "",
-    ].filter(Boolean).join(".");
-    const callId = stringValue(
-      event.call_id ??
-      event.tool_call_id ??
-      item.id ??
-      toolBlock?.id ??
-      toolBlock?.tool_use_id ??
-      event.id,
-    );
-    const toolName = redactToolName(stringValue(
-      event.name ??
-      item.name ??
-      item.command ??
-      toolBlock?.name ??
-      recordValue(event.tool).name,
-    ));
-    if (semanticType.includes("compact")) {
-      normalized.push(runtimeEvent("provider_compacted", completedAt, null, "Provider compacted its session context.", {
-        adapter_type: adapterType,
-      }));
-      continue;
-    }
-    const started =
-      semanticType.includes("tool_use") ||
-      (semanticType.includes("command_execution") && type.includes("started")) ||
-      (semanticType.includes("tool") && type.includes("start"));
-    if (started) {
-      normalized.push(runtimeEvent("tool_call_started", completedAt, callId, "Tool call started.", {
-        adapter_type: adapterType,
-        tool_name: toolName,
-      }));
-    } else if (
-      semanticType.includes("tool") || semanticType.includes("command_execution")
-    ) {
-      const failed = type.includes("error") ||
-        type.includes("fail") ||
-        item.status === "failed" ||
-        item.status === "error" ||
-        toolBlock?.is_error === true;
-      normalized.push(runtimeEvent(
-        failed ? "tool_call_failed" : "tool_call_completed",
-        completedAt,
-        callId,
-        failed ? "Tool call failed." : "Tool call completed.",
-        { adapter_type: adapterType, tool_name: toolName },
-      ));
-    } else if (type.includes("error")) {
-      normalized.push(runtimeEvent("error", completedAt, null, "Runtime reported an error.", {
-        adapter_type: adapterType,
-        error_code: stringValue(event.code),
-      }));
-    }
-  }
-  return normalized;
+    return native ? [native] : [];
+  });
 }
 
 function normalizeNativeProtocolEvent(
@@ -120,46 +51,13 @@ function normalizeNativeProtocolEvent(
   event: Record<string, unknown>,
   occurredAt: string,
 ): RuntimeSemanticEvent | null {
-  if (adapterType === "codex_cli") {
-    const method = stringValue(event.method);
-    if (method === "thread/compacted") {
-      return runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
-        adapter_type: adapterType,
-      });
-    }
-    if (method !== "item/started" && method !== "item/completed") return null;
-    const item = recordValue(recordValue(event.params).item);
-    const itemType = stringValue(item.type);
-    if (method === "item/completed" && itemType?.toLowerCase().includes("compact")) {
-      return runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
-        adapter_type: adapterType,
-      });
-    }
-    if (!itemType || !["commandExecution", "fileChange", "mcpToolCall"].includes(itemType)) {
-      return null;
-    }
-    const failed = method === "item/completed" &&
-      ["failed", "error", "declined"].includes(stringValue(item.status) ?? "");
-    return runtimeEvent(
-      method === "item/started"
-        ? "tool_call_started"
-        : failed
-          ? "tool_call_failed"
-          : "tool_call_completed",
-      occurredAt,
-      stringValue(item.id),
-      method === "item/started"
-        ? "Tool call started."
-        : failed
-          ? "Tool call failed."
-          : "Tool call completed.",
-      {
-        adapter_type: adapterType,
-        tool_name: redactToolName(stringValue(item.name ?? item.command ?? itemType)),
-      },
-    );
-  }
-  if (adapterType === "opencode" && event.method === "session/update") {
+  // ACP runtime replatform P3/P4: all conversation runtimes speak the same
+  // session/update vocabulary. This branch is protocol-shaped, not
+  // vendor-specific.
+  if (
+    (adapterType === "claude_code" || adapterType === "opencode" || adapterType === "codex_cli")
+    && event.method === "session/update"
+  ) {
     const update = recordValue(recordValue(event.params).update);
     const updateType = stringValue(update.sessionUpdate);
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);

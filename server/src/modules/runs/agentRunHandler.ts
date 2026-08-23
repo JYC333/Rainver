@@ -15,6 +15,7 @@ import type { JobHandlerResult } from "../jobs/handlerRegistry";
 import { PgJobQueueRepository } from "../jobs/repository";
 import type { RuntimeHostLogger } from "../runtimeHost";
 import { finalizeChatTurn } from "./chatTurnFinalizer";
+import { recordHostTaskThreadOutcome } from "../hosts/threadOutcome";
 import { protocolRunStatus } from "./orchestrationResults";
 import { withDbTransaction } from "../routeUtils/common";
 
@@ -154,6 +155,16 @@ async function handleAgentRun(
       worker_id: job.worker_id,
       job_id: job.job_id,
       command_source: "job",
+      // control-center-phase2-plan.md P1: the hosts dispatch endpoint no
+      // longer calls executeRun synchronously — it enqueues this job instead
+      // (async dispatch) and carries the task thread's vendor resume session
+      // id and requested timeout here, the same way the endpoint used to
+      // pass both as direct caller parameters (the timeout was dropped
+      // silently by the P1 migration until P1 discovery review caught it —
+      // no other agent_run job carries timeout_ms today, so both fields are
+      // undefined/null for every job but this endpoint's).
+      adapter_config: recordValue(job.payload.adapter_config),
+      timeout_ms: numberValue(job.payload.timeout_ms),
     });
   } catch (error) {
     if (job.attempts >= job.max_attempts) {
@@ -181,6 +192,15 @@ async function handleAgentRun(
           if (currentTerminal && isTerminalRun(currentTerminal.status)) {
             await orchestration.reconcileTerminalDelegation(currentTerminal);
             await finalizeChatTurn(config, repository, currentTerminal);
+            const exhaustedThreadId = stringValue(job.payload.host_task_thread_id);
+            if (exhaustedThreadId) {
+              await recordHostTaskThreadOutcome(
+                config,
+                exhaustedThreadId,
+                currentTerminal,
+                job.payload.host_thread_resume_attempted === true,
+              );
+            }
           }
         }
       }
@@ -205,6 +225,19 @@ async function handleAgentRun(
   }
   if (completedRun) {
     await finalizeChatTurn(config, repository, completedRun);
+  }
+  // control-center-phase2-plan.md P1: the hosts dispatch endpoint now
+  // enqueues this job instead of awaiting executeRun inline, so task-thread
+  // outcome recording (vendor session id, session_reset detection) has to
+  // happen here instead, gated on the run actually carrying a thread.
+  const hostTaskThreadId = stringValue(job.payload.host_task_thread_id);
+  if (completedRun && hostTaskThreadId) {
+    await recordHostTaskThreadOutcome(
+      config,
+      hostTaskThreadId,
+      completedRun,
+      job.payload.host_thread_resume_attempted === true,
+    );
   }
   // Research runs use the normal Run/Materialization authority. This hook is
   // only a latency optimization: the reconciler observes the committed run
@@ -282,6 +315,10 @@ export async function enqueueAgentRunJob(
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function isTerminalRun(status: string): boolean {

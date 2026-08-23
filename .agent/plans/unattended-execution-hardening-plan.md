@@ -1,7 +1,13 @@
 # Unattended Execution Hardening Plan
 
 Date: 2026-07-24
-Status: DEFERRED UNTIL CONTROLLED REAL-INTEGRATION SMOKE
+Status: DEFERRED UNTIL CONTROLLED REAL-INTEGRATION SMOKE.
+**2026-08-21:** the missing entry evidence (a real CLI runtime installed and
+producing real Run failures) is expected to come from
+[plans/acp-runtime-replatform-plan.md](acp-runtime-replatform-plan.md)'s
+two-week real-usage acceptance gate (carried forward from the retired
+phase-1 and phase-2 plans), not from a separate smoke effort. Re-check the entry
+trigger after that gate passes rather than scheduling this plan independently.
 
 ## Purpose
 

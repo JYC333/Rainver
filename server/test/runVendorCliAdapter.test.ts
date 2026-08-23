@@ -5,11 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import {
   buildSubprocessEnv,
-  createVendorEventStream,
-  createVendorTextDeltaStream,
   executeVendorCliAdapter,
-  parseOpenCodeOutput,
-  parseVendorStructuredOutput,
   type CliCommandExecutor,
   type CliCredentialBrokerPort,
   type CliExecutionResult,
@@ -186,18 +182,29 @@ class FakeExecutor implements CliCommandExecutor {
   }> = [];
   result: CliExecutionResult = {
     returncode: 0,
-    stdout: JSON.stringify({
-      method: "item/agentMessage/delta",
-      params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
-        itemId: "item-1",
-        delta: "cli output",
-      },
-    }),
+    // Empty by default: every ACP-protocol test that needs extra session/update
+    // content overrides this explicitly with valid `jsonrpc: "2.0"`-shaped
+    // NDJSON lines (see e.g. "runs OpenCode with a sandbox config..."); a
+    // non-ACP (claude_code) test overrides it with realistic stream-json.
+    stdout: "",
     stderr: "",
     timed_out: false,
   };
+  /**
+   * ACP context-priming delivery (context bootstrap turn + current-user
+   * turn) sends a second `session/prompt`; set to feed extra session/update
+   * lines before responding to it. Empty by default — a no-op for every
+   * single-prompt test, since the controller only ever asks for a second
+   * prompt when it was given more than one.
+   */
+  secondTurnStdout = "";
+  sessionModelOptions: Array<Record<string, unknown>> | null = null;
+  /**
+   * Simulates a `session/resume` RPC rejection (e.g. "Session not found") —
+   * the controller's own `resume_handshake_failed` path, distinct from the
+   * process-exit/stderr-text heuristic other failure tests below exercise.
+   */
+  simulateResumeRejection = false;
 
   async runCommand(input: {
     command: string[];
@@ -218,54 +225,43 @@ class FakeExecutor implements CliCommandExecutor {
     this.calls.push(input);
     const controller = (input as Parameters<CliCommandExecutor["runCommand"]>[0]).stdio_controller;
     if (controller) {
+      // ACP runtime replatform P1/P3: opencode and codex_cli both drive the
+      // general AcpController now (CodexAppServerController's bespoke
+      // NDJSON-RPC handshake is deleted); this fake only needs to speak ACP.
       const send = (message: Record<string, unknown>) => { this.protocolMessages.push(message); };
       const close = () => {};
       controller.start(send);
-      if (input.command.includes("app-server")) {
-        controller.receive({ id: 1, result: {} }, send, close);
-        controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
-        controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
+      controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+      if (this.simulateResumeRejection) {
         controller.receive({
-          method: "item/started",
-          params: {
-            threadId: "thread-1",
-            turnId: "turn-1",
-            item: { id: "bootstrap-command", type: "commandExecution", command: "bootstrap command" },
-          },
+          jsonrpc: "2.0",
+          id: 2,
+          error: { code: -32000, message: "Session not found" },
         }, send, close);
-        controller.receive({
-          method: "thread/tokenUsage/updated",
-          params: {
-            threadId: "thread-1",
-            turnId: "turn-1",
-            tokenUsage: {
-              last: {
-                inputTokens: 12,
-                outputTokens: 3,
-                totalTokens: 15,
-                cachedInputTokens: 4,
-                cacheWriteInputTokens: 0,
-                reasoningOutputTokens: 1,
-              },
-              total: {
-                inputTokens: 12,
-                outputTokens: 3,
-                totalTokens: 15,
-                cachedInputTokens: 4,
-                cacheWriteInputTokens: 0,
-                reasoningOutputTokens: 1,
-              },
-            },
-          },
-        }, send, close);
-      } else {
-        controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
-        controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, close);
+        return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+      }
+      controller.receive({
+        jsonrpc: "2.0",
+        id: 2,
+        result: {
+          sessionId: "session-1",
+          ...(this.sessionModelOptions ? { configOptions: this.sessionModelOptions } : {}),
+        },
+      }, send, close);
+      // The controller only asks for session/set_config_option when a model
+      // was supplied (codex_cli never supplies one) — replying to it
+      // unconditionally would arrive as an unexpected id 3 once the
+      // controller has already moved straight to session/prompt.
+      const setConfigOption = this.protocolMessages.at(-1);
+      if (setConfigOption?.method === "session/set_config_option") {
+        // Echo back whatever model was actually requested — the controller
+        // fails closed if the applied value doesn't match what it asked for.
+        const requestedModel = (setConfigOption.params as { value?: unknown } | undefined)?.value;
         controller.receive({
           jsonrpc: "2.0",
           id: 3,
           result: {
-            configOptions: [{ id: "model", currentValue: "provider/model" }],
+            configOptions: [{ id: "model", currentValue: requestedModel }],
           },
         }, send, close);
       }
@@ -273,68 +269,46 @@ class FakeExecutor implements CliCommandExecutor {
         input.on_stdout_chunk?.(`${line}\n`);
         controller.receive(JSON.parse(line) as Record<string, unknown>, send, close);
       }
-      if (input.command.includes("app-server")) {
-        controller.receive({
-          method: "turn/completed",
-          params: {
-            threadId: "thread-1",
-            turn: { id: "turn-1", status: "completed" },
+      controller.receive(
+        {
+          jsonrpc: "2.0",
+          id: 4,
+          result: {
+            stopReason: "end_turn",
+            usage: {
+              inputTokens: 12,
+              outputTokens: 3,
+              totalTokens: 20,
+              cachedReadTokens: 4,
+              cachedWriteTokens: 0,
+              thoughtTokens: 1,
+            },
           },
-        }, send, close);
-        await Promise.resolve();
-        if (this.protocolMessages.filter((message) => message.method === "turn/start").length > 1) {
-          controller.receive({ id: 4, result: { turn: { id: "turn-2" } } }, send, close);
-          controller.receive({
-            method: "item/started",
-            params: {
-              threadId: "thread-1",
-              turnId: "turn-2",
-              item: { id: "current-command", type: "commandExecution", command: "current command" },
-            },
-          }, send, close);
-          controller.receive({
-            method: "item/agentMessage/delta",
-            params: {
-              threadId: "thread-1",
-              turnId: "turn-2",
-              itemId: "item-2",
-              delta: "cli output",
-            },
-          }, send, close);
-          controller.receive({
-            method: "thread/tokenUsage/updated",
-            params: {
-              threadId: "thread-1",
-              turnId: "turn-2",
-              tokenUsage: {
-                total: {
-                  inputTokens: 24, outputTokens: 6, totalTokens: 30,
-                  cachedInputTokens: 8, cacheWriteInputTokens: 0,
-                  reasoningOutputTokens: 2,
-                },
-              },
-            },
-          }, send, close);
-          controller.receive({
-            method: "turn/completed",
-            params: {
-              threadId: "thread-1",
-              turn: { id: "turn-2", status: "completed" },
-            },
-          }, send, close);
+        },
+        send,
+        close,
+      );
+      // Context-priming delivery: before_next_prompt is async, so the
+      // controller's second session/prompt (id 5) lands a couple of
+      // microtasks after id 4's response resolves.
+      await Promise.resolve();
+      await Promise.resolve();
+      if (this.protocolMessages.some((m) => m.id === 5 && m.method === "session/prompt")) {
+        for (const line of this.secondTurnStdout.split(/\r?\n/).filter(Boolean)) {
+          input.on_stdout_chunk?.(`${line}\n`);
+          controller.receive(JSON.parse(line) as Record<string, unknown>, send, close);
         }
-      } else {
         controller.receive(
           {
             jsonrpc: "2.0",
-            id: 4,
+            id: 5,
             result: {
               stopReason: "end_turn",
               usage: {
-                inputTokens: 12,
-                outputTokens: 3,
-                totalTokens: 20,
-                cachedReadTokens: 4,
+                inputTokens: 24,
+                outputTokens: 6,
+                totalTokens: 39,
+                cachedReadTokens: 8,
                 cachedWriteTokens: 0,
                 thoughtTokens: 1,
               },
@@ -358,7 +332,11 @@ class FakeTools implements RuntimeToolResolverPort {
       executable_path: process.execPath,
       version: "test-version",
       source: "npm" as const,
-      package_name: runtime === "claude_code" ? "@anthropic-ai/claude-code" : "@openai/codex",
+      package_name: runtime === "claude_code"
+        ? "@agentclientprotocol/claude-agent-acp"
+        : runtime === "codex_cli"
+          ? "@agentclientprotocol/codex-acp"
+          : "@openai/codex",
     };
   }
 }
@@ -443,11 +421,7 @@ describe("executeVendorCliAdapter", () => {
     ]);
     expect(broker.cleanups).toEqual(["run-1"]);
     expect(executor.calls[0]).toMatchObject({
-      command: [
-        process.execPath,
-        "app-server",
-        "--stdio",
-      ],
+      command: [process.execPath],
       cwd: sandbox,
       timeout_seconds: 120,
       run_id: "run-1",
@@ -460,26 +434,22 @@ describe("executeVendorCliAdapter", () => {
       adapter_type: "codex_cli",
       adapter_kind: "local_cli",
       success: true,
-      output_text: "cli output",
+      output_text: "",
       error_code: null,
       usage: {
-        input_tokens: 8,
-        output_tokens: 2,
-        total_tokens: 15,
+        input_tokens: 12,
+        output_tokens: 3,
+        total_tokens: 20,
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 4,
         reasoning_tokens: 1,
       },
       metadata_json: {
         credential_profile_id: "11111111-1111-4111-8111-111111111111",
-        external_session_id: "thread-1",
+        external_session_id: "session-1",
       },
       adapter_log_json: {
-        command: [
-          process.execPath,
-          "app-server",
-          "--stdio",
-        ],
+        command: [process.execPath],
         timeout_seconds: 120,
       },
     });
@@ -547,6 +517,23 @@ describe("executeVendorCliAdapter", () => {
       },
     };
 
+    executor.result.stdout = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "session-1",
+        update: { sessionUpdate: "tool_call", toolCallId: "bootstrap-call", title: "bootstrap command" },
+      },
+    });
+    executor.secondTurnStdout = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "session-1",
+        update: { sessionUpdate: "tool_call", toolCallId: "current-call", title: "current command" },
+      },
+    });
+
     const result = await executeVendorCliAdapter(
       config(),
       {
@@ -561,45 +548,42 @@ describe("executeVendorCliAdapter", () => {
     );
 
     expect(result.success).toBe(true);
-    const turns = executor.protocolMessages.filter((message) => message.method === "turn/start") as Array<{
-      params: { input: Array<{ text: string }> };
+    const turns = executor.protocolMessages.filter((message) => message.method === "session/prompt") as Array<{
+      params: { prompt: Array<{ text: string }> };
     }>;
     expect(turns).toHaveLength(2);
-    expect(turns[0]?.params.input[0]?.text).toContain("[Agent Space context bootstrap — ordinary context message]");
-    expect(turns[0]?.params.input[0]?.text).toContain("Validated checkpoint and canonical tail.");
-    expect(turns[0]?.params.input[0]?.text).not.toContain("Continue the task.");
-    expect(turns[1]?.params.input[0]?.text).toBe("Continue the task.");
-    expect(invocationAttempts.acknowledgeContext).toHaveBeenCalledWith(delivery, "thread-1");
+    expect(turns[0]?.params.prompt[0]?.text).toContain("[Agent Space context bootstrap — ordinary context message]");
+    expect(turns[0]?.params.prompt[0]?.text).toContain("Validated checkpoint and canonical tail.");
+    expect(turns[0]?.params.prompt[0]?.text).not.toContain("Continue the task.");
+    expect(turns[1]?.params.prompt[0]?.text).toBe("Continue the task.");
+    expect(invocationAttempts.acknowledgeContext).toHaveBeenCalledWith(delivery, "session-1");
     expect(capturedEvents.map((event) => event.type)).toEqual(["tool_call_started"]);
     expect(JSON.stringify(capturedEvents)).toContain("current command");
     expect(JSON.stringify(capturedEvents)).not.toContain("bootstrap command");
     await expect(readFile(join(sandbox, "AGENTS.md"), "utf8")).rejects.toThrow();
   });
 
-  it("discards unterminated Claude bootstrap parser state before current-turn capture", async () => {
+  it("does not leak Claude ACP bootstrap tool events into the current turn", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-delivery-"));
     tmpPaths.push(sandbox);
-    const sessionId = "22222222-2222-4222-8222-222222222222";
-    const outputs = [
-      JSON.stringify({
-        type: "assistant",
-        session_id: sessionId,
-        message: { content: [{ type: "tool_use", id: "bootstrap-tool", name: "BootstrapTool" }] },
-      }),
-      `\n${JSON.stringify({
-        type: "assistant",
-        session_id: sessionId,
-        message: { content: [{ type: "tool_use", id: "current-tool", name: "CurrentTool" }] },
-      })}\n${JSON.stringify({ type: "result", session_id: sessionId, result: "done" })}\n`,
-    ];
-    let callIndex = 0;
-    const executor: CliCommandExecutor = {
-      async runCommand(input) {
-        const stdout = outputs[callIndex++] ?? "";
-        input.on_stdout_chunk?.(stdout);
-        return { returncode: 0, stdout, stderr: "", timed_out: false };
+    const sessionId = "session-1";
+    const executor = new FakeExecutor();
+    executor.result.stdout = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: { sessionUpdate: "tool_call", toolCallId: "bootstrap-tool", title: "BootstrapTool" },
       },
-    };
+    });
+    executor.secondTurnStdout = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: { sessionUpdate: "tool_call", toolCallId: "current-tool", title: "CurrentTool" },
+      },
+    });
     const capturedEvents: Array<{ type: string; metadata_json?: unknown }> = [];
     const delivery: InvocationDelivery = {
       id: "delivery-claude",
@@ -665,7 +649,6 @@ describe("executeVendorCliAdapter", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(callIndex).toBe(2);
     expect(capturedEvents.map((event) => event.type)).toEqual(["tool_call_started"]);
     expect(JSON.stringify(capturedEvents)).toContain("CurrentTool");
     expect(JSON.stringify(capturedEvents)).not.toContain("BootstrapTool");
@@ -814,6 +797,14 @@ describe("executeVendorCliAdapter", () => {
     );
 
     expect(result.success).toBe(true);
+    // The bound provider's model reaches codex the same way as any other ACP
+    // adapter — via session/set_config_option — not only through the
+    // CODEX_HOME provider config written below (supports_model_override:
+    // false gates only the retired argv --model flag, not ACP).
+    expect(executor.protocolMessages).toContainEqual(expect.objectContaining({
+      method: "session/set_config_option",
+      params: expect.objectContaining({ configId: "model", value: "MiniMax-M3" }),
+    }));
     expect(broker.tempHome).toBeTruthy();
     expect(executor.calls[0].env.HOME).toBe(broker.tempHome);
     expect(executor.calls[0].env.CODEX_HOME).toBe(join(broker.tempHome!, ".codex"));
@@ -823,11 +814,7 @@ describe("executeVendorCliAdapter", () => {
     const codexDir = executor.calls[0].env.CODEX_HOME;
     expect((await lstat(codexDir)).isSymbolicLink()).toBe(false);
     const configToml = await readFile(join(codexDir, "config.toml"), "utf8");
-    expect(executor.calls[0].command).toEqual([
-      process.execPath,
-      "app-server",
-      "--stdio",
-    ]);
+    expect(executor.calls[0].command).toEqual([process.execPath]);
     expect(configToml).toContain('model = "MiniMax-M3"');
     expect(configToml).toContain('model_provider = "agent_space_provider"');
     expect(configToml).toContain(
@@ -1044,16 +1031,32 @@ describe("executeVendorCliAdapter", () => {
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
-    executor.result.stdout = await readFile(
-      join(__dirname, "fixtures", "cliRuntimeOutput", "claude_code.turn.jsonl"),
-      "utf8",
-    );
+    executor.result.stdout = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "usage_update",
+          _meta: {
+            "_claude/rateLimit": {
+              status: "allowed_warning",
+              rateLimitType: "seven_day",
+              utilization: 0.42,
+              resetsAt: 1_785_427_200,
+              isUsingOverage: false,
+            },
+          },
+        },
+      },
+    });
 
     const result = await executeVendorCliAdapter(
       config(),
       {
         run: run({ adapter_type: "claude_code", model_provider_id: null }),
         sandbox_cwd: sandbox,
+        model: "claude-opus-5",
         adapter_config: {
           credential_profile_id: "22222222-2222-4222-8222-222222222222",
         },
@@ -1062,15 +1065,19 @@ describe("executeVendorCliAdapter", () => {
     );
 
     expect(result.usage).toEqual({
-      input_tokens: 532,
-      output_tokens: 18,
-      total_tokens: 17_326,
-      cache_creation_input_tokens: 16_776,
-      cache_read_input_tokens: 0,
+      input_tokens: 12,
+      output_tokens: 3,
+      total_tokens: 20,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 4,
+      reasoning_tokens: 1,
     });
-    expect(result.model_usage).toHaveLength(2);
+    expect(result.model_usage).toEqual([{
+      model: "claude-opus-5",
+      usage: result.usage,
+    }]);
     expect(result.metadata_json).toMatchObject({
-      external_session_id: "11111111-2222-4333-8444-555555555555",
+      external_session_id: "session-1",
       subscription_quota: {
         rate_limit_type: "seven_day",
         utilization: 0.42,
@@ -1109,16 +1116,11 @@ describe("executeVendorCliAdapter", () => {
 
     expect(executor.calls[0].command).toEqual([
       process.execPath,
-      "--print",
-      "--output-format",
-      "stream-json",
-      "--include-partial-messages",
-      "--verbose",
-      "--model",
-      "claude-sonnet",
-      "--dangerously-skip-permissions",
-      "Fix the bug",
     ]);
+    expect(executor.protocolMessages).toContainEqual(expect.objectContaining({
+      method: "session/set_config_option",
+      params: expect.objectContaining({ configId: "model", value: "claude-sonnet" }),
+    }));
     expect(result.metadata_json).toMatchObject({
       adapter_type: "claude_code",
       permission_bypass_requested: true,
@@ -1128,6 +1130,36 @@ describe("executeVendorCliAdapter", () => {
       permissions?: { deny?: string[] };
     };
     expect(claudeSettings.permissions?.deny).toContain("Task");
+  });
+
+  it("normalizes a concrete Claude model to the ACP family option", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-model-normalize-"));
+    tmpPaths.push(sandbox);
+    const executor = new FakeExecutor();
+    executor.sessionModelOptions = [{
+      id: "model",
+      currentValue: "default",
+      options: [
+        { value: "default", name: "Default" },
+        { value: "sonnet", name: "Sonnet" },
+      ],
+    }];
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run({ adapter_type: "claude_code" }),
+        sandbox_cwd: sandbox,
+        model: "claude-sonnet-4-6",
+      },
+      { credentialBroker: new FakeBroker(), executor, toolRegistry: new FakeTools() },
+    );
+
+    expect(result.success).toBe(true);
+    expect(executor.protocolMessages).toContainEqual(expect.objectContaining({
+      method: "session/set_config_option",
+      params: expect.objectContaining({ configId: "model", value: "sonnet" }),
+    }));
   });
 
   it("renders Claude's explicit resume command for a bound conversation session", async () => {
@@ -1154,15 +1186,17 @@ describe("executeVendorCliAdapter", () => {
 
     expect(executor.calls[0].command).toEqual([
       process.execPath,
-      "--print",
-      "--output-format",
-      "stream-json",
-      "--include-partial-messages",
-      "--verbose",
-      "--resume",
-      "22222222-2222-4222-8222-222222222222",
-      "Fix the bug",
     ]);
+    expect(executor.protocolMessages).toContainEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/resume",
+      params: {
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        cwd: expect.any(String),
+        mcpServers: [],
+      },
+    });
     expect(result.metadata_json).toMatchObject({
       conversation_binding_id: "binding-1",
       runtime_session_resumed: true,
@@ -1203,6 +1237,39 @@ describe("executeVendorCliAdapter", () => {
     expect(result).toMatchObject({
       success: false,
       error_code: "runtime_session_invalid",
+    });
+  });
+
+  it("clears the stale requested session id when the ACP resume handshake itself is rejected", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-resume-rejected-"));
+    tmpPaths.push(sandbox);
+    const executor = new FakeExecutor();
+    executor.simulateResumeRejection = true;
+
+    const result = await executeVendorCliAdapter(
+      config(),
+      {
+        run: run({ adapter_type: "claude_code" }),
+        sandbox_cwd: sandbox,
+        adapter_config: {
+          conversation_runtime: {
+            binding_id: "binding-1",
+            runtime_state_key: "11111111-1111-4111-8111-111111111111",
+            runtime_session_id: "22222222-2222-4222-8222-222222222222",
+          },
+        },
+      },
+      {
+        credentialBroker: new FakeBroker(),
+        executor,
+        toolRegistry: new FakeTools(),
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error_code: "runtime_session_invalid",
+      metadata_json: { external_session_id: null },
     });
   });
 
@@ -1317,7 +1384,7 @@ describe("executeVendorCliAdapter", () => {
       success: true,
       adapter_type: "opencode",
       output_text: "structured answermore",
-      output_json: { format: "opencode_jsonl" },
+      output_json: null,
       usage: {
         input_tokens: 12,
         output_tokens: 3,
@@ -1353,15 +1420,6 @@ describe("executeVendorCliAdapter", () => {
           },
         },
       },
-    });
-  });
-
-  it("falls back to stdout when an OpenCode stream contains no JSON events", () => {
-    expect(parseOpenCodeOutput("plain output")).toEqual({
-      text: "plain output",
-      output_json: null,
-      event_count: 0,
-      runtime_events: [],
     });
   });
 
@@ -1463,432 +1521,6 @@ describe("buildSubprocessEnv", () => {
 });
 
 describe("vendor structured event normalization", () => {
-  it("starts Codex app-server with its own read-only sandbox inside the OS mount barrier", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "inspect",
-      cwd: "/workspace",
-      model: null,
-      sandbox_mode: "read-only",
-    })!;
-    const sent: Record<string, unknown>[] = [];
-    controller.start((message) => sent.push(message));
-    controller.receive({ id: 1, result: {} }, (message) => sent.push(message), () => {});
-
-    expect(sent[2]).toMatchObject({
-      method: "thread/start",
-      params: {
-        cwd: "/workspace",
-        sandbox: "read-only",
-        approvalPolicy: "never",
-      },
-    });
-  });
-
-  it("drives Codex app-server and emits only documented agent-message deltas", () => {
-    const deltas: string[] = [];
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "hello",
-      cwd: "/workspace",
-      model: "gpt-test",
-      on_text_delta: (delta) => deltas.push(delta),
-    })!;
-    const sent: Record<string, unknown>[] = [];
-    let closed = false;
-    controller.start((message) => sent.push(message));
-    controller.receive({ id: 1, result: {} }, (message) => sent.push(message), () => {
-      closed = true;
-    });
-    controller.receive(
-      { id: 2, result: { thread: { id: "thread-1" } } },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    controller.receive(
-      { method: "thread/started", params: { thread: { id: "thread-1" } } },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    for (const status of ["starting", "ready"]) {
-      controller.receive(
-        {
-          method: "mcpServer/startupStatus/updated",
-          params: {
-            threadId: "thread-1",
-            name: "agent_space",
-            status,
-          },
-        },
-        (message) => sent.push(message),
-        () => { closed = true; },
-      );
-    }
-    controller.receive(
-      {
-        method: "configWarning",
-        params: { summary: "A recoverable configuration warning" },
-      },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-
-    expect(sent.map((message) => message.method)).toEqual([
-      "initialize",
-      "initialized",
-      "thread/start",
-      "turn/start",
-    ]);
-    expect(sent[3]).toMatchObject({
-      params: {
-        threadId: "thread-1",
-        input: [{ type: "text", text: "hello" }],
-      },
-    });
-    expect(sent[2]).toMatchObject({
-      params: {
-        cwd: "/workspace",
-        model: "gpt-test",
-        approvalPolicy: "never",
-        sandbox: "workspace-write",
-      },
-    });
-    controller.receive(
-      { id: 3, result: { turn: { id: "turn-1" } } },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    controller.receive(
-      {
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          turn: { id: "turn-1" },
-        },
-      },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    controller.receive(
-      {
-        method: "thread/status/changed",
-        params: { threadId: "thread-1", status: { type: "active" } },
-      },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    for (const delta of ["hel", "lo"]) {
-      controller.receive(
-        {
-          method: "item/agentMessage/delta",
-          params: {
-            threadId: "thread-1",
-            turnId: "turn-1",
-            itemId: "item-1",
-            delta,
-          },
-        },
-        (message) => sent.push(message),
-        () => { closed = true; },
-      );
-    }
-    expect(deltas).toEqual(["hel", "lo"]);
-    controller.receive(
-      {
-        method: "thread/tokenUsage/updated",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          tokenUsage: {
-            last: {
-              inputTokens: 12,
-              outputTokens: 3,
-              totalTokens: 15,
-              cachedInputTokens: 4,
-              cacheWriteInputTokens: 0,
-              reasoningOutputTokens: 1,
-            },
-            total: {
-              inputTokens: 30,
-              outputTokens: 7,
-              totalTokens: 37,
-              cachedInputTokens: 10,
-              cacheWriteInputTokens: 0,
-              reasoningOutputTokens: 2,
-            },
-          },
-        },
-      },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-
-    controller.receive(
-      {
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          turn: { id: "turn-1", status: "completed" },
-        },
-      },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    controller.receive(
-      {
-        method: "thread/status/changed",
-        params: { threadId: "thread-1", status: { type: "idle" } },
-      },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-    expect(closed).toBe(true);
-    expect(controller.result()).toMatchObject({
-      completed: true,
-      error: null,
-      text: "hello",
-      external_session_id: "thread-1",
-      usage: {
-        input_tokens: 20,
-        output_tokens: 5,
-        total_tokens: 37,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 10,
-        reasoning_tokens: 2,
-      },
-    });
-  });
-
-  it("resumes a Codex thread and records only the resumed turn usage delta", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "follow up",
-      cwd: "/workspace",
-      model: null,
-      runtime_session_id: "thread-existing",
-    })!;
-    const sent: Record<string, unknown>[] = [];
-    const send = (message: Record<string, unknown>) => sent.push(message);
-    let closed = false;
-    const close = () => { closed = true; };
-
-    controller.start(send);
-    controller.receive({ id: 1, result: {} }, send, close);
-    expect(sent[2]).toEqual({
-      method: "thread/resume",
-      id: 2,
-      params: { threadId: "thread-existing" },
-    });
-    controller.receive(
-      { id: 2, result: { thread: { id: "thread-existing" } } },
-      send,
-      close,
-    );
-    expect(sent.some((message) => message.method === "turn/start")).toBe(false);
-    controller.receive({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId: "thread-existing",
-        tokenUsage: {
-          total: {
-            inputTokens: 100,
-            outputTokens: 40,
-            totalTokens: 140,
-            cachedInputTokens: 20,
-            cacheWriteInputTokens: 5,
-            reasoningOutputTokens: 10,
-          },
-        },
-      },
-    }, send, close);
-    expect(sent.at(-1)).toMatchObject({
-      method: "turn/start",
-      params: {
-        threadId: "thread-existing",
-        input: [{ type: "text", text: "follow up" }],
-      },
-    });
-    controller.receive({ id: 3, result: { turn: { id: "turn-follow-up" } } }, send, close);
-    controller.receive({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId: "thread-existing",
-        turnId: "turn-follow-up",
-        tokenUsage: {
-          total: {
-            inputTokens: 130,
-            outputTokens: 55,
-            totalTokens: 185,
-            cachedInputTokens: 25,
-            cacheWriteInputTokens: 7,
-            reasoningOutputTokens: 14,
-          },
-        },
-      },
-    }, send, close);
-    controller.receive({
-      method: "turn/completed",
-      params: {
-        threadId: "thread-existing",
-        turn: { id: "turn-follow-up", status: "completed" },
-      },
-    }, send, close);
-
-    expect(closed).toBe(true);
-    expect(controller.result()).toMatchObject({
-      completed: true,
-      external_session_id: "thread-existing",
-      usage: {
-        input_tokens: 23,
-        output_tokens: 11,
-        total_tokens: 45,
-        cache_creation_input_tokens: 2,
-        cache_read_input_tokens: 5,
-        reasoning_tokens: 4,
-      },
-    });
-  });
-
-  it("accepts scoped Codex reasoning and command-output delta notifications", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "hello",
-      cwd: "/workspace",
-      model: null,
-    })!;
-    let closed = false;
-    const send = () => {};
-    const close = () => { closed = true; };
-    controller.receive({ id: 1, result: {} }, send, close);
-    controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
-    controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
-
-    for (const method of [
-      "item/reasoning/textDelta",
-      "item/commandExecution/outputDelta",
-    ]) {
-      controller.receive({
-        method,
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          itemId: "item-1",
-          delta: "diagnostic",
-        },
-      }, send, close);
-    }
-
-    expect(closed).toBe(false);
-    expect(controller.result()).toMatchObject({ completed: false, error: null, text: "" });
-  });
-
-  it("rejects incomplete Codex token-usage notifications", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "hello",
-      cwd: "/workspace",
-      model: null,
-    })!;
-    const send = () => {};
-    let closed = false;
-    const close = () => { closed = true; };
-    controller.receive({ id: 1, result: {} }, send, close);
-    controller.receive({ id: 2, result: { thread: { id: "thread-1" } } }, send, close);
-    controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
-    controller.receive({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
-        tokenUsage: {
-          total: {
-            inputTokens: 12,
-            outputTokens: 3,
-          },
-        },
-      },
-    }, send, close);
-
-    expect(closed).toBe(true);
-    expect(controller.result()).toMatchObject({
-      completed: false,
-      error: "Codex app-server returned invalid token usage",
-      usage: null,
-    });
-  });
-
-  it("rejects malformed Codex protocol envelopes", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "hello",
-      cwd: "/workspace",
-      model: null,
-    })!;
-    let closed = false;
-    controller.receive({ foo: 1 }, () => {}, () => { closed = true; });
-    expect(closed).toBe(true);
-    expect(controller.result().error).toBe(
-      "Codex app-server returned an unsupported protocol message",
-    );
-  });
-
-  it("fails closed when Codex app-server requests interactive approval", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "hello",
-      cwd: "/workspace",
-      model: null,
-    })!;
-    const sent: Record<string, unknown>[] = [];
-    let closed = false;
-
-    controller.receive(
-      { id: 91, method: "item/commandExecution/requestApproval", params: {} },
-      (message) => sent.push(message),
-      () => { closed = true; },
-    );
-
-    expect(sent).toEqual([{
-      id: 91,
-      error: expect.objectContaining({ code: -32601 }),
-    }]);
-    expect(closed).toBe(true);
-    expect(controller.result()).toMatchObject({
-      completed: false,
-      error: "Codex requested unsupported interactive method 'item/commandExecution/requestApproval'",
-      text: "",
-    });
-  });
-
-  it("rejects an out-of-order Codex completion", () => {
-    const controller = createCliConversationController({
-      adapter_type: "codex_cli",
-      prompt: "hello",
-      cwd: "/workspace",
-      model: null,
-    })!;
-    let closed = false;
-
-    controller.receive(
-      {
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          turn: { id: "turn-1", status: "completed" },
-        },
-      },
-      () => {},
-      () => { closed = true; },
-    );
-
-    expect(closed).toBe(true);
-    expect(controller.result()).toMatchObject({
-      completed: false,
-      error: "Codex app-server returned an out-of-order turn completion",
-      text: "",
-    });
-  });
-
   it("drives OpenCode ACP and emits agent_message_chunk updates", () => {
     const deltas: string[] = [];
     const controller = createCliConversationController({
@@ -1902,6 +1534,12 @@ describe("vendor structured event normalization", () => {
     let closed = false;
     const send = (message: Record<string, unknown>) => sent.push(message);
     controller.start(send);
+    expect(sent[0]).toMatchObject({
+      method: "initialize",
+      params: {
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      },
+    });
     controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {
       closed = true;
     });
@@ -1985,6 +1623,8 @@ describe("vendor structured event normalization", () => {
         cache_read_input_tokens: 4,
         reasoning_tokens: 1,
       },
+      model_usage: [],
+      subscription_quota: null,
     });
   });
 
@@ -2056,7 +1696,165 @@ describe("vendor structured event normalization", () => {
     });
   });
 
-  it("fails closed when OpenCode ACP requests interactive permission", () => {
+  it("auto-approves an OpenCode ACP permission request for the active session", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => { closed = true; });
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => { closed = true; });
+
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 92,
+        method: "session/request_permission",
+        params: {
+          sessionId: "session-1",
+          options: [
+            { optionId: "reject", kind: "reject_once" },
+            { optionId: "allow", kind: "allow_once" },
+          ],
+        },
+      },
+      send,
+      () => { closed = true; },
+    );
+
+    expect(sent.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      id: 92,
+      result: { outcome: { outcome: "selected", optionId: "allow" } },
+    });
+    expect(closed).toBe(false);
+    expect(controller.result()).toMatchObject({ completed: false, error: null });
+  });
+
+  it("fails closed when an OpenCode ACP permission request offers no allow option", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => { closed = true; });
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => { closed = true; });
+
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 92,
+        method: "session/request_permission",
+        params: {
+          sessionId: "session-1",
+          options: [{ optionId: "reject", kind: "reject_once" }],
+        },
+      },
+      send,
+      () => { closed = true; },
+    );
+
+    expect(sent.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      id: 92,
+      result: { outcome: { outcome: "cancelled" } },
+    });
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "OpenCode ACP requested permission with no allow option offered",
+    });
+  });
+
+  it("fails closed when an OpenCode ACP permission request's allow option has no optionId", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => { closed = true; });
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => { closed = true; });
+
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 92,
+        method: "session/request_permission",
+        params: {
+          sessionId: "session-1",
+          options: [{ kind: "allow_once" }],
+        },
+      },
+      send,
+      () => { closed = true; },
+    );
+
+    expect(sent.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      id: 92,
+      result: { outcome: { outcome: "cancelled" } },
+    });
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "OpenCode ACP requested permission with no allow option offered",
+    });
+  });
+
+  it("fails closed on an OpenCode ACP permission request with no session established yet", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => { closed = true; });
+
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 92,
+        method: "session/request_permission",
+        params: {
+          options: [{ optionId: "allow", kind: "allow_once" }],
+        },
+      },
+      send,
+      () => { closed = true; },
+    );
+
+    expect(sent.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      id: 92,
+      error: expect.objectContaining({ code: -32600 }),
+    });
+    expect(closed).toBe(true);
+    expect(controller.result()).toMatchObject({
+      completed: false,
+      error: "OpenCode ACP requested permission for an out-of-scope session",
+    });
+  });
+
+  it("fails closed when OpenCode ACP requests an unsupported interactive method", () => {
     const controller = createCliConversationController({
       adapter_type: "opencode",
       prompt: "hello",
@@ -2070,7 +1868,7 @@ describe("vendor structured event normalization", () => {
       {
         jsonrpc: "2.0",
         id: 92,
-        method: "session/request_permission",
+        method: "fs/read_text_file",
         params: {},
       },
       (message) => sent.push(message),
@@ -2085,8 +1883,43 @@ describe("vendor structured event normalization", () => {
     expect(closed).toBe(true);
     expect(controller.result()).toMatchObject({
       completed: false,
-      error: "OpenCode ACP requested unsupported interactive method 'session/request_permission'",
+      error: "OpenCode ACP requested unsupported interactive method 'fs/read_text_file'",
       text: "",
+    });
+  });
+
+  it("captures agentCapabilities from initialize without gating behavior on their shape", () => {
+    const events: Record<string, unknown>[] = [];
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+      on_protocol_event: (event) => events.push(event),
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+
+    controller.start(send);
+    controller.receive(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: { sessionCapabilities: ["close", "fork", "list", "resume"] },
+        },
+      },
+      send,
+      () => { closed = true; },
+    );
+
+    expect(closed).toBe(false);
+    expect(sent.map((message) => message.method)).toEqual(["initialize", "session/new"]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      result: { agentCapabilities: { sessionCapabilities: ["close", "fork", "list", "resume"] } },
     });
   });
 
@@ -2249,61 +2082,4 @@ describe("vendor structured event normalization", () => {
     });
   });
 
-  it("ignores Claude final-result copies after partial-message deltas", () => {
-    const claude = createVendorTextDeltaStream("claude_code");
-    expect(claude.push([
-      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}}',
-      '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}',
-      '{"type":"result","result":"hello"}',
-      "",
-    ].join("\n"))).toEqual(["hello"]);
-  });
-
-  it("normalizes Codex command lifecycle without persisting message deltas", () => {
-    const stream = createVendorEventStream("codex_cli");
-    const first = stream.push(
-      '{"type":"item.started","item":{"id":"call-1","type":"command_execution","command":"npm test"}}\n' +
-      '{"type":"item.delta","delta":"private token fragment"}\n',
-    );
-    const second = stream.push(
-      '{"type":"item.completed","item":{"id":"call-1","type":"command_execution","status":"completed"}}',
-    );
-    expect(first.map((event) => event.type)).toEqual(["tool_call_started"]);
-    expect(second).toEqual([]);
-    expect(stream.finish().map((event) => event.type)).toEqual(["tool_call_completed"]);
-    expect(JSON.stringify([...first, ...stream.finish()])).not.toContain("private token fragment");
-  });
-
-  it("normalizes Claude tool-use and tool-result blocks", () => {
-    const parsed = parseVendorStructuredOutput("claude_code", [
-      '{"type":"assistant","message":{"content":[{"type":"text","text":"Working"},{"type":"tool_use","id":"tool-1","name":"Read"}]}}',
-      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"hidden body"}]}}',
-      '{"type":"result","result":"Done"}',
-    ].join("\n"));
-    expect(parsed?.text).toBe("Working\nDone");
-    expect(parsed?.runtime_events.map((event) => event.type)).toEqual([
-      "tool_call_started",
-      "tool_call_completed",
-    ]);
-    expect(JSON.stringify(parsed?.runtime_events)).not.toContain("hidden body");
-  });
-
-  it("normalizes vendor compaction without persisting token deltas", () => {
-    const stream = createVendorEventStream("claude_code");
-    expect(stream.push(
-      '{"type":"system","subtype":"compact_boundary","metadata":{"private":"ignored"}}\n',
-    )).toEqual([
-      expect.objectContaining({
-        type: "provider_compacted",
-        summary: "Provider compacted its session context.",
-      }),
-    ]);
-  });
-
-  it("normalizes OpenCode tool lifecycle across chunk boundaries", () => {
-    const stream = createVendorEventStream("opencode");
-    expect(stream.push('{"type":"tool_use_start","id":"call')).toEqual([]);
-    expect(stream.push('-2","name":"bash"}\n').map((event) => event.type))
-      .toEqual(["tool_call_started"]);
-  });
 });

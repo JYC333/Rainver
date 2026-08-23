@@ -85,7 +85,8 @@ export default function App() {
 
                 {/* Space-scoped workspace — every module here operates on the URL's Space. */}
                 <Route path="spaces/:spaceId">
-                  <Route index element={<Navigate to="today" replace />} />
+                  {/* ADR 0016 D11: the control center is the default home for a Space. */}
+                  <Route index element={<Navigate to="command-center" replace />} />
                   {SPACE_MODULES.map(moduleRoute)}
                 </Route>
 

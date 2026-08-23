@@ -61,6 +61,7 @@ and each needs a real second member before its shape is knowable.
 | **Internal-delegation routing requirement.** A task that must not be decomposed by the runtime cannot say so: `subagent_disable_mechanism` exists on the candidate but there is no matching request dimension, and adding one needs a producer as well. Only local CLIs have runtime-internal subagents, so nothing it could reject exists yet. Dropped on 2026-08-15 from the routing admission work that shipped in `47efdf59`, for that reason. | A CLI runtime is installed into the sandbox image |
 | **Retention and pruning design.** Append-only Run/Event/Evolution/usage data and Artifact storage need explicit retention semantics that preserve audit obligations, Proposal/Artifact provenance, and per-type policy. It cannot be a generic age-based delete job. | The database reaches a few GB, backups exceed 15 minutes, or real Run logs make growth materially visible |
 | **Operations runbook consolidation.** One operator page covering service placement and health, backup/restore and host-loss recovery, runtime-tool and credential recovery, retry/alert/scheduler diagnosis, and safe stop and escalation boundaries. | Unattended hardening completes |
+| **`executeRun`'s outer catch has no thread-event awareness.** Found 2026-08-22 during the control-center phase-2 P3 closure review (retired plan, git history), sweeping for siblings of a just-fixed gap (four early returns in `remoteHostCliAdapter.ts` that produced a terminal Run with zero `host_thread_events` rows — fixed via `remoteFailureWithEvent`). `orchestrationService.ts`'s `executeRun` generic `catch` (~line 1490) finalizes a Run as failed with no knowledge of `thread_event_sink` at all — it's constructed only locally inside `invokeAdapterUnbounded`'s remote-CLI branch, never threaded up. If `executor.runCommand` in `remoteHostCliAdapter.ts` ever throws instead of resolving (traced one plausible path: a synchronous `ws.send()` throw from `dispatchLaunch` if the registered connection were ever not truly `OPEN`, an anomalous state this registry's own invariants should prevent — not a routine failure like the four just-fixed branches), the Conversation UI's poll-based completion detection (P3, `ThreadConversation.tsx`) has nothing to observe and reproduces the original "stuck Cancel / no diagnostics / no diff" symptom. Broader than P3's scope — this catch has never had thread-event awareness for *any* exception type, predating P1 through P3; not fixed here (review budget exhausted at 3/3 reviewers for this phase, and the fix requires restructuring how far up the call stack `thread_event_sink` is threaded, materially larger than a P3-scoped repair). | A real remote-host Run reaches `executeRun`'s outer catch by a path other than `remoteHostCliAdapter.ts`'s own now-complete status-event coverage |
 
 **Codex internal delegation is not required to be disabled** (decided
 2026-08-13). Runtime-internal subagents do not widen the permission surface:
@@ -106,6 +107,46 @@ symmetry.
 scope is not a Space, Project, or Domain scope. Runtime composition answers
 "which code is loaded"; Space answers "who may read this". If the trigger ever
 fires, the two must not be allowed to become one enum, one id, or one predicate.
+
+**Amended 2026-08-22 — re-evaluated in light of DeepSeek Harness; verdict
+unchanged.** Cordis turns out to be DeepSeek-published (its docs live under
+the deepseek-harness repo), and DSH — "everything is a plugin", agent loop
+included — is its flagship reference implementation. Re-verified the
+empirical basis against today's code before re-affirming: `PluginHost`
+(`server/src/modules/plugins/host/index.ts`) is still boot-time-only,
+synchronous, activate-once, with no deactivate/dispose anywhere; plugin
+enablement is request-time DB-flag gating over always-loaded code; the
+register/unregister lifecycles the hosts work added since the original audit
+(`HostConnectionRegistry`, `CliProcessRegistry`) are data-plane state (live
+connections, live processes), not code composition — the exact class the
+original entry already excluded via its `scheduler/registry.ts` example.
+Neither trigger half has moved. Three context updates, none changing the
+verdict:
+
+1. If the trigger ever fires, Cordis is now a *stronger candidate* than at
+   the original evaluation (major-vendor maintenance, a serious reference
+   implementation, real docs) — this changes post-trigger selection weight,
+   not whether the trigger has fired. Counterweight: it currently moves at
+   DSH's developer-preview breaking-change pace.
+2. DSH-as-runtime-endpoint (see the multi-host section's endpoint row)
+   provides an **out-of-process path to consume the Cordis plugin/skill
+   ecosystem**: ecosystem plugins run inside a DSH endpoint, and the control
+   plane speaks only the SDK protocol. This removes the strongest
+   previously-conceivable future reason to adopt Cordis in-process — wanting
+   the ecosystem no longer implies importing the programming model.
+3. "External plugin-ecosystem compatibility" (third parties writing Agent
+   Space extensions against Cordis instead of `PluginHost`) is explicitly
+   **not** an additional trigger: it presupposes real third-party developers
+   (far off for a personal/family product — other entries in this register
+   still wait on a *second user*), and even if it arrived, item 2's endpoint
+   path absorbs most of it. Named here so a future discussion cannot route
+   around this entry by claiming the trigger list never considered the
+   ecosystem argument.
+
+The scope warning above stands unchanged and is *reinforced* by DSH's
+existence: in a Cordis world everything becomes a `ctx.*` service, and the
+most natural migration mistake would be hanging authorization predicates off
+runtime scope.
 
 ### Generated executable lifecycle
 
@@ -233,6 +274,19 @@ differ, which is what the trigger provides.
 
 ## Watch items
 
+- **Run `prompt`/`instruction` are always redacted to `null` on every read** —
+  `runToOut()` (`server/src/modules/runs/runReadModel.ts`) unconditionally
+  nulls both fields by design ("canonical input remains in its owning
+  Message/Run records... never the raw task or rendered context body"), so
+  the `(r.instruction || r.prompt) && <p>...</p>` display line already
+  present in `RunsPage.tsx`, `RunDetailPage.tsx`, and (as of P4)
+  `command_center/ThreadDetailPage.tsx` can never actually render for a real
+  Run. Not a regression — found during P4's discovery review, deferred as
+  pre-existing and out of that phase's scope (fixing only the newest copy
+  would leave the other two inconsistent). Revisit only as a fix across all
+  three call sites together, tied to whatever the intended non-redacted
+  read path for a Run's task description turns out to be.
+
 ## Rooms — product follow-ups
 
 These items are deliberately outside the first Room release. They are
@@ -273,6 +327,37 @@ observed trigger.
   does not violate this: AgentRunGroup keeps its "one collaboration task"
   semantics and becomes a task opened inside a Room. Room is a persistent
   conversation container, not a DAG.
+
+## Multi-host control center — deferred by decision
+
+Phases 1 and 2 (both retired, plans deleted, ledgers in git history) and
+[ADR 0016](../decisions/0016-control-plane-execution-hosts.md) built a
+working dispatch/monitor/review loop across a handful of personally owned
+hosts plus the conversational thread surface on top of it;
+[plans/acp-runtime-replatform-plan.md](../plans/acp-runtime-replatform-plan.md)
+(active) replaces the self-maintained vendor protocol layer with ACP. These
+are explicit non-decisions recorded during those plans' approvals, not
+oversights.
+
+| Item | Trigger |
+|---|---|
+| **Remote in-place execution's propose→apply governance ("pit 3")** — changes land on disk before review on a trusted host, inverting this system's usual propose-then-apply order; no design chosen yet. | A dedicated design discussion, per the user's explicit request to revisit this separately |
+| **Execution-location axis in `DeterministicRouteSelector`** | Phase-1 explicit (project, workspace, runtime) dispatch stops being sufficient — e.g. a project needs "run wherever is free" rather than a user-picked host |
+| **Server-host daemon unification** (wrapping the server's own execution in the same daemon protocol as remote hosts, retiring `ServerHostExecutionAdapter` as a special case) | The two execution paths (server-local + daemon) have both been in daily use long enough to know the daemon protocol is stable |
+| **Cross-host task-thread migration** (resuming a vendor CLI session on a different host than it started on) | A real workflow needs to move a task between machines mid-thread |
+| **Remote quota probing** | A remote host's provider/subscription usage needs visibility from the control plane |
+| **Capability-based host routing / distributed scheduling / host leasing** | More than a small fixed set of hosts, or concurrent dispatch contention, makes manual host selection impractical |
+| **Multi-user host sharing** (a host accepting Runs from someone other than its registered owner) | A real multi-person household/team wants to share execution hardware — needs its own security design, not an extension of B62/B63 |
+| **Host-level isolation for remote (trusted) hosts** (containerizing the daemon's execution, sandboxing per-run) | The trust model needs raising — e.g. a host is shared, or runs untrusted task input |
+| **Cross-host workspace sync / divergence detection** | The same project's workspaces on different hosts diverge often enough that silence is costly |
+| **Distinct `interrupted` run status + full daemon-reconciliation-on-reconnect** — P3 shipped a narrower version: `HostConnectionRegistry` gives a dropped WS connection `RECONNECT_GRACE_MS` (60s) to resume the same in-flight run before failing it as an ordinary `host_disconnected` failure. A disconnect that outlasts the grace window, or a daemon that reconnects after its process already finished while disconnected, does not get reconciled — the run is already terminal. | A real host with an unreliable network makes 60s too short in practice, or a run's process regularly outlives a disconnect long enough that losing its outcome is costly |
+| **Binary-safe remote output-artifact transport** — `AGENT_SPACE_OUTPUT_DIR` contents are read back as UTF-8 and uploaded as JSON strings (`packages/host-daemon/src/outputFiles.ts`); a binary deliverable comes back corrupted. | A remote workflow needs to produce a binary output file, not just text |
+| **Structured agent-space-information channel, distinct from workspace file changes** — real-usage finding, 2026-08-22: the user correctly separated two things this repo currently conflates under one mechanism. (1) Workspace-scope file changes (code, docs — anything meant to become part of the target repo) are fully handled by the daemon's git-diff capture (`gitDiff.ts`, intent-to-add covers new files too) — no upload channel needed. (2) Information meant for agent-space *itself* — something that should get recorded, indexed, or made visible across Projects (a cross-project note, a finding Knowledge/Memory should ingest) — has **no real channel today**. `AGENT_SPACE_OUTPUT_DIR`/`remote_output` artifacts were the closest thing, but they're just raw uploaded files with no schema and no consumer (unlike server-host's Run Exchange, which at least validates declared outputs against a `run_output.v1` manifest) — nothing reads them, nothing offers them to Knowledge/Memory, and (found the same day) the P3 Thread conversation UI doesn't even surface them, so anything landing there today is orphaned twice over. The prompt-level nudge that misdirected ordinary workspace writes into this channel was removed as an immediate fix (`remoteHostCliAdapter.ts`); this row is the real channel that removal leaves undesigned. Needs: what shape structured information takes (free text vs. a schema akin to `run_output.v1`), who consumes it (direct Knowledge item, a Memory proposal, a new reviewed-artifact subtype), and whether "cross-project exchange" should just be the existing Knowledge/Memory system rather than a new mechanism. | A real workflow needs a remote (or server-host) run to hand agent-space something other than a workspace file change — e.g. a cross-project finding, a note Memory should ingest |
+| **Mid-turn steering** — tool-boundary queue injection and soft interrupt, so a message sent mid-turn reaches the agent before the turn ends (phase 2 shipped one-shot-per-turn with a turn-boundary queue). **The duplex transport this needs is being built by the ACP replatform** (its A2), and ACP's `session/prompt` + `session/cancel` are the protocol surface — so what remains deferred is the *product behavior*, not the plumbing. **Confirmed 2026-08-22 that the capability already exists at the protocol level**: `claude-agent-acp` 0.70.0 advertises `_meta.claudeCode.promptQueueing: true` at `initialize`. That removes the "is this even possible" unknown; it does not change the trigger, because the open questions were always product ones (what a queued mid-turn message should do to the visible conversation, and how it interacts with the per-thread FIFO queue). | acp-runtime-replatform-plan.md's acceptance gate passes; next-phase scoping |
+| **DeepSeek Harness as a runtime candidate** — evaluated 2026-08-22 and **not adopted**. Its sibling entries here (codex, opencode) are gone: both moved into [plans/acp-runtime-replatform-plan.md](../plans/acp-runtime-replatform-plan.md), and the `OpenCodeServerAdapter` HTTP/SSE-tunnel mechanism this row used to describe was superseded before anything was built — everything now speaks ACP over one stdio transport. DSH is the only part still deferred, and its disqualifier is a property of DSH rather than of the protocol choice: it is absent from the ACP registry, and **DeepSeek Harness added 2026-08-22 as a third endpoint candidate** (out-of-process JSON-RPC SDK, `session.event`/`session.status` push — same daemon-supervised/tunneled shape; its web server has no auth/TLS, loopback-only by default, so it is never dialed into directly, exactly like opencode serve). Current DSH limits, all verified against its own docs at evaluation time: Claude Code/Codex run only as one-shot subagent workers (fresh process per call, `inheritsParentContext: false`, no session resume, teardown after) — **cannot serve the conversational thread surface today**, which is built on vendor session resume + subscription quota; developer preview with no compatibility promise, and its SDK protocol has no version negotiation, no session-close, no prompt-cancel. Re-evaluation check item #1 at next-phase scoping: has DSH's Claude Code subagent gained context inheritance + session resume — that single change is what would qualify it for the conversational surface. **Absorb regardless of adoption** (reference, zero dependency): (a) when designing the next-phase adapter seam and tunnel protocol, lay DSH's SDK protocol, opencode's HTTP/SSE API, and claude's duplex frames side by side and shape our port from all three — and treat DSH's own admitted protocol gaps (version negotiation, session-close, cancel) as the checklist our tunnel protocol v1 must cover; (b) DSH's layered session-event vocabulary (`turn/start`, `step/start`, `tool/call`, `assistant/chunk`) is the reference point whenever `host_thread_events`' flat schema needs turn/step grouping (P3's conversation UI grouping model, future schema evolution); (c) DSH existing at all hardens the standing "never build our own agent loop / skill runtime / tool registry / subagent orchestration / trajectory engine" list — those all come free from the endpoint side. | acp-runtime-replatform-plan.md's acceptance gate passes; next-phase scoping |
+| **Replace the remote-dispatch agent-FK shim** — implemented in the control-center phase-2 work (retired plan, git history; its C8 decision): `ensureRemoteDispatchAgent` (`server/src/modules/hosts/remoteDispatchAgent.ts`) lazily creates one space-shared, system-owned Agent per space (`agent_kind = 'system_remote_dispatch'`, a new value in `ck_agents_agent_kind`) purely to satisfy `runs.agent_id`/`agent_version_id`'s NOT NULL FKs — its own `adapter_type`/model config are never read by anything (a remote run's execution is driven by `runs.adapter_type`, not the Agent). Written directly (not via `PgAgentRepository.create()`) specifically to avoid that path's real requirements — a model provider for `model_api`-family types, a registered CLI runtime tool version for `local_cli`-family types — neither of which this placeholder needs or should depend on. This whole mechanism must be replaced by the real agent/Room-supervision model, not silently kept | Next-phase agent/Room-supervision model lands |
+| **Global IA redesign** (projects listing, home, recents semantics — phase 2 deliberately touched only the Command Center) | Two weeks of real conversational-surface usage (acp-runtime-replatform-plan.md's acceptance gate) supplies the evidence; then its own plan |
+| Resuming [capability-shrink-plan.md](../plans/capability-shrink-plan.md) and [project-conversational-advancement-plan.md](../plans/project-conversational-advancement-plan.md) Phase C/D | acp-runtime-replatform-plan.md's acceptance gate passes (Room returns narrowed to dispatch/supervision — see that plan's C1) |
 
 ## Retirement
 

@@ -51,7 +51,19 @@ export interface RuntimeAdapterSpec {
     resume_command_template?: string[];
     interactive_command_template?: string[];
     argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
-    protocol?: "codex_app_server" | "acp";
+    protocol?: "acp";
+    /**
+     * ACP runtime replatform P3: the daemon-probed vendor binary name to
+     * check `capabilities_json.runtimes` against for remote eligibility,
+     * when it differs from `executable.command`. An ACP adapter package
+     * (e.g. `codex-acp`) is our own bundled client, not something a trusted
+     * host has installed — the daemon's capability probe checks for the
+     * underlying vendor CLI (`codex`) instead (see A6, hosts.md). Unset for
+     * adapters whose vendor CLI natively speaks the wire protocol we use
+     * (opencode: the daemon probes for "opencode" and that is also
+     * `executable.command`).
+     */
+    remote_capability_probe?: string;
   };
   credentials: {
     credential_mode: CredentialMode;
@@ -106,7 +118,8 @@ export interface LocalCliRuntimeAdapterSpec extends RuntimeAdapterSpec {
     resume_command_template?: string[];
     interactive_command_template?: string[];
     argument_rendering_strategy: "argv_template" | "stdin" | "ndjson_rpc";
-    protocol?: "codex_app_server" | "acp";
+    protocol?: "acp";
+    remote_capability_probe?: string;
   };
   credentials: RuntimeAdapterSpec["credentials"] & {
     credential_mode: "cli_profile" | "cli_profile_or_model_provider";
@@ -260,40 +273,22 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       denied_value: "Task",
     },
     delegation_controllability: "runtime_config",
-    structured_output: "unknown",
-    // Measured 2026-07-26: `--resume <session-id>` restored conversation state
-    // in a separate process. Session ids are UUIDs, exposed in the
-    // stream-json output.
+    structured_output: "native_event_stream",
+    // ACP runtime replatform P4: Claude's opaque ACP session id is resumed by
+    // the general AcpController, not by vendor-specific `--resume` argv.
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
-    observability_level: "opaque",
+    observability_level: "structured",
     side_effect_level: "workspace",
     data_exposure: "provider",
     baseline_trust_level: "low",
-    executable: { command: "claude", allow_path_override: true },
+    executable: { command: "claude-agent-acp", allow_path_override: true },
     invocation: {
-      headless_command_template: [
-        "{executable}",
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--verbose",
-        "{prompt}",
-      ],
-      resume_command_template: [
-        "{executable}",
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--verbose",
-        "--resume",
-        "{resume_session_id}",
-        "{prompt}",
-      ],
-      interactive_command_template: ["{executable}"],
-      argument_rendering_strategy: "argv_template",
+      headless_command_template: ["{executable}"],
+      resume_command_template: ["{executable}"],
+      argument_rendering_strategy: "ndjson_rpc",
+      protocol: "acp",
+      remote_capability_probe: "claude",
     },
     credentials: {
       credential_mode: "cli_profile",
@@ -309,15 +304,18 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       model_config_behavior: "uses_model",
     },
     permissions: {
+      // ACP's permission requests are answered by the controller. Keep the
+      // policy key and an empty argv template so existing high-risk dispatch
+      // policy remains valid without reviving Claude's CLI-only bypass flag.
       supports_permission_bypass: true,
-      permission_bypass_arg_template: ["--dangerously-skip-permissions"],
+      permission_bypass_arg_template: [],
       permission_bypass_policy_key: "allow_permission_bypass",
     },
     usage: {
       usage_accuracy: "precise",
       supports_usage_probe: false,
       usage_probe_kind: "cached_claude_quota",
-      usage_parser_type: "generic",
+      usage_parser_type: "acp",
     },
     output: {
       output_parser_type: "generic",
@@ -337,24 +335,29 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     subagent_disable_mechanism: "unknown",
     delegation_controllability: "unknown",
     structured_output: "unknown",
-    // Codex app-server resumes an opaque thread id through `thread/resume`.
-    // The server keeps the corresponding `.codex` state in the conversation's
-    // isolated HOME and subtracts restored cumulative usage from the next turn.
+    // ACP runtime replatform P3: codex resumes an opaque session id through
+    // `session/resume` (A7) — the general AcpController, not a bespoke
+    // thread/resume RPC. The server keeps the corresponding `.codex` state in
+    // the conversation's isolated HOME; each turn's usage is per-turn
+    // already (session/prompt's own result.usage), no baseline subtraction
+    // needed the way the deleted codex_app_server controller required.
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
     observability_level: "opaque",
     side_effect_level: "workspace",
     data_exposure: "provider",
     baseline_trust_level: "low",
-    executable: { command: "codex", allow_path_override: true },
+    // `codex-acp` is our own pinned ACP adapter (A6), not the vendor CLI
+    // itself — it bundles a compatible `@openai/codex` and, absent
+    // `CODEX_PATH`, spawns that bundled copy directly. `remote_capability_probe`
+    // below still points capability checks at the vendor CLI name a trusted
+    // host actually reports.
+    executable: { command: "codex-acp", allow_path_override: true },
     invocation: {
-      headless_command_template: [
-        "{executable}",
-        "app-server",
-        "--stdio",
-      ],
+      headless_command_template: ["{executable}"],
       argument_rendering_strategy: "ndjson_rpc",
-      protocol: "codex_app_server",
+      protocol: "acp",
+      remote_capability_probe: "codex",
     },
     credentials: {
       credential_mode: "cli_profile",

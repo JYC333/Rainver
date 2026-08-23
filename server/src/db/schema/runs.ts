@@ -5,6 +5,7 @@ import { users } from "./auth";
 import { sessions } from "./sessions";
 import { spaces } from "./spaces";
 import { projectFolders } from "./projectFolders";
+import { hostTaskThreads } from "./hostTaskThreads";
 import { modelProviders } from "./providers";
 import { agentRunGroups, runDelegations } from "./agentGroups";
 import { artifacts } from "./artifacts";
@@ -24,6 +25,9 @@ export const runs = pgTable("runs", {
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
 	runtimeProfileSelectionSource: varchar("runtime_profile_selection_source", { length: 16 }),
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
+	// ADR 0016 D14: set only for a run dispatched into a host task thread
+	// (remote-host runs); null for every server-host run.
+	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	parentRunId: varchar("parent_run_id", { length: 36 }),
 	rootRunId: varchar("root_run_id", { length: 36 }),
@@ -95,6 +99,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_runs_trigger_origin").using("btree", table.triggerOrigin.asc().nullsLast()),
 	index("ix_runs_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
+	index("ix_runs_host_task_thread_id").using("btree", table.hostTaskThreadId.asc().nullsLast()),
 	foreignKey({ columns: [table.workflowVersionId], foreignColumns: [evolvableAssetVersions.id], name: "runs_workflow_version_fkey" }),
 	foreignKey({
 			columns: [table.ownerUserId],
@@ -125,6 +130,11 @@ export const runs = pgTable("runs", {
 			columns: [table.delegationId],
 			foreignColumns: [runDelegations.id],
 			name: "runs_delegation_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.hostTaskThreadId],
+			foreignColumns: [hostTaskThreads.id],
+			name: "runs_host_task_thread_id_fkey"
 		}).onDelete("set null"),
 	foreignKey({
 			columns: [table.instructedByAgentId],

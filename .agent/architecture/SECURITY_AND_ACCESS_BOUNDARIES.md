@@ -579,6 +579,15 @@ the recipient remains an active member.
 
 ## 10. Project Folder and Artifact Path Safety
 
+**Scope note (amended 2026-08-21, [ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
+everything in this section describes the **server host** only. A Project
+Folder row bound to a remote (personal) execution host never reaches this
+code path at all: the control plane holds no path for it, PathPolicy is
+never invoked, and there is no bubblewrap namespace — the remote daemon
+spawns natively on the machine's own filesystem under trusted-host mode
+(B62). This is a narrower trust model for execution hosts the user owns and
+has paired, not a relaxation of these invariants for the server host.
+
 **Project Folder file access** (`server/src/modules/projectFolders/repository.ts`):
 - A registered Project Folder is one shared workspace with no personal area.
   Its whole root is available to Project-authorized readers and mounted

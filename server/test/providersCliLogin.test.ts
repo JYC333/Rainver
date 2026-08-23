@@ -24,7 +24,10 @@ afterEach(async () => {
 });
 
 const FAST = { outputSettleMs: 20, actionCooldownMs: 30, pollMs: 5, deadlineMs: 2_000 };
-const shResolver = { resolveForExecution: async () => ({ executable_path: "sh" }) };
+const shResolver = {
+  resolveForExecution: async () => ({ executable_path: "sh" }),
+  resolveVendorCliForExecution: async () => ({ executable_path: "sh" }),
+};
 
 class FakePty {
   written: string[] = [];
@@ -247,6 +250,9 @@ describe("CLI login engine", () => {
       FAST,
       {
         async resolveForExecution() {
+          throw new Error("Runtime tool 'gemini_cli' is not installed.");
+        },
+        async resolveVendorCliForExecution() {
           throw new Error("Runtime tool 'gemini_cli' is not installed.");
         },
       },

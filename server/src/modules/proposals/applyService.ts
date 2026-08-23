@@ -20,8 +20,9 @@ import {
   PgProposalRepository,
 } from "./repository";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore";
-import { PgProjectFolderRepository, projectFolderAbsoluteRoot } from "../projectFolders/repository";
+import { PgProjectFolderRepository, assertServerHostFolder, projectFolderAbsoluteRoot } from "../projectFolders/repository";
 import { validatePath } from "../projectFolders/pathPolicy";
+import { HttpError } from "../routeUtils/common";
 import type {
   ProposalAcceptOut,
   ProposalAcceptResultType,
@@ -533,6 +534,12 @@ export class PgProposalApplyService {
       if (!folder) {
         await client.query("ROLLBACK");
         throw new ProposalApplyHttpError(404, "Project Folder not found");
+      }
+      try {
+        assertServerHostFolder(folder);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error instanceof HttpError ? new ProposalApplyHttpError(error.statusCode, error.message) : error;
       }
       const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
 

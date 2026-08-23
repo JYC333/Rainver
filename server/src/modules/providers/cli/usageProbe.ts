@@ -53,6 +53,21 @@ export interface ProbePtyFactory {
 
 export interface ProbeToolResolver {
   resolveForExecution(runtime: string): Promise<{ executable_path: string }>;
+  resolveVendorCliForExecution?(runtime: string): Promise<{ executable_path: string }>;
+}
+
+/**
+ * ACP runtime replatform P3/P4: codex's quota probe spawns the vendor
+ * `codex` binary directly and speaks its own app-server protocol, not ACP —
+ * `resolveForExecution("codex_cli")` now resolves the `codex-acp` adapter
+ * instead, so the probe must ask for the vendor CLI explicitly, with no
+ * fallback (codex-acp cannot substitute for the vendor CLI here). Claude's
+ * probe has the same split but degrades gracefully via the base interface's
+ * optional `resolveVendorCliForExecution` instead of requiring this narrower
+ * type; opencode's probe has no such split at all.
+ */
+export interface CodexProbeToolResolver extends ProbeToolResolver {
+  resolveVendorCliForExecution(runtime: string): Promise<{ executable_path: string }>;
 }
 
 export interface ProbeTimings {
@@ -189,7 +204,10 @@ export async function probeClaudeQuota(
 ): Promise<QuotaResult> {
   let executable: string;
   try {
-    executable = (await toolResolver.resolveForExecution("claude_code")).executable_path;
+    executable = (
+      await (toolResolver.resolveVendorCliForExecution?.("claude_code")
+        ?? toolResolver.resolveForExecution("claude_code"))
+    ).executable_path;
   } catch (error) {
     const result = emptyQuota();
     result.error = error instanceof Error ? error.message : "Claude runtime tool is not installed.";

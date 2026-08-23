@@ -36,17 +36,30 @@ export async function renderCliCommand(
     context_cwd?: string | null;
     resume_session_id?: string | null;
     required_sandbox_level?: string | null;
+    /**
+     * ADR 0016 P3: a remote execution host has no server-local sandbox path
+     * for this check to inspect — the deny-config it verifies would have to
+     * live in the daemon's actual workspace, not a path the server can see
+     * or write to. Writing a compliant-looking file server-side and passing
+     * its path here would prove nothing about what the remote CLI process
+     * actually honors (security theater), so remote callers explicitly opt
+     * out instead. Defaults to false, preserving today's behavior for every
+     * existing (server-host) caller.
+     */
+    skip_subagent_disable_check?: boolean;
   },
 ): Promise<RenderedCliCommand> {
-  try {
-    await assertRuntimeSubagentsDisabled(spec, input.context_cwd ?? input.sandbox_cwd);
-  } catch (error) {
-    throw new CliRenderError(
-      "runtime_subagents_not_disabled",
-      error instanceof RuntimeSubagentConfigError
-        ? error.message
-        : "Runtime subagent disablement could not be verified.",
-    );
+  if (!input.skip_subagent_disable_check) {
+    try {
+      await assertRuntimeSubagentsDisabled(spec, input.context_cwd ?? input.sandbox_cwd);
+    } catch (error) {
+      throw new CliRenderError(
+        "runtime_subagents_not_disabled",
+        error instanceof RuntimeSubagentConfigError
+          ? error.message
+          : "Runtime subagent disablement could not be verified.",
+      );
+    }
   }
   const template = input.resume_session_id && spec.invocation.resume_command_template
     ? spec.invocation.resume_command_template
@@ -61,8 +74,6 @@ export async function renderCliCommand(
   };
   const argv = renderTemplate(template, values);
   const redacted = renderTemplate(template, { ...values, prompt: "[REDACTED_PROMPT]" });
-  applyReadOnlyVendorSandbox(spec, argv, input.required_sandbox_level);
-  applyReadOnlyVendorSandbox(spec, redacted, input.required_sandbox_level);
 
   const extraArgs: string[] = [];
   if (input.model && spec.invocation.argument_rendering_strategy !== "ndjson_rpc") {
@@ -96,19 +107,6 @@ export async function renderCliCommand(
       input.permission_bypass &&
       (spec.permissions.permission_bypass_arg_template ?? []).every((arg) => argv.includes(arg)),
   };
-}
-
-function applyReadOnlyVendorSandbox(
-  spec: LocalCliRuntimeAdapterSpec,
-  argv: string[],
-  sandboxLevel: string | null | undefined,
-): void {
-  if (spec.adapter_type !== "codex_cli" || sandboxLevel !== "read_only") return;
-  const sandboxIndex = argv.indexOf("--sandbox");
-  // Codex app-server carries the sandbox mode in thread/start rather than
-  // process argv. Legacy direct-exec templates still use this flag.
-  if (sandboxIndex < 0 || sandboxIndex + 1 >= argv.length) return;
-  argv[sandboxIndex + 1] = "read-only";
 }
 
 function renderTemplate(template: string[], values: Record<string, string>): string[] {

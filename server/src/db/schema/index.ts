@@ -68,4 +68,8 @@ export * from "./sourceBackfill";
 export * from "./spaces";
 export * from "./tasks";
 export * from "./usage";
+export * from "./hosts";
+export * from "./hostTaskThreads";
+export * from "./hostThreadEvents";
+export * from "./hostThreadMessages";
 export * from "./projectFolders";

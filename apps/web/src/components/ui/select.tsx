@@ -6,6 +6,8 @@ import { cn } from '../../lib/utils'
 export interface SelectOption {
   value: string
   label: string
+  /** Shown but not choosable — e.g. an offline host, a "next phase" runtime. */
+  disabled?: boolean
 }
 
 interface SelectProps {
@@ -117,12 +119,16 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
           type="button"
           role="option"
           aria-selected={opt.value === value}
-          onClick={() => { onChange(opt.value); setOpen(false) }}
+          aria-disabled={opt.disabled}
+          disabled={opt.disabled}
+          onClick={() => { if (opt.disabled) return; onChange(opt.value); setOpen(false) }}
           className={cn(
             'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors',
-            opt.value === value
-              ? 'text-foreground bg-accent'
-              : 'text-muted-foreground hover:text-foreground hover:bg-accent',
+            opt.disabled
+              ? 'text-muted-foreground/50 cursor-not-allowed'
+              : opt.value === value
+                ? 'text-foreground bg-accent'
+                : 'text-muted-foreground hover:text-foreground hover:bg-accent',
           )}
         >
           <span className="flex-1 truncate">{opt.label}</span>

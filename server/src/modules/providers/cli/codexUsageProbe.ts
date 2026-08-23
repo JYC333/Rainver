@@ -9,7 +9,7 @@
  */
 
 import { mkdir } from "node:fs/promises";
-import type { ProbeToolResolver, QuotaResult } from "./usageProbe";
+import type { CodexProbeToolResolver, QuotaResult } from "./usageProbe";
 import type { CliCommandExecutor, CliStdioController } from "../../runs/localCliExecution";
 
 export interface CodexRpcHandle {
@@ -366,13 +366,13 @@ class CodexRpcSession {
 export async function probeCodexQuota(
   codexHome: string,
   loginHome: string,
-  toolResolver: ProbeToolResolver,
+  toolResolver: CodexProbeToolResolver,
   timings: CodexRpcTimings = DEFAULT_TIMINGS,
   runner?: { executor: CliCommandExecutor; run_id: string; workspace_cwd: string; proxy_url?: string },
 ): Promise<QuotaResult> {
   let executable: string;
   try {
-    executable = (await toolResolver.resolveForExecution("codex_cli")).executable_path;
+    executable = (await toolResolver.resolveVendorCliForExecution("codex_cli")).executable_path;
   } catch (error) {
     const result = emptyQuota();
     result.error = error instanceof Error ? error.message : "Codex runtime tool is not installed.";

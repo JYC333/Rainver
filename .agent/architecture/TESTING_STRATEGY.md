@@ -51,6 +51,14 @@ Do not add tests for:
 
 ## Fixtures And Factories
 
+Before building test setup, search for what already exists: `server/test/support/`
+first, then a neighbouring test file for the same domain. Shared PostgreSQL access,
+captured-SQL assertions, provider HTTP fakes, and domain fixtures all live there
+already, and the reuse obligation for them is
+[`REUSE_AND_DEPENDENCY_POLICY.md`](REUSE_AND_DEPENDENCY_POLICY.md) §7. When the same
+setup appears a second or third time, promote it into `server/test/support/` rather
+than copying it again.
+
 Factories must create valid minimal objects by default. Required ownership fields such as `space_id`, `created_by_user_id`, `project_folder_id`, and related actor IDs should be visible at call sites when the rule under test depends on them.
 
 Rules:

@@ -17,6 +17,7 @@
 default:
   docs:
     - .agent/INDEX.md
+    - .agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md
     - .agent/architecture/SECURITY_AND_ACCESS_BOUNDARIES.md
     - .agent/architecture/TESTING_STRATEGY.md
 
@@ -38,6 +39,7 @@ security-access:
 backend-domain:
   docs:
     - .agent/BOUNDARIES.md
+    - .agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md
     - .agent/architecture/DATABASE_AND_TRANSACTIONS.md
     - .agent/architecture/MEMORY_MODEL.md
     - .agent/architecture/PROPOSALS.md
@@ -146,7 +148,9 @@ project-folder-artifact:
     - .agent/modules/sandbox.md
     - .agent/modules/project-files.md
     - .agent/modules/runtime-context.md
+    - .agent/modules/hosts.md
     - .agent/decisions/0004-context-wrapper.md
+    - .agent/decisions/0016-control-plane-execution-hosts.md
     - .agent/BOUNDARIES.md
   code_roots:
     - server/src/modules/projectFolders
@@ -353,6 +357,7 @@ module_registry:
   docs:
     - .agent/architecture/MODULES.md
     - .agent/architecture/MODULE_DEVELOPMENT_GUIDE.md
+    - .agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md
     - .agent/decisions/0006-plugin-module-architecture.md
     - .agent/BOUNDARIES.md
   code_roots:

@@ -82,6 +82,7 @@ export {
   __setProbeFactoryForTests,
   parseQuota,
   probeClaudeQuota,
+  type CodexProbeToolResolver,
   type ProbePtyFactory,
   type ProbeToolResolver,
   type QuotaResult,

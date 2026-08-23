@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +8,7 @@ import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository";
 import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox";
+import { PgHostRepository } from "../src/modules/hosts/repository";
 import type { RunRecord } from "../src/modules/runs/repository";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
@@ -17,6 +19,7 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "33333333-3333-4333-8333-333333333333";
 const SECOND_PROJECT = "44444444-4444-4444-8444-444444444444";
 const OTHER_PROJECT = "55555555-5555-4555-8555-555555555555";
+const HOST = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -41,11 +44,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE project_folders, projects, space_memberships, users, spaces CASCADE");
+  await pool.query("TRUNCATE project_folders, projects, space_memberships, users, spaces, hosts CASCADE");
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now())`,
     [USER],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
+     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    [HOST],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
     await pool.query(
@@ -72,8 +80,8 @@ function insertFolder(
     `INSERT INTO project_folders (
        id, space_id, project_id, created_by_user_id, name, root_path, status,
        kind, is_primary, execution_enabled, protected, system_managed,
-       created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$1,$5,'active','code',$6,true,false,false,now(),now())`,
+       host_id, host_kind, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$1,$5,'active','code',$6,true,false,false,$7,'server',now(),now())`,
     [
       input.id,
       input.spaceId ?? SPACE,
@@ -81,6 +89,7 @@ function insertFolder(
       USER,
       input.rootPath,
       input.primary ?? false,
+      HOST,
     ],
   );
 }
@@ -209,5 +218,73 @@ describe("Project Folder database invariants", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("stamps a new Folder to the server host (ADR 0016)", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    const repo = new PgProjectFolderRepository(
+      pool,
+      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+    );
+    const identity = { spaceId: SPACE, userId: USER };
+    const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
+    const row = await pool.query<{ host_id: string; host_kind: string }>(
+      `SELECT host_id, host_kind FROM project_folders WHERE id = $1`,
+      [created.id],
+    );
+    expect(row.rows[0]).toMatchObject({ host_id: HOST, host_kind: "server" });
+  });
+
+  it("refuses local-filesystem reads and sandbox prep for a remote-host Folder (ADR 0016 B62-B64)", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    const hosts = new PgHostRepository(pool);
+    const issued = await hosts.issuePairingCode(USER, "Remote Test Box");
+    if ("statusCode" in issued) throw new Error("expected success");
+    const remoteFolderId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await pool.query(
+      `INSERT INTO project_folders (
+         id, space_id, project_id, created_by_user_id, name, root_path, status,
+         kind, is_primary, execution_enabled, protected, system_managed,
+         registered_from, host_id, host_kind, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'Remote Folder',NULL,'active','code',false,true,false,false,'daemon_registered',$5,'remote',now(),now())`,
+      [remoteFolderId, SPACE, PROJECT, USER, issued.host_id],
+    );
+    const repo = new PgProjectFolderRepository(
+      pool,
+      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+    );
+    const identity = { spaceId: SPACE, userId: USER };
+
+    await expect(repo.getTree(identity, PROJECT, remoteFolderId)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(repo.getFile(identity, PROJECT, remoteFolderId, "x")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(repo.getGitStatus(identity, PROJECT, remoteFolderId)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(repo.getGitDiff(identity, PROJECT, remoteFolderId, null)).rejects.toMatchObject({ statusCode: 409 });
+
+    const manager = new PgRunSandboxManager(
+      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+      pool,
+    );
+    await expect(
+      manager.prepareRunWorkspace({
+        id: "fefefefe-fefe-4fef-8fef-fefefefefefe",
+        space_id: SPACE,
+        project_folder_id: remoteFolderId,
+        required_sandbox_level: "read_only",
+      } as RunRecord),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("rejects a remote-host Folder that carries a root_path at the database level", async (ctx) => {
+    if (!available || !pool) return ctx.skip();
+    await expect(
+      pool.query(
+        `INSERT INTO project_folders (
+           id, space_id, project_id, created_by_user_id, name, root_path, status,
+           kind, is_primary, execution_enabled, protected, system_managed,
+           host_id, host_kind, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,'Bad Remote Folder','/should/not/exist','active','code',false,true,false,false,$5,'remote',now(),now())`,
+        [randomUUID(), SPACE, PROJECT, USER, HOST],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
   });
 });

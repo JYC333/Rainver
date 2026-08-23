@@ -30,6 +30,7 @@ const PROVIDER = "30000000-0000-4000-8000-000000000008";
 const SETUP = "30000000-0000-4000-8000-000000000009";
 const PROJECT = "30000000-0000-4000-8000-000000000011";
 const FOLDER = "30000000-0000-4000-8000-000000000012";
+const HOST = "30000000-0000-4000-8000-000000000014";
 const THREAD = "30000000-0000-4000-8000-000000000013";
 
 let container: TestPostgresDatabase | undefined;
@@ -55,9 +56,14 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE context_checkpoint_corrections, context_semantic_checkpoints, context_micro_checkpoints, context_capture_gaps, context_events, context_event_scopes, sealed_invocation_payload_access_audits, sealed_invocation_payloads, invocation_snapshots, invocation_deliveries, context_window_reconciliations, execution_control_snapshots, users, spaces CASCADE");
+  await pool.query("TRUNCATE context_checkpoint_corrections, context_semantic_checkpoints, context_micro_checkpoints, context_capture_gaps, context_events, context_event_scopes, sealed_invocation_payload_access_audits, sealed_invocation_payloads, invocation_snapshots, invocation_deliveries, context_window_reconciliations, execution_control_snapshots, users, spaces, hosts CASCADE");
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
   await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
+     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    [HOST],
+  );
   await pool.query(
     `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,'owner','active',now(),now())`,
@@ -1009,9 +1015,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await pool.query(
       `INSERT INTO project_folders (
          id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
-         execution_enabled,protected,system_managed,created_at,updated_at
-       ) VALUES ($1,$2,$3,$4,'Delivery Folder','active','code',TRUE,TRUE,FALSE,FALSE,now(),now())`,
-      [FOLDER, SPACE, PROJECT, USER],
+         execution_enabled,protected,system_managed,host_id,host_kind,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,'Delivery Folder','active','code',TRUE,TRUE,FALSE,FALSE,$5,'server',now(),now())`,
+      [FOLDER, SPACE, PROJECT, USER, HOST],
     );
     const instructionId = randomUUID();
     await pool.query(

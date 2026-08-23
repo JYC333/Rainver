@@ -58,10 +58,7 @@ import {
   resolveNetworkProfileRepository,
 } from "../networkProfiles";
 import { createCliConversationController } from "./cliConversationProtocol";
-import {
-  parseCliRuntimeMeasurement,
-  type CliRuntimeMeasurement,
-} from "./cliRuntimeMeasurement";
+import { type CliRuntimeMeasurement } from "./cliRuntimeMeasurement";
 import { managedAdapterRequest } from "../runtimeContext";
 import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts";
 
@@ -257,9 +254,10 @@ export async function executeVendorCliAdapter(
       executable: tool.executable_path,
       prompt: input.prompt ?? input.run.prompt ?? "",
       mode: input.mode ?? input.run.mode,
-      // Codex receives the selected model through its run-scoped provider
-      // config; it intentionally has no CLI model override flag.
-      model: spec.adapter_type === "codex_cli" ? null : runtimeBinding.model ?? input.model ?? null,
+      // renderCliCommand only turns this into an argv --model flag for a
+      // non-ndjson_rpc adapter (cliCommandRendering.ts); it is a no-op for
+      // every ACP adapter, so it is always safe to forward here.
+      model: runtimeBinding.model ?? input.model ?? null,
       permission_bypass: Boolean(input.adapter_config?.permission_bypass),
       runtime_policy_json: recordValue(input.adapter_config?.runtime_policy_json),
       risk_level: input.risk_level ?? "low",
@@ -311,20 +309,12 @@ export async function executeVendorCliAdapter(
     spec.adapter_type as VendorCliAdapterType,
   );
   let result: CliExecutionResult;
-  let stream = spec.invocation.protocol
-    ? null
-    : createVendorEventStream(spec.adapter_type as VendorCliAdapterType);
-  let textStream = spec.invocation.protocol
-    ? null
-    : createVendorTextDeltaStream(spec.adapter_type as VendorCliAdapterType);
   const pendingEvents: Promise<void>[] = [];
-  let captureOutput = Boolean(spec.invocation.protocol || (deliveryPrompts?.length ?? 1) === 1);
   const emitTextDelta = (delta: string) => {
-    if (!captureOutput) return;
     input.text_delta_sink?.(delta);
   };
   const emitProtocolEvent = (message: Record<string, unknown>) => {
-    if (!captureOutput || !input.runtime_event_sink) return;
+    if (!input.runtime_event_sink) return;
     for (const event of normalizeVendorEvents(
       spec.adapter_type,
       [message],
@@ -333,21 +323,23 @@ export async function executeVendorCliAdapter(
       pendingEvents.push(Promise.resolve(input.runtime_event_sink(event)));
     }
   };
-  const stdioController = spec.invocation.protocol
-    ? createCliConversationController({
-        adapter_type: spec.adapter_type as VendorCliAdapterType,
-        prompts: deliveryPrompts ?? [input.prompt ?? input.run.prompt ?? ""],
-        cwd: input.sandbox_cwd!,
-        model: runtimeBinding.model ?? input.model ?? null,
-        sandbox_mode: sandboxLevel === "read_only" ? "read-only" : "workspace-write",
-        runtime_session_id: runtimeSessionId,
-        before_next_prompt: input.invocation_delivery && input.invocation_attempts?.acknowledgeContext
-          ? (sessionId) => input.invocation_attempts!.acknowledgeContext!(input.invocation_delivery!, sessionId)
-          : undefined,
-        on_text_delta: emitTextDelta,
-        on_protocol_event: emitProtocolEvent,
-      })
-    : undefined;
+  const stdioController = createCliConversationController({
+    adapter_type: spec.adapter_type as VendorCliAdapterType,
+    prompts: deliveryPrompts ?? [input.prompt ?? input.run.prompt ?? ""],
+    cwd: input.sandbox_cwd!,
+    // `supports_model_override: false` in specs.ts gates only the argv
+    // `--model`-flag rendering path above, not ACP's independent
+    // session/set_config_option — codex-acp does support model switching
+    // over ACP even though its spec declares no argv override.
+    model: runtimeBinding.model ?? input.model ?? null,
+    sandbox_mode: sandboxLevel === "read_only" ? "read-only" : "workspace-write",
+    runtime_session_id: runtimeSessionId,
+    before_next_prompt: input.invocation_delivery && input.invocation_attempts?.acknowledgeContext
+      ? (sessionId) => input.invocation_attempts!.acknowledgeContext!(input.invocation_delivery!, sessionId)
+      : undefined,
+    on_text_delta: emitTextDelta,
+    on_protocol_event: emitProtocolEvent,
+  });
   try {
     const cliNetworkEnv = await cliDefaultNetworkEnv(config, input.run.space_id, credential, runtimeBinding);
     const exchangeEnv = runExchangeEnv(input.adapter_config);
@@ -360,6 +352,12 @@ export async function executeVendorCliAdapter(
         ...runtimeBinding.env,
         ...cliNetworkEnv,
         ...exchangeEnv,
+        // The server-host sandbox is always headless — codex-acp's ChatGPT
+        // browser-login auth method cannot function inside it regardless, so
+        // suppressing it is a strict improvement (no CODEX_PATH override
+        // here: server-host uses codex-acp's own bundled codex, driven by
+        // the CODEX_HOME the credential broker already prepared).
+        ...(spec.adapter_type === "codex_cli" ? { NO_BROWSER: "1" } : {}),
         ...(toolToken && toolUrl
           ? { AGENT_SPACE_MCP_URL: toolUrl, AGENT_SPACE_TOOL_TOKEN: toolToken }
           : {}),
@@ -370,14 +368,6 @@ export async function executeVendorCliAdapter(
       ) ?? input.run.id,
       stdin: command.stdin,
       process_registry: input.process_registry,
-      on_stdout_chunk: (chunk) => {
-        for (const delta of textStream?.push(chunk) ?? []) emitTextDelta(delta);
-        for (const event of stream?.push(chunk) ?? []) {
-          if (captureOutput && input.runtime_event_sink) {
-            pendingEvents.push(Promise.resolve(input.runtime_event_sink(event)));
-          }
-        }
-      },
       stdio_controller: controller,
       egress_profile: runnerEgressProfile(
         Boolean(credential.profile_id || runtimeBinding.provider_id || credential.network_profile_id),
@@ -394,77 +384,29 @@ export async function executeVendorCliAdapter(
         : undefined,
     });
     result = await runRendered(rendered, stdioController);
-    if (!spec.invocation.protocol && deliveryPrompts && deliveryPrompts.length > 1
-      && result.returncode === 0 && !result.timed_out) {
-      const firstMeasurement = parseCliRuntimeMeasurement(
-        spec.adapter_type as VendorCliAdapterType,
-        result.stdout,
-      );
-      const nextSessionId = firstMeasurement.external_session_id;
-      if (!nextSessionId) {
-        result = {
-          ...result,
-          returncode: 1,
-          stderr: `${result.stderr}\nVendor CLI did not return a session id for the context phase.`.trim(),
-        };
-      } else {
-        if (input.invocation_delivery && input.invocation_attempts?.acknowledgeContext) {
-          await input.invocation_attempts.acknowledgeContext(input.invocation_delivery, nextSessionId);
-        }
-        rendered = await renderCliCommand(spec, {
-          executable: tool.executable_path,
-          prompt: deliveryPrompts.at(-1)!,
-          mode: input.mode ?? input.run.mode,
-          model: spec.adapter_type === "codex_cli" ? null : runtimeBinding.model ?? input.model ?? null,
-          permission_bypass: Boolean(input.adapter_config?.permission_bypass),
-          runtime_policy_json: recordValue(input.adapter_config?.runtime_policy_json),
-          risk_level: input.risk_level ?? "low",
-          project_folder_id: input.run.project_folder_id,
-          sandbox_cwd: input.sandbox_cwd ?? null,
-          context_cwd: vendorContextCwd(input),
-          resume_session_id: nextSessionId,
-          required_sandbox_level: sandboxLevel,
-        });
-        if (toolToken && toolUrl) {
-          await configureCliToolTransport(spec, input, rendered, runtimeBinding, toolUrl, toolToken);
-        }
-        // The context process is a separate ordinary vendor turn. Discard its
-        // complete and partial parser state before current-turn capture starts;
-        // otherwise an unterminated bootstrap JSONL record can be completed by
-        // the next process and be misattributed to the user turn.
-        stream?.finish();
-        textStream?.finish();
-        stream = createVendorEventStream(spec.adapter_type as VendorCliAdapterType);
-        textStream = createVendorTextDeltaStream(spec.adapter_type as VendorCliAdapterType);
-        captureOutput = true;
-        result = await runRendered(rendered);
-      }
-    }
   } finally {
     if (toolToken) cliRunToolIdentities.revoke(toolToken);
     await cleanupRuntimeProviderBinding(runtimeBinding);
     await cleanupCredential(input, credentialBroker);
   }
-  for (const event of stream?.finish() ?? []) {
-    if (captureOutput && input.runtime_event_sink) {
-      pendingEvents.push(Promise.resolve(input.runtime_event_sink(event)));
-    }
-  }
-  for (const delta of textStream?.finish() ?? []) emitTextDelta(delta);
   await Promise.allSettled(pendingEvents);
 
-  const protocolResult = spec.invocation.protocol ? stdioController?.result() ?? null : null;
+  // `stdioController` is only ever undefined when there were no prompts to
+  // run at all (createCliConversationController's own guard) — every real
+  // dispatch reaches this with a controller and a completed protocol result.
+  const protocolResult = stdioController?.result() ?? null;
+  // Mirrors remoteHostCliAdapter.ts's own guard: a resume whose handshake
+  // failed must not surface the stale requested id — `runtimeSessionId` was
+  // set optimistically before the resume RPC's response ever arrived.
+  const resumedSessionInvalid = Boolean(runtimeSessionId) && protocolResult?.resume_handshake_failed === true;
   const measurement: CliRuntimeMeasurement = protocolResult
-      ? {
-        external_session_id: protocolResult.external_session_id ?? null,
+    ? {
+        external_session_id: resumedSessionInvalid ? null : protocolResult.external_session_id ?? null,
         usage: protocolResult.usage ?? null,
-        model_usage: [],
-        subscription_quota: null,
+        model_usage: protocolResult.model_usage ?? [],
+        subscription_quota: protocolResult.subscription_quota ?? null,
       }
-    : parseCliRuntimeMeasurement(
-        spec.adapter_type as VendorCliAdapterType,
-        result.stdout,
-      );
+    : { external_session_id: null, usage: null, model_usage: [], subscription_quota: null };
   const envelope = cliResultEnvelope(
     input,
     spec,
@@ -475,7 +417,6 @@ export async function executeVendorCliAdapter(
     tool,
     startedAt,
     runtimeBinding,
-    Boolean(input.runtime_event_sink),
     protocolResult,
     measurement,
   );
@@ -827,13 +768,15 @@ function cliResultEnvelope(
   tool: ResolvedRuntimeTool,
   startedAt: string,
   runtimeBinding: RuntimeProviderBinding,
-  eventsStreamed: boolean,
   protocolResult: {
     completed: boolean;
     text: string;
     error?: string | null;
+    resume_handshake_failed?: boolean;
     external_session_id?: string | null;
     usage?: RunAdapterResultEnvelope["usage"];
+    model_usage?: RunAdapterResultEnvelope["model_usage"];
+    subscription_quota?: CliRuntimeMeasurement["subscription_quota"];
   } | null,
   measurement: CliRuntimeMeasurement,
 ): RunAdapterResultEnvelope {
@@ -845,22 +788,20 @@ function cliResultEnvelope(
   const protocolError = protocolResult
     ? protocolResult.error?.trim() || (protocolResult.completed ? null : "CLI conversation protocol ended before the final turn completed")
     : null;
-  const resumedSessionInvalid = resumedRuntimeSession && Boolean(
-    protocolError || invalidRuntimeSessionMessage(stderr),
+  const resumedSessionInvalid = resumedRuntimeSession && (
+    protocolResult
+      ? protocolResult.resume_handshake_failed === true || invalidRuntimeSessionMessage(stderr)
+      : invalidRuntimeSessionMessage(stderr)
   );
   const success = result.returncode === 0 && !result.timed_out && !protocolError;
-  const structured = parseVendorStructuredOutput(
-    spec.adapter_type as VendorCliAdapterType,
-    stdout,
-  );
   const completedAt = new Date().toISOString();
   return {
     adapter_type: spec.adapter_type,
     adapter_kind: "local_cli",
     success,
-    output_text: protocolResult?.text ?? structured?.text ?? stdout,
+    output_text: protocolResult?.text ?? stdout,
     output_json: (success
-      ? structured?.output_json ?? null
+      ? null
       : { adapter_type: spec.adapter_type }) as RunAdapterResultEnvelope["output_json"],
     exit_code: result.returncode,
     error_code: success
@@ -900,8 +841,8 @@ function cliResultEnvelope(
       trigger_origin: input.trigger_origin ?? input.run.trigger_origin,
       permission_bypass_requested: Boolean(input.adapter_config?.permission_bypass),
       permission_bypass_used: rendered.permission_bypass_used,
-      structured_output: Boolean(structured),
-      structured_event_count: structured?.event_count ?? null,
+      structured_output: Boolean(protocolResult),
+      structured_event_count: null,
       external_session_id: measurement.external_session_id,
       conversation_binding_id: stringValue(
         recordValue(input.adapter_config?.conversation_runtime).binding_id,
@@ -926,170 +867,17 @@ function cliResultEnvelope(
       exit_code: result.returncode,
       timeout_seconds: timeout,
     }) as RunAdapterResultEnvelope["metadata_json"],
-    runtime_events: !eventsStreamed && structured?.runtime_events.length
-      ? structured.runtime_events
-      : terminalRuntimeEvents({
-          adapterType: spec.adapter_type,
-          success,
-          completedAt,
-          errorCode: success
-            ? null
-            : resumedSessionInvalid
-              ? "runtime_session_invalid"
-              : result.failure_code ?? "cli_adapter_nonzero_exit",
-        }),
+    runtime_events: terminalRuntimeEvents({
+      adapterType: spec.adapter_type,
+      success,
+      completedAt,
+      errorCode: success
+        ? null
+        : resumedSessionInvalid
+          ? "runtime_session_invalid"
+          : result.failure_code ?? "cli_adapter_nonzero_exit",
+    }),
   };
-}
-
-export function createVendorEventStream(adapterType: VendorCliAdapterType): {
-  push(chunk: string): RuntimeSemanticEvent[];
-  finish(): RuntimeSemanticEvent[];
-} {
-  let buffer = "";
-  const parse = (flush: boolean): RuntimeSemanticEvent[] => {
-    const lines = buffer.split(/\r?\n/);
-    buffer = flush ? "" : lines.pop() ?? "";
-    const occurredAt = new Date().toISOString();
-    return lines.flatMap((line) => {
-      const event = parseJsonRecord(line);
-      return event ? normalizeVendorEvents(adapterType, [event], occurredAt) : [];
-    });
-  };
-  return {
-    push(chunk) {
-      buffer += chunk;
-      return parse(false);
-    },
-    finish() {
-      if (!buffer.trim()) return [];
-      buffer += "\n";
-      return parse(true);
-    },
-  };
-}
-
-export function parseVendorStructuredOutput(
-  adapterType: VendorCliAdapterType,
-  stdout: string,
-): ReturnType<typeof parseOpenCodeOutput> | null {
-  const parsed = parseOpenCodeOutput(stdout, adapterType);
-  return parsed.event_count > 0 ? parsed : null;
-}
-
-export function parseOpenCodeOutput(
-  stdout: string,
-  adapterType: VendorCliAdapterType = "opencode",
-): {
-  text: string;
-  output_json: Record<string, unknown> | null;
-  event_count: number;
-  runtime_events: ReturnType<typeof normalizeVendorEvents>;
-} {
-  const events = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      return parseJsonRecord(line);
-    })
-    .filter((event): event is Record<string, unknown> => Boolean(event));
-  if (events.length === 0) {
-    return { text: stdout, output_json: null, event_count: 0, runtime_events: [] };
-  }
-  const textChunks = events
-    .flatMap(eventText)
-    .filter((value): value is string => Boolean(value));
-  const usesDeltaProtocol = events.some((event) =>
-    event.method === "item/agentMessage/delta" ||
-    (
-      event.method === "session/update" &&
-      recordValue(recordValue(event.params).update).sessionUpdate === "agent_message_chunk"
-    ));
-  const text = textChunks.join(usesDeltaProtocol ? "" : "\n");
-  return {
-    text: text || stdout,
-    output_json: { format: `${adapterType}_jsonl` },
-    event_count: events.length,
-    runtime_events: normalizeVendorEvents(
-      adapterType,
-      events,
-      new Date().toISOString(),
-    ),
-  };
-}
-
-function eventText(event: Record<string, unknown>): string[] {
-  if (event.method === "item/agentMessage/delta") {
-    const delta = stringValue(recordValue(event.params).delta);
-    return delta ? [delta] : [];
-  }
-  if (event.method === "session/update") {
-    const update = recordValue(recordValue(event.params).update);
-    if (update.sessionUpdate !== "agent_message_chunk") return [];
-    const text = stringValue(recordValue(update.content).text);
-    return text ? [text] : [];
-  }
-  const direct = stringValue(event.text)
-    ?? stringValue(event.result)
-    ?? stringValue(recordValue(event.part).text)
-    ?? stringValue(recordValue(event.item).text)
-    ?? stringValue(recordValue(event.message).text);
-  if (direct) return [direct];
-  const content = recordValue(event.message).content;
-  if (!Array.isArray(content)) return [];
-  return content.flatMap((block) => {
-    const text = stringValue(recordValue(block).text);
-    return text ? [text] : [];
-  });
-}
-
-export function createVendorTextDeltaStream(adapterType: VendorCliAdapterType): {
-  push(chunk: string): string[];
-  finish(): string[];
-} {
-  let buffer = "";
-  const eventDeltas = (event: Record<string, unknown>): string[] => {
-    if (adapterType !== "claude_code" || event.type !== "stream_event") return [];
-    const streamEvent = recordValue(event.event);
-    const delta = recordValue(streamEvent.delta);
-    const text = streamEvent.type === "content_block_delta" && delta.type === "text_delta"
-      ? stringValue(delta.text)
-      : null;
-    return text ? [text] : [];
-  };
-  const parse = (flush: boolean): string[] => {
-    const lines = buffer.split(/\r?\n/);
-    buffer = flush ? "" : lines.pop() ?? "";
-    return lines
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .flatMap((line) => {
-        const event = parseJsonRecord(line);
-        return event ? eventDeltas(event) : [];
-      });
-  };
-  return {
-    push(chunk) {
-      buffer += chunk;
-      return parse(false);
-    },
-    finish() {
-      if (!buffer.trim()) return [];
-      buffer += "\n";
-      return parse(true);
-    },
-  };
-}
-
-function parseJsonRecord(line: string): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(line.trim());
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function cliFailure(

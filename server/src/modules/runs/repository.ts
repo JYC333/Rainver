@@ -882,7 +882,7 @@ export class PgRunRepository {
               r.runtime_profile_id, r.runtime_profile_selection_source,
               av.system_prompt AS system_prompt,
               r.run_type, r.status, r.mode, r.prompt,
-              r.instruction, r.project_folder_id, r.session_id, r.parent_run_id,
+              r.instruction, r.project_folder_id, r.host_task_thread_id, r.session_id, r.parent_run_id,
               r.root_run_id, r.run_group_id, r.delegation_id,
               r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
               r.capabilities_json, r.model_provider_id, r.model_override_json, r.required_sandbox_level,
@@ -973,7 +973,7 @@ export class PgRunRepository {
     const result = await this.db.query<RunRecord>(
       `SELECT id, space_id, agent_id, agent_version_id, run_role,
               requested_runtime_profile_id, runtime_profile_id, runtime_profile_selection_source,
-              run_type, status, mode, prompt, instruction, project_folder_id,
+              run_type, status, mode, prompt, instruction, project_folder_id, host_task_thread_id,
               session_id, parent_run_id, root_run_id, run_group_id, delegation_id,
               project_id, scheduled_at, adapter_type,
               capability_id, capabilities_json, model_provider_id, model_override_json,
@@ -1566,7 +1566,7 @@ export class PgRunRepository {
           WHERE space_id = $1 AND id = $2 AND status = 'queued'
           RETURNING id, space_id, agent_id, agent_version_id, runtime_profile_id,
                     runtime_profile_snapshot_json, run_type, status, mode,
-                    prompt, instruction, project_folder_id, session_id, project_id,
+                    prompt, instruction, project_folder_id, host_task_thread_id, session_id, project_id,
                     parent_run_id, root_run_id, run_group_id, delegation_id,
                     adapter_type, capability_id, capabilities_json, model_provider_id,
                     model_override_json, permission_snapshot_json,

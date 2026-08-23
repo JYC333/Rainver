@@ -16,6 +16,7 @@ import {
   validatePath,
 } from "./pathPolicy";
 import { isGitRepo, runGit } from "./git";
+import { PgHostRepository } from "../hosts/repository";
 
 const MAX_DEPTH = 5;
 const MAX_FILES = 500;
@@ -68,6 +69,9 @@ export interface ProjectFolderRow {
   allow_external_root: boolean;
   snapshot_retention_days: number | null;
   snapshot_max_count: number | null;
+  host_id: string;
+  host_kind: string;
+  display_path: string | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -93,6 +97,9 @@ export interface ProjectFolderOut {
   metadata_json: Record<string, unknown> | null;
   snapshot_retention_days: number | null;
   snapshot_max_count: number | null;
+  host_id: string;
+  host_kind: string;
+  display_path: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -224,6 +231,10 @@ export class PgProjectFolderRepository {
 
     const id = randomUUID();
     const now = new Date().toISOString();
+    // This flow (mkdir/clone/scan under `workspaceRoot`) only ever creates a
+    // folder on the server host — remote-host workspace registration is a
+    // separate daemon-driven path (P1's hosts module), not this endpoint.
+    const serverHostId = await new PgHostRepository(this.db).ensureServerHostId();
     return withTransactionIfPool(this.db, async (db) => {
       if (isPrimary) await demotePrimary(db, identity.spaceId, projectId);
       const row = await db.query<ProjectFolderRow>(
@@ -231,11 +242,14 @@ export class PgProjectFolderRepository {
            id, space_id, project_id, created_by_user_id, name, description, kind,
            is_primary, execution_enabled, repo_url, root_path, default_branch,
            metadata_json, status, protected, system_managed, registered_from,
+           host_id, host_kind,
            created_at, updated_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, true, $9, $10, $11,
-           $12::jsonb, 'active', false, $13, $14, $15, $15
+           $12::jsonb, 'active', false, $13, $14,
+           $15, 'server',
+           $16, $16
          )
          RETURNING ${folderColumns()}`,
         [
@@ -253,6 +267,7 @@ export class PgProjectFolderRepository {
           JSON.stringify(optionalObject(body.metadata_json)),
           registeredFrom !== "scan",
           registeredFrom,
+          serverHostId,
           now,
         ],
       );
@@ -406,8 +421,81 @@ export class PgProjectFolderRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * ADR 0016 `workspace add`: registers a directory the daemon already has
+   * on its own machine — never mkdir/clone/scan, never a local `root_path`.
+   * Called with the host's owner as `userId`; write access to the target
+   * Project is still required, exactly as the server-host `create` flow.
+   */
+  async createRemoteWorkspace(
+    projectId: string,
+    userId: string,
+    hostId: string,
+    input: { name: string; displayPath: string | null },
+  ): Promise<ProjectFolderOut> {
+    const project = await this.db.query<{ space_id: string }>(
+      `SELECT space_id FROM projects WHERE id = $1 AND deleted_at IS NULL`,
+      [projectId],
+    );
+    const spaceId = project.rows[0]?.space_id;
+    if (!spaceId) throw new HttpError(404, "Project not found");
+    await assertProjectWriter(this.db, spaceId, projectId, userId);
+    const name = requiredText(input.name, "name");
+    const duplicate = await this.db.query<{ id: string }>(
+      `SELECT id FROM project_folders
+        WHERE space_id = $1 AND project_id = $2 AND name = $3 AND status = 'active'
+        LIMIT 1`,
+      [spaceId, projectId, name],
+    );
+    if (duplicate.rows[0]) {
+      throw new HttpError(409, `A Project Folder named '${name}' already exists in this Project`);
+    }
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const row = await this.db.query<ProjectFolderRow>(
+      `INSERT INTO project_folders (
+         id, space_id, project_id, created_by_user_id, name, root_path, status,
+         kind, is_primary, execution_enabled, protected, system_managed,
+         registered_from, host_id, host_kind, display_path,
+         created_at, updated_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, NULL, 'active',
+         'code', false, true, false, false,
+         'daemon_registered', $6, 'remote', $7,
+         $8, $8
+       )
+       RETURNING ${folderColumns()}`,
+      [id, spaceId, projectId, userId, name, hostId, optionalText(input.displayPath), now],
+    );
+    return folderToOut(row.rows[0]!);
+  }
+
+  /** `workspace list`: every active Folder registered under this host. */
+  async listForHost(hostId: string): Promise<ProjectFolderOut[]> {
+    const result = await this.db.query<ProjectFolderRow>(
+      `${folderSelect()} WHERE host_id = $1 AND status = 'active' ORDER BY created_at ASC`,
+      [hostId],
+    );
+    return result.rows.map(folderToOut);
+  }
+
+  /**
+   * `workspace remove`: removes only the registration row, scoped to the
+   * calling host's own token — a host can never remove another host's
+   * workspace, and this never touches the directory itself (the daemon owns
+   * that; see `unregister` for the equivalent server-host semantics).
+   */
+  async unregisterForHost(hostId: string, folderId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `DELETE FROM project_folders WHERE id = $1 AND host_id = $2 AND host_kind = 'remote'`,
+      [folderId, hostId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async getTree(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<FileNode> {
     const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
+    assertServerHostFolder(folder);
     await this.enforceFolderRead(folder, identity.userId, "tree");
     const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
     const info = await stat(root).catch(() => null);
@@ -417,6 +505,7 @@ export class PgProjectFolderRepository {
 
   async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string): Promise<FileContent> {
     const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
+    assertServerHostFolder(folder);
     const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
     const safe = validatePath({
       path: resolve(root, requestedPath),
@@ -443,6 +532,7 @@ export class PgProjectFolderRepository {
 
   async getGitStatus(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<GitStatus> {
     const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
+    assertServerHostFolder(folder);
     await this.enforceFolderRead(folder, identity.userId, "git_status");
     const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
     if (!await isGitRepo(root)) return { is_repo: false, branch: null, files: [] };
@@ -458,6 +548,7 @@ export class PgProjectFolderRepository {
     requestedPath: string | null,
   ): Promise<{ diff: string; path: string | null; truncated: boolean; redacted: boolean }> {
     const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
+    assertServerHostFolder(folder);
     const root = projectFolderAbsoluteRoot(folder, this.config.workspaceRoot);
     let relPath: string | null = null;
     if (requestedPath) {
@@ -605,6 +696,21 @@ export class PgProjectFolderRepository {
   }
 }
 
+/**
+ * ADR 0016 / B62-B64: a remote-host Folder has no server-side path at all —
+ * `root_path` is always NULL for it (schema-enforced,
+ * `ck_project_folders_remote_no_root_path`). Every repository method that
+ * touches the local filesystem must call this first, so a remote row can
+ * never fall through to `projectFolderAbsoluteRoot`'s `resolve(workspaceRoot,
+ * folder.id)` default and accidentally read/write a server-local path that
+ * has nothing to do with the folder it claims to represent.
+ */
+export function assertServerHostFolder(folder: Pick<ProjectFolderRow, "host_kind">): void {
+  if (folder.host_kind !== "server") {
+    throw new HttpError(409, "This Project Folder is bound to a remote execution host; the server holds no local path for it.");
+  }
+}
+
 export function projectFolderAbsoluteRoot(
   folder: Pick<ProjectFolderRow, "id" | "root_path">,
   workspaceRoot: string,
@@ -639,6 +745,9 @@ export function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
     metadata_json: row.metadata_json,
     snapshot_retention_days: row.snapshot_retention_days,
     snapshot_max_count: row.snapshot_max_count,
+    host_id: row.host_id,
+    host_kind: row.host_kind,
+    display_path: row.display_path,
     created_at: dateIso(row.created_at),
     updated_at: dateIso(row.updated_at),
   };
@@ -662,6 +771,7 @@ function folderColumns(): string {
           is_primary, execution_enabled, repo_url, root_path, default_branch, status,
           protected, system_managed, registered_from, metadata_json,
           allow_external_root, snapshot_retention_days, snapshot_max_count,
+          host_id, host_kind, display_path,
           created_at, updated_at`;
 }
 

@@ -25,6 +25,7 @@ export function runToOut(
     selected_runtime_profile_id: run.runtime_profile_id ?? null,
     runtime_profile_selection_source: run.runtime_profile_selection_source ?? null,
     project_folder_id: run.project_folder_id ?? null,
+    host_task_thread_id: run.host_task_thread_id ?? null,
     session_id: run.session_id ?? null,
     parent_run_id: run.parent_run_id ?? null,
     root_run_id: run.root_run_id ?? null,

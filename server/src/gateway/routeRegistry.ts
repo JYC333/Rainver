@@ -75,6 +75,7 @@ import { promptsModule } from "../modules/prompts";
 import { tasksModule } from "../modules/tasks";
 import { projectFolderExecutionConfigsModule } from "../modules/projectFolderExecutionConfigs";
 import { projectFoldersModule } from "../modules/projectFolders";
+import { hostsModule } from "../modules/hosts";
 import { deploymentModule } from "../modules/deployment";
 import { frontendSupportModule } from "../modules/frontendSupport";
 // Official optional module control plane — registered before optional product modules.
@@ -168,6 +169,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   tasksModule,
   projectFolderExecutionConfigsModule,
   projectFoldersModule,
+  hostsModule,
   jobsModule,
   autonomyModule,
   automationsModule,

@@ -2326,6 +2326,8 @@ export interface Run {
   runtime_profile_selection_source?: 'explicit' | 'default' | null
   active_route_decision_id?: string | null
   project_folder_id: string | null
+  /** ADR 0016 D14: set only for a run dispatched to a remote host. */
+  host_task_thread_id?: string | null
   session_id: string | null
   parent_run_id: string | null
   instructed_by_user_id?: string | null
@@ -2360,6 +2362,7 @@ export interface Run {
   required_sandbox_level?: string | null
   contract_snapshot_json?: Record<string, unknown>
   workflow_version_id?: string | null
+  project_id?: string | null
 }
 
 export interface RunLogicalIO {
@@ -3395,6 +3398,11 @@ export interface ProjectFolder {
   metadata_json: Record<string, unknown> | null
   snapshot_retention_days: number | null
   snapshot_max_count: number | null
+  /** ADR 0016: which execution host this workspace lives on. */
+  host_id: string
+  host_kind: 'server' | 'remote'
+  /** Daemon-reported, display-only (ADR 0016 D3) — never an access path. */
+  display_path: string | null
   created_at: string
   updated_at: string
 }
@@ -3420,6 +3428,129 @@ export type ProjectFolderUpdateBody = Partial<Omit<ProjectFolderCreateBody, 'rep
 export interface ProjectFolderScanCandidate {
   name: string
   path: string
+}
+
+// --- ADR 0016: multi-host control center -----------------------------------
+
+export interface HostCapabilities {
+  runtimes?: string[]
+  versions?: Record<string, string>
+}
+
+export interface Host {
+  id: string
+  owner_user_id: string | null
+  name: string
+  kind: 'server' | 'remote'
+  status: 'pending_pairing' | 'online' | 'offline' | 'revoked'
+  last_heartbeat_at: string | null
+  platform: string | null
+  arch: string | null
+  daemon_version: string | null
+  capabilities_json: HostCapabilities | null
+  created_at: string
+  updated_at: string
+}
+
+export interface HostPairingCode {
+  host_id: string
+  pairing_code: string
+  expires_at: string
+}
+
+export interface HostTaskThread {
+  id: string
+  project_folder_id: string
+  host_id: string
+  adapter_type: string
+  vendor_session_id: string | null
+  last_run_id: string | null
+  status: 'active' | 'session_reset'
+  created_by_user_id: string
+  created_at: string
+  updated_at: string
+  /** control-center-phase2-plan.md P2 (C4): non-null while the message queue is paused. */
+  queue_paused_at: string | null
+}
+
+/** control-center-phase2-plan.md P3 (C10): a `GET /hosts/threads/recent` row — cross-project, joined summary fields included. */
+export interface HostRecentThread extends HostTaskThread {
+  project_id: string
+  project_name: string
+  folder_name: string
+}
+
+export type HostThreadMessageStatus = 'queued' | 'dispatched' | 'withdrawn'
+
+export interface HostThreadMessage {
+  id: string
+  host_task_thread_id: string
+  prompt: string
+  status: HostThreadMessageStatus
+  run_id: string | null
+  created_by_user_id: string
+  created_at: string
+  updated_at: string
+}
+
+export type HostThreadEventType =
+  | 'assistant_text'
+  | 'tool_activity_started'
+  | 'tool_activity_finished'
+  | 'status'
+  | 'diagnostic'
+  | 'plan_updated'
+
+export interface HostThreadEvent {
+  id: string
+  host_task_thread_id: string
+  run_id: string
+  event_index: number
+  event_type: HostThreadEventType
+  text: string | null
+  tool_call_id: string | null
+  tool_name: string | null
+  tool_input_summary: string | null
+  /** ACP runtime replatform P3 (A9): set on tool_activity_started only. */
+  tool_kind: string | null
+  /** ACP runtime replatform P3 (A9): set on tool_activity_finished only; absent for codex (adapter asymmetry, not a bug). */
+  tool_result_summary: string | null
+  status: string | null
+  created_at: string
+}
+
+/** control-center-phase2-plan.md P3 (C6): a `GET /hosts/runtime-adapters` row. */
+export interface HostRuntimeAdapterOption {
+  adapter_type: string
+  display_name: string
+  command: string
+  /** ACP runtime replatform P3: the vendor binary a host's capability probe actually reports (may differ from `command`). */
+  capability_probe: string
+  remote_eligible: boolean
+}
+
+export interface HostDispatchRequest {
+  project_folder_id: string
+  // control-center-phase2-plan.md P2 (C8): the server no longer requires
+  // (or reads) an Agent selection for a remote dispatch — kept optional,
+  // not removed, so existing callers that still send one keep compiling.
+  agent_id?: string
+  adapter_type: string
+  prompt: string
+  thread_id?: string | null
+  timeout_ms?: number | null
+}
+
+export interface HostDispatchResponse {
+  // control-center-phase2-plan.md P2 (C4): every send goes through the
+  // per-thread message queue — `message_id` always identifies the sent
+  // message; `run_id` is only set once something actually dispatched
+  // (`status: "dispatched"`), null while the message is still `"queued"`
+  // behind an active run or a paused thread.
+  message_id: string
+  thread_id: string
+  run_id: string | null
+  status: 'dispatched' | 'queued'
 }
 
 export interface ProjectFolderExecutionConfig {

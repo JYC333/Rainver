@@ -12,9 +12,12 @@ Before making code or architecture changes:
    [`.agent/context-bundles.yaml`](.agent/context-bundles.yaml).
 3. Read [`.agent/BOUNDARIES.md`](.agent/BOUNDARIES.md) before structural,
    ownership, security, policy, data-model, or migration changes.
-4. Read [`.agent/architecture/TESTING_STRATEGY.md`](.agent/architecture/TESTING_STRATEGY.md)
+4. Read [`.agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md`](.agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md)
+   before implementing substantial new behavior, adding a dependency, or
+   building shared infrastructure.
+5. Read [`.agent/architecture/TESTING_STRATEGY.md`](.agent/architecture/TESTING_STRATEGY.md)
    before adding or changing tests.
-5. Use [`.agent/COMMANDS.md`](.agent/COMMANDS.md) for canonical run, build,
+6. Use [`.agent/COMMANDS.md`](.agent/COMMANDS.md) for canonical run, build,
    test, migration, backup, and compose commands.
 
 Do not load every `.agent/` document by default. Load only what the task needs.
@@ -55,6 +58,11 @@ change.
 
 - Read the relevant docs first, then the code.
 - Keep changes scoped to the requested module/context.
+- Before implementing substantial new behavior, search the repository for an
+  existing implementation, helper, or test fixture; check the installed
+  dependencies and the canonical mechanism index; and for generic or commodity
+  capability, evaluate a mature external library before writing custom code.
+  Follow [`.agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md`](.agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md).
 - Implement the smallest code that satisfies the requested behavior. Avoid
   speculative, unused, duplicate, or convenience-only code; add abstraction only
   when it removes real complexity or matches an established local pattern.

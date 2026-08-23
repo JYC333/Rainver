@@ -62,6 +62,13 @@ export interface VerificationInput {
   base_commit_sha: string | null;
   output_json: unknown;
   materialization_items: RunMaterializationItemSummary[];
+  /**
+   * ADR 0016 P2: the run's resolved `HostExecutionPort` kind. Omitted (or
+   * `"server"`) preserves today's behavior exactly; a future `"remote"` run
+   * short-circuits `file_exists` rather than `stat`-ing a path that has no
+   * meaning on this machine.
+   */
+  host_kind?: "server" | "remote";
 }
 
 export interface VerificationEnginePort {

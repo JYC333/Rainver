@@ -474,7 +474,7 @@ async function evaluateByType(
   if (["command", "test", "lint", "typecheck"].includes(type)) {
     return evaluateCommand(input.run.id, input.sandbox_cwd, declaration, commandExecutor);
   }
-  if (type === "file_exists") return evaluateFileExistsAsync(input.sandbox_cwd, declaration.config);
+  if (type === "file_exists") return evaluateFileExistsAsync(input.sandbox_cwd, declaration.config, input.host_kind);
   if (type === "file_changed") return evaluateFileChanged(changed, declaration.config);
   if (type === "diff_scope") return evaluateDiffScope(changed, declaration.config);
   if (type === "no_forbidden_change") return evaluateNoForbiddenChange(changed, declaration.config);
@@ -558,7 +558,15 @@ async function evaluateCommand(
 async function evaluateFileExistsAsync(
   sandboxCwd: string | null,
   config: Record<string, unknown>,
+  hostKind?: "server" | "remote",
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
+  // ADR 0016 P2: `sandbox_cwd` on a remote-host run has no meaning on this
+  // machine — never `stat` it. No remote Run exists yet (P3), so this
+  // branch is unreachable today; it exists so P3 does not have to
+  // remember to add it.
+  if (hostKind && hostKind !== "server") {
+    return unavailable("file_exists verification is not available for a remote execution host.");
+  }
   const path = stringValue(config.path) ?? stringValue(config.value);
   if (!sandboxCwd) return unavailable("A sandbox is required for file_exists verification.");
   if (!path || !safeRelativePath(path)) return unavailable("file_exists requires a safe relative path.");

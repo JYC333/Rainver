@@ -429,6 +429,25 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   `space_runtime_tool_policies`. Agent versions store the resolved
   `runtime_tool_version`, and runs fail closed before credential resolution if
   that version is unavailable, disabled, or disallowed for the active space.
+- **HostExecutionPort (ADR 0016; extracted in the retired phase-1
+  control-center plan's P2):**
+  `RunOrchestrationService.prepareRuntimeContext` resolves a `HostExecutionPort`
+  once per run — server-host runs and folder-less runs always resolve to
+  `ServerHostExecutionAdapter`, a verbatim wrapper around the existing
+  `RunSandboxManagerPort`/`RunCodePatchCollectorPort`/`RunExchangePort`
+  instances (zero behavior change from before this port existed). A run bound
+  to a Project Folder resolves the Folder's `host_kind` via
+  `RunExecutionAdapterDeps.hostKindResolver`; a non-`server` result fails the
+  run with `remote_execution_not_implemented` rather than falling through to
+  local-filesystem code — no dispatch path can bind a run to a remote-host
+  Folder yet, so this is a defensive assertion, not a reachable branch. Remote
+  execution (`RemoteHostExecutionAdapter`, daemon-driven) is P3; the CLI
+  process executor and artifact materialization are not part of this port —
+  P3's remote adapter dispatches over the daemon protocol and collects
+  uploaded payloads rather than swapping implementations of those interfaces.
+  `file_exists` verification (`server/src/modules/runs/verification/engine.ts`)
+  takes the resolved `host_kind` and short-circuits for a non-`server` run
+  instead of `stat`-ing a path with no meaning on that machine.
 
 Do not add new adapters to the agents module — it contains Agent/AgentVersion CRUD only.
 

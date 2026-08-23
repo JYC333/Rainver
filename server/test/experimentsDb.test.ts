@@ -25,6 +25,7 @@ const PROJECT = "55555555-5555-4555-8555-555555555555";
 const WORKSPACE = "88888888-8888-4888-8888-888888888888";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
+const HOST = "77777777-7777-4777-8777-777777777777";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -53,11 +54,15 @@ beforeEach(async () => {
   await pool.query(
     `TRUNCATE experiment_interpretations, experiment_observations, experiment_runs, experiment_versions, experiment_definitions,
        inquiry_evidence_signals, inquiry_signal_candidates, inquiry_threads, project_folders, projects,
-       space_memberships, users, spaces CASCADE`,
+       space_memberships, users, spaces, hosts CASCADE`,
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
   await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at) VALUES ($1, NULL, 'server', 'server', 'online', $2, $2)`,
+    [HOST, now],
+  );
   await pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
@@ -67,9 +72,9 @@ beforeEach(async () => {
     [PROJECT, SPACE, OWNER, now],
   );
   await pool.query(
-    `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, execution_enabled, protected, system_managed, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'Experiment Folder','active','code',true,true,false,false,$5,$5)`,
-    [WORKSPACE, SPACE, PROJECT, OWNER, now],
+    `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, execution_enabled, protected, system_managed, host_id, host_kind, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'Experiment Folder','active','code',true,true,false,false,$5,'server',$6,$6)`,
+    [WORKSPACE, SPACE, PROJECT, OWNER, HOST, now],
   );
   await pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,current_version_id,visibility,created_at,updated_at)

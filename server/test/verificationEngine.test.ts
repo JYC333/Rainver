@@ -191,4 +191,37 @@ describe("verification engine", () => {
     expect(results[0]).toMatchObject({ verifier_type: "command", status: "passed" });
     expect(calls).toContainEqual(expect.arrayContaining([process.execPath, "-e"]));
   });
+
+  it("short-circuits file_exists for a remote-host run instead of stat-ing a path that has no meaning on this machine (ADR 0016 P2)", async () => {
+    const db = new VerificationDb();
+    const engine = new PgVerificationEngine(db);
+    const current = run({
+      contract_snapshot_json: {
+        required_outputs_json: ["file:report.json"],
+      },
+    });
+
+    const remote = await engine.verify({
+      run: current,
+      sandbox_cwd: "/this/path/does/not/exist/on/the/server",
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+      host_kind: "remote",
+    });
+    expect(remote[0]).toMatchObject({ verifier_type: "file_exists", status: "error" });
+    expect(remote[0]?.summary).toMatch(/not available for a remote execution host/);
+
+    // Omitting host_kind (or "server") preserves today's behavior exactly —
+    // it still actually checks the filesystem, so a genuinely-missing file
+    // fails rather than reporting unavailable.
+    const server = await engine.verify({
+      run: current,
+      sandbox_cwd: "/this/path/does/not/exist/on/the/server",
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+    expect(server[0]).toMatchObject({ verifier_type: "file_exists", status: "failed" });
+  });
 });

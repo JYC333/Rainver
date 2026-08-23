@@ -34,6 +34,7 @@ export const agents = pgTable("agents", {
 	uniqueIndex("uq_agents_system_source_post_processor_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_source_annotator_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_annotator'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_research_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text))`),
+	uniqueIndex("uq_agents_system_remote_dispatch_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_remote_dispatch'::text) AND ((status)::text = 'active'::text))`),
 	foreignKey({
 			columns: [table.ownerUserId],
 			foreignColumns: [users.id],
@@ -55,7 +56,7 @@ export const agents = pgTable("agents", {
 			name: "fk_agents_current_version_id_agent_versions"
 		}),
 	unique("uq_agents_space_id_id").on(table.id, table.spaceId),
-	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])`),
+	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text, ('system_remote_dispatch'::character varying)::text])`),
 	check("ck_agents_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('inactive'::character varying)::text, ('archived'::character varying)::text, ('disabled'::character varying)::text])`),
 	check("ck_agents_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_agents_access_level", sql`access_level IN ('full', 'summary')`),

@@ -9,68 +9,38 @@ import { normalizeVendorEvents } from "../src/modules/runs/runtimeEventNormaliza
 // the same way `error.message` already is.
 
 describe("normalizeVendorEvents tool_name redaction", () => {
-  it("redacts a secret embedded in a raw command_execution command string", () => {
-    const events = normalizeVendorEvents(
-      "codex",
-      [{
-        type: "command_execution_started",
-        item: { command: 'curl -H "Bearer sk-abcdefghijklmnop123456" https://example.com' },
-      }],
-      "2026-07-25T00:00:00.000Z",
-    );
+  it("redacts a secret embedded in an ACP tool_call title", () => {
+    const events = normalizeVendorEvents("codex_cli", [{
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "call-1",
+          title: 'curl -H "Bearer sk-abcdefghijklmnop123456" https://example.com',
+        },
+      },
+    }], "2026-07-25T00:00:00.000Z");
     expect(events).toHaveLength(1);
     const toolName = String((events[0]!.metadata_json as Record<string, unknown>).tool_name);
     expect(toolName).not.toContain("sk-abcdefghijklmnop123456");
     expect(toolName).toContain("[REDACTED_SECRET]");
   });
 
-  it("truncates an oversized command string instead of persisting it unbounded", () => {
-    const longCommand = `echo ${"a".repeat(5_000)}`;
-    const events = normalizeVendorEvents(
-      "codex",
-      [{ type: "command_execution_started", item: { command: longCommand } }],
-      "2026-07-25T00:00:00.000Z",
-    );
+  it("truncates an oversized tool_call title instead of persisting it unbounded", () => {
+    const longTitle = `echo ${"a".repeat(5_000)}`;
+    const events = normalizeVendorEvents("codex_cli", [{
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "session-1",
+        update: { sessionUpdate: "tool_call", toolCallId: "call-1", title: longTitle },
+      },
+    }], "2026-07-25T00:00:00.000Z");
     const toolName = String((events[0]!.metadata_json as Record<string, unknown>).tool_name);
-    expect(toolName.length).toBeLessThan(longCommand.length);
+    expect(toolName.length).toBeLessThan(longTitle.length);
     expect(toolName.endsWith("...[truncated]")).toBe(true);
-  });
-
-  it("keeps a short, safe tool name unchanged", () => {
-    const events = normalizeVendorEvents(
-      "claude_code",
-      [{ type: "tool_use_started", item: { name: "read_file" } }],
-      "2026-07-25T00:00:00.000Z",
-    );
-    expect((events[0]!.metadata_json as Record<string, unknown>).tool_name).toBe("read_file");
-  });
-
-  it("normalizes validated Codex app-server item lifecycle events", () => {
-    const occurredAt = "2026-07-25T00:00:00.000Z";
-    const events = normalizeVendorEvents("codex_cli", [
-      {
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: { id: "item-1", type: "commandExecution", command: "npm test" },
-        },
-      },
-      {
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          item: { id: "item-1", type: "commandExecution", status: "completed" },
-        },
-      },
-    ], occurredAt);
-
-    expect(events.map((event) => event.type)).toEqual([
-      "tool_call_started",
-      "tool_call_completed",
-    ]);
-    expect(events.every((event) => event.call_id === "item-1")).toBe(true);
   });
 
   it("normalizes ACP tool lifecycle updates", () => {
@@ -105,5 +75,56 @@ describe("normalizeVendorEvents tool_name redaction", () => {
       "tool_call_started",
       "tool_call_failed",
     ]);
+    expect((events[0]!.metadata_json as Record<string, unknown>).tool_name).toBe("Read file");
+  });
+
+  it("normalizes ACP tool lifecycle updates for codex_cli too (ACP runtime replatform P3)", () => {
+    const events = normalizeVendorEvents("codex_cli", [
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call-1",
+            title: "npm test",
+          },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-1",
+            status: "completed",
+          },
+        },
+      },
+    ], "2026-07-25T00:00:00.000Z");
+
+    expect(events.map((event) => event.type)).toEqual([
+      "tool_call_started",
+      "tool_call_completed",
+    ]);
+    expect(events.every((event) => event.call_id === "call-1")).toBe(true);
+  });
+
+  it("produces no normalized event for an ACP initialize response echoed for diagnostics", () => {
+    const events = normalizeVendorEvents("opencode", [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          protocolVersion: 1,
+          agentCapabilities: { sessionCapabilities: ["close", "fork", "list", "resume"] },
+        },
+      },
+    ], "2026-07-25T00:00:00.000Z");
+
+    expect(events).toEqual([]);
   });
 });

@@ -8,6 +8,7 @@ import { gitOutput, isGitRepo, runGit } from "./git";
 import { isInside } from "./pathPolicy";
 import {
   PgProjectFolderRepository,
+  assertServerHostFolder,
   projectFolderAbsoluteRoot,
   type ProjectFolderRow,
 } from "./repository";
@@ -74,6 +75,10 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     if (!folder) {
       throw new HttpError(404, "Project Folder not found");
     }
+    // ADR 0016: P1 sandbox provisioning (worktree/read-only/managed dir) is
+    // server-host-only. Remote-host Runs get their own `HostExecutionPort`
+    // adapter in P3, not this local-filesystem path.
+    assertServerHostFolder(folder);
     const folderRoot = await this.validateFolderRoot(folder);
     if (level === "read_only") {
       const contextCwd = this.readOnlyContextPath(run.space_id, run.id);

@@ -1,0 +1,119 @@
+import { arch, platform } from "node:os";
+import { detectCapabilities, type DaemonCapabilities } from "./capabilities.js";
+
+const DAEMON_VERSION = "0.1.0";
+
+export class ApiError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(url: string, init: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { "content-type": "application/json", ...init.headers },
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not reach the control plane at ${url}: ${cause}`);
+  }
+  const text = await response.text();
+  const body = text ? (JSON.parse(text) as unknown) : undefined;
+  if (!response.ok) {
+    const detail = body && typeof body === "object" && "detail" in body ? String((body as { detail: unknown }).detail) : response.statusText;
+    throw new ApiError(response.status, detail);
+  }
+  return body as T;
+}
+
+async function helloInfo(): Promise<{ platform: string; arch: string; daemon_version: string; capabilities_json: DaemonCapabilities }> {
+  const capabilities = await detectCapabilities();
+  return { platform: platform(), arch: arch(), daemon_version: DAEMON_VERSION, capabilities_json: capabilities };
+}
+
+export interface RegisterResult {
+  host_id: string;
+  token: string;
+  name: string;
+}
+
+export async function registerHost(serverUrl: string, pairingCode: string): Promise<RegisterResult> {
+  const info = await helloInfo();
+  return request<RegisterResult>(`${serverUrl}/api/v1/hosts/register`, {
+    method: "POST",
+    body: JSON.stringify({ pairing_code: pairingCode, ...info }),
+  });
+}
+
+export interface WorkspaceOut {
+  id: string;
+  project_id: string;
+  name: string;
+  display_path: string | null;
+  host_kind: string;
+  root_path: string | null;
+  created_at: string;
+}
+
+export async function createWorkspace(
+  serverUrl: string,
+  token: string,
+  input: { projectId: string; name: string; displayPath: string },
+): Promise<WorkspaceOut> {
+  return request<WorkspaceOut>(`${serverUrl}/api/v1/hosts/me/workspaces`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ project_id: input.projectId, name: input.name, display_path: input.displayPath }),
+  });
+}
+
+export async function listWorkspaces(serverUrl: string, token: string): Promise<WorkspaceOut[]> {
+  const result = await request<{ items: WorkspaceOut[] }>(`${serverUrl}/api/v1/hosts/me/workspaces`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return result.items;
+}
+
+export async function removeWorkspace(serverUrl: string, token: string, folderId: string): Promise<void> {
+  await request<void>(`${serverUrl}/api/v1/hosts/me/workspaces/${encodeURIComponent(folderId)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+  });
+}
+
+export async function uploadRunDiff(
+  serverUrl: string,
+  token: string,
+  runId: string,
+  input: { diff: string; truncated: boolean },
+): Promise<void> {
+  await request<void>(`${serverUrl}/api/v1/hosts/me/runs/${encodeURIComponent(runId)}/diff`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function uploadRunOutputs(
+  serverUrl: string,
+  token: string,
+  runId: string,
+  files: Array<{ name: string; content: string }>,
+): Promise<void> {
+  if (files.length === 0) return;
+  await request<void>(`${serverUrl}/api/v1/hosts/me/runs/${encodeURIComponent(runId)}/outputs`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ files }),
+  });
+}
+
+export { helloInfo };

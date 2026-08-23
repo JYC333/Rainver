@@ -13,7 +13,7 @@ Define the mobile client strategy. agent-space targets mobile as a thin client f
 - Offline queue for captures (sync when back online)
 
 ## Does Not Own
-- Agent run execution (always server-side)
+- Agent run execution (server-side, or on a registered execution host acting on the control plane's behalf — see [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-plane-execution-hosts.md); mobile never executes agent code locally either way)
 - Project Folder file editing (desktop / web only in v1)
 - Full memory review governance UI (mobile shows simplified view)
 
@@ -89,7 +89,7 @@ Left and right panels (from desktop layout) become:
 - Background sync: Web Background Sync API for offline queue drain
 
 ## Invariants
-- Mobile never runs agent code locally — all agent execution is server-side
+- Mobile never runs agent code locally — all agent execution runs on the control plane's server host or a registered execution host, never on the client
 - Quick capture must work offline (no error if server unreachable)
 - Card review must pre-fetch to work without continuous connection
 - Mobile layout must be a variant of desktop layout components — not a separate app

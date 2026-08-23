@@ -29,6 +29,7 @@ export interface RunRecord {
   prompt: string | null;
   instruction: string | null;
   project_folder_id: string | null;
+  host_task_thread_id?: string | null;
   session_id: string | null;
   parent_run_id?: string | null;
   root_run_id?: string | null;

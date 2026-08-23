@@ -7,9 +7,11 @@
 
 ## 1. Product Stance
 
-agent-space is **not** a local-first system and will not become one. The server-authoritative model is a deliberate design choice: agents run server-side, memory is managed through a proposal workflow, and policy and credentials require central enforcement.
+agent-space is **not** a local-first system and will not become one. The server-authoritative model is a deliberate design choice: the control plane holds canonical state, memory is managed through a proposal workflow, and policy and credentials require central enforcement.
 
-The compatible goal is narrower: **local-first personal interfaces for capture, drafts, tasks, cards, lightweight notes, and offline reading** — where local-first genuinely improves user experience — while keeping agent execution, active memory, proposals, credentials, Project Folder operations, policy, runtime adapters, and deployment firmly server-authoritative.
+The compatible goal is narrower: **local-first personal interfaces for capture, drafts, tasks, cards, lightweight notes, and offline reading** — where local-first genuinely improves user experience — while keeping active memory, proposals, credentials, policy, and deployment firmly server-authoritative.
+
+**Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** agent execution and Project Folder operations are authoritative to whichever **execution host** owns the folder, not necessarily the server process — the server host (unchanged, strictly isolated) or a personal machine the user has explicitly paired as a trusted execution host. This is a narrowing, not a reversal: an execution host is a machine the user owns and has paired with the control plane, never an arbitrary or untrusted client, and it never gains the ability to originate syncable drafts the way the local-first clients in §2 do. The "not local-first" stance in this document is entirely about client-originated sync of drafts/records, and is unaffected by where a paired execution host happens to run an agent.
 
 Key principle: any object that feeds into durable system state must pass through the server. Local-first is a client convenience layer, not a durability layer.
 
@@ -49,10 +51,18 @@ Objects that must never leave the server boundary:
 
 - Credentials and provider secrets
 - RuntimeAdapter secrets / config
-- Project Folder filesystem paths
+- Project Folder filesystem paths (server-host rows only — see below)
 - Sandbox paths
 - Deployment jobs
 - Capability install / update state
+
+**Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
+for a Project Folder row bound to a remote execution host, there is no
+server-side path to keep server-only — the control plane never possesses
+one. Only a daemon-reported `display_path` (UI-display data, never an access
+or identity key) is stored. "Server-only" for that row means "never treated
+as control-plane authority", which the daemon path already satisfies by
+construction rather than by boundary enforcement.
 
 ### Cache-Only
 Read-only local copies; never written back as truth:
@@ -149,7 +159,7 @@ Clients must not:
 - Apply agent-produced memory writes without the server proposal flow
 - Independently resolve artifact references against local state
 
-Agent execution remains server-side (or main-node-side in federated deployments). This is non-negotiable: tool use, memory access, credential injection, and policy checks are server responsibilities.
+Agent execution remains server-side on the server host. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** it is control-plane-side on a remote execution host — a personal machine the user has paired, not a client. Tool use, memory access, credential injection, and policy checks are server responsibilities on the server host; a remote trusted host deliberately does not receive server-brokered credentials, in-process tool calls, or PathPolicy enforcement (see §1's amendment above and [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10) — it runs the machine's own already-installed CLI under its own login state. What remains non-negotiable is that a *client* (browser, mobile) never executes agent logic or holds credentials; that boundary is unchanged.
 
 ---
 
@@ -174,7 +184,7 @@ The following are explicitly out of scope for this system:
 - **Full event sourcing** — not the current storage model; adding it retroactively is high risk
 - **Full offline agent execution** — violates policy enforcement and memory authority boundaries
 - **Full mobile database sync** — no current mobile client; design when the need is concrete
-- **E2EE / zero-knowledge architecture** — incompatible with server-side agent execution and memory management
+- **E2EE / zero-knowledge architecture** — incompatible with control-plane-mediated memory management, and (per [ADR 0016](../decisions/0016-control-plane-execution-hosts.md)) still incompatible on a paired execution host: pairing extends trust to a specific machine, it does not make that machine zero-knowledge to the control plane
 - **Project Folder file local-first sync** — filesystem paths are server-authoritative; local sync introduces conflict resolution complexity that has no current payoff
 
 These may become relevant in future iterations, but should not influence current implementation decisions.

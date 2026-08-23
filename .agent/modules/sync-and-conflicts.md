@@ -19,7 +19,7 @@ Define the sync strategy for a future where agent-space can run on multiple devi
 
 ## Core Design Principles
 
-**Local-first for syncable objects:** Captures, drafts, tasks, card reviews, and user preferences write locally first. Sync is a background operation, not a prerequisite. Agent execution, proposal apply, and active memory writes remain server-authoritative and do not follow this principle — see [architecture/LOCAL_FIRST_COMPATIBILITY.md](../architecture/LOCAL_FIRST_COMPATIBILITY.md) for the full data classification.
+**Local-first for syncable objects:** Captures, drafts, tasks, card reviews, and user preferences write locally first. Sync is a background operation, not a prerequisite. Proposal apply and active memory writes remain server-authoritative, and agent execution stays authoritative to the control plane's server host or a paired execution host — none of this follows the local-first principle; see [architecture/LOCAL_FIRST_COMPATIBILITY.md](../architecture/LOCAL_FIRST_COMPATIBILITY.md) for the full data classification and [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-plane-execution-hosts.md) for the execution-host model.
 
 **Append-bias:** Prefer creating new records over in-place mutation. New Memory versions are new records (version field increments). Agent runs are immutable once complete.
 

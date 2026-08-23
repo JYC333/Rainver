@@ -42,6 +42,7 @@ node_modules/
 server/dist/
 apps/web/dist/
 packages/protocol/dist/
+packages/host-daemon/dist/
 
 # Rust / Tauri
 apps/web/src-tauri/target/

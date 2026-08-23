@@ -124,6 +124,15 @@ import type {
   FileContent,
   FileNode,
   GitStatus,
+  Host,
+  HostDispatchRequest,
+  HostDispatchResponse,
+  HostPairingCode,
+  HostRecentThread,
+  HostRuntimeAdapterOption,
+  HostTaskThread,
+  HostThreadEvent,
+  HostThreadMessage,
   HomeSummaryOut,
   InformationDigest,
   InquiryCandidate,
@@ -1396,6 +1405,7 @@ export const artifactsApi = {
     artifact_type?: string
     project_id?: string
     project_folder_id?: string
+    run_id?: string
     limit?: number
     offset?: number
   } = {}) => {
@@ -1403,6 +1413,7 @@ export const artifactsApi = {
     if (params.artifact_type !== undefined) q.artifact_type = params.artifact_type
     if (params.project_id !== undefined) q.project_id = params.project_id
     if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
+    if (params.run_id !== undefined) q.run_id = params.run_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Artifact>>('/artifacts?' + new URLSearchParams(q))
@@ -1810,6 +1821,31 @@ export const projectFoldersApi = {
     get<{ diff: string; path: string | null; truncated: boolean; redacted: boolean }>(
       `/projects/${projectId}/folders/${folderId}/git/diff` + (path ? `?path=${encodeURIComponent(path)}` : ''),
     ),
+}
+
+// ADR 0016: multi-host control center — pairing, dispatch, and the
+// work-stream read side (task threads). See .agent/modules/hosts.md.
+export const hostsApi = {
+  list: () => get<{ items: Host[] }>('/hosts'),
+  pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
+  revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
+  dispatch: (data: HostDispatchRequest) => post<HostDispatchResponse>('/hosts/dispatch', data),
+  listThreads: (projectId: string) =>
+    get<{ items: HostTaskThread[] }>(`/hosts/threads?project_id=${encodeURIComponent(projectId)}`),
+  /** Cross-project landing read (C10) — Project is a filter the caller applies via `listThreads`, not a precondition. */
+  listRecentThreads: (limit = 20) =>
+    get<{ items: HostRecentThread[] }>(`/hosts/threads/recent?limit=${limit}`),
+  listRuntimeAdapters: () => get<{ items: HostRuntimeAdapterOption[] }>('/hosts/runtime-adapters'),
+  listMessages: (threadId: string) =>
+    get<{ items: HostThreadMessage[] }>(`/hosts/threads/${encodeURIComponent(threadId)}/messages`),
+  listEvents: (threadId: string, after: number) =>
+    get<{ items: HostThreadEvent[] }>(`/hosts/threads/${encodeURIComponent(threadId)}/events?after=${after}`),
+  withdrawMessage: (threadId: string, messageId: string) =>
+    post<HostThreadMessage>(`/hosts/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/withdraw`),
+  resumeQueue: (threadId: string) =>
+    post<{ thread_id: string; run_id: string | null; status: 'dispatched' | 'idle' }>(`/hosts/threads/${encodeURIComponent(threadId)}/resume-queue`),
+  cancel: (threadId: string) =>
+    post<{ run_id: string; status: string }>(`/hosts/threads/${encodeURIComponent(threadId)}/cancel`),
 }
 
 export const projectFolderExecutionConfigsApi = {

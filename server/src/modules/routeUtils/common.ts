@@ -290,6 +290,35 @@ export async function withQueryableTransaction<T>(
   }
 }
 
+/**
+ * Wraps an async callback so every call chains strictly after the one
+ * before it, instead of racing when called from synchronous, un-awaited
+ * call sites (a live output-stream callback firing several times per
+ * chunk, none of which its caller awaits). Without this, two calls whose
+ * work reads-then-writes some shared "current max" state (an
+ * `event_index`-style cursor) can both read the same starting point and
+ * collide. A rejection from one call does not skip or block the next —
+ * each call is attempted regardless of how the previous one settled — and
+ * the returned function's own promise never rejects (a live/best-effort
+ * callback must not crash its un-awaited caller via an unhandled
+ * rejection); a caller that needs to know a batch actually landed should
+ * `await` the returned promise and check separately, not rely on rejection.
+ * `control-center-phase2-plan.md` P1: built for `host_thread_events` writes
+ * and the pre-existing `run_events` semantic-event sink, which had the
+ * identical race, found via this same phase's own test coverage.
+ */
+export function serializeCalls<TArg>(
+  fn: (arg: TArg) => Promise<unknown>,
+): (arg: TArg) => Promise<void> {
+  let chain: Promise<void> = Promise.resolve();
+  return (arg) => {
+    const attempt = () => fn(arg);
+    const next = chain.then(attempt, attempt).then(() => undefined, () => undefined);
+    chain = next;
+    return next;
+  };
+}
+
 export function page<T>(
   items: T[],
   total: number,

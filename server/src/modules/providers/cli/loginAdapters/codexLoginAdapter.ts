@@ -41,6 +41,10 @@ export const codexLoginAdapter: CliLoginAdapter = {
   runtime: "codex_cli",
   method: "cli",
   command: ["codex", "login", "--device-auth"],
+  // ACP runtime replatform P3: resolveForExecution("codex_cli") now
+  // resolves the codex-acp ACP adapter, which does not support
+  // --device-auth — this flow needs the bundled vendor `codex` CLI instead.
+  resolve_vendor_cli: true,
   home_subdir: ".codex",
   credential_file: "auth.json",
   label: "Codex CLI",

@@ -1,5 +1,5 @@
 {
-  "id": "062cedba-2d25-4a29-9e7d-9419cd9bee74",
+  "id": "44f7d773-0bd1-4f9a-b06e-8e399c0a08c3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -3624,6 +3624,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uq_agents_system_remote_dispatch_per_space": {
+          "name": "uq_agents_system_remote_dispatch_per_space",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "(((agent_kind)::text = 'system_remote_dispatch'::text) AND ((status)::text = 'active'::text))",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3701,7 +3717,7 @@
       "checkConstraints": {
         "ck_agents_agent_kind": {
           "name": "ck_agents_agent_kind",
-          "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])"
+          "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text, ('system_remote_dispatch'::character varying)::text])"
         },
         "ck_agents_status": {
           "name": "ck_agents_status",
@@ -52469,6 +52485,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "host_task_thread_id": {
+          "name": "host_task_thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "session_id": {
           "name": "session_id",
           "type": "varchar(36)",
@@ -53125,6 +53147,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_runs_host_task_thread_id": {
+          "name": "ix_runs_host_task_thread_id",
+          "columns": [
+            {
+              "expression": "host_task_thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -53218,6 +53255,19 @@
           "tableTo": "run_delegations",
           "columnsFrom": [
             "delegation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "runs_host_task_thread_id_fkey": {
+          "name": "runs_host_task_thread_id_fkey",
+          "tableFrom": "runs",
+          "tableTo": "host_task_threads",
+          "columnsFrom": [
+            "host_task_thread_id"
           ],
           "columnsTo": [
             "id"
@@ -66691,6 +66741,661 @@
       },
       "isRLSEnabled": false
     },
+    "public.hosts": {
+      "name": "hosts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pairing_code_expires_at": {
+          "name": "pairing_code_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_heartbeat_at": {
+          "name": "last_heartbeat_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "platform": {
+          "name": "platform",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "arch": {
+          "name": "arch",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "daemon_version": {
+          "name": "daemon_version",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "capabilities_json": {
+          "name": "capabilities_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_hosts_owner_user_id": {
+          "name": "ix_hosts_owner_user_id",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_hosts_status": {
+          "name": "ix_hosts_status",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_hosts_single_server": {
+          "name": "uq_hosts_single_server",
+          "columns": [
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "kind = 'server'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_hosts_owner_name": {
+          "name": "uq_hosts_owner_name",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "owner_user_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "hosts_owner_user_id_fkey": {
+          "name": "hosts_owner_user_id_fkey",
+          "tableFrom": "hosts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_hosts_token_hash": {
+          "name": "uq_hosts_token_hash",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_hosts_kind": {
+          "name": "ck_hosts_kind",
+          "value": "kind IN ('server', 'remote')"
+        },
+        "ck_hosts_status": {
+          "name": "ck_hosts_status",
+          "value": "status IN ('pending_pairing', 'online', 'offline', 'revoked')"
+        },
+        "ck_hosts_server_no_owner": {
+          "name": "ck_hosts_server_no_owner",
+          "value": "kind <> 'server' OR owner_user_id IS NULL"
+        },
+        "ck_hosts_remote_has_owner": {
+          "name": "ck_hosts_remote_has_owner",
+          "value": "kind <> 'remote' OR owner_user_id IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.host_task_threads": {
+      "name": "host_task_threads",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_folder_id": {
+          "name": "project_folder_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "host_id": {
+          "name": "host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "adapter_type": {
+          "name": "adapter_type",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vendor_session_id": {
+          "name": "vendor_session_id",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_run_id": {
+          "name": "last_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "queue_paused_at": {
+          "name": "queue_paused_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_host_task_threads_project_folder_id": {
+          "name": "ix_host_task_threads_project_folder_id",
+          "columns": [
+            {
+              "expression": "project_folder_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_host_task_threads_host_id": {
+          "name": "ix_host_task_threads_host_id",
+          "columns": [
+            {
+              "expression": "host_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "host_task_threads_project_folder_id_fkey": {
+          "name": "host_task_threads_project_folder_id_fkey",
+          "tableFrom": "host_task_threads",
+          "tableTo": "project_folders",
+          "columnsFrom": [
+            "project_folder_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_task_threads_host_id_fkey": {
+          "name": "host_task_threads_host_id_fkey",
+          "tableFrom": "host_task_threads",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_host_task_threads_id_folder": {
+          "name": "uq_host_task_threads_id_folder",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_folder_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_host_task_threads_status": {
+          "name": "ck_host_task_threads_status",
+          "value": "status IN ('active', 'session_reset')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.host_thread_events": {
+      "name": "host_thread_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "host_task_thread_id": {
+          "name": "host_task_thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_index": {
+          "name": "event_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_call_id": {
+          "name": "tool_call_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_name": {
+          "name": "tool_name",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_input_summary": {
+          "name": "tool_input_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_kind": {
+          "name": "tool_kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_result_summary": {
+          "name": "tool_result_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_host_thread_events_thread_id": {
+          "name": "ix_host_thread_events_thread_id",
+          "columns": [
+            {
+              "expression": "host_task_thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_host_thread_events_run_id": {
+          "name": "ix_host_thread_events_run_id",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "host_thread_events_thread_id_fkey": {
+          "name": "host_thread_events_thread_id_fkey",
+          "tableFrom": "host_thread_events",
+          "tableTo": "host_task_threads",
+          "columnsFrom": [
+            "host_task_thread_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_thread_events_run_id_fkey": {
+          "name": "host_thread_events_run_id_fkey",
+          "tableFrom": "host_thread_events",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_host_thread_events_thread_event_index": {
+          "name": "uq_host_thread_events_thread_event_index",
+          "nullsNotDistinct": false,
+          "columns": [
+            "host_task_thread_id",
+            "event_index"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_host_thread_events_event_type": {
+          "name": "ck_host_thread_events_event_type",
+          "value": "(event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text])"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.host_thread_messages": {
+      "name": "host_thread_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "host_task_thread_id": {
+          "name": "host_task_thread_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_host_thread_messages_thread_id": {
+          "name": "ix_host_thread_messages_thread_id",
+          "columns": [
+            {
+              "expression": "host_task_thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_host_thread_messages_run_id": {
+          "name": "ix_host_thread_messages_run_id",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "host_thread_messages_thread_id_fkey": {
+          "name": "host_thread_messages_thread_id_fkey",
+          "tableFrom": "host_thread_messages",
+          "tableTo": "host_task_threads",
+          "columnsFrom": [
+            "host_task_thread_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_thread_messages_run_id_fkey": {
+          "name": "host_thread_messages_run_id_fkey",
+          "tableFrom": "host_thread_messages",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_host_thread_messages_status": {
+          "name": "ck_host_thread_messages_status",
+          "value": "(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('dispatched'::character varying)::text, ('withdrawn'::character varying)::text])"
+        },
+        "ck_host_thread_messages_run_id_consistency": {
+          "name": "ck_host_thread_messages_run_id_consistency",
+          "value": "(status = 'dispatched') = (run_id IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.project_folder_execution_configs": {
       "name": "project_folder_execution_configs",
       "schema": "",
@@ -67035,6 +67740,24 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": false
+        },
+        "host_id": {
+          "name": "host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "host_kind": {
+          "name": "host_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_path": {
+          "name": "display_path",
+          "type": "varchar(1024)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -67088,6 +67811,21 @@
           "columns": [
             {
               "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_folders_host_id": {
+          "name": "ix_project_folders_host_id",
+          "columns": [
+            {
+              "expression": "host_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -67178,6 +67916,19 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "project_folders_host_id_fkey": {
+          "name": "project_folders_host_id_fkey",
+          "tableFrom": "project_folders",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -67200,6 +67951,14 @@
         "ck_project_folders_status": {
           "name": "ck_project_folders_status",
           "value": "(status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text])"
+        },
+        "ck_project_folders_host_kind": {
+          "name": "ck_project_folders_host_kind",
+          "value": "host_kind IN ('server', 'remote')"
+        },
+        "ck_project_folders_remote_no_root_path": {
+          "name": "ck_project_folders_remote_no_root_path",
+          "value": "host_kind <> 'remote' OR root_path IS NULL"
         }
       },
       "isRLSEnabled": false

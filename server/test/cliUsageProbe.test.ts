@@ -32,7 +32,10 @@ afterEach(async () => {
 const FAST = { promptSettleMs: 20, outputSettleMs: 20, pollMs: 5, deadlineMs: 1_000 };
 const FAST_RPC = { initializeTimeoutMs: 500, requestTimeoutMs: 500 };
 const claudeResolver = { resolveForExecution: async () => ({ executable_path: "claude" }) };
-const codexResolver = { resolveForExecution: async () => ({ executable_path: "codex" }) };
+const codexResolver = {
+  resolveForExecution: async () => ({ executable_path: "codex-acp" }),
+  resolveVendorCliForExecution: async () => ({ executable_path: "codex" }),
+};
 
 const USAGE_SCREEN = [
   "Claude usage this cycle",

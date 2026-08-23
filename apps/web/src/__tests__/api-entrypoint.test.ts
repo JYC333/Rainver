@@ -10,4 +10,9 @@ describe('web API entrypoint', () => {
   it('defaults the Vite dev proxy to server, not backend', () => {
     expect(viteConfigSource).toContain("'http://server:8010'")
   })
+
+  it('proxies the trusted-host WebSocket through the same dev origin', () => {
+    expect(viteConfigSource).toContain("'/internal'")
+    expect(viteConfigSource).toContain('ws: true')
+  })
 })

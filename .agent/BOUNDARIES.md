@@ -240,7 +240,7 @@ context outputs or sources of truth.
 
 **B18** — Sandboxes are short-lived execution areas. Long-term records are: artifacts, diffs, logs, and approved proposals. Sandbox directories may be cleaned up after artifact collection.
 
-**B19** — Agents do not directly modify a real Project Folder. Read-only work uses an OS-enforced `read_only` namespace; mutation uses `Project Folder → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`.
+**B19** — Agents do not directly modify a real Project Folder. Read-only work uses an OS-enforced `read_only` namespace; mutation uses `Project Folder → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`. **Amended 2026-08-21 ([ADR 0016](decisions/0016-control-plane-execution-hosts.md)):** this governed sequence describes the server host and any host under code-patch proposal governance. A Project Folder row bound to a remote trusted host is the deliberate exception — the agent runs in-place on the real directory and there is no worktree/apply-patch stage; see B65.
 
 **B19A** — Files & Code reads are policy-gated. `project_folder.read` is enforced for tree, file, git status, and git diff. Protected-Folder, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
 
@@ -287,9 +287,35 @@ implementation state and must not be extended as the target skill model.
 
 ---
 
+## Execution Host Boundaries
+
+See [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md).
+
+**B62** — An instance is one control plane plus N execution hosts. The server
+host keeps the existing strict isolation model (bubblewrap, PathPolicy,
+mount containment) unchanged; a remote (personal) host runs in trusted-host
+mode — native process spawn, no sandbox, the machine's own login state — and
+is not held to the server host's isolation invariants. Do not weaken the
+server host's isolation to make the two hosts look uniform, and do not claim
+remote execution carries the same isolation guarantees it does not have.
+
+**B63** — A host accepts Runs only from its own registered owner. There is no
+multi-user host sharing. A dispatch to a host whose `owner_user_id` does not
+match the caller must be rejected before any job is sent.
+
+**B64** — The control plane never resolves, mounts, or reads a filesystem
+path on a remote host. A remote Project Folder row's `root_path` stays null;
+only a daemon-reported `display_path` may be stored, and it is UI-display
+data, never used for access control, mount resolution, or identity.
+
+**B65** — Remote in-place execution's propose→apply governance (review before
+changes land, rollback semantics) is an open design question, not settled by
+default. Do not wire a remote diff into the code-patch proposal apply/rollback
+machinery without a new decision superseding this boundary.
+
 ## Mobile Boundaries
 
-**B28** — Mobile is a thin client. Agent execution always runs server-side. The mobile client must never attempt to run agent code locally.
+**B28** — Mobile is a thin client. Agent execution always runs server-side (or, per ADR 0016, on a registered execution host acting on the control plane's behalf). The mobile client must never attempt to run agent code locally.
 
 **B29** — Quick capture on mobile must work offline. The client must queue the ActivityRecord in IndexedDB and sync when the connection is restored.
 

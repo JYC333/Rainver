@@ -4,6 +4,7 @@ import { users } from "./auth";
 import { spaces } from "./spaces";
 import { projects } from "./projects";
 import { validationRecipes } from "./tasks";
+import { hosts } from "./hosts";
 
 export const projectFolders = pgTable("project_folders", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -29,11 +30,22 @@ export const projectFolders = pgTable("project_folders", {
 	allowExternalRoot: boolean("allow_external_root").default(false).notNull(),
 	snapshotRetentionDays: integer("snapshot_retention_days"),
 	snapshotMaxCount: integer("snapshot_max_count"),
+	// ADR 0016: which execution host owns this Folder. `hostKind` is a
+	// denormalized, write-once copy of `hosts.kind` at row-creation time —
+	// a host's kind never changes after creation, so this cannot drift —
+	// kept on the row so filesystem-touching code can guard on it without a
+	// join. A `remote` row's `rootPath` stays NULL forever; `displayPath` is
+	// the daemon-reported, UI-only label for it (never used for access,
+	// mount resolution, or identity — see B64).
+	hostId: varchar("host_id", { length: 36 }).notNull(),
+	hostKind: varchar("host_kind", { length: 16 }).notNull(),
+	displayPath: varchar("display_path", { length: 1024 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_project_folders_slug").using("btree", table.slug.asc().nullsLast()),
 	index("ix_project_folders_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_project_folders_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_project_folders_status").using("btree", table.status.asc().nullsLast()),
+	index("ix_project_folders_host_id").using("btree", table.hostId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.createdByUserId],
 			foreignColumns: [users.id],
@@ -49,6 +61,11 @@ export const projectFolders = pgTable("project_folders", {
 			foreignColumns: [projects.id, projects.spaceId],
 			name: "project_folders_project_id_fkey"
 		}),
+	foreignKey({
+			columns: [table.hostId],
+			foreignColumns: [hosts.id],
+			name: "project_folders_host_id_fkey"
+		}),
 	unique("uq_project_folders_space_id_id").on(table.id, table.spaceId),
 	uniqueIndex("uq_project_folders_space_root_path").using(
 		"btree",
@@ -58,6 +75,10 @@ export const projectFolders = pgTable("project_folders", {
 	uniqueIndex("uq_project_folders_one_primary_per_project").using("btree", table.projectId.asc().nullsLast()).where(sql`is_primary`),
 	check("ck_project_folders_kind", sql`kind IN ('code', 'data', 'docs')`),
 	check("ck_project_folders_status", sql`(status)::text = ANY (ARRAY['active'::text, 'archived'::text, 'stale'::text])`),
+	check("ck_project_folders_host_kind", sql`host_kind IN ('server', 'remote')`),
+	// Root path is authoritative only on the server host (ADR 0016 B64); a
+	// remote row's real path lives on the daemon's machine, never here.
+	check("ck_project_folders_remote_no_root_path", sql`host_kind <> 'remote' OR root_path IS NULL`),
 ]);
 
 export const projectFolderExecutionConfigs = pgTable("project_folder_execution_configs", {

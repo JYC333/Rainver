@@ -119,6 +119,7 @@ describe("repository agent guide invariants", () => {
       ".agent/INDEX.md",
       ".agent/context-bundles.yaml",
       ".agent/BOUNDARIES.md",
+      ".agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md",
       ".agent/architecture/TESTING_STRATEGY.md",
       ".agent/COMMANDS.md",
     ]) {
@@ -138,5 +139,74 @@ describe("repository agent guide invariants", () => {
       expect(positions.every((position) => position >= 0)).toBe(true);
       expect(positions).toEqual([...positions].sort((left, right) => left - right));
     }
+  });
+
+  it("records every server runtime dependency in the canonical mechanism index", () => {
+    // The reuse policy's index is only useful if it stays complete: an agent
+    // that reads it and finds nothing for a concern concludes the repository
+    // has no canonical mechanism, and hand-writes a second one. Server runtime
+    // dependencies are the set worth pinning this way — each is a
+    // cross-cutting choice, and the list is short enough that recording one
+    // costs a single table row. Workspace packages are excluded (they are this
+    // repo's own code), and dev dependencies are covered by the index's testing
+    // section rather than by this gate.
+    const manifest = JSON.parse(
+      readFileSync(join(repoRoot, "server", "package.json"), "utf8"),
+    ) as { dependencies?: Record<string, string> };
+    const policy = readFileSync(
+      join(agentRoot, "architecture", "REUSE_AND_DEPENDENCY_POLICY.md"),
+      "utf8",
+    );
+
+    const missing = Object.keys(manifest.dependencies ?? {})
+      .filter((name) => !name.startsWith("@agent-space/"))
+      .filter((name) => !policy.includes(name));
+
+    expect(
+      missing,
+      `Server dependencies missing from .agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md:\n${missing.join("\n")}`,
+    ).toEqual([]);
+  });
+});
+
+describe("repository agent hook invariants", () => {
+  const hookPairs = ["check-docs-sync.sh", "check-dependency-policy.sh"];
+
+  it("keeps the Claude and Codex hook scripts byte-identical", () => {
+    // Both harnesses run the same rules; a fix applied to one side only is the
+    // failure mode this catches, and it is silent otherwise.
+    for (const name of hookPairs) {
+      const claude = readFileSync(join(repoRoot, ".claude", "hooks", name), "utf8");
+      const codex = readFileSync(join(repoRoot, ".codex", "hooks", name), "utf8");
+      expect(codex, `${name} drifted between .claude/hooks and .codex/hooks`).toBe(claude);
+    }
+  });
+
+  it("keeps every document a hook points at real", () => {
+    // The docs-sync map previously named three deleted documents — one of them a
+    // "current focus" file INDEX.md forbids reintroducing — on nearly every edit.
+    // Stale hook output trains agents to ignore hook output, so this is a gate.
+    const script = readFileSync(join(repoRoot, ".claude", "hooks", "check-docs-sync.sh"), "utf8");
+    const missing = [...script.matchAll(/relevant_docs="([^"]+)"/g)]
+      .flatMap((match) => match[1]!.split(","))
+      .map((entry) => entry.trim())
+      .filter((entry) => entry && !existsSync(join(agentRoot, entry)));
+
+    expect(missing, `Hook points at missing .agent/ docs:\n${missing.join("\n")}`).toEqual([]);
+  });
+
+  it("keeps every repository path a hook matches on real", () => {
+    // Six of the mapped module directories had been renamed or deleted. Only
+    // unambiguous patterns are checked: `*<dir>/*` and `*<file>.ts(x)`.
+    const script = readFileSync(join(repoRoot, ".claude", "hooks", "check-docs-sync.sh"), "utf8");
+    const targets = new Set<string>();
+    for (const match of script.matchAll(/\*((?:server|apps|packages|plugins)\/[\w/.-]*?)(\/\*|\.tsx?)(?=[|)])/g)) {
+      targets.add(match[2] === "/*" ? match[1]! : match[1]! + match[2]!);
+    }
+
+    expect(targets.size, "path patterns should be extractable from the hook").toBeGreaterThan(10);
+    const missing = [...targets].filter((target) => !existsSync(join(repoRoot, target))).sort();
+
+    expect(missing, `Hook matches paths that no longer exist:\n${missing.join("\n")}`).toEqual([]);
   });
 });

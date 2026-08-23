@@ -70,77 +70,54 @@ function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
   };
 }
 
+/**
+ * ACP runtime replatform P3: codex_cli drives the general AcpController now
+ * (CodexAppServerController's bespoke NDJSON-RPC handshake is deleted) — this
+ * helper drives a single ACP turn to completion, same as it did for the old
+ * protocol, just speaking session/new + session/prompt instead.
+ */
 function completeCodexProtocol(
   controller: CliStdioController | undefined,
   text: string,
-  observeSend: (message: Record<string, unknown>) => void = () => {},
-  threadId = "thread-1",
-  resumed = false,
+  sessionId = "session-1",
 ): void {
-  if (!controller) throw new Error("expected Codex stdio controller");
-  const send = observeSend;
+  if (!controller) throw new Error("expected ACP stdio controller");
+  const sent: Record<string, unknown>[] = [];
+  const send = (message: Record<string, unknown>) => { sent.push(message); };
   const close = () => {};
   controller.start(send);
-  controller.receive({ id: 1, result: {} }, send, close);
-  controller.receive({ id: 2, result: { thread: { id: threadId } } }, send, close);
-  if (resumed) {
+  controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+  controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId } }, send, close);
+  const setConfigOption = sent.at(-1);
+  if (setConfigOption?.method === "session/set_config_option") {
+    const requestedModel = (setConfigOption.params as { value?: unknown } | undefined)?.value;
     controller.receive({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId,
-        tokenUsage: {
-          total: {
-            inputTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0,
-            cachedInputTokens: 0,
-            cacheWriteInputTokens: 0,
-            reasoningOutputTokens: 0,
-          },
-        },
-      },
+      jsonrpc: "2.0",
+      id: 3,
+      result: { configOptions: [{ id: "model", currentValue: requestedModel }] },
     }, send, close);
   }
-  controller.receive({ id: 3, result: { turn: { id: "turn-1" } } }, send, close);
   controller.receive({
-    method: "item/agentMessage/delta",
+    jsonrpc: "2.0",
+    method: "session/update",
     params: {
-      threadId,
-      turnId: "turn-1",
-      itemId: "item-1",
-      delta: text,
+      sessionId,
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
     },
   }, send, close);
   controller.receive({
-    method: "thread/tokenUsage/updated",
-    params: {
-      threadId,
-      turnId: "turn-1",
-      tokenUsage: {
-        last: {
-          inputTokens: 12,
-          outputTokens: 3,
-          totalTokens: 15,
-          cachedInputTokens: 4,
-          cacheWriteInputTokens: 0,
-          reasoningOutputTokens: 1,
-        },
-        total: {
-          inputTokens: 12,
-          outputTokens: 3,
-          totalTokens: 15,
-          cachedInputTokens: 4,
-          cacheWriteInputTokens: 0,
-          reasoningOutputTokens: 1,
-        },
+    jsonrpc: "2.0",
+    id: 4,
+    result: {
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 3,
+        totalTokens: 20,
+        cachedReadTokens: 4,
+        cachedWriteTokens: 0,
+        thoughtTokens: 1,
       },
-    },
-  }, send, close);
-  controller.receive({
-    method: "turn/completed",
-    params: {
-      threadId,
-      turn: { id: "turn-1", status: "completed" },
     },
   }, send, close);
 }
@@ -1276,11 +1253,7 @@ describe("RunOrchestrationService", () => {
       identity: { spaceId: "space-1", userId: "user-1" },
     });
     expect(executorCalls[0]).toEqual({
-      command: [
-        process.execPath,
-        "app-server",
-        "--stdio",
-      ],
+      command: [process.execPath],
       cwd: "/tmp/aspace-prepared-run",
     });
     expect(repo.calls).toContain("event:sandbox_created:succeeded");
@@ -1295,19 +1268,114 @@ describe("RunOrchestrationService", () => {
         execution_channel: "local_cli",
         adapter_type: "codex_cli",
         run_id: "run-1",
-        external_session_id: "thread-1",
+        external_session_id: "session-1",
         usage_accuracy: "provider_reported",
         idempotency_key: "usage-delivery-1:0",
         usage_details: {
-          input: 8,
-          output: 2,
-          total: 15,
+          input: 12,
+          output: 3,
+          total: 20,
           input_cache_creation: 0,
           input_cache_read: 4,
           output_reasoning: 1,
         },
       }),
     ]);
+  });
+
+  it("never touches the local workspace manager for a run bound to a remote-host Folder, regardless of its sandbox level (ADR 0016 P2/P3)", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({
+      adapter_type: "codex_cli",
+      model_provider_id: null,
+      required_sandbox_level: "worktree",
+      project_folder_id: "remote-workspace-1",
+    });
+    const workspaceManager = new FakeWorkspaceManager();
+    const hostKindCalls: Array<{ projectFolderId: string; spaceId: string }> = [];
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      runtimeToolVersionResolver: async () => "test-version",
+      workspaceManager,
+      hostKindResolver: async (projectFolderId, spaceId) => {
+        hostKindCalls.push({ projectFolderId, spaceId });
+        return { hostKind: "remote", hostId: "host-1" };
+      },
+      vendorCli: {
+        credentialBroker: {
+          async grantForRun() {
+            throw new Error("must not resolve a credential grant for a remote run (D1: no server-brokered credentials)");
+          },
+        },
+        executor: {
+          async runCommand() {
+            throw new Error("must not spawn a process through the server-host executor for a remote run");
+          },
+        },
+        toolRegistry: new FakeTools(),
+      },
+    });
+
+    const result = await service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      job_id: "11111111-1111-4111-8111-111111111111",
+      command_source: "job",
+    });
+
+    // ACP runtime replatform P3: codex_cli is now remote-eligible (its
+    // protocol is "acp", driven through the same general AcpController as
+    // opencode) — no live daemon connection is registered anywhere in this
+    // process during this test, so it fails the same way the argv_template
+    // remote test below does (host offline), not via a protocol-rejection
+    // error_code. That failure mode is itself proof the call reached the
+    // remote branch rather than falling through to the server-host mocks
+    // above, which would have thrown instead.
+    expect(result).toMatchObject({ status: "failed" });
+    expect(hostKindCalls).toEqual([{ projectFolderId: "remote-workspace-1", spaceId: "space-1" }]);
+    // Never reached the workspace manager — a remote-bound run skips every
+    // local-sandbox branch unconditionally, even though this run explicitly
+    // requested "worktree", precisely because the Folder's real path lives
+    // on a different machine and required_sandbox_level cannot be trusted
+    // to always be "none" for a remote-bound run.
+    expect(workspaceManager.calls).toEqual([]);
+  });
+
+  it("routes a supported (ACP) adapter's remote-host run to the remote branch with no local sandbox prep (ADR 0016 P3)", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({
+      adapter_type: "claude_code",
+      model_provider_id: null,
+      required_sandbox_level: "none",
+      project_folder_id: "remote-workspace-2",
+      prompt: "fix the failing test",
+    });
+    const workspaceManager = new FakeWorkspaceManager();
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      runtimeToolVersionResolver: async () => "test-version",
+      workspaceManager,
+      hostKindResolver: async () => ({ hostKind: "remote", hostId: "host-2" }),
+    });
+    const result = await service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      job_id: "11111111-1111-4111-8111-111111111111",
+      command_source: "job",
+    });
+    // No live daemon connection is registered anywhere in this process
+    // during this test, so `RemoteWsCliCommandExecutor` (constructed inside
+    // `executeRemoteHostCliAdapter` itself — this layer has no injection
+    // seam for it, by design; see remoteHostCliAdapter.test.ts for
+    // wire-level coverage with a fake connection registry) reports the
+    // host offline rather than crashing or falling through to a local
+    // path. That failure mode is itself proof the call reached the remote
+    // branch: a local_cli run with no execution_port override would
+    // instead have failed on a missing vendor credential grant.
+    expect(result).toMatchObject({ status: "failed" });
+    expect(workspaceManager.calls).toEqual([]);
   });
 
   it("writes materialization summaries and finalizes after terminal state", async () => {
@@ -1926,11 +1994,7 @@ describe("RunOrchestrationService", () => {
         adapter_config: { executable_path: "/tmp/attacker-binary" },
       }),
     ).resolves.toMatchObject({ status: "succeeded" });
-    expect(adapterConfigs[0].command).toEqual([
-      process.execPath,
-      "app-server",
-      "--stdio",
-    ]);
+    expect(adapterConfigs[0].command).toEqual([process.execPath]);
   });
 
   it("uses the run row adapter type as authoritative and fails closed for unknown adapters", async () => {
@@ -2162,9 +2226,9 @@ describe("RunOrchestrationService", () => {
     expect(usageObservations[0]).toMatchObject({
       run_id: "run-1",
       usage_details: {
-        input: 8,
-        output: 2,
-        total: 15,
+        input: 12,
+        output: 3,
+        total: 20,
         input_cache_creation: 0,
         input_cache_read: 4,
         output_reasoning: 1,

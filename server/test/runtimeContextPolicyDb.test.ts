@@ -23,6 +23,7 @@ const RUN = "66666666-6666-4666-8666-666666666666";
 const AUTOMATION = "77777777-7777-4777-8777-777777777777";
 const CHILD_RUN = "89898989-8989-4989-8989-898989898989";
 const PROVIDER_HOME_SPACE = "99999999-9999-4999-8999-999999999999";
+const HOST = "12121212-1212-4212-8212-121212121212";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -49,11 +50,16 @@ beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(`TRUNCATE runtime_context_policy_audits, runtime_context_policy_bindings,
     runtime_context_policy_versions, agents, project_folders, project_members, projects,
-    policy_decision_records, space_memberships, users, spaces CASCADE`);
+    policy_decision_records, space_memberships, users, spaces, hosts CASCADE`);
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Team', 'household', now(), now())`,
     [SPACE],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
+     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    [HOST],
   );
   for (const id of [OWNER, ADMIN, MEMBER, OTHER]) {
     await pool.query(
@@ -82,9 +88,10 @@ beforeEach(async () => {
   await pool.query(
     `INSERT INTO project_folders (
        id, space_id, project_id, name, status, created_at, updated_at, kind,
-       is_primary, execution_enabled, protected, system_managed, allow_external_root
-     ) VALUES ($1,$2,$3,'Folder','active',now(),now(),'code',true,true,false,false,false)`,
-    [FOLDER, SPACE, PROJECT],
+       is_primary, execution_enabled, protected, system_managed, allow_external_root,
+       host_id, host_kind
+     ) VALUES ($1,$2,$3,'Folder','active',now(),now(),'code',true,true,false,false,false,$4,'server')`,
+    [FOLDER, SPACE, PROJECT, HOST],
   );
   await pool.query(
     `INSERT INTO agents (

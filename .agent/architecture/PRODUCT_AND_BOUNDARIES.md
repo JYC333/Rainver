@@ -71,7 +71,7 @@ capture / trigger
 
 ### Sandbox and path policy boundary
 
-- All file access from agent execution is mediated by `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`.
+- On the server host, all file access from agent execution is mediated by `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** a Project Folder row bound to a remote trusted host never reaches this mediation — the control plane holds no path for it and `PathPolicy` is never invoked; see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10.
 - Sandboxed file-access adapters currently run inside a git worktree. One-shot Docker
   is planned for stricter process isolation and must fail closed until implemented.
 - Adapters must not access arbitrary host paths.

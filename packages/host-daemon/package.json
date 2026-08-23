@@ -1,0 +1,34 @@
+{
+  "name": "@agent-space/host-daemon",
+  "version": "0.1.0",
+  "description": "Thin execution-host bridge for ADR 0016: registers a personal machine with an Agent Space control plane, registers pre-existing directories as trusted-host workspaces, and holds an outbound heartbeat connection. No planner, no memory, no business logic — see .agent/decisions/0016-control-plane-execution-hosts.md.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "bin": {
+    "agent-space-host": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.70.0",
+    "@agentclientprotocol/codex-acp": "1.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.0",
+    "vitest": "^3.2.6"
+  }
+}

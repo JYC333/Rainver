@@ -35,6 +35,15 @@ export interface LoginRuntimeConfig {
   hint_cli?: string;
   /** Runtime-specific output parser for terminal output. */
   createOutputParser?: () => LoginOutputParser;
+  /**
+   * ACP runtime replatform P3: codex's login flow spawns the vendor `codex`
+   * binary directly (`codex login --device-auth`) and speaks its own
+   * protocol — `resolveForExecution` now resolves the `codex-acp` ACP
+   * adapter instead of the vendor CLI, which does not support this flow the
+   * same way. Set only by adapters whose `resolveForExecution` result would
+   * be the wrong binary for CLI login specifically.
+   */
+  resolve_vendor_cli?: boolean;
 }
 
 export interface LoginOutputParserInput {
@@ -53,6 +62,7 @@ export type LoginOutputParser = (input: LoginOutputParserInput) => LoginOutputPa
 
 export interface LoginToolResolver {
   resolveForExecution(runtime: string): Promise<{ executable_path: string }>;
+  resolveVendorCliForExecution(runtime: string): Promise<{ executable_path: string }>;
 }
 
 export type LoginEvent = Record<string, unknown> & { type: string };
@@ -426,7 +436,9 @@ export async function runCliLogin(
     return;
   }
   try {
-    const resolved = await toolResolver.resolveForExecution(runtime);
+    const resolved = cfg.resolve_vendor_cli
+      ? await toolResolver.resolveVendorCliForExecution(runtime)
+      : await toolResolver.resolveForExecution(runtime);
     command = [resolved.executable_path, ...cfg.command.slice(1)];
   } catch (error) {
     emit({

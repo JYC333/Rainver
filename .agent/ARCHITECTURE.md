@@ -91,7 +91,7 @@
 - **MemoryProvider** — abstract interface for memory backends; `LocalMemoryProvider` is the only enabled provider in MVP
 - **Module registry** — `server/src/gateway/routeRegistry.ts` (backend) and `apps/web/src/modules/registry.ts` (frontend) are the single sources of truth for which features are active; see [ADR 0006](decisions/0006-plugin-module-architecture.md)
 - **Client-server protocol** — REST (current) + WebSocket events + SSE streaming (planned)
-- **Partial offline support** — mobile captures and card reviews can queue offline and sync on reconnect; agent execution, memory writes, and proposal apply remain server-authoritative; see [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md)
+- **Partial offline support** — mobile captures and card reviews can queue offline and sync on reconnect; memory writes and proposal apply remain server-authoritative, and agent execution stays authoritative to the control plane's server host or a paired execution host (never the client — see [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md)); see [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md)
 - **Run resilience fields** — status includes `degraded`; mode includes `live|dry_run`; temporal fields are explicit; artifacts are exportable; proposals have urgency/deadline
 - **Home aggregate APIs** — Home UI consumes lightweight backend read models
   (`/api/v1/me/*`, `/api/v1/home/summary`) only; no full ContextPackage and no

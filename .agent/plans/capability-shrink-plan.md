@@ -1,7 +1,12 @@
 # Capability Shrink Plan
 
 Date: 2026-08-13; revised 2026-08-14
-Status: IN PROGRESS — items 1–6 below remain unscheduled
+Status: **PAUSED 2026-08-21** — items 1–6 below remain unscheduled and stay
+unscheduled while the control-center line is the active plan (now
+[plans/acp-runtime-replatform-plan.md](acp-runtime-replatform-plan.md); the
+retired phase-1 plan's D2/D12 froze the knowledge/capability half of the
+system to keep attention on one active line of work). Resume as a cleanup
+batch after the phase-2 acceptance gate, not before.
 
 ## Execution status
 

@@ -19,6 +19,7 @@ const VIEWER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "33333333-3333-4333-8333-333333333333";
 const OTHER_PROJECT = "55555555-5555-4555-8555-555555555555";
 const FOLDER = "44444444-4444-4444-8444-444444444444";
+const HOST = "66666666-6666-4666-8666-666666666666";
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -48,13 +49,18 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   await pool.query(
-    "TRUNCATE project_folder_execution_configs, project_folders, projects, users, spaces CASCADE",
+    "TRUNCATE project_folder_execution_configs, project_folders, projects, users, spaces, hosts CASCADE",
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'User', 'active', now(), now()),
             ($2, 'Viewer', 'active', now(), now())`,
     [USER, VIEWER],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
+     VALUES ($1, NULL, 'server', 'server', 'online', now(), now())`,
+    [HOST],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
     await pool.query(
@@ -75,9 +81,9 @@ beforeEach(async () => {
     [PROJECT, SPACE, USER, OTHER_PROJECT],
   );
   await pool.query(
-    `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, execution_enabled, protected, system_managed, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'Folder','active','code',true,true,false,false,now(),now())`,
-    [FOLDER, SPACE, PROJECT, USER],
+    `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, execution_enabled, protected, system_managed, host_id, host_kind, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'Folder','active','code',true,true,false,false,$5,'server',now(),now())`,
+    [FOLDER, SPACE, PROJECT, USER, HOST],
   );
   await pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)

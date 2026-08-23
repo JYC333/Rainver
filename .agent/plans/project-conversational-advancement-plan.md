@@ -1,7 +1,23 @@
 # Project Conversational Advancement Plan
 
 Date: 2026-08-16
-Status: Phase A completed 2026-08-16; Phase B completed 2026-08-16; gate to
+Status: **SUSPENDED 2026-08-21** — Phases C and D are on hold pending
+[plans/acp-runtime-replatform-plan.md](acp-runtime-replatform-plan.md); the
+resume condition is **its two-week acceptance gate passing** (amended
+2026-08-21 and again 2026-08-22 as the control-center line's plan document
+changed hands; the phase-1 and phase-2 plans are both retired, ledgers in git
+history). Room's future role is also **narrowed in place** (decided in the
+phase-2 grilling as its C1, carried forward as a standing decision in the
+active plan's §6): Room returns as a
+**dispatch/supervision entry** for execution hosts ("create a thread on my
+desktop for X", "summarize last night's threads") — it never relays the
+turn-by-turn work conversation itself, which belongs exclusively to the
+direct task-thread surface. Phase C/D scope will be revised in that light
+rather than resumed unchanged. Do not advance Phase C without re-reading
+acp-runtime-replatform-plan.md first.
+
+Prior status (superseded by the suspension above, kept for history): Phase A
+completed 2026-08-16; Phase B completed 2026-08-16; gate to
 Phase C open (see "Gate between Phases A+B and Phase C" — waiting on the user
 completing one real round conclusion and one knowledge landing through
 conversation). 2026-08-18: a reliability hardening insert

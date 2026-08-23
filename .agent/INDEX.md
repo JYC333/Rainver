@@ -4,11 +4,17 @@
 
 agent-space is a space-based, multi-user, agent-first system for personal, family, and small-team
 use within a single deployment instance. It has a server backend (PostgreSQL),
-a React/Vite frontend (PWA), and a server-authoritative agent execution model: agents run server-side inside isolated
-sandboxes, memory is written only through a proposal → approval workflow, and policy and
-credentials are enforced centrally. The system is **not** local-first; it supports offline capture
-and draft queuing for personal convenience but agent execution, active memory, proposals,
-credentials, Project Folder operations, and deployment remain server-authoritative. See
+a React/Vite frontend (PWA), and a server-authoritative control plane: canonical state, orchestration,
+memory (written only through a proposal → approval workflow), and policy/credential enforcement all
+live on the server. Agent execution itself runs on one or more **execution hosts** registered to the
+control plane — the server host (strictly isolated, bubblewrap sandboxed, the default and only host
+in a single-machine deployment) or a personal machine the user owns and has paired (trusted-host mode,
+native execution, no sandbox isolation). See
+[decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md) for
+the two-tier trust model. The system is **not** local-first; it supports offline capture
+and draft queuing for personal convenience but active memory, proposals, credentials, and deployment
+remain server-authoritative, and Project Folder operations remain authoritative to whichever host owns
+that folder. See
 [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) for the
 durable position on this boundary.
 
@@ -34,6 +40,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 |---|---|
 | Implemented Runtime Context architecture and decision record | [architecture/MEMORY_CONTEXT_RUNTIME.md](architecture/MEMORY_CONTEXT_RUNTIME.md) · [modules/runtime-context.md](modules/runtime-context.md) · [decisions/0014-unified-runtime-context-engine.md](decisions/0014-unified-runtime-context-engine.md) |
 | Security and access boundary reference | [architecture/SECURITY_AND_ACCESS_BOUNDARIES.md](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md) |
+| Reuse / dependency policy and the canonical mechanism index (load before building anything substantial) | [architecture/REUSE_AND_DEPENDENCY_POLICY.md](architecture/REUSE_AND_DEPENDENCY_POLICY.md) |
 | Test layer and product invariant philosophy | [architecture/TESTING_STRATEGY.md](architecture/TESTING_STRATEGY.md) |
 | Local-first compatibility position | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) |
 | Architectural invariants (load before structural changes) | [BOUNDARIES.md](BOUNDARIES.md) |
@@ -76,6 +83,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 |---|---|
 | [architecture/MODULES.md](architecture/MODULES.md) | Current backend module map, support packages, ownership, registries, facades |
 | [architecture/MODULE_DEVELOPMENT_GUIDE.md](architecture/MODULE_DEVELOPMENT_GUIDE.md) | How to add/change backend modules and extension hooks |
+| [architecture/REUSE_AND_DEPENDENCY_POLICY.md](architecture/REUSE_AND_DEPENDENCY_POLICY.md) | Mandatory pre-implementation search, reuse ladder, third-party evaluation, canonical mechanism index, parallel-implementation rule, custom-build exception |
 | [architecture/DATABASE_AND_TRANSACTIONS.md](architecture/DATABASE_AND_TRANSACTIONS.md) | UnitOfWork, transaction ownership, external call boundary, PostgreSQL rules |
 | [architecture/DATA_AUTHORITY_MATRIX.md](architecture/DATA_AUTHORITY_MATRIX.md) | Cross-domain data authorities, canonical writers, and read-model boundaries |
 | [architecture/MEMORY_MODEL.md](architecture/MEMORY_MODEL.md) | Memory scopes, visibility, access control |
@@ -183,6 +191,7 @@ Load only the module docs relevant to your task.
 | Capability lifecycle | [modules/capability.md](modules/capability.md) |
 | Runtime Context acquisition, planning, delivery, and continuity | [modules/runtime-context.md](modules/runtime-context.md) |
 | Sandbox execution | [modules/sandbox.md](modules/sandbox.md) |
+| Execution hosts (control plane + host daemon), pairing, workspace registration | [modules/hosts.md](modules/hosts.md) |
 | Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
 | Runtime tools / adapter types | [modules/runtime-adapters.md](modules/runtime-adapters.md) |
 | Credentials | [modules/credentials.md](modules/credentials.md) |
@@ -220,6 +229,7 @@ Load only the module docs relevant to your task.
 | [0013](decisions/0013-personal-team-content-boundary.md) | Personal vs team content boundary: creation context decides Space/scope/visibility, capture lands in the personal Space, filing is a transformation, Run-level context taint narrows derived output, cross-person read auditing; amends ADR 0001 for per-user aggregated cross-Space reads |
 | [0014](decisions/0014-unified-runtime-context-engine.md) | Accepted clean cutover to one Runtime Context Gateway for Agent task context, with separate Retrieval/Policy/Usage authorities, typed deliveries, event/checkpoint continuity, product-owned Project context, and per-work-scope CLI isolation |
 | [0015](decisions/0015-focus-area-classification.md) | Focus area is a user-created classification, not a second access scope: it aggregates Projects/Notes/Knowledge, participates in no access decision, and is told apart from a module by whether the thing needs code. Internal identifier `focus_area`; `domain` is reserved for this codebase's DDD vocabulary |
+| [0016](decisions/0016-control-plane-execution-hosts.md) | An instance is one control plane plus N execution hosts (`hosts` table; every Project Folder bound to one host); two-tier trust — server host keeps strict sandbox isolation unchanged, a paired personal host runs a thin daemon in trusted-host mode (native execution, no sandbox, own login state); paths are host-owned, never control-plane authority; remote propose→apply governance for in-place execution is explicitly deferred, not settled |
 
 ---
 
@@ -232,10 +242,11 @@ architecture and the defer register once nothing in it can be advanced.
 
 | Document | Holds |
 |---|---|
+| [plans/acp-runtime-replatform-plan.md](plans/acp-runtime-replatform-plan.md) | **Active.** Replace every self-maintained vendor CLI protocol implementation with the Agent Client Protocol, across both the remote and server-host execution paths; carries the conversational surface's acceptance gate. (Control center phases 1 and 2 both shipped and their plans are retired; ledgers in git history, current state in modules/hosts.md + ADR 0016) |
 | [plans/backlog.md](plans/backlog.md) | Real work with no trigger condition, pulled on demand |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, the standing enablement gates, watch items, and parked ideas |
-| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — a design, not a checklist |
-| [plans/project-conversational-advancement-plan.md](plans/project-conversational-advancement-plan.md) | Conversational Project advancement — Room as command surface, phased A–D |
+| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — DEFERRED; entry evidence is expected to come from acp-runtime-replatform-plan.md's acceptance gate |
+| [plans/project-conversational-advancement-plan.md](plans/project-conversational-advancement-plan.md) | Conversational Project advancement — Room as command surface, phased A–D; **phases C/D suspended 2026-08-21**, re-evaluated after acp-runtime-replatform-plan.md's acceptance gate; Room narrowed to dispatch/supervision entry (never relays work turns) |
 
 Do not create competing task files, and do not reintroduce a "current focus"
 document. One existed and was removed: a file whose job is to declare what is
@@ -275,6 +286,7 @@ load all docs for every task.
 | Security / access change | `security-access` bundle: `SECURITY_AND_ACCESS_BOUNDARIES.md`, `POLICY_ENFORCEMENT_INVENTORY.md`, `TESTING_STRATEGY.md`, `BOUNDARIES.md` |
 | Backend domain change | `backend-domain` bundle: relevant domain doc + `DATABASE_AND_TRANSACTIONS.md` + `BOUNDARIES.md` |
 | Frontend / home / UI change | `frontend-product` bundle: `product-shell.md`, `frontend-layout.md`, `client-server-protocol.md`, module doc |
+| Any new subsystem, shared mechanism, or new dependency | `REUSE_AND_DEPENDENCY_POLICY.md` + the owning module doc |
 | Testing change | `TESTING_STRATEGY.md` + the specific test file's domain doc |
 | Runtime / agent / run change | `runtime-agent` bundle: `EXECUTION_MODEL.md`, `RUNS_AND_OUTPUTS.md`, `agents.md`, `BOUNDARIES.md` |
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
@@ -288,6 +300,8 @@ Additional agent rules:
 - Never write active memory directly — use proposals.
 - Never turn Runtime Context into vendor context files; adapters consume the accepted Delivery directly.
 - Read `BOUNDARIES.md` before making structural changes.
+- Search for an existing implementation, dependency, and test fixture before building a new one;
+  `architecture/REUSE_AND_DEPENDENCY_POLICY.md` is the source of truth for that decision.
 - New backend routes go in `server/src/modules/<module>/routes.ts` and
   the module is registered in `server/src/gateway/routeRegistry.ts`.
 - New frontend pages go in `apps/web/src/modules/<module>/`, registered in

@@ -37,6 +37,10 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   ["@earendil-works/pi-agent-core", join("src", "modules", "runs", "piManagedAgentLoop.ts")],
   ["node-pty", join("src", "modules", "providers", "cli", "loginEngine.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],
+  // ADR 0016: the only WebSocket endpoint in the server, the hosts
+  // hello/heartbeat channel — confined here so a second module cannot grow
+  // its own ad hoc realtime transport.
+  ["@fastify/websocket", join("src", "modules", "hosts", "routes.ts")],
   // drizzle-orm is schema-declaration only (server/src/db/schema/), never a
   // query layer — repositories keep writing hand-written SQL through `pg`.
   // See .agent/architecture/DATABASE_AND_TRANSACTIONS.md, "Schema Authoring".

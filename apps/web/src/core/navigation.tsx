@@ -1,6 +1,6 @@
 import {
   Home, Inbox, CheckCircle, BookOpen, ListTodo, Bot, Folder, FolderKanban, Settings,
-  GitBranch, Building2, ServerCog,
+  GitBranch, Building2, ServerCog, Server,
   Library, Rss, Share2,
   type LucideIcon,
 } from 'lucide-react'
@@ -45,6 +45,10 @@ export interface RailItem {
 /** Major destinations. Home is always first and stable. */
 export const RAIL_ITEMS: RailItem[] = [
   { id: 'home',       label: 'Home',       to: '/home',        icon: Home,        scope: 'home',  mobile: true },
+  // ADR 0016 D11: Command Center is the default landing page for a Space
+  // (see App.tsx's `spaces/:spaceId` index redirect) — placed first among
+  // the space-scoped rail items so it reads as the space's home surface.
+  { id: 'command-center', label: 'Command Center', to: '/command-center', icon: Server, scope: 'space', mobile: true },
   { id: 'inbox',      label: 'Inbox',      to: '/activity',    icon: Inbox,       scope: 'space', mobile: true },
   { id: 'library',    label: 'Library',    to: '/library',     icon: Library,     scope: 'space', mobile: true },
   { id: 'source',     label: 'Sources',    to: '/sources',      icon: Rss,         scope: 'space' },

@@ -2,6 +2,7 @@ const ENV_ALLOWED_KEYS = new Set(["PATH", "TERM", "SHELL", "LANG"]);
 const BROKER_ENV_KEYS = new Set(["HOME"]);
 const RUNTIME_ENV_KEYS = new Set([
   "CODEX_HOME",
+  "NO_BROWSER",
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_MODEL",

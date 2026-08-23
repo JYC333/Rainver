@@ -66,6 +66,27 @@ const INSTALLED_CLAUDE_CODE_VERSION = "1.2.3";
  */
 class FakeClaudeCodeInstaller implements RuntimeToolInstallRunner {
   async run(input: { package_ref: string; prefix: string; cache_dir: string }): Promise<void> {
+    if (input.package_ref.startsWith("@agentclientprotocol/claude-agent-acp@")) {
+      const acpDir = join(input.prefix, "node_modules", "@agentclientprotocol", "claude-agent-acp");
+      const sdkDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-agent-sdk");
+      const sdkNativeDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64");
+      await mkdir(acpDir, { recursive: true });
+      await mkdir(sdkDir, { recursive: true });
+      await mkdir(sdkNativeDir, { recursive: true });
+      await writeFile(join(acpDir, "package.json"), JSON.stringify({ version: INSTALLED_CLAUDE_CODE_VERSION }));
+      await writeFile(join(sdkDir, "package.json"), JSON.stringify({
+        version: "0.3.232",
+        optionalDependencies: {
+          "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.232",
+        },
+      }));
+      await writeFile(join(sdkNativeDir, "package.json"), JSON.stringify({ version: "0.3.232" }));
+      await mkdir(join(input.prefix, "node_modules", ".bin"), { recursive: true });
+      const acpBin = join(input.prefix, "node_modules", ".bin", "claude-agent-acp");
+      await writeFile(acpBin, "#!/bin/sh\nexit 0\n");
+      await chmod(acpBin, 0o755);
+      return;
+    }
     const packageDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-code");
     const nativeDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-code-linux-x64");
     await mkdir(nativeDir, { recursive: true });
@@ -155,7 +176,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query("TRUNCATE spaces, users CASCADE");
+  await pool.query("TRUNCATE spaces, users, hosts CASCADE");
   await syncBuiltinPrompts(pool, CATALOG_ROOT);
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
@@ -230,13 +251,18 @@ beforeEach(async () => {
     [now],
   );
   await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, name, kind, status, created_at, updated_at)
+     VALUES ('host-1', NULL, 'server', 'server', 'online', $1, $1)`,
+    [now],
+  );
+  await pool.query(
     `INSERT INTO project_folders (
        id, space_id, project_id, name, status, created_by_user_id, kind,
        is_primary, execution_enabled, protected, system_managed,
-       created_at, updated_at
+       host_id, host_kind, created_at, updated_at
      ) VALUES (
        'folder-1', 'space-1', 'project-1', 'Room Folder', 'active', 'user-1',
-       'code', true, true, false, false, $1, $1
+       'code', true, true, false, false, 'host-1', 'server', $1, $1
      )`,
     [now],
   );

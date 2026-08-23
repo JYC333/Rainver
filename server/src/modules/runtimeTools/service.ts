@@ -28,6 +28,26 @@ export interface RuntimeToolDefinition {
   bin_relative_path: string;
   package_json_relative_path: string;
   default_version: string;
+  /**
+   * ACP runtime replatform P3: set only for codex_cli. The managed package
+   * is the ACP adapter (`bin_relative_path` -> `codex-acp`), but two
+   * features that predate the ACP migration — CLI device-auth login and the
+   * TUI-scraping quota probe — still spawn the underlying vendor `codex`
+   * binary directly and speak its own protocol, not ACP. codex-acp bundles
+   * a compatible `@openai/codex` as a regular dependency, so the same
+   * managed install already places a working `codex` binary at this sibling
+   * path — resolved via `resolveVendorCliForExecution`, never
+   * `resolveForExecution` (which resolves `bin_relative_path`, the adapter).
+   */
+  vendor_cli_bin_relative_path?: string;
+  /**
+   * A runtime may use a pinned ACP adapter for execution while retaining the
+   * vendor CLI package for login and legacy quota-probe flows. The vendor
+   * package is installed into the same isolated version root and never used as
+   * the conversation executable.
+   */
+  vendor_package_name?: string;
+  vendor_package_version?: string;
 }
 
 export interface RuntimeToolManifest {
@@ -109,21 +129,28 @@ export const RUNTIME_TOOL_DEFINITIONS: Record<string, RuntimeToolDefinition> = {
     runtime: "claude_code",
     label: "Claude Code",
     source: "npm",
-    package_name: "@anthropic-ai/claude-code",
-    bin_name: "claude",
-    bin_relative_path: join("node_modules", ".bin", "claude"),
-    package_json_relative_path: join("node_modules", "@anthropic-ai", "claude-code", "package.json"),
+    package_name: "@agentclientprotocol/claude-agent-acp",
+    bin_name: "claude-agent-acp",
+    bin_relative_path: join("node_modules", ".bin", "claude-agent-acp"),
+    package_json_relative_path: join("node_modules", "@agentclientprotocol", "claude-agent-acp", "package.json"),
     default_version: "latest",
+    vendor_package_name: "@anthropic-ai/claude-code",
+    vendor_package_version: "latest",
+    vendor_cli_bin_relative_path: join("node_modules", ".bin", "claude"),
   },
+  // ACP runtime replatform P3: server-host runs codex through the ACP
+  // adapter (bundles a compatible @openai/codex, driven via CODEX_HOME the
+  // same way the raw CLI already was), not the raw `codex` package directly.
   codex_cli: {
     runtime: "codex_cli",
     label: "Codex CLI",
     source: "npm",
-    package_name: "@openai/codex",
-    bin_name: "codex",
-    bin_relative_path: join("node_modules", ".bin", "codex"),
-    package_json_relative_path: join("node_modules", "@openai", "codex", "package.json"),
+    package_name: "@agentclientprotocol/codex-acp",
+    bin_name: "codex-acp",
+    bin_relative_path: join("node_modules", ".bin", "codex-acp"),
+    package_json_relative_path: join("node_modules", "@agentclientprotocol", "codex-acp", "package.json"),
     default_version: "latest",
+    vendor_cli_bin_relative_path: join("node_modules", ".bin", "codex"),
   },
   opencode: {
     runtime: "opencode",
@@ -268,12 +295,17 @@ async function runtimeToolVersionReady(
   if (!(await executableExists(resolve(versionRoot, definition.bin_relative_path)))) {
     return false;
   }
+  if (
+    definition.vendor_cli_bin_relative_path
+    && !(await executableExists(resolve(versionRoot, definition.vendor_cli_bin_relative_path)))
+  ) {
+    return false;
+  }
   if (definition.runtime === "opencode" && !(await openCodeBinaryReady(versionRoot))) {
     return false;
   }
-  const nativePackagePath = nativeOptionalPackagePath(definition, versionRoot);
-  if (nativePackagePath && !(await exists(nativePackagePath))) {
-    return false;
+  for (const nativePackagePath of nativeOptionalPackagePaths(definition, versionRoot)) {
+    if (!(await exists(nativePackagePath))) return false;
   }
   if (definition.runtime === "claude_code" && !(await claudePlacedBinaryReady(versionRoot))) {
     return false;
@@ -325,6 +357,30 @@ function claudeNativePackageName(): string | null {
   if (process.platform === "win32") {
     if (process.arch === "x64") return "@anthropic-ai/claude-code-win32-x64";
     if (process.arch === "arm64") return "@anthropic-ai/claude-code-win32-arm64";
+  }
+  return null;
+}
+
+function claudeAcpNativePackageName(): string | null {
+  if (process.platform === "linux") {
+    if (process.arch === "x64") {
+      return isMuslRuntime()
+        ? "@anthropic-ai/claude-agent-sdk-linux-x64-musl"
+        : "@anthropic-ai/claude-agent-sdk-linux-x64";
+    }
+    if (process.arch === "arm64") {
+      return isMuslRuntime()
+        ? "@anthropic-ai/claude-agent-sdk-linux-arm64-musl"
+        : "@anthropic-ai/claude-agent-sdk-linux-arm64";
+    }
+  }
+  if (process.platform === "darwin") {
+    if (process.arch === "x64") return "@anthropic-ai/claude-agent-sdk-darwin-x64";
+    if (process.arch === "arm64") return "@anthropic-ai/claude-agent-sdk-darwin-arm64";
+  }
+  if (process.platform === "win32") {
+    if (process.arch === "x64") return "@anthropic-ai/claude-agent-sdk-win32-x64";
+    if (process.arch === "arm64") return "@anthropic-ai/claude-agent-sdk-win32-arm64";
   }
   return null;
 }
@@ -415,13 +471,17 @@ function packageInstallPath(prefix: string, packageName: string): string {
     : join(prefix, "node_modules", packageName);
 }
 
-function nativeOptionalPackagePath(
+function nativeOptionalPackageNames(definition: RuntimeToolDefinition): string[] {
+  const names = [nativeOptionalPackageName(definition)];
+  if (definition.runtime === "claude_code") names.push(claudeAcpNativePackageName());
+  return names.filter((name): name is string => Boolean(name));
+}
+
+function nativeOptionalPackagePaths(
   definition: RuntimeToolDefinition,
   versionRoot: string,
-): string | null {
-  const packageName = nativeOptionalPackageName(definition);
-  if (!packageName) return null;
-  return packageInstallPath(versionRoot, packageName);
+): string[] {
+  return nativeOptionalPackageNames(definition).map((name) => packageInstallPath(versionRoot, name));
 }
 
 function claudeWrapperPackagePath(prefix: string): string {
@@ -651,15 +711,23 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
         executablePath = resolve(versionRoot, definition.bin_relative_path);
         executableOk = await executableExists(executablePath);
         if (!executableOk) warnings.push("active executable is missing or not executable");
+        if (
+          definition.vendor_cli_bin_relative_path
+          && !(await executableExists(resolve(versionRoot, definition.vendor_cli_bin_relative_path)))
+        ) {
+          executableOk = false;
+          warnings.push(`${definition.label}'s bundled vendor CLI executable is missing; reinstall the ${definition.label} runtime tool.`);
+        }
         if (definition.runtime === "opencode" && !(await openCodeBinaryReady(versionRoot))) {
           executableOk = false;
           warnings.push("OpenCode libc-compatible native binary is missing; reinstall the OpenCode runtime tool.");
         }
-        const nativePackageName = nativeOptionalPackageName(definition);
-        const nativePackagePath = nativeOptionalPackagePath(definition, versionRoot);
-        if (nativePackagePath && !(await exists(nativePackagePath))) {
-          executableOk = false;
-          warnings.push(`${nativePackageName} is missing; reinstall the ${definition.label} runtime tool.`);
+        for (const nativePackageName of nativeOptionalPackageNames(definition)) {
+          const nativePackagePath = packageInstallPath(versionRoot, nativePackageName);
+          if (!(await exists(nativePackagePath))) {
+            executableOk = false;
+            warnings.push(`${nativePackageName} is missing; reinstall the ${definition.label} runtime tool.`);
+          }
         }
         if (definition.runtime === "claude_code" && !(await claudePlacedBinaryReady(versionRoot))) {
           executableOk = false;
@@ -801,6 +869,57 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
     };
   }
 
+  /**
+   * ACP runtime replatform P3: for codex_cli only, resolves the underlying
+   * vendor `codex` binary bundled alongside the managed `codex-acp` adapter
+   * — for the CLI device-auth login flow and the TUI-scraping quota probe,
+   * both of which spawn the vendor CLI directly and predate the ACP
+   * migration. `resolveForExecution` resolves the adapter binary instead;
+   * the two are never interchangeable.
+   */
+  async resolveVendorCliForExecution(runtime: string): Promise<ResolvedRuntimeTool> {
+    const definition = definitionFor(runtime);
+    if (!definition.vendor_cli_bin_relative_path) {
+      throw new RuntimeToolError(
+        "runtime_tool_vendor_cli_not_applicable",
+        `Runtime tool '${runtime}' has no separate vendor CLI executable to resolve.`,
+        500,
+      );
+    }
+    const status = await this.status(runtime);
+    if (!status.installed || !status.active_version) {
+      throw new RuntimeToolError(
+        "cli_tool_not_installed",
+        `Runtime tool '${runtime}' is not installed.`,
+        409,
+      );
+    }
+    const root = this.runtimeRoot(runtime);
+    const versionRoot = this.versionRoot(runtime, status.active_version);
+    const resolved = resolve(versionRoot, definition.vendor_cli_bin_relative_path);
+    if (!isWithinRoot(root, resolved)) {
+      throw new RuntimeToolError(
+        "runtime_tool_path_escape",
+        "Runtime tool executable escapes its installation root.",
+        500,
+      );
+    }
+    if (!(await executableExists(resolved))) {
+      throw new RuntimeToolError(
+        "cli_tool_not_installed",
+        `Runtime tool '${runtime}' is missing its bundled vendor CLI executable; reinstall it.`,
+        409,
+      );
+    }
+    return {
+      runtime,
+      executable_path: resolved,
+      version: status.active_version,
+      source: definition.source,
+      package_name: definition.package_name,
+    };
+  }
+
   async install(runtime: string, input: RuntimeToolInstallInput = {}): Promise<RuntimeToolInstallResult> {
     const definition = definitionFor(runtime);
     const requestedVersion = validateVersionRef(input.version?.trim() || definition.default_version);
@@ -815,6 +934,13 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
         cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
         ignore_scripts: definition.runtime === "opencode",
       });
+      if (definition.vendor_package_name) {
+        await this.runner.run({
+          package_ref: `${definition.vendor_package_name}@${definition.vendor_package_version ?? "latest"}`,
+          prefix: tmpDir,
+          cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
+        });
+      }
       const packageJson = await readJsonFile<{
         version?: string;
         optionalDependencies?: Record<string, string>;
@@ -839,17 +965,31 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
           502,
         );
       }
-      await this.ensureNativeOptionalPackage(
+      if (
+        definition.vendor_cli_bin_relative_path
+        && !(await executableExists(join(tmpDir, definition.vendor_cli_bin_relative_path)))
+      ) {
+        throw new RuntimeToolError(
+          "runtime_tool_binary_missing",
+          `Installed package did not bundle the vendor CLI executable required by ${definition.label}'s login and quota-probe flows.`,
+          502,
+        );
+      }
+      await this.ensureNativeOptionalPackages(
         definition,
         tmpDir,
         packageJson?.optionalDependencies ?? {},
       );
-      const nativePackageName = nativeOptionalPackageName(definition);
-      const nativePackagePath = nativeOptionalPackagePath(definition, tmpDir);
-      if (nativePackagePath && !(await exists(nativePackagePath))) {
+      const missingNativePackages: string[] = [];
+      for (const nativePackageName of nativeOptionalPackageNames(definition)) {
+        if (!(await exists(packageInstallPath(tmpDir, nativePackageName)))) {
+          missingNativePackages.push(nativePackageName);
+        }
+      }
+      if (missingNativePackages.length > 0) {
         throw new RuntimeToolError(
           "runtime_tool_optional_dependency_missing",
-          `${nativePackageName} was not installed. Reinstall ${definition.label} with optional npm dependencies enabled.`,
+          `${missingNativePackages.join(", ")} was not installed. Reinstall ${definition.label} with optional npm dependencies enabled.`,
           502,
         );
       }
@@ -900,31 +1040,39 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
     }
   }
 
-  private async ensureNativeOptionalPackage(
+  private async ensureNativeOptionalPackages(
     definition: RuntimeToolDefinition,
     prefix: string,
     optionalDependencies: Record<string, string>,
   ): Promise<void> {
-    const nativePackageName = nativeOptionalPackageName(definition);
-    const nativePackagePath = nativeOptionalPackagePath(definition, prefix);
-    if (!nativePackageName || !nativePackagePath) return;
-    if (await exists(nativePackagePath)) {
-      if (definition.runtime === "claude_code") {
-        await this.ensureClaudePostinstall(prefix);
-      }
-      return;
+    for (const nativePackageName of nativeOptionalPackageNames(definition)) {
+      const nativePackagePath = packageInstallPath(prefix, nativePackageName);
+      if (await exists(nativePackagePath)) continue;
+      // Claude's two native packages come from different packages: the vendor
+      // binary is declared by claude-code, while the ACP adapter's native SDK
+      // is declared by @anthropic-ai/claude-agent-sdk. Codex's package remains
+      // a nested optional dependency of @openai/codex.
+      const sourcePackageName = definition.runtime === "claude_code"
+        ? nativePackageName === claudeNativePackageName()
+          ? definition.vendor_package_name
+          : "@anthropic-ai/claude-agent-sdk"
+        : definition.runtime === "codex_cli"
+          ? "@openai/codex"
+          : null;
+      const sourceOptionalDependencies = sourcePackageName
+        ? (await readJsonFile<{ optionalDependencies?: Record<string, string> }>(
+            join(packageInstallPath(prefix, sourcePackageName), "package.json"),
+          ))?.optionalDependencies ?? {}
+        : optionalDependencies;
+      const nativePackageSpec = sourceOptionalDependencies[nativePackageName];
+      if (!nativePackageSpec) continue;
+      await this.runner.run({
+        package_ref: `${nativePackageName}@${nativePackageSpec}`,
+        prefix,
+        cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
+      });
     }
-    const nativePackageSpec = optionalDependencies[nativePackageName];
-    if (!nativePackageSpec) return;
-
-    await this.runner.run({
-      package_ref: `${nativePackageName}@${nativePackageSpec}`,
-      prefix,
-      cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
-    });
-    if (definition.runtime === "claude_code") {
-      await this.ensureClaudePostinstall(prefix);
-    }
+    if (definition.runtime === "claude_code") await this.ensureClaudePostinstall(prefix);
   }
 
   private async ensureOpenCodeBinary(
@@ -1011,9 +1159,8 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
       executableOk = false;
       warnings.push("OpenCode libc-compatible native binary is missing");
     }
-    const nativePackageName = nativeOptionalPackageName(definition);
-    const nativePackagePath = nativeOptionalPackagePath(definition, versionRoot);
-    if (nativePackagePath && !(await exists(nativePackagePath))) {
+    for (const nativePackageName of nativeOptionalPackageNames(definition)) {
+      if (await exists(packageInstallPath(versionRoot, nativePackageName))) continue;
       executableOk = false;
       warnings.push(`${nativePackageName} is missing`);
     }

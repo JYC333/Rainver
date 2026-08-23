@@ -20,6 +20,9 @@ import {
   executeVendorCliAdapter,
   type VendorCliAdapterDeps,
 } from "./vendorCliAdapter";
+import { executeRemoteHostCliAdapter } from "./remoteHostCliAdapter";
+import { PgHostThreadEventRepository, createSerializedThreadEventSink } from "../hosts/threadEventRepository";
+import { serializeCalls } from "../routeUtils/common";
 import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector";
 import type { CliProcessRegistry } from "./localCliExecution";
 import { PgRunRepository } from "./repository";
@@ -253,6 +256,8 @@ export interface RunExecutionAdapterDeps {
   processRegistry?: CliProcessRegistry;
   routeResolver?: RunRouteResolverPort;
   runExchange?: RunExchangePort;
+  /** ADR 0016 P2: resolves a Project Folder's `host_kind` for per-run `HostExecutionPort` selection. */
+  hostKindResolver?: (projectFolderId: string, spaceId: string) => Promise<{ hostKind: HostKind; hostId: string }>;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
   conversationRuntimeSessions?: {
     record(input: {
@@ -299,6 +304,63 @@ export interface RunCodePatchCollectorPort {
   }): Promise<{ item: RunMaterializationItemSummary; errors: string[] } | null>;
 }
 
+export type HostKind = "server" | "remote";
+
+/**
+ * ADR 0016 / control-center-plan.md P2: the run-file-lifecycle seam a Run's
+ * execution is bound to — prepare/cleanup the workspace, run exchange, and
+ * code-patch collection — selected once per run from its Project Folder's
+ * `host_kind` (`resolveExecutionPort`, below). Phase 2 has exactly one
+ * implementation (`ServerHostExecutionAdapter`, wrapping the existing
+ * sandbox/exchange/code-patch pieces verbatim — no behavior changes);
+ * `RemoteHostExecutionAdapter` is P3. The CLI process executor
+ * (`CliCommandExecutor`) and artifact materialization are deliberately not
+ * part of this port yet: P3's remote adapter dispatches over the daemon
+ * protocol and collects uploaded payloads rather than swapping
+ * implementations of these same interfaces, so there is nothing to
+ * genuinely abstract here until that lands.
+ */
+export interface HostExecutionPort {
+  readonly hostKind: HostKind;
+  /** Set only for a remote port — which daemon connection to dispatch to. */
+  readonly hostId?: string;
+  readonly workspaceManager?: RunSandboxManagerPort;
+  readonly codePatchCollector?: RunCodePatchCollectorPort;
+  readonly runExchange: RunExchangePort;
+}
+
+export class ServerHostExecutionAdapter implements HostExecutionPort {
+  readonly hostKind: HostKind = "server";
+  constructor(
+    readonly workspaceManager: RunSandboxManagerPort | undefined,
+    readonly codePatchCollector: RunCodePatchCollectorPort | undefined,
+    readonly runExchange: RunExchangePort,
+  ) {}
+}
+
+/**
+ * ADR 0016 P3: a remote run always dispatches with `required_sandbox_level:
+ * "none"` (the dispatch endpoint's job), so `workingDirScopeForLevel`
+ * naturally skips every local-filesystem branch in `prepareRuntimeContext` —
+ * `sandbox_cwd`/`cleanup`/`exchange` never get set, so `workspaceManager`/
+ * `codePatchCollector`/`runExchange` are never actually invoked for a
+ * remote run. `runExchange` still needs a real (non-optional)
+ * `RunExchangePort` value to satisfy the interface; this one throws instead
+ * of silently touching a local path if that "never invoked" assumption is
+ * ever violated by a future change.
+ */
+export class RemoteHostExecutionAdapter implements HostExecutionPort {
+  readonly hostKind: HostKind = "remote";
+  readonly workspaceManager = undefined;
+  readonly codePatchCollector = undefined;
+  readonly runExchange: RunExchangePort = {
+    prepare: () => { throw new Error("RemoteHostExecutionAdapter: Run Exchange has no meaning on a remote host (D7)."); },
+    collect: () => { throw new Error("RemoteHostExecutionAdapter: Run Exchange has no meaning on a remote host (D7)."); },
+    cleanup: () => { throw new Error("RemoteHostExecutionAdapter: Run Exchange has no meaning on a remote host (D7)."); },
+  };
+  constructor(readonly hostId: string) {}
+}
+
 export interface RunExecutionInput extends RunExecuteRequest {
   run_input?: RunInputEnvelope;
   prompt?: string | null;
@@ -324,6 +386,8 @@ export interface RunExecutionInput extends RunExecuteRequest {
   text_delta_sink?: (delta: string) => void;
   invocation_delivery?: InvocationDelivery;
   invocation_attempts?: RunInvocationAttemptLifecycle;
+  /** ADR 0016 P3: set by `executeRun` from `preparedRuntime.execution_port`; read by `invokeAdapterUnbounded` to route a `local_cli` run to the remote-host adapter instead of `executeVendorCliAdapter`. */
+  execution_port?: HostExecutionPort | null;
 }
 
 type RuntimeAdapterExecutor = (
@@ -416,6 +480,8 @@ interface PreparedRuntimeContext {
   invocation_delivery: InvocationDelivery | null;
   invocation_attempts: RunInvocationAttemptLifecycle | null;
   cli_execution_lease: { binding_id: string; lease_id: string } | null;
+  /** Resolved once per run by `resolveExecutionPort`; null until then. */
+  execution_port: HostExecutionPort | null;
 }
 
 interface ResolvedRuntimePolicy {
@@ -442,6 +508,8 @@ export class RunOrchestrationService {
   private readonly ensureWorkContextSetup:
     NonNullable<RunExecutionAdapterDeps["ensureWorkContextSetup"]> | null;
   private readonly cliContinuity: RuntimeContextCliContinuityService | null;
+  private readonly serverExecutionPort: ServerHostExecutionAdapter;
+  private readonly hostKindResolver: ((projectFolderId: string, spaceId: string) => Promise<{ hostKind: HostKind; hostId: string }>) | null;
 
   constructor(
     private readonly config: ServerConfig,
@@ -462,6 +530,22 @@ export class RunOrchestrationService {
           )
         : null);
     this.runExchange = adapters.runExchange ?? new RunExchangeManager(config.sandboxRoot);
+    this.serverExecutionPort = new ServerHostExecutionAdapter(
+      adapters.workspaceManager,
+      adapters.codePatchCollector,
+      this.runExchange,
+    );
+    this.hostKindResolver = adapters.hostKindResolver
+      ?? (repository instanceof PgRunRepository && config.databaseUrl
+        ? async (projectFolderId, spaceId) => {
+            const result = await getDbPool(config.databaseUrl!).query<{ host_kind: string; host_id: string }>(
+              `SELECT host_kind, host_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
+              [projectFolderId, spaceId],
+            );
+            const row = result.rows[0];
+            return { hostKind: (row?.host_kind as HostKind | undefined) ?? "server", hostId: row?.host_id ?? "" };
+          }
+        : null);
     this.usageRecorder = adapters.usageRecorder
       ?? (repository instanceof PgRunRepository && config.databaseUrl
         ? (observation) => recordUsageObservation(config, observation)
@@ -759,10 +843,15 @@ export class RunOrchestrationService {
       const contextBoundRunning = applyEffectiveWorkContextBindings(running, effectiveBindings);
       await this.markDelegatedRunRunningBestEffort(contextBoundRunning);
 
+      // ADR 0016 P3: resolved once, here, rather than separately inside
+      // `enforceRuntimePolicy` and `prepareRuntimeContext` — both need to
+      // agree on the same host_kind for the same run, and re-querying
+      // per-caller risks the two disagreeing under a concurrent host change.
+      const executionPort = await this.resolveExecutionPort(contextBoundRunning);
       // Policy gate + server-owned adapter resolution first. The run row and
       // agent/runtime configuration own the adapter and sandbox level; request
       // bodies never override executable paths, permissions, or runtime policy.
-      const resolved = await this.enforceRuntimePolicy(contextBoundRunning, input);
+      const resolved = await this.enforceRuntimePolicy(contextBoundRunning, input, executionPort.hostKind);
       const effectiveRun: RunRecord = {
         ...contextBoundRunning,
         adapter_type: resolved.adapter_type,
@@ -792,11 +881,50 @@ export class RunOrchestrationService {
           required_sandbox_level: effectiveRun.required_sandbox_level,
         });
       }
+      // A single stdout chunk from a CLI adapter can carry several JSONL
+      // lines that each normalize to a RuntimeSemanticEvent (e.g. a tool_use
+      // block immediately followed by its tool_result) — the caller fires
+      // one un-awaited `runtime_event_sink` call per event
+      // (`for (const event of eventStream.push(chunk)) void
+      // runtime_event_sink?.(event)` in both vendorCliAdapter.ts and
+      // remoteHostCliAdapter.ts). `appendRunEvent`'s `event_index` is a
+      // fresh `COALESCE(MAX+1, 0)` read per INSERT, so two overlapping
+      // un-awaited calls for the same run can read the same max and collide
+      // on `uq_run_events_space_run_event_index` — found via
+      // control-center-phase2-plan.md P1's remote-events test, which is the
+      // first coverage to produce two RuntimeSemanticEvents from one chunk
+      // for a remote run; the same race exists for the server-host path.
+      // `serializeCalls` (routeUtils/common.ts) fixes it by construction.
+      // Unlike host_thread_events' equivalent fix, no database-level lock is
+      // needed on top of it: run_events' uniqueness is per-run, and
+      // tryAcquireExecutionLock already guarantees only one process ever
+      // executes a given run, so this in-process chain is the whole story.
+      //
+      // Swallowing note: `appendRuntimeSemanticEvent` rethrows for
+      // "critical" event types, but no caller has ever actually observed
+      // that rethrow. `remoteHostCliAdapter.ts` calls this sink via `void`,
+      // un-awaited (this process has no unhandledRejection handler, so
+      // Node's default there is to crash — a rethrow was observable, just
+      // never intentionally). `vendorCliAdapter.ts` (the server-host path)
+      // instead collects every call into a `pendingEvents` array and awaits
+      // them via `Promise.allSettled`, whose per-item outcomes it never
+      // inspects — a rethrow there was already silently absorbed before
+      // this phase, by a different mechanism, not a crash. Either way,
+      // nothing today reads or acts on a "critical" rethrow's signal.
+      // `serializeCalls` turns the `void`-path's crash-on-any-write-hiccup
+      // behavior into a swallow too, uniformly — a deliberate call: one
+      // run's transient write failure no longer takes the whole process
+      // (and every other concurrently executing run) down with it, and
+      // nothing that actually enforced anything is lost. Flagged explicitly
+      // per P1 discovery/closure review, not silently ridden through.
+      const serializedRuntimeEventSink = serializeCalls(
+        (event: RuntimeSemanticEvent) => this.appendRuntimeSemanticEvent(effectiveRun, event),
+      );
       const effectiveInput: RunExecutionInput = {
         ...input,
         adapter_config: resolved.adapter_config,
         risk_level: resolved.risk_level,
-        runtime_event_sink: (event) => this.appendRuntimeSemanticEvent(effectiveRun, event),
+        runtime_event_sink: serializedRuntimeEventSink,
         ...(isChatTurnRun(effectiveRun)
           ? { text_delta_sink: (delta: string) => publishChatTextDelta(effectiveRun.id, delta) }
           : {}),
@@ -848,6 +976,7 @@ export class RunOrchestrationService {
         effectiveRun,
         effectiveInput,
         executionControlSnapshot,
+        executionPort,
         effectiveBindings,
       );
       let adapterResult: RunAdapterResultEnvelope;
@@ -858,6 +987,7 @@ export class RunOrchestrationService {
             ...inputWithPreparedRuntime(effectiveInput, preparedRuntime),
             invocation_delivery: preparedRuntime.invocation_delivery ?? undefined,
             invocation_attempts: preparedRuntime.invocation_attempts ?? undefined,
+            execution_port: preparedRuntime.execution_port,
           },
         );
       } catch (error) {
@@ -891,7 +1021,7 @@ export class RunOrchestrationService {
         preparedRuntime.cli_execution_lease.binding_id = replacement.id;
       }
       if (preparedRuntime.exchange) {
-        const exchange = await this.runExchange.collect(
+        const exchange = await (preparedRuntime.execution_port?.runExchange ?? this.runExchange).collect(
           preparedRuntime.exchange,
           preparedRuntime.run_input.output_contract.required_outputs,
         );
@@ -1096,6 +1226,7 @@ export class RunOrchestrationService {
           base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
           output_json: adapterResult.output_json,
           materialization_items: [],
+          host_kind: preparedRuntime?.execution_port?.hostKind,
         }, "pre_materialization");
         semanticFailure = semanticRunFailure(adapterResult, verificationResults);
       }
@@ -1128,6 +1259,7 @@ export class RunOrchestrationService {
             base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
             output_json: adapterResult.output_json,
             materialization_items: materialization.items,
+            host_kind: preparedRuntime?.execution_port?.hostKind,
           }, "post_materialization");
           verificationResults.push(...postMaterialization);
           semanticFailure = semanticRunFailure(
@@ -1622,6 +1754,7 @@ export class RunOrchestrationService {
   private async enforceRuntimePolicy(
     run: RunRecord,
     input: RunExecutionInput,
+    hostKind: HostKind,
   ): Promise<ResolvedRuntimePolicy> {
     const runtimeConfig = recordValue(run.runtime_config_json);
     const callerConfig = input.command_source === "http" ? {} : input.adapter_config ?? {};
@@ -1638,12 +1771,19 @@ export class RunOrchestrationService {
     // caller may supply a fallback risk for legacy runs, but it can never
     // downgrade a critical contract to reach a weaker sandbox.
     const riskLevel = stringConfigValue(contract.risk_level) ?? input.risk_level ?? null;
-    const requiredSandboxLevel = resolveSandboxLevelForRuntime({
-      adapterType: run.adapter_type,
-      configuredLevel: run.required_sandbox_level,
-      riskLevel,
-      projectFolderId: run.project_folder_id,
-    });
+    // ADR 0016 P3: sandbox escalation (ephemeral/read_only/worktree/docker) is
+    // server-host policy for a workspace the server itself provisions. A
+    // remote host's workspace is the daemon's own trusted-host directory —
+    // the dispatch endpoint always creates the run at `none`, and that must
+    // stand, not get escalated to a level the server never prepares.
+    const requiredSandboxLevel = hostKind === "server"
+      ? resolveSandboxLevelForRuntime({
+          adapterType: run.adapter_type,
+          configuredLevel: run.required_sandbox_level,
+          riskLevel,
+          projectFolderId: run.project_folder_id,
+        })
+      : run.required_sandbox_level;
     if (requiredSandboxLevel === "one_shot_docker" && isVendorCliAdapter(run.adapter_type)) {
       const spec = getRuntimeAdapterSpec(run.adapter_type);
       if (!spec?.sandbox.supports_one_shot_docker) {
@@ -1691,7 +1831,11 @@ export class RunOrchestrationService {
       );
       if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
-    if (run.model_provider_id && !this.hasGrantedApproval(run, "policy_requires_approval_runtime_use_credential")) {
+    // D1: a remote host never gets a server-brokered credential, so this
+    // check is structurally moot for it — gated explicitly rather than
+    // relying only on `run.model_provider_id` staying unset for every
+    // present and future remote code path.
+    if (hostKind === "server" && run.model_provider_id && !this.hasGrantedApproval(run, "policy_requires_approval_runtime_use_credential")) {
       const decisionId = await this.enforcePolicyRequest(
         {
           action: "runtime.use_credential",
@@ -1725,7 +1869,14 @@ export class RunOrchestrationService {
       );
       if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
-    if (isVendorCliAdapter(run.adapter_type)) {
+    // ADR 0016 P3 (D1): a remote host is never granted a server-brokered
+    // credential and never runs a server-managed runtime-tool version — it
+    // uses whatever the machine is already logged into and whatever CLI is
+    // already on its PATH. Both concerns below (`runtime.use_credential`
+    // policy, `resolveRuntimeToolVersion`) are about server-owned resources
+    // that a remote run never touches, so neither applies to it. The
+    // general `runtime.execute` gate above still applies to every run.
+    if (isVendorCliAdapter(run.adapter_type) && hostKind === "server") {
       const credentialProfileId = stringConfigValue(base.adapter_config.credential_profile_id);
       const requestedRuntimeToolVersion = stringConfigValue(base.adapter_config.runtime_tool_version);
       try {
@@ -1826,10 +1977,29 @@ export class RunOrchestrationService {
     );
   }
 
+  /**
+   * ADR 0016 P2/P3: a run with no Project Folder has never been anything but
+   * server-host (ephemeral/no-folder runs predate this concept entirely),
+   * so it resolves to the server port without a lookup. A run bound to a
+   * Folder resolves that Folder's `host_kind`; `remote` returns a
+   * `RemoteHostExecutionAdapter` carrying the target host id (consumed by
+   * `invokeAdapterUnbounded`'s remote branch, not by anything in this
+   * function — the dispatch endpoint is expected to set
+   * `required_sandbox_level: "none"` for a remote run, which already makes
+   * every local-filesystem branch below a no-op).
+   */
+  private async resolveExecutionPort(run: RunRecord): Promise<HostExecutionPort> {
+    if (!run.project_folder_id || !this.hostKindResolver) return this.serverExecutionPort;
+    const resolved = await this.hostKindResolver(run.project_folder_id, run.space_id);
+    if (resolved.hostKind === "server") return this.serverExecutionPort;
+    return new RemoteHostExecutionAdapter(resolved.hostId);
+  }
+
   private async prepareRuntimeContext(
     run: RunRecord,
     input: RunExecutionInput,
     control: ExecutionControlSnapshot | null,
+    executionPort: HostExecutionPort,
     effectiveBindings?: EffectiveRunContextBindings,
   ): Promise<PreparedRuntimeContext> {
     const prepared: PreparedRuntimeContext = {
@@ -1850,11 +2020,18 @@ export class RunOrchestrationService {
       invocation_delivery: null,
       invocation_attempts: null,
       cli_execution_lease: null,
+      execution_port: null,
     };
 
     try {
+      prepared.execution_port = executionPort;
       let cliBinding: Awaited<ReturnType<RuntimeContextCliContinuityService["prepareBinding"]>> | null = null;
-      if (isVendorCliAdapter(run.adapter_type) && this.cliContinuity) {
+      // ADR 0016 P3: CLI continuity is server-HOME-materialization
+      // machinery (prepareBinding, conversation state directories) with no
+      // meaning for a remote host — its session continuity is the vendor
+      // CLI's own state on that machine, resumed via the task thread's
+      // `vendor_session_id` instead (see executeRemoteHostCliAdapter).
+      if (isVendorCliAdapter(run.adapter_type) && this.cliContinuity && prepared.execution_port?.hostKind === "server") {
         if (!control || !effectiveBindings?.workContextSetupRef) {
           throw new RunPreparationError(
             "runtime_context_authority_missing",
@@ -1920,7 +2097,18 @@ export class RunOrchestrationService {
         };
       }
 
-      if (isVendorCliAdapter(run.adapter_type) && !prepared.sandbox_cwd) {
+      // ADR 0016 P3: none of these local-sandbox concepts apply to a remote
+      // host — its "sandbox" is the daemon's own trusted-host workspace,
+      // resolved entirely on that machine. Gated on host_kind rather than
+      // trusting every caller to pass `required_sandbox_level: "none"` for
+      // a remote-bound run (the dispatch endpoint does, but this is the
+      // point of actual disk access, so it is where the guard belongs).
+      // `=== "server"`, not `!== "remote"`: every other `hostKind` check in
+      // this file is spelled positively (found during the plan's final
+      // integration review as a latent drift trap — a future third
+      // `HostKind` would silently fall into whichever spelling it doesn't
+      // match).
+      if (isVendorCliAdapter(run.adapter_type) && !prepared.sandbox_cwd && prepared.execution_port?.hostKind === "server") {
         const scope = workingDirScopeForLevel(run.required_sandbox_level);
         if (scope === "ephemeral") {
           // Run-scope sandbox: the server owns provisioning + teardown of a throwaway
@@ -1948,7 +2136,7 @@ export class RunOrchestrationService {
             },
           });
         } else if (scope === "read_only" || scope === "worktree") {
-          const manager = this.adapters.workspaceManager;
+          const manager = prepared.execution_port?.workspaceManager;
           if (!manager) {
             throw new RunPreparationError(
               "workspace_prepare_failed",
@@ -1981,6 +2169,17 @@ export class RunOrchestrationService {
             });
           }
         }
+      }
+
+      // ADR 0016 P3: a remote host gets no server-brokered Runtime Context —
+      // no retrieval, no provider/model resolution, no MCP. It runs the
+      // vendor CLI bare, using whatever the machine is already logged into.
+      // Planning a Delivery here would also fail outright for any remote run
+      // with no model_override/model_config, since there is no bound
+      // provider to resolve a default model from.
+      if (prepared.execution_port?.hostKind === "remote") {
+        await this.prepareRunExchange(run, prepared);
+        return prepared;
       }
 
       // Every managed or CLI execution enters the Gateway only after any required
@@ -2033,8 +2232,9 @@ export class RunOrchestrationService {
       prepared.cli_execution_lease = null;
       await this.cliContinuity.releaseExecutionLease(lease.binding_id, lease.lease_id).catch(() => {});
     }
+    const executionPort = prepared?.execution_port ?? this.serverExecutionPort;
     if (prepared?.exchange) {
-      await this.runExchange.cleanup(prepared.exchange).catch(() => {});
+      await executionPort.runExchange.cleanup(prepared.exchange).catch(() => {});
       prepared.exchange = null;
     }
     if (!prepared?.cleanup) return;
@@ -2048,9 +2248,9 @@ export class RunOrchestrationService {
       prepared.cleanup = null;
       return;
     }
-    if (!this.adapters.workspaceManager) return;
+    if (!executionPort.workspaceManager) return;
     try {
-      await this.adapters.workspaceManager.cleanupRunWorkspace({
+      await executionPort.workspaceManager.cleanupRunWorkspace({
         runId: run.id,
         spaceId: run.space_id,
         cleanupKind: prepared.cleanup.cleanup_kind,
@@ -2068,7 +2268,8 @@ export class RunOrchestrationService {
     prepared: PreparedRuntimeContext,
   ): Promise<void> {
     if (!isVendorCliAdapter(run.adapter_type) || !prepared.sandbox_cwd) return;
-    prepared.exchange = await this.runExchange.prepare(
+    const executionPort = prepared.execution_port ?? this.serverExecutionPort;
+    prepared.exchange = await executionPort.runExchange.prepare(
       run.space_id,
       run.id,
       prepared.run_input,
@@ -2088,14 +2289,15 @@ export class RunOrchestrationService {
     prepared: PreparedRuntimeContext | null,
     proposalStatus: "pending" | "staged" = "pending",
   ): Promise<{ item: RunMaterializationItemSummary; errors: string[] } | null> {
+    const codePatchCollector = prepared?.execution_port?.codePatchCollector;
     if (
       prepared?.sandbox_kind !== "worktree" ||
       !prepared.sandbox_cwd ||
-      !this.adapters.codePatchCollector
+      !codePatchCollector
     ) {
       return null;
     }
-    return this.adapters.codePatchCollector.collect({
+    return codePatchCollector.collect({
       run,
       worktreePath: prepared.sandbox_cwd,
       baseCommitSha: prepared.base_commit_sha,
@@ -2160,6 +2362,33 @@ export class RunOrchestrationService {
         run,
         "runtime_adapter_not_implemented",
         `Runtime adapter '${run.adapter_type ?? "unknown"}' is not registered.`,
+      );
+    }
+    if (spec.executor_family === "local_cli" && input.execution_port?.hostKind === "remote") {
+      const threadId = run.host_task_thread_id;
+      const threadEvents = threadId && this.config.databaseUrl
+        ? new PgHostThreadEventRepository(getDbPool(this.config.databaseUrl))
+        : null;
+      return executeRemoteHostCliAdapter(
+        {
+          run,
+          prompt: input.prompt ?? null,
+          model: input.model ?? null,
+          resume_session_id: stringConfigValue(input.adapter_config?.remote_resume_session_id),
+          timeout_seconds: input.timeout_ms && input.timeout_ms > 0 ? Math.ceil(input.timeout_ms / 1000) : null,
+          runtime_event_sink: input.runtime_event_sink,
+          // control-center-phase2-plan.md P1 (C2): persisted as frames
+          // arrive, not batched — the thread's live read model. Serialized
+          // per run (see createSerializedThreadEventSink) since stdout and
+          // stderr chunks can arrive back-to-back through un-awaited
+          // callbacks.
+          thread_event_sink: threadEvents
+            ? createSerializedThreadEventSink(threadEvents, threadId!, run.id)
+            : undefined,
+          process_registry: this.adapters.processRegistry,
+        },
+        input.execution_port.hostId!,
+        run.project_folder_id!,
       );
     }
     return RUNTIME_EXECUTORS[spec.executor_family](this.config, run, input, this.adapters);

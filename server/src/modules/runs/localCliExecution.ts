@@ -40,6 +40,7 @@ export interface CliCommandExecutor {
     process_registry?: CliProcessRegistry;
     stall_timeout_seconds?: number;
     on_stdout_chunk?: (chunk: string) => void;
+    on_stderr_chunk?: (chunk: string) => void;
     stdio_controller?: CliStdioController;
     raw_stdio_controller?: CliRawStdioController;
     terminal?: boolean;
@@ -60,9 +61,18 @@ export interface CliStdioController {
   result(): {
     completed: boolean;
     error: string | null;
+    resume_handshake_failed?: boolean;
     text: string;
     external_session_id?: string | null;
     usage?: CanonicalUsage | null;
+    model_usage?: Array<{ model: string; usage: CanonicalUsage }>;
+    subscription_quota?: {
+      status: string;
+      rate_limit_type: string;
+      utilization: number;
+      resets_at: number;
+      is_using_overage: boolean;
+    } | null;
   };
 }
 
