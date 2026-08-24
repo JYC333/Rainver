@@ -32,7 +32,11 @@ import type { SystemActionId } from "@agent-space/protocol" with { "resolution-m
  * the Room's one-level/two-specialist delegation budget, and
  * `research.start_acquisition` is idempotency-guarded rather than
  * proposal-gated (room-advancement-reliability-plan Phase 4: the Thread was
- * already human-accepted at creation). The two are not mutually exclusive —
+ * already human-accepted at creation). `research.cancel_acquisition` is its
+ * stop lever, listed here so a Room notification about running research
+ * always has a matching in-Room action — a report the user can
+ * only act on by leaving for the web UI is the interruption the reform
+ * removed, moved rather than deleted. The two are not mutually exclusive —
  * an ad hoc delegated investigation and a tracked acquisition Workflow may
  * run on the same Thread at once; choosing between (or combining) them is
  * the Manager Agent's judgment, never a server-side gate.
@@ -58,4 +62,5 @@ export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "inquiry.promote_knowledge",
   "agent.delegate",
   "research.start_acquisition",
+  "research.cancel_acquisition",
 ];

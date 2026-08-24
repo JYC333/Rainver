@@ -15,6 +15,7 @@ import {
   type ResearchArtifactValidationFailure,
 } from "../artifactValidation";
 import { RESEARCH_SYNTHESIS_CRITIQUE_OUTPUT_CONTRACT, RESEARCH_SYNTHESIS_OUTPUT_CONTRACT } from "../outputSchemas";
+import { checkpointBlocks, recordInformationalIdeaReview } from "../researchCheckpointPolicy";
 import {
   PROJECT_RESEARCH_SYNTHESIS_CRITIQUE_PROMPT_KEY,
   PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY,
@@ -498,17 +499,31 @@ export class ProjectResearchSynthesisCoordinator {
     });
     state.artifact_ids = unique([...state.artifact_ids, input.archiveArtifactId]);
     state.synthesis_run_id = input.runId;
+    // Checkpoint reform: when idea_review does not gate, this
+    // stage is under way rather than waiting on anybody. Writing
+    // `waiting_review`/`blocked` first and waiving after would advertise a
+    // review nobody will be asked for — and if the reconciler is not running,
+    // the operation would sit that way indefinitely.
+    const gated = checkpointBlocks("idea_review");
     state.current_stage = "idea_review";
-    state.stage_state = "waiting_review";
+    state.stage_state = gated ? "waiting_review" : "running";
     await setResearchOperationState(this.db, operation, state, [
       { seq: 0, status: "done" }, { seq: 1, status: "done" }, { seq: 2, status: "done" },
       { seq: 3, status: "done", detail: { run_id: input.runId, report_id: materialized.id } },
-      { seq: 4, status: "blocked", detail: { checkpoint_type: "idea_review", report_id: materialized.id } },
+      {
+        seq: 4,
+        status: gated ? "blocked" : "active",
+        detail: { checkpoint_type: "idea_review", report_id: materialized.id },
+      },
     ]);
-    await this.ports.createCheckpoint(this.db, input.spaceId, input.projectId, input.workflowId, operation.id, "idea_review", {
+    const checkpointId = await this.ports.createCheckpoint(this.db, input.spaceId, input.projectId, input.workflowId, operation.id, "idea_review", {
       operation_id: operation.id, run_kind: state.run_kind, report_id: materialized.id,
       idea_count: materialized.ideaCount, requires_batch_decision: true,
     });
+    // Waived after the state write, so a dropped write replays rather than
+    // leaving a waived checkpoint with no advance behind it;
+    // `reconcileIdeaReviewStage` carries the operation onward next tick.
+    await recordInformationalIdeaReview(this.db, input.spaceId, checkpointId);
   }
 
   async reconcileCompletedDraft(input: {

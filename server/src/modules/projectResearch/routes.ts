@@ -8,6 +8,7 @@ import { ProjectResearchReportRepository } from "./reportRepository";
 import { ProjectResearchQuestionRefineService } from "./questionRefineService";
 import { registerProjectResearchAreaRoutes } from "./areaRoutes";
 import { ProjectResearchStandingComparisonService } from "./standingComparisonService";
+import { ResearchOperationCancelService } from "./researchOperationCancel";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => ProjectResearchRepository) | null = null;
 let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchPipelineService) | null = null;
@@ -306,6 +307,32 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           identity,
           requireParam(request, "projectId"),
           requireParam(request, "operationId"),
+        ),
+      );
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post(`${base}/operations/:operationId/cancel`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const operationId = requireParam(request, "operationId");
+      const gate = await enforceSources(
+        context,
+        identity,
+        "research.acquisition.cancel",
+        "project_operation",
+        operationId,
+      );
+      if (gate.blocked) return reply.code(403).send(gate.reply403);
+      return reply.send(
+        await new ResearchOperationCancelService(dbPool(context.config)).cancelOperation(
+          identity,
+          requireParam(request, "projectId"),
+          operationId,
+          optionalString(jsonBody(request).reason),
         ),
       );
     } catch (error) {

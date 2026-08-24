@@ -8,7 +8,7 @@ describe("ProjectResearchScreeningCoordinator", () => {
     const query = vi.fn();
     const coordinator = new ProjectResearchScreeningCoordinator(
       { query } as unknown as Queryable,
-      { createCheckpoint: vi.fn(), setState: vi.fn() },
+      { createCheckpoint: vi.fn(), setState: vi.fn(), resumeAfterCheckpoint: vi.fn(), notifyRoom: vi.fn(), failOperation: vi.fn() },
     );
 
     await expect(coordinator.countRelevantItems("space", "project", [])).resolves.toEqual({
@@ -29,7 +29,7 @@ describe("ProjectResearchScreeningCoordinator", () => {
       .mockResolvedValueOnce({ rows: [{ pending_extraction: "0", pending_processing: "1", pending_events: "0" }] });
     const coordinator = new ProjectResearchScreeningCoordinator(
       { query } as unknown as Queryable,
-      { createCheckpoint: vi.fn(), setState: vi.fn() },
+      { createCheckpoint: vi.fn(), setState: vi.fn(), resumeAfterCheckpoint: vi.fn(), notifyRoom: vi.fn(), failOperation: vi.fn() },
     );
     const state = researchState({
       source_backfill_plan_ids: ["plan"],

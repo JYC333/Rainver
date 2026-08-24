@@ -223,6 +223,10 @@ const proposalInputs:Record<string,z.ZodType>={
     thread_id: z.string().min(1),
     intent_note: z.string().trim().min(1).max(2000).optional(),
   }).strict(),
+  "research.cancel_acquisition": z.object({
+    operation_id: z.string().min(1),
+    reason: z.string().trim().min(1).max(2000).optional(),
+  }).strict(),
 };
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
@@ -284,6 +288,9 @@ export const SYSTEM_ACTION_REGISTRY = [
   // write. The human confirmation gate is replaced by hard idempotency
   // guards in the acquisition service.
   agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
+  // The symmetric stop for the action above. Direct execution for the same
+  // reason: a stop that waits on a proposal review is not a stop.
+  agentAction("research.cancel_acquisition", "Cancel a running research acquisition", "projectResearch", "ResearchOperationCancelService.cancelOperation", "research.acquisition.cancel", "durable", { resource_type: "project_operation", resource_id_input_field: "operation_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
 ] as const satisfies readonly SystemActionDefinition[];
 
 export type SystemActionId = (typeof SYSTEM_ACTION_REGISTRY)[number]["id"];

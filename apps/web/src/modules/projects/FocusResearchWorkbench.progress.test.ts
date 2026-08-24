@@ -20,6 +20,17 @@ function operation(overrides: Partial<ProjectOperation['progress_json']> = {}): 
 }
 
 describe('FocusResearchWorkbench operation progress', () => {
+  it('describes a cancelled operation as stopped and freezes its remaining steps', () => {
+    const cancelled = {
+      ...operation({ current_stage: 'screening' }),
+      status: 'cancelled' as const,
+    }
+    expect(researchOperationNextStep(cancelled)).toContain('No further work will run')
+    expect(researchOperationSteps(cancelled).map(step => step.status)).toEqual([
+      'done', 'done', 'cancelled', 'skipped', 'skipped',
+    ])
+  })
+
   it('reports backfill windows and ingestion records', () => {
     expect(researchOperationDetail(operation({
       backfill_progress: {

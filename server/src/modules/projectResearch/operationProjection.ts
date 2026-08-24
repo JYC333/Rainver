@@ -207,6 +207,12 @@ export interface ResearchOperationState {
     updated_at: string;
     message: string;
   };
+  // Last classification count observed while screening was still incomplete,
+  // and when it was first observed at that value. `screening_progress
+  // .updated_at` is recomputed on every tick, so it cannot say whether
+  // anything actually moved; this can. Used only to tell a slow screening
+  // from a stuck one — see `ProjectResearchScreeningCoordinator.createGate`.
+  screening_stall_watch?: { classified_items: number; since: string };
   synthesis_progress?: {
     run_id: string;
     run_status: string;

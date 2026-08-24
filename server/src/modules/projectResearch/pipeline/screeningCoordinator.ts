@@ -2,6 +2,12 @@ import type { Queryable } from "../../routeUtils/common";
 import { objectValue, optionalString } from "../../routeUtils/common";
 import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/config";
 import {
+  SCREENING_AUTO_CONTINUE_CORPUS_LIMIT,
+  checkpointBlocks,
+  screeningExceedsAutoBudget,
+  waiveCheckpointAutomatically,
+} from "../researchCheckpointPolicy";
+import {
   applyResearchStatePatch,
   deriveSkippedAfterScreeningSteps,
   researchStage,
@@ -43,6 +49,51 @@ export interface ProjectResearchScreeningPorts {
     state: ResearchOperationState,
     steps: ResearchStepOverride[],
   ): Promise<void>;
+  /** Continues past a checkpoint the reform waived, on the same path a human
+   * approval takes — see `createGate`. */
+  resumeAfterCheckpoint(
+    operation: ScreeningOperationRow,
+    workflowId: string,
+    checkpointId: string,
+  ): Promise<void>;
+  /** Reports a research Operation's state to its originating Room, if it has
+   * one. Inert for an Operation with no Room origin. */
+  notifyRoom(
+    operation: ScreeningOperationRow,
+    status: "waiting_review" | "completed",
+    reason: string,
+  ): Promise<void>;
+  /** Fails the Operation through the orchestrator's single failure path, which
+   * also owns the `failed` Room notification. */
+  failOperation(operation: ScreeningOperationRow, message: string): Promise<void>;
+}
+
+/**
+ * How long classification may sit at the same count, with nothing in flight,
+ * before the operation is called stuck rather than slow.
+ *
+ * Deliberately generous: a false positive fails a recoverable operation
+ * (retryable, and the user is told), while a false negative is the hang this
+ * exists to end. On the incremental path classification is driven by the
+ * source pipeline's own cadence, so short windows would misread a quiet
+ * source as a stall.
+ */
+const SCREENING_STALL_WINDOW_MS = 60 * 60_000;
+
+/** The screening stage's five-step projection. seq 0/1 are always behind us
+ * here and seq 4 is always ahead; only the screening step itself (seq 2) and
+ * whether synthesis (seq 3) has started vary between `createGate`'s exits. */
+function screeningGateSteps(
+  seq2: { status: "active" | "blocked" | "done"; detail: Record<string, unknown> },
+  seq3Status: "pending" | "active",
+): ResearchStepOverride[] {
+  return [
+    { seq: 0, status: "done" },
+    { seq: 1, status: "done" },
+    { seq: 2, status: seq2.status, detail: seq2.detail },
+    { seq: 3, status: seq3Status },
+    { seq: 4, status: "pending" },
+  ];
 }
 
 /** Owns screening progress, corpus counts, the review gate, and valid empty
@@ -77,16 +128,123 @@ export class ProjectResearchScreeningCoordinator {
       },
     );
     if (!state.checkpoint_ids.includes(checkpointId)) state.checkpoint_ids.push(checkpointId);
+    // Captured before this method mutates the state: `waiting_review` here
+    // means a previous tick already paused (and already told the Room), so
+    // this tick only refreshes the checkpoint snapshot.
+    const wasAlreadyPaused = researchState(operation.progress_json).stage_state === "waiting_review";
     state.current_stage = "screening";
-    state.stage_state = "waiting_review";
     state.heartbeat_at = new Date().toISOString();
-    await this.ports.setState(operation, state, [
-      { seq: 0, status: "done" },
-      { seq: 1, status: "done" },
-      { seq: 2, status: "blocked", detail: { checkpoint_id: checkpointId, counts } },
-      { seq: 3, status: "pending" },
-      { seq: 4, status: "pending" },
-    ]);
+
+    // The gate did two jobs, and only one of them was asking a human.
+    //
+    // On the incremental path there is no drain check before this point (the
+    // baseline path has `ensureItemsProcessed`), so the checkpoint opens while
+    // classification is still running and each later reconcile tick refreshes
+    // its snapshot in place. What actually released the operation was the
+    // human approving *after* watching the count reach completion. Waiving on
+    // the first tick would therefore send a partly-classified corpus to
+    // synthesis, and freeze the checkpoint's snapshot at that moment, since
+    // `upsertPendingResearchCheckpoint` only refreshes rows still pending.
+    //
+    // So auto-continue waits for classification, which is a machine condition
+    // and needs no human. Until then the checkpoint stays a live pending
+    // record exactly as before — and a human approving that pending gate from
+    // the web UI remains the manual override for a classification that will
+    // never finish (approval bypasses this wait by design).
+    const progress = state.screening_progress;
+    const classificationComplete = !progress
+      || (progress.total_items > 0 && progress.classified_items >= progress.total_items);
+
+    if (!classificationComplete) {
+      // Classification that will never finish has to end as a failure, or the
+      // operation shows "running" forever with no lever: `failed` is the only
+      // status `retryFailedOperation` accepts, and `failOperation` posts the
+      // Room notification. There are two ways it never finishes.
+      //
+      // The visible one is a batch that exhausted its retries.
+      if ((progress?.failed_batches ?? 0) > 0) {
+        await this.ports.failOperation(
+          operation,
+          `Screening stalled: ${progress?.failed_batches} classification batch(es) failed permanently, so ${progress?.unclassified_items ?? 0} item(s) were never classified.`,
+        );
+        return;
+      }
+
+      // The silent one has no failed batch to point at — the incremental path
+      // enqueues no recovery batches at all (`ensureItemsProcessed` runs only
+      // for baseline and question_rescreen), so items left unclassified at the
+      // current research-question version simply never get a decision and
+      // every counter reads zero. What distinguishes that from a slow
+      // screening is only whether the count moves, so that is what is
+      // measured. Work still in flight is never called stuck, however long it
+      // takes.
+      const observed = progress?.classified_items ?? 0;
+      const inFlight = (progress?.active_batches ?? 0) > 0;
+      const watch = state.screening_stall_watch;
+      if (inFlight || !watch || watch.classified_items !== observed) {
+        state.screening_stall_watch = { classified_items: observed, since: new Date().toISOString() };
+      } else if (Date.now() - new Date(watch.since).getTime() > SCREENING_STALL_WINDOW_MS) {
+        await this.ports.failOperation(
+          operation,
+          `Screening stalled: ${progress?.unclassified_items ?? 0} of ${progress?.total_items ?? 0} item(s) have gone unclassified with no progress for over ${Math.round(SCREENING_STALL_WINDOW_MS / 60_000)} minutes and no classification work in flight.`,
+        );
+        return;
+      }
+
+      state.stage_state = "running";
+      await this.ports.setState(operation, state, screeningGateSteps(
+        { status: "active", detail: { checkpoint_id: checkpointId, counts } },
+        "pending",
+      ));
+      return;
+    }
+
+    // Classification finished; the stall watch has nothing left to watch.
+    delete state.screening_stall_watch;
+
+    if (checkpointBlocks("screening_gate") || screeningExceedsAutoBudget(counts)) {
+      state.stage_state = "waiting_review";
+      await this.ports.setState(operation, state, screeningGateSteps(
+        { status: "blocked", detail: { checkpoint_id: checkpointId, counts } },
+        "pending",
+      ));
+      // Only the tick that pauses speaks; later ticks just refresh the
+      // snapshot. Without this edge check the nudger would enqueue a notify
+      // job every few seconds for the whole wait.
+      if (!wasAlreadyPaused) {
+        await this.ports.notifyRoom(
+          operation,
+          "waiting_review",
+          `Screening matched ${counts.relevant + counts.maybe} items, over the ${SCREENING_AUTO_CONTINUE_CORPUS_LIMIT}-item limit for continuing without review. Approving the screening checkpoint (on the Project's Operations page) synthesizes anyway; the operation can also be cancelled from here.`,
+        );
+      }
+      return;
+    }
+
+    // Non-blocking: record what the machine concluded, then continue on the
+    // exact path a human approval took. Reusing `resumeAfterCheckpoint`
+    // rather than inlining the advance keeps one implementation of "what
+    // happens after screening" — the alternative drifts the moment either
+    // copy is fixed.
+    //
+    // Order matters: persist, then waive. A stage-advancing `setState` is
+    // `onStale: "noop"`, so a lost race drops the write silently — and once
+    // the checkpoint is waived, `screeningGateDecided` treats screening as
+    // behind us and never re-enters this transition, stranding the operation
+    // in a state with no `failed` status to retry from. Waiving only after
+    // the state landed means a dropped write just replays next tick.
+    state.stage_state = "running";
+    await this.ports.setState(operation, state, screeningGateSteps(
+      { status: "done", detail: { checkpoint_id: checkpointId, counts, auto_continued: true } },
+      "active",
+    ));
+    await waiveCheckpointAutomatically(
+      this.db,
+      operation.space_id,
+      checkpointId,
+      `Screening matched ${counts.relevant + counts.maybe} items, within the ${SCREENING_AUTO_CONTINUE_CORPUS_LIMIT}-item limit for continuing without review.`,
+    );
+    await this.ports.resumeAfterCheckpoint(operation, state.workflow_id, checkpointId);
   }
 
   async completeEmptyInitialIntake(operation: ScreeningOperationRow, state: ResearchOperationState): Promise<void> {
@@ -123,8 +281,8 @@ export class ProjectResearchScreeningCoordinator {
         applyResearchStatePatch(current, base, state);
         await db.query(
           `UPDATE project_research_checkpoints
-              SET status='waived', user_decision='waived', decision_reason=$4,
-                  decided_by_user_id=NULL, decided_at=$5, updated_at=$5
+              SET status='waived', decision_reason=$4,
+                  decided_at=$5, updated_at=$5
             WHERE space_id=$1 AND project_id=$2 AND workflow_id=$3
               AND checkpoint_type='screening_gate' AND status='pending'
               AND machine_result_json->>'operation_id'=$6`,
@@ -161,6 +319,10 @@ export class ProjectResearchScreeningCoordinator {
       stepOverrides: deriveSkippedAfterScreeningSteps(),
       onStale: "noop",
     });
+    // An empty result is among the most common outcomes of a Room-started
+    // acquisition, and finishing silently would leave the Room waiting on a
+    // terminal event that never comes.
+    await this.ports.notifyRoom(operation, "completed", state.empty_result.message);
   }
 
   async countRelevantItems(spaceId: string, projectId: string, sourceItemIds: string[]): Promise<ScreeningCounts> {

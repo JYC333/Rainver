@@ -332,8 +332,14 @@ export function isTerminalRunStatus(status: string): status is RunTerminalStatus
   ].includes(status);
 }
 
+/** Statuses a Run can never leave. Deliberately excludes `waiting_for_review`
+ * and `cancelling` — both are cancellable/in-flight — so SQL that selects
+ * "Runs still worth stopping" can be built from this list rather than a
+ * hand-rolled copy that drifts. */
+export const HARD_TERMINAL_RUN_STATUSES = ["succeeded", "failed", "degraded", "cancelled", "orphaned"] as const;
+
 export function isHardTerminalRunStatus(status: string): status is RunTerminalStatus {
-  return ["succeeded", "failed", "degraded", "cancelled", "orphaned"].includes(status);
+  return (HARD_TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
 }
 
 export function protocolRunStatus(status: string): RunStatus | "unknown" {

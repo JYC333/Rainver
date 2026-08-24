@@ -406,9 +406,11 @@ UTC day, enforced at queue time. Its output contract is a `notebook_update` ops
 document applied by the research reconciler on run completion. `POST
 .../research/reports` queues a `synthesis_only` operation over the current
 reviewed corpus to create a new immutable snapshot. Materialization creates the
-normal domain-owned `idea_review` checkpoint: the execution-per-pass graph may
-finish, but the operation and report remain `waiting_review` /
-`awaiting_review` until a project writer approves or rejects the checkpoint.
+normal domain-owned `idea_review` checkpoint. Under the checkpoint policy
+(`researchCheckpointPolicy.ts`, `.agent/architecture/SYSTEM_ACTIONS.md`) that
+checkpoint is an informational record: it is auto-waived at creation, the
+operation continues, and `reconcileIdeaReviewStage` completes it on the next
+tick — the report's idea candidates stay reviewable on the report itself.
 
 Notes also persist referenced source-item ids, on `note_revisions.refs_json`.
 Applied AI updates merge their `refs` into that set — each write starts from
@@ -581,7 +583,11 @@ The user's explicit Start action
 authorizes the history import for this Project Research operation; Auto Research
 does not create a second `source_backfill_start` proposal. Generic Source and
 agent-triggered history plans remain proposal-gated. After the history window
-and post-processing drain, a `screening_gate` must be approved before synthesis.
+and post-processing drain, a `screening_gate` checkpoint records the screening
+result; it pauses for approval only when the screened corpus exceeds
+`SCREENING_AUTO_CONTINUE_CORPUS_LIMIT`, and otherwise auto-waives and
+continues into synthesis (checkpoint policy — see
+`.agent/architecture/SYSTEM_ACTIONS.md`).
 The resulting `evidence_matrix` includes `relevant`, `included`, and `maybe`
 corpus rows, is refreshed on retries, and is attached explicitly to the managed
 synthesis run as a bounded evidence pack. Its source-connection metadata keeps
@@ -624,8 +630,9 @@ preview/tail, parser error and position where available), the run is marked
 artifact content remains available through the artifact record; logs only add a
 bounded, redacted preview/tail for diagnosis. The operation and Run detail
 views expose the same diagnostics, and the server emits a structured
-`[project-research.synthesis] validation_failed` log line. An `idea_review` checkpoint is the final gate before
-the source schedule is activated.
+`[project-research.synthesis] validation_failed` log line. An `idea_review`
+checkpoint is recorded (and auto-waived — it no longer gates) before the
+source schedule is activated.
 
 When a failed synthesis operation is retried, the retry clears the old
 `synthesis_progress` snapshot and writes the new run id and queued/started
@@ -975,6 +982,7 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | GET | `/projects/{id}/research/workflow/{workflowId}/checkpoints` | List checkpoints for a workflow |
 | POST | `/projects/{id}/research/workflow/{workflowId}/checkpoints/{checkpointId}/decide` | Record a human decision (`approved` / `rejected` / `waived`) on a checkpoint |
 | POST | `/projects/{id}/research/operations/{operationId}/retry` | Retry a failed managed research operation from its persisted stage |
+| POST | `/projects/{id}/research/operations/{operationId}/cancel` | Cancel a running research operation: the row goes terminal synchronously and a job kills its Runs, screening batches, backfill plans, and pass Execution, and waives its pending checkpoints |
 | POST | `/projects/{id}/research/operations/{operationId}/reconcile` | Repair a stale operation projection from the canonical run; never re-queues the run |
 | PUT | `/projects/{id}/research/operations/{operationId}/item-limit` | Explicitly raise the active research item limit from Project Settings and resume a partial import if needed |
 | PUT | `/projects/{id}/research/item-limit` | Save the explicit body `workflow_id`'s draft intake limit; omitting it creates a new partial draft |
@@ -1447,5 +1455,10 @@ product progress view; status and `progress_json` are projected from validated,
 same-space links when an operation is read. `version` starts at 1 and increments
 on every operation projection/state mutation; managed research updates require
 the version read under the locked operation-projection row. Public routes live under
-`/api/v1/projects/{projectId}/operations`; cancellation changes only the
-operation grouping record and never cancels linked execution objects.
+`/api/v1/projects/{projectId}/operations`; the generic cancellation there
+changes only the operation grouping record and never cancels linked execution
+objects. Research operations are the exception: their dedicated cancel route
+(`/research/operations/{operationId}/cancel`) is policy-enforced as
+`research.acquisition.cancel` and also terminates the operation's in-flight
+Runs, screening batches, backfill plans, and pass Execution — see
+`.agent/architecture/SYSTEM_ACTIONS.md`, `research.cancel_acquisition`.

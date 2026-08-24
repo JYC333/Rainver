@@ -233,7 +233,10 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
       `SELECT status, progress_json->>'current_stage' AS current_stage FROM project_operations WHERE id=$1`,
       [operationId],
     );
-    expect(finalOperation.rows[0]).toEqual({ status: "waiting_review", current_stage: "idea_review" });
+    // Checkpoint reform: reaching idea_review no longer means
+    // waiting on anybody, so the operation stays active rather than
+    // advertising a review that will never be asked for.
+    expect(finalOperation.rows[0]).toEqual({ status: "active", current_stage: "idea_review" });
 
     const report = await pool.query<{ synthesis_run_id: string; run_kind: string; status: string }>(
       `SELECT synthesis_run_id, run_kind, status FROM project_research_reports WHERE operation_id=$1`,
@@ -246,9 +249,12 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
         WHERE space_id=$1 AND machine_result_json->>'operation_id'=$2`,
       [SPACE, operationId],
     );
+    // Checkpoint reform: idea_review is recorded but does not
+    // hold the operation, so it is waived at creation and
+    // `reconcileIdeaReviewStage` carries the operation on from there.
     expect(checkpoint.rows).toContainEqual({
       checkpoint_type: "idea_review",
-      status: "pending",
+      status: "waived",
       operation_id: operationId,
     });
 

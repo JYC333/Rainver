@@ -248,10 +248,10 @@ export interface RunExecutionAdapterDeps {
   runtimeToolVersionResolver?: RunRuntimeToolVersionResolver;
   delegationProjector?: RunDelegationLifecycleProjectorPort;
   /**
-   * Shared CLI process registry. Execute registers spawned CLI processes here;
-   * cancelRun terminates them through it. Must be the same instance across the
-   * HTTP routes and the job worker so a stop from another request can reach a
-   * running process.
+   * Shared active-execution registry. CLI execution registers Runner process
+   * callbacks and managed API execution registers its AbortController here;
+   * cancelRun terminates either through the same interface. Must be the same
+   * instance across HTTP routes and the job worker.
    */
   processRegistry?: CliProcessRegistry;
   routeResolver?: RunRouteResolverPort;
@@ -1641,9 +1641,22 @@ export class RunOrchestrationService {
         error: "Run not found in this space.",
       };
     }
-    // queued, running, waiting_for_review, and waiting_for_dependency runs are cancellable;
-    // hard-terminal runs are a no-op.
+    // queued, running, waiting_for_review, and waiting_for_dependency runs are cancellable.
+    // A previously-cancelled Run is terminal but may still need finalization
+    // reconciliation after an earlier cancellation attempt failed there.
     if (isHardTerminalRunStatus(run.status)) {
+      if (run.status === "cancelled") {
+        const finalization = await this.finalizeTerminalRunBestEffort(run);
+        if (finalization?.status === "failed") {
+          return {
+            run_id: run.id,
+            status: "cancelled",
+            error_code: "finalization_failed",
+            error: finalization.error_message ?? "Run finalization failed.",
+          };
+        }
+        await this.markDelegatedRunTerminal(run);
+      }
       return {
         run_id: run.id,
         status: protocolRunStatus(run.status),
@@ -2349,7 +2362,11 @@ export class RunOrchestrationService {
         : Math.min(requestedTimeoutMs, contractTimeoutMs);
     const spec = getRuntimeAdapterSpec(run.adapter_type);
     const timeoutSeconds = timeoutMs === null ? null : Math.max(1, Math.ceil(timeoutMs / 1000));
-    const controller = timeoutMs && spec?.executor_family === "managed_api"
+    // Managed requests need an AbortController even when no timeout is set:
+    // the same signal is also the user's Stop control. Registering it in the
+    // shared execution registry lets cancelRun abort the provider request and
+    // wait until the adapter has actually unwound before publishing terminal.
+    const controller = spec?.executor_family === "managed_api"
       ? new AbortController()
       : null;
     const adapterInput: RunExecutionInput = {
@@ -2365,14 +2382,24 @@ export class RunOrchestrationService {
         },
       } : {}),
     };
+    if (controller && this.adapters.processRegistry?.registerRemote) {
+      this.adapters.processRegistry.registerRemote(
+        run.id,
+        () => controller.abort(),
+        () => controller.abort(),
+      );
+    }
     const promise = this.invokeAdapterUnbounded(run, adapterInput);
-    if (!timeoutMs || timeoutMs <= 0) return promise;
+    const trackedPromise = controller && this.adapters.processRegistry?.registerRemote
+      ? promise.finally(() => this.adapters.processRegistry?.deregister(run.id))
+      : promise;
+    if (!timeoutMs || timeoutMs <= 0) return trackedPromise;
     // Local CLI adapters own their deadline: the scoped Runner terminates
     // the process group and waits for exit. Racing that cleanup here would
     // release the Job while the child process was still alive.
-    if (spec?.executor_family === "local_cli") return promise;
+    if (spec?.executor_family === "local_cli") return trackedPromise;
     return withTimeout(
-      promise,
+      trackedPromise,
       timeoutMs,
       adapterTimeoutEnvelope(run, timeoutMs),
       () => controller?.abort(),

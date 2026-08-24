@@ -1113,6 +1113,7 @@ export class ProjectResearchOrchestrator {
             await this.setState(row, completedState, deriveSkippedAfterScreeningSteps());
             await this.completeWorkflowCoverage(spaceId, row.project_id, state.workflow_id, row.id, state.partial ? "partial" : "completed");
             await this.flushPendingIncremental(spaceId, row.project_id, state.workflow_id);
+            await this.notifyRoomOfOperationStatus(row, "completed", "The research operation finished: no relevant material was found in the selected history window.");
           } else {
             await this.createScreeningGate(row, state);
           }
@@ -1174,6 +1175,7 @@ export class ProjectResearchOrchestrator {
           message: "No relevant or maybe material was found in this update.",
         };
         await this.setState(row, state, deriveSkippedAfterScreeningSteps());
+        await this.notifyRoomOfOperationStatus(row, "completed", "The research operation finished: no relevant or maybe material was found in this update.");
       } else {
         await this.createScreeningGate(row, state);
       }
@@ -1405,8 +1407,8 @@ export class ProjectResearchOrchestrator {
     executionId: string,
   ): Promise<void> {
     this.activePassExecutionId = executionId;
-    const checkpoint = await this.db.query<{ checkpoint_type: string; status: string; machine_result_json: unknown }>(
-      `SELECT checkpoint_type, status, machine_result_json FROM project_research_checkpoints WHERE id=$1 AND space_id=$2 AND project_id=$3 AND workflow_id=$4`,
+    const checkpoint = await this.db.query<{ checkpoint_type: string; status: string; machine_result_json: unknown; decided_by_user_id: string | null }>(
+      `SELECT checkpoint_type, status, machine_result_json, decided_by_user_id FROM project_research_checkpoints WHERE id=$1 AND space_id=$2 AND project_id=$3 AND workflow_id=$4`,
       [checkpointId, spaceId, projectId, workflowId],
     );
     const value = checkpoint.rows[0];
@@ -1461,7 +1463,17 @@ export class ProjectResearchOrchestrator {
         { seq: 1, status: "done" },
         { seq: 2, status: "done" },
         { seq: 3, status: "done" },
-        { seq: 4, status: "done", detail: { checkpoint_id: checkpointId, decided_by_user_id: userId } },
+        // Only a real decision is attributed. An auto-waived checkpoint has no
+        // decider, and naming the project writer the pass happens to run under
+        // would be the same false record `waiveCheckpointAutomatically`
+        // avoids by leaving the column NULL.
+        {
+          seq: 4,
+          status: "done",
+          detail: value.decided_by_user_id
+            ? { checkpoint_id: checkpointId, decided_by_user_id: value.decided_by_user_id }
+            : { checkpoint_id: checkpointId, auto_continued: true },
+        },
       ]);
       await this.setWorkflowMonitoring(spaceId, projectId, workflowId, state);
       await this.enqueueIntegrityMonitor(spaceId, userId, projectId, workflowId, "monitoring_activated");
@@ -1480,6 +1492,11 @@ export class ProjectResearchOrchestrator {
       await tryQueueAdviceForWorkflowThread(this.db, {
         spaceId, userId, projectId, workflowId, triggerKind: "search_completed",
       });
+      await this.notifyRoomOfOperationStatus(
+        operation,
+        "completed",
+        "The research operation finished. Its report, evidence, and any proposals are on the Project.",
+      );
     }
   }
 
@@ -2108,7 +2125,38 @@ export class ProjectResearchOrchestrator {
       createCheckpoint: (spaceId, projectId, workflowId, operationId, type, result) =>
         this.createCheckpoint(spaceId, projectId, workflowId, operationId, type, result),
       setState: (operation, state, steps) => this.setState(operation, state, steps),
+      resumeAfterCheckpoint: async (operation, workflowId, checkpointId) => {
+        const actorUserId = await this.projectWriterActor(operation.space_id, operation.project_id);
+        if (!actorUserId) {
+          // Loud, like `reconcileOperation` in the same condition. A silent
+          // return here would strand the operation: the gate is already
+          // waived, so the screening transition never re-enters, and without
+          // a `failed` status there is nothing to retry.
+          await this.failScreeningOperation(operation.space_id, operation.id, "Research auto-continue requires a project writer");
+          return;
+        }
+        await this.resumeAfterCheckpoint(
+          operation.space_id,
+          actorUserId,
+          operation.project_id,
+          workflowId,
+          checkpointId,
+        );
+      },
+      notifyRoom: (operation, status, reason) =>
+        this.notifyRoomOfOperationStatus(operation as OperationRow, status, reason),
+      failOperation: (operation, message) =>
+        this.failScreeningOperation(operation.space_id, operation.id, message),
     });
+  }
+
+  /** Screening-port failure entry: refetches the full row (the coordinator's
+   * `ScreeningOperationRow` carries no `status`, which `failOperation`'s
+   * terminal guard reads) and fails through the single failure path. */
+  private async failScreeningOperation(spaceId: string, operationId: string, message: string): Promise<void> {
+    const row = await this.operation(spaceId, operationId);
+    if (!row) return;
+    await this.failOperation(row, message);
   }
 
   private createScreeningGate(operation: OperationRow, state: ResearchOperationState): Promise<void> {
@@ -2595,16 +2643,20 @@ export class ProjectResearchOrchestrator {
           }
         : step);
     await this.setState(operation, { ...state, failed_stage: failedStage, error }, failedSteps);
-    await this.notifyRoomOfOperationFailure(operation, message);
+    await this.notifyRoomOfOperationStatus(operation, "failed", message);
   }
 
-  /** `research_workflow_terminal` (failed variant) — the completed/waiting_review
-   * variants are not wired yet (room-advancement-reliability-plan Phase 4
-   * follow-up: they require Room-notification capability inside the
-   * ports-abstracted screening/synthesis/monitoring coordinators, which this
-   * phase does not touch). Inert for every operation without a Room origin —
-   * i.e. every operation not started via `research.start_acquisition`, which
-   * today is all of them except this one path.
+  /** Reports one `research_workflow_terminal` variant to the Operation's
+   * originating Room. Inert for every operation without a Room origin — i.e.
+   * every operation not started via `research.start_acquisition`.
+   *
+   * All three variants (`failed`, `completed`, `waiting_review`) go through
+   * here. The last two became reachable with the checkpoint reform: before
+   * it, a Room-started acquisition that finished or paused told
+   * the Room nothing, and the user had to discover it from the web UI's
+   * Operation surface — which is precisely the interruption the reform set out
+   * to remove, so removing the gates without wiring these would have made the
+   * Room *less* informative, not more.
    *
    * Enqueues a job via `this.db` rather than posting the Room message
    * directly. `failOperation` is called from action-node handlers that
@@ -2619,18 +2671,47 @@ export class ProjectResearchOrchestrator {
    * recorded on a later attempt. Enqueuing through `this.db` instead ties the
    * notification's fate to the same commit/rollback boundary as the state
    * write it reports on — both persist together, or neither does. */
-  private async notifyRoomOfOperationFailure(operation: Pick<OperationRow, "id" | "space_id" | "project_id" | "progress_json">, message: string): Promise<void> {
+  /** Once-per-episode is each *call site's* responsibility, not this method's:
+   * `failed` fires once per pass (`failOperation` early-returns on a terminal
+   * row), `completed` paths are reached once, and the `waiting_review` pause
+   * notifies only on the transition edge (`createGate` checks the prior
+   * `stage_state`). An earlier version deduped here against any previously
+   * enqueued `(operation, status)` job, which was permanent — a retried
+   * operation's second failure, or a second distinct pause, was silently
+   * dropped forever. The `episode` (the operation's pass generation, for
+   * `failed`) flows into the Room event key so a genuinely new episode of the
+   * same status is a new Room event rather than a Room-side dedupe casualty. */
+  private async notifyRoomOfOperationStatus(
+    operation: Pick<OperationRow, "id" | "space_id" | "project_id" | "progress_json">,
+    status: "failed" | "completed" | "waiting_review",
+    message: string,
+  ): Promise<void> {
     const origin = objectValue(operation.progress_json);
     const roomId = optionalString(origin.origin_room_id);
     const sessionId = optionalString(origin.origin_session_id);
     if (!roomId || !sessionId) return;
     const identity = await this.projectWriterActor(operation.space_id, operation.project_id);
     if (!identity) return;
+    let episode: number | null = null;
+    if (status === "failed") {
+      const row = await this.db.query<{ generation: number }>(
+        `SELECT generation FROM project_operations WHERE id=$1 AND space_id=$2`,
+        [operation.id, operation.space_id],
+      );
+      episode = row.rows[0]?.generation ?? null;
+    }
     await new PgJobQueueRepository(this.db).enqueue({
       job_type: RESEARCH_OPERATION_FAILURE_NOTIFY_JOB,
       space_id: operation.space_id,
       user_id: identity,
-      payload: { operation_id: operation.id, room_id: roomId, session_id: sessionId, reason: message },
+      payload: {
+        operation_id: operation.id,
+        room_id: roomId,
+        session_id: sessionId,
+        status,
+        ...(episode === null ? {} : { episode }),
+        reason: message,
+      },
     });
   }
 

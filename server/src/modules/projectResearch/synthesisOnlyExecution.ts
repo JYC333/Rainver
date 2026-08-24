@@ -16,6 +16,7 @@ import { deriveStepStates, operationSteps, type ResearchOperationState } from ".
 import { setResearchOperationState } from "./pipeline/operationProjectionWriter";
 import { researchQueryText } from "./pipeline/synthesisCoordinator";
 import { upsertPendingResearchCheckpoint } from "./checkpointWriter";
+import { checkpointBlocks, recordInformationalIdeaReview } from "./researchCheckpointPolicy";
 
 const RESEARCH_AUTOMATION_PURPOSE = "project_research_workflow_execution";
 const MATERIALIZE_REPORT_ACTION_KEY = "project_research.materialize_report";
@@ -313,18 +314,27 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     },
   });
 
+  // Checkpoint reform: `idea_review` records what synthesis produced but no
+  // longer holds the operation. The outcome is written first and the waive
+  // follows it, so a dropped outcome write cannot leave a waived checkpoint
+  // with nothing behind it; `reconcileIdeaReviewStage` picks up the waived
+  // checkpoint on its next tick and resumes from there, so the completion
+  // path stays the single one a human approval took.
+  const gated = checkpointBlocks("idea_review");
+
   await applyExecutionOutcomeToOperation(
     context.db,
     context.identity.spaceId,
     operationId,
     context.executionId,
-    "waiting_review",
+    gated ? "waiting_review" : "idea_review_recorded",
     {
       research_report_id: materialized.id,
       idea_count: materialized.ideaCount,
       checkpoint_ids: [checkpointId],
     },
   );
+  await recordInformationalIdeaReview(context.db, context.identity.spaceId, checkpointId);
   return { output: { research_report_id: materialized.id, idea_count: materialized.ideaCount } };
 }
 
@@ -340,7 +350,7 @@ async function applyExecutionOutcomeToOperation(
   spaceId: string,
   operationId: string,
   executionId: string,
-  outcome: "waiting_review" | "failed",
+  outcome: "waiting_review" | "idea_review_recorded" | "failed",
   detail: Record<string, unknown>,
   ignoreStale = false,
 ): Promise<void> {
@@ -356,10 +366,11 @@ async function applyExecutionOutcomeToOperation(
     if (ignoreStale) return;
     throw new HttpError(409, "Operation is not governed by this Workflow Execution");
   }
+  const reachedIdeaReview = outcome === "waiting_review" || outcome === "idea_review_recorded";
   const nextState: ResearchOperationState = {
     ...operation.progress_json,
-    current_stage: outcome === "waiting_review" ? "idea_review" : "failed",
-    stage_state: outcome === "waiting_review" ? "waiting_review" : "failed",
+    current_stage: reachedIdeaReview ? "idea_review" : "failed",
+    stage_state: outcome === "waiting_review" ? "waiting_review" : outcome === "idea_review_recorded" ? "running" : "failed",
     heartbeat_at: new Date().toISOString(),
     ...detail,
   };
@@ -367,8 +378,15 @@ async function applyExecutionOutcomeToOperation(
     db,
     { id: operationId, space_id: spaceId, project_id: operation.project_id, progress_json: operation.progress_json },
     nextState,
-    outcome === "waiting_review"
-      ? [{ seq: 3, status: "done" }, { seq: 4, status: "blocked", detail: { checkpoint_id: nextState.checkpoint_ids[0] } }]
+    reachedIdeaReview
+      ? [
+          { seq: 3, status: "done" },
+          {
+            seq: 4,
+            status: outcome === "waiting_review" ? "blocked" : "active",
+            detail: { checkpoint_id: nextState.checkpoint_ids[0] },
+          },
+        ]
       : deriveStepStates(nextState),
   );
 }

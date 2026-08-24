@@ -67,15 +67,41 @@ describe("registerResearchAcquisitionContinuation", () => {
     expect(result.context).toMatchObject({ operation_id: "op-1", reason: "Checkpoint rejected by user" });
   });
 
+  it("research_workflow_terminal: completed asks for a summary of what the operation produced", async () => {
+    const result = await registry().resolveEvent({} as never, {
+      ...baseEvent,
+      kind: "research_workflow_terminal",
+      key: "op-1:completed",
+      payload: { status: "completed", operation_id: "op-1", reason: "The research operation finished." },
+    });
+    expect(result.directive).toBe("report_research_operation_completed");
+    // A Room told only "a job completed" is no better than the web UI the
+    // reform was moving work away from.
+    expect(result.instruction).toContain("Summarize");
+    expect(result.context).toMatchObject({ operation_id: "op-1" });
+  });
+
+  it("research_workflow_terminal: waiting_review names the user's options, including cancel", async () => {
+    const result = await registry().resolveEvent({} as never, {
+      ...baseEvent,
+      kind: "research_workflow_terminal",
+      key: "op-1:waiting_review",
+      payload: { status: "waiting_review", operation_id: "op-1", reason: "Screening matched 400 items" },
+    });
+    expect(result.directive).toBe("report_research_operation_waiting");
+    expect(result.instruction).toContain("Screening matched 400 items");
+    expect(result.instruction).toContain("research.cancel_acquisition");
+  });
+
   it("research_workflow_terminal: an unrecognized status falls back to a generic status-changed continuation rather than throwing", async () => {
     const result = await registry().resolveEvent({} as never, {
       ...baseEvent,
       kind: "research_workflow_terminal",
-      key: "op-1",
-      payload: { status: "completed", operation_id: "op-1" },
+      key: "op-1:reticulating",
+      payload: { status: "reticulating", operation_id: "op-1" },
     });
     expect(result.directive).toBeNull();
-    expect(result.context).toMatchObject({ operation_id: "op-1", status: "completed" });
+    expect(result.context).toMatchObject({ operation_id: "op-1", status: "reticulating" });
   });
 
   it("throws for an unregistered event kind, matching the registry's own fail-loud contract", async () => {

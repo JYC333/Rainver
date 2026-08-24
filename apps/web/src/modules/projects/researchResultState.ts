@@ -15,6 +15,7 @@ export type ResearchResultStateKind =
   | 'checkpoint'
   | 'failure'
   | 'running'
+  | 'cancelled'
   | 'monitoring_update'
   | 'monitoring'
   | 'completed'
@@ -243,15 +244,24 @@ export function savedSetupDiffersFromOperation(
 }
 
 export function researchResultState(input: ResearchResultStateInput): ResearchResultState {
-  const pendingCheckpoints = input.checkpoints.filter(checkpoint =>
-    checkpoint.status === 'pending' && isResearchHumanReviewCheckpoint(checkpoint),
-  )
   const current = currentOperations(input.operations.filter(operation => operation.kind === 'research'))
+  const cancelledOperationIds = new Set(input.operations
+    .filter(operation => operation.status === 'cancelled')
+    .map(operation => operation.id))
+  const pendingCheckpoints = input.checkpoints.filter(checkpoint =>
+    checkpoint.status === 'pending'
+      && isResearchHumanReviewCheckpoint(checkpoint)
+      && !cancelledOperationIds.has(typeof checkpoint.machine_result_json?.operation_id === 'string'
+        ? checkpoint.machine_result_json.operation_id
+        : ''),
+  )
   const failedOperations = current.filter(operation => operation.status === 'failed')
   const runningOperations = current.filter(operation => ['active', 'waiting_review'].includes(operation.status))
+  const cancelledOperations = current.filter(operation => operation.status === 'cancelled')
   const latestOperation = newest(current)
   const failedOperation = newest(failedOperations)
   const runningOperation = newest(runningOperations)
+  const cancelledOperation = newest(cancelledOperations)
   const checkpoint = newest(pendingCheckpoints)
   const latestReport = latestReadableResearchReport(input.reports)
   const drift = Boolean(input.projectQuestion && workflowQuestion(input.workflow) && input.projectQuestion !== workflowQuestion(input.workflow))
@@ -309,7 +319,7 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
   if (checkpoint) {
     return {
       kind: 'checkpoint', eyebrow: 'Review required',
-      conclusion: checkpoint.checkpoint_type === 'idea_review' ? 'Idea candidates are ready for your decision.' : 'Screening results are ready for your decision.',
+      conclusion: checkpoint.checkpoint_type === 'manuscript_gate' ? 'The manuscript is ready for your decision.' : 'Screening results are ready for your decision.',
       detail: 'Your decision controls what enters the formal research outputs.',
       metrics: corpusMetrics, primaryAction: { key: 'review_results', label: 'Review results' }, secondaryAction: latestReport ? { key: 'open_report', label: 'Open latest report' } : null,
       operation: runningOperation, checkpoint, latestReport, notices: noticesFor(1), failure: null,
@@ -333,6 +343,17 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
       metrics: [...operationScopeMetrics(runningOperation), ...corpusMetrics],
       primaryAction: null, secondaryAction: latestReport ? { key: 'open_report', label: 'Open latest report' } : null,
       operation: runningOperation, checkpoint: null, latestReport, notices: noticesFor(3), failure: null,
+    }
+  }
+  if (cancelledOperation) {
+    return {
+      kind: 'cancelled', eyebrow: 'Research stopped',
+      conclusion: 'This research operation was cancelled.',
+      detail: 'No further work will be started for this operation. Previously collected material and reports are unchanged.',
+      metrics: corpusMetrics,
+      primaryAction: latestReport ? { key: 'open_report', label: 'Open latest report' } : { key: 'view_corpus', label: 'View corpus' },
+      secondaryAction: latestReport ? { key: 'view_corpus', label: 'View corpus' } : null,
+      operation: cancelledOperation, checkpoint: null, latestReport, notices: monitoring ? noticesFor(-1) : [], failure: null,
     }
   }
   if (latestOperation && isEmptySearch(latestOperation)) {

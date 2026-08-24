@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, CheckCircle2, LoaderCircle } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Ban, CheckCircle2, LoaderCircle } from 'lucide-react'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -22,6 +22,7 @@ const toneClasses: Record<ResearchResultState['kind'], string> = {
   checkpoint: 'border-warning/50 bg-warning/5',
   failure: 'border-destructive/45 bg-destructive/5',
   running: 'border-primary/35 bg-primary/5',
+  cancelled: 'border-border bg-muted/30',
   monitoring_update: 'border-success/35 bg-success/5',
   monitoring: 'border-success/35 bg-success/5',
   completed: 'border-success/35 bg-success/5',
@@ -39,6 +40,7 @@ function actionHref(action: ResearchResultAction, state: ResearchResultState, pr
 function StateIcon({ kind }: { kind: ResearchResultState['kind'] }) {
   if (kind === 'failure' || kind === 'question_drift') return <AlertTriangle className="size-5" />
   if (kind === 'running') return <LoaderCircle className="size-5 animate-spin" />
+  if (kind === 'cancelled') return <Ban className="size-5" />
   return <CheckCircle2 className="size-5" />
 }
 

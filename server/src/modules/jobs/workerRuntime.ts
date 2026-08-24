@@ -29,6 +29,7 @@ import { registerRoomConversationTitleHandler } from "../rooms/conversationTitle
 import { registerRoomDelegationCompletionRetryHandler } from "../agentGroups/delegationCompletionRetryJob";
 import { registerResearchAcquisitionPipelineHandler } from "../projectResearch/pipeline/researchAcquisitionPipelineJob";
 import { registerResearchOperationFailureNotifyHandler } from "../projectResearch/pipeline/researchOperationFailureNotifyJob";
+import { registerResearchOperationCancelHandler } from "../projectResearch/pipeline/researchOperationCancelJob";
 
 const POLL_INTERVAL_MS = 1_000;
 const RECLAIM_INTERVAL_MS = 120_000;
@@ -74,6 +75,7 @@ export function buildJobHandlerRegistry(
   registerRoomDelegationCompletionRetryHandler(registry, config);
   registerResearchAcquisitionPipelineHandler(registry, config);
   registerResearchOperationFailureNotifyHandler(registry, config);
+  registerResearchOperationCancelHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   return registry;

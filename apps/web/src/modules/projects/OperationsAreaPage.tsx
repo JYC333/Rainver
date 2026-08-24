@@ -123,6 +123,21 @@ export default function OperationsAreaPage() {
     }
   }
 
+  async function cancelOperation(operationId: string) {
+    setResearchBusy(`cancel-operation-${operationId}`)
+    try {
+      const result = await projectResearchApi.cancelOperation(projectId, operationId)
+      toast.success(result.already_terminal
+        ? 'This research operation had already stopped'
+        : 'Research operation stopped; its running work is being cancelled')
+      await load()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setResearchBusy(null)
+    }
+  }
+
   async function reconcileOperation(operationId: string) {
     setResearchBusy('reconcile-operation')
     try {
@@ -199,6 +214,7 @@ export default function OperationsAreaPage() {
             onDecideCheckpoint={decideCheckpoint}
             onReconcileOperation={operationId => void reconcileOperation(operationId)}
             onRetryOperation={operationId => void retryOperation(operationId)}
+            onCancelOperation={operationId => void cancelOperation(operationId)}
           />
         )
       })}

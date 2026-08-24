@@ -22,7 +22,7 @@ import { PgRunRepository } from "../src/modules/runs/repository";
 import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders";
-import type { CliStdioController } from "../src/modules/runs/localCliExecution";
+import { LocalCliProcessRegistry, type CliStdioController } from "../src/modules/runs/localCliExecution";
 import type { UsageObservation } from "../src/modules/usage/types";
 
 function config(withDatabase = false) {
@@ -2154,6 +2154,82 @@ describe("RunOrchestrationService", () => {
     expect(repo.calls.indexOf("runtime:invalidate"))
       .toBeLessThan(repo.calls.indexOf("terminal:cancelled"));
     expect(repo.run?.status).toBe("cancelled");
+  });
+
+  it("aborts an in-flight managed API request before confirming cancellation", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({ status: "queued", adapter_type: "model_api" });
+    const processRegistry = new LocalCliProcessRegistry();
+    let signalSeen: AbortSignal | undefined;
+    let started!: () => void;
+    const adapterStarted = new Promise<void>((resolve) => { started = resolve; });
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      processRegistry,
+      managedApi: {
+        executeRuntimeHost: async (_config, _request, options) => {
+          signalSeen = options?.signal;
+          started();
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("managed request aborted")),
+              { once: true },
+            );
+          });
+        },
+      },
+    });
+
+    const execution = service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    });
+    await adapterStarted;
+
+    const cancellation = await service.cancelRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      requested_by_user_id: "user-1",
+      reason: "stop the provider request",
+    });
+    const executionResult = await execution;
+
+    expect(signalSeen?.aborted).toBe(true);
+    // The executing worker still owns terminal publication at this instant,
+    // so the cancelling caller may observe the intermediate state; what must
+    // already be true is that the provider signal fired and the owner then
+    // publishes cancelled rather than a late success/failure.
+    expect(cancellation).toMatchObject({ status: "cancelling" });
+    expect(executionResult).toMatchObject({ status: "cancelled" });
+    expect(repo.run?.status).toBe("cancelled");
+    expect(processRegistry.terminate("run-1")).toBe(false);
+  });
+
+  it("retries finalization when cancel is repeated for a cancelled Run", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({ status: "cancelled", run_group_id: "group-1" });
+    const projector = new FakeDelegationProjector();
+    let attempts = 0;
+    const materializer = {
+      async finalizeRun() {
+        attempts += 1;
+        return attempts === 1
+          ? { kind: "activity", status: "failed", error_code: "finalization_failed", error_message: "temporary finalizer failure" }
+          : { kind: "activity", status: "succeeded", activity_id: "finalization-1" };
+      },
+    } as unknown as RunMaterializationService;
+    const service = orchestration(repo, { materializer, delegationProjector: projector });
+
+    await expect(service.cancelRun({ run_id: "run-1", space_id: "space-1" }))
+      .resolves.toMatchObject({ status: "cancelled", error_code: "finalization_failed" });
+    await expect(service.cancelRun({ run_id: "run-1", space_id: "space-1" }))
+      .resolves.toMatchObject({ status: "cancelled", skipped: true, skip_reason: "run_already_terminal" });
+
+    expect(attempts).toBe(2);
+    expect(projector.terminal).toHaveLength(1);
   });
 
   it("does not overwrite a concurrent cancel when the adapter finishes", async () => {

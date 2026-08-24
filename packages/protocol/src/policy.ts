@@ -1202,6 +1202,25 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "fail_closed",
   },
   {
+    // The stop lever for what `research.acquisition.start` began. Low risk and
+    // allowed by default in both directions: stopping work the user or their
+    // Agent no longer wants is not a destructive act on durable content — no
+    // Artifact, Report, or Knowledge already written is touched — and a stop
+    // that needed approval would be no stop at all while a Run keeps spending.
+    action: "research.acquisition.cancel",
+    resource_type: "project_operation",
+    default_risk_level: "low",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point: "server/src/modules/projectResearch/routes.ts + system-action policy gate",
+    description:
+      "Cancel a running research Operation: the Operation stops accepting new passes and its in-flight Runs, screening batches, and pass Execution are terminated.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
+  {
     action: "retrieval.search",
     resource_type: "retrieval_tool",
     default_risk_level: "low",

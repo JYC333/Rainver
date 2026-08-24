@@ -3071,6 +3071,11 @@ export const projectResearchApi = {
       `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/retry`,
       {},
     ),
+  cancelOperation: (projectId: string, operationId: string, reason?: string) =>
+    post<{ operation_id: string; status: 'cancelled'; already_terminal: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/cancel`,
+      reason ? { reason } : {},
+    ),
   reconcileOperation: (projectId: string, operationId: string) =>
     post<ProjectOperation & { reconcile_diagnostic?: {
       operation_id: string

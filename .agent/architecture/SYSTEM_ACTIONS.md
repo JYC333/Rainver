@@ -186,13 +186,16 @@ This is a change of scope, not of strength: the intersection is unchanged, an
 action outside the list is still denied, and the Run must still declare it.
 Most of the allowance is proposal-gated (`project.propose_definition`,
 `inquiry.propose_thread`, `inquiry.record_conclusion`,
-`inquiry.promote_knowledge`); `agent.delegate` and `research.start_acquisition`
-(room-advancement-reliability-plan Phase 4) are the two directly-executed
-exceptions — durable actions guarded by idempotency rather than a human
-accept/reject step, because delegating a specialist investigation and
-starting a tracked research acquisition are both execution on an
-already-accepted Thread, not the agent-drafted structure/content write ADR
-0003 gates. It exists because a Room's roster
+`inquiry.promote_knowledge`); `agent.delegate`, `research.start_acquisition`
+(room-advancement-reliability-plan Phase 4), and `research.cancel_acquisition`
+are the directly-executed exceptions — durable actions guarded
+by idempotency rather than a human accept/reject step, because delegating a
+specialist investigation, starting a tracked research acquisition, and
+stopping one are all execution on an already-accepted Thread, not the
+agent-drafted structure/content write ADR 0003 gates. Cancel is in the list so
+a Room notification about running research always has a matching in-Room
+action; a report the user can only act on by leaving for the web UI is the
+interruption the reform removed, moved rather than deleted. It exists because a Room's roster
 is fixed at creation and no product surface edits `tool_permissions_json` at
 all, so binding Room conversation to Agent permissions means a Room built
 around a differently configured Agent silently does nothing, with nowhere for
@@ -241,8 +244,8 @@ the run's space, agent, instructed user, run, and Project scope. Project-only
 actions reject an unscoped run; backfill proposal lookup also proves the plan
 belongs to that Project. Agents do not receive direct activation, proposal-apply,
 grant-management, credential, deployment, or memory-write actions.
-`research.start_acquisition` is the one durable exception in the Room
-allowance to this proposal-only shape (see below).
+`research.start_acquisition` and `research.cancel_acquisition` are the durable
+exceptions in the Room allowance to this proposal-only shape (see below).
 
 `inquiry.propose_thread`, `inquiry.record_conclusion`, and
 `inquiry.promote_knowledge` (plan:
@@ -439,27 +442,106 @@ Completion reports back through the `ConversationContinuationRegistry` event
 side (Phase 3): `research_pipeline_outcome` (keyed by thread id) covers
 acquisition started, the question failing its FINER assessment (a first-class
 outcome relayed to the user for question refinement, not an error), and a
-stage failure; `research_workflow_terminal` (keyed by operation id) covers
-the Operation's own later failure, posted from
-`ProjectResearchOrchestrator.failOperation`. The Operation's Room origin is a
+stage failure; `research_workflow_terminal` (keyed by `<operation id>:<status>`)
+covers the Operation's own later lifecycle. The Operation's Room origin is a
 loose `origin_room_id`/`origin_session_id` pair written into
 `project_operations.progress_json` at intake time (the established
 non-FK-cross-domain-identifier pattern; `progress_json->>'workflow_id'`
 already carries a unique index this way) — terminal paths that find it
 notify the Room, paths that do not (every non-Room-originated research flow)
-stay silent. `research_workflow_terminal`'s `completed` and `waiting_review`
-(checkpoint pause) variants are not wired yet: the operations that reach
-`completed` status or create a checkpoint do so from the
-`screeningCoordinator`/`synthesisCoordinator`/`monitoringCoordinator`
-pipeline stages, which are deliberately built behind a `ports` abstraction
-with no `ServerConfig`/Room dependency, unlike `failOperation`
-(a `ProjectResearchOrchestrator` method with `this.config` already in scope).
-Wiring those two variants means extending those ports, not adding another
-one-line hook, and is scoped to the checkpoint-reform follow-up
-(`.agent/plans/backlog.md` R1.1) rather than this phase. Until then, a
-Room-started acquisition that reaches a checkpoint stalls silently from the
-Room's perspective; the user still sees and can act on it from the web UI's
-Operation surface.
+stay silent.
+
+All three `research_workflow_terminal` variants are wired, through the single
+`ProjectResearchOrchestrator.notifyRoomOfOperationStatus`: `failed` from
+`failOperation`, `completed` from the idea-review advance, and
+`waiting_review` from the one surviving screening pause. The status is part of
+the event key because one Operation can legitimately report twice — pause over
+the screening budget, then finish — and a bare operation id would make
+`findRoomEventContinuation` swallow the second as a duplicate.
+
+## `research.cancel_acquisition`
+
+The symmetric stop for the action above, and the control that replaced the
+blocking checkpoints. Direct execution, not
+proposal-gated, for the same reason as its counterpart plus one of its own: a
+stop that waits on a review is not a stop while a Run keeps spending.
+
+`ResearchOperationCancelService` writes the Operation's `cancelled` status —
+`startResearchReconcilePass` reads that status under `FOR UPDATE`, so no
+later pass can begin — and enqueues `research_operation_cancel` in one
+transaction with it (callers hand the service a plain pool, so the service
+opens the transaction itself; without it a failed enqueue would leave a dead
+Operation whose Runs keep spending and no path that ever re-enqueues the
+kill). The handler then stops the four kinds of live work an Operation owns,
+from the jobs worker where the process registry lives: its Runs (found by the
+`operation_id` every research Run stamps into its contract snapshot, scoped
+by `project_id` for the index), its screening batch jobs, its source backfill
+plans (the acquisition itself — the segment scheduler never consults the
+Operation's status), and its pass Execution. It also waives the Operation's
+still-pending checkpoints: pre-reform the checkpoint decision *was* the stop
+lever, so stopping resolved the row as a side effect, and a surviving pending
+gate would keep the web UI advertising a review whose approval no-ops. A Run
+that answers `cancelling` (kill requested, process exit unconfirmed) defers
+the job for a later retry rather than being counted as cancelled. Managed API
+Runs register their AbortController in the same process-wide execution
+registry as CLI Runner callbacks, so Stop aborts the live provider request and
+waits for the adapter to unwind instead of only changing the database row.
+Cancelled Runs are reselected because terminal finalization and delegation
+projection are idempotent; the job fails and retries until both complete.
+Everything skips other work already terminal, so
+a Run that produced its report between the stop and the job keeps its result.
+
+The web route enforces and durably records `research.acquisition.cancel`
+before calling the service; the managed SystemAction dispatcher applies the
+same policy action on the Agent path. An optional caller reason is carried in
+the cancellation job and becomes the Run's terminal cancellation reason.
+
+## Research checkpoint policy
+
+`researchCheckpointPolicy.ts` is the single authority for which checkpoints
+still stop a workflow. Dogfooding (2026-08-20) found the gates were
+rubber-stamp approved every time, so they interrupted without changing any
+decision; the reform keeps the checkpoint row as the durable record of what
+the machine concluded and lets the workflow continue.
+
+`manuscript_gate` still blocks, because its output is external-facing and
+nothing downstream can un-send it. `screening_gate` blocks conditionally, on
+corpus size (`SCREENING_AUTO_CONTINUE_CORPUS_LIMIT`): removing it removed the
+only place a user saw "N papers matched" before paying for a synthesis over
+all of them, so the budget protection moved from a prompt to a limit. Under
+it the operation continues unattended; over it the operation pauses and tells
+the Room why, which is a report the user acts on rather than a question they
+answer on every ordinary run. `idea_review`, `integrity_gate`, and
+`review_gate` are records only.
+
+An automatic pass writes `status='waived'` with `user_decision` and
+`decided_by_user_id` left NULL, so an audit can still tell whether anybody
+looked. Auto-continue additionally waits for classification to drain: on the
+incremental path the checkpoint opens before classification finishes and each
+reconcile tick refreshes its snapshot in place, so the gate was also serving
+as that sync point — waiving early would both freeze the snapshot (only
+pending rows refresh) and send a partly-classified corpus to synthesis. A
+human approving the still-pending gate from the web UI remains the manual
+override for a classification that will never finish.
+
+A classification that will never finish fails the Operation outright —
+`failed` is the only status whose advertised remedies (retry, cancel) both
+actually work. Two detections, because there are two shapes: a batch that
+exhausted its retries is visible in `failed_batches`, but the incremental
+path enqueues no recovery batches at all, so items left unclassified at the
+current research-question version show every counter at zero. The second is
+caught by watching whether the classified count moves
+(`screening_stall_watch`, since `screening_progress.updated_at` is recomputed
+each tick and cannot say): same count, nothing in flight, past the stall
+window, is stuck rather than slow.
+
+Room reporting rides `research_workflow_terminal` once per episode: `failed`
+from `failOperation` (keyed with the pass generation, so a retried failure is
+a new event), `completed` from every terminal-success path — the idea-review
+advance and the three empty-result completions — and `waiting_review` only on
+the tick that pauses over the screening budget. Approving a paused screening
+checkpoint happens on the web UI's Operations surface; the Room's matching
+action is cancel.
 
 ## Invariants
 

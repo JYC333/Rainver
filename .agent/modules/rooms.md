@@ -138,9 +138,11 @@ Room conversation summaries:
   never reaches this second notification. `research.start_acquisition`
   reports the same way: `research_pipeline_outcome` (started, the question
   failing FINER assessment, or a stage failure) and `research_workflow_terminal`
-  (the Operation's own later failure) — see
+  (the Operation's own later `failed`, `completed`, or `waiting_review`) — see
   `.agent/architecture/SYSTEM_ACTIONS.md` for the full event/idempotency
-  shape and the checkpoint-notification gap still open in plan backlog R1.1.
+  shape. `research.cancel_acquisition` is the matching in-Room stop, so a
+  report about running research never forces the user out to the web UI to
+  act on it.
 - Proposal-card continuation is a system execution instruction, not a human
   chat utterance. The dedicated Proposal-continuation endpoint accepts only a
   Proposal id; the server verifies that it is decided, visible, belongs to the

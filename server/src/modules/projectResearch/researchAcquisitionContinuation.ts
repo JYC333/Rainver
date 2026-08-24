@@ -8,12 +8,13 @@ import type { ConversationContinuationRegistry, ProposalContinuation } from "../
  *   the pipeline — acquisition started, the question failed its FINER
  *   assessment (a first-class outcome, not an error), or an earlier stage
  *   failed. Posted by `ResearchAcquisitionPipelineRunner`.
- * - `research_workflow_terminal` (key = operation id): the Operation's own
- *   later lifecycle. Only the `failed` variant is wired in this phase, from
- *   `ProjectResearchOrchestrator.failOperation` — the `completed` and
- *   `waiting_review` (checkpoint pause) variants are not yet reachable (see
- *   the room-advancement-reliability-plan Phase 4 follow-up note) and are
- *   deliberately not registered as unreachable/untestable handlers.
+ * - `research_workflow_terminal` (key = `<operation id>:<status>`): the
+ *   Operation's own later lifecycle. All three variants are wired, all
+ *   through `ProjectResearchOrchestrator.notifyRoomOfOperationStatus` —
+ *   `failed` from `failOperation`, `completed` when the idea-review advance
+ *   finishes the operation, and `waiting_review` when the screening corpus
+ *   exceeds the auto-continue budget. The status is part of the event key
+ *   because one Operation can legitimately report twice (pause, then finish).
  */
 export function registerResearchAcquisitionContinuation(registry: ConversationContinuationRegistry): void {
   registry.registerEvent("research_pipeline_outcome", ({ event }) => {
@@ -49,9 +50,24 @@ export function registerResearchAcquisitionContinuation(registry: ConversationCo
         context: { operation_id: event.payload.operation_id ?? null, reason },
       };
     }
-    // completed / waiting_review are not yet emitted (see module doc); a
-    // generic fallback keeps this future-proof rather than throwing on an
-    // event kind this handler already owns.
+    if (status === "completed") {
+      const reason = typeof event.payload.reason === "string" ? event.payload.reason : "The research operation finished.";
+      return {
+        directive: "report_research_operation_completed",
+        instruction: `The research operation you started for this Thread has finished: ${reason} Summarize what it produced for the user and say what it means for the Thread's question — do not simply announce that a job completed.`,
+        context: { operation_id: event.payload.operation_id ?? null, reason },
+      };
+    }
+    if (status === "waiting_review") {
+      const reason = typeof event.payload.reason === "string" ? event.payload.reason : "The research operation is waiting for a decision.";
+      return {
+        directive: "report_research_operation_waiting",
+        instruction: `The research operation you started for this Thread has paused and needs the user: ${reason} Relay this in plain language and tell them their options — approving the checkpoint to continue happens on the Project's Operations page in the web UI (you cannot approve it from here); cancelling the operation is available from this conversation via research.cancel_acquisition.`,
+        context: { operation_id: event.payload.operation_id ?? null, reason },
+      };
+    }
+    // A status this handler does not know is still its own event kind, so it
+    // reports rather than throws.
     return {
       directive: null,
       instruction: "A research operation you started for this Thread changed status. Check the operation for details.",

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, HelpCircle, FlaskConical, RefreshCw } from 'lucide-react'
+import { Ban, ChevronDown, ChevronRight, HelpCircle, FlaskConical, RefreshCw } from 'lucide-react'
 import type { InquiryThread, ProjectOperation, ProjectResearchCheckpoint, ProjectResearchWorkflow } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -20,6 +20,7 @@ interface ResearchOperationRowProps {
   onDecideCheckpoint: (checkpoint: ProjectResearchCheckpoint, decision: 'approved' | 'rejected') => void
   onReconcileOperation: (operationId: string) => void
   onRetryOperation: (operationId: string) => void
+  onCancelOperation: (operationId: string) => void
 }
 
 /**
@@ -31,7 +32,7 @@ interface ResearchOperationRowProps {
  */
 export function ResearchOperationRow({
   operation, workflow, thread, checkpoints, busyAction, reconciling,
-  onDecideCheckpoint, onReconcileOperation, onRetryOperation,
+  onDecideCheckpoint, onReconcileOperation, onRetryOperation, onCancelOperation,
 }: ResearchOperationRowProps) {
   const pendingCheckpoints = checkpoints.filter(checkpoint => checkpoint.status === 'pending' && isResearchHumanReviewCheckpoint(checkpoint))
   const [expanded, setExpanded] = useState(operation.status === 'failed' || pendingCheckpoints.length > 0)
@@ -64,7 +65,7 @@ export function ResearchOperationRow({
           </Badge>
         </div>
       </button>
-      {operation.status !== 'completed' && operation.status !== 'failed' && (
+      {!['completed', 'failed', 'cancelled'].includes(operation.status) && (
         <div className="px-3">
           <div className="h-1.5 overflow-hidden rounded-full bg-muted">
             <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${researchOperationPercent(operation)}%` }} />
@@ -91,11 +92,24 @@ export function ResearchOperationRow({
               </details>
             </div>
           )}
-          {operation.status === 'failed' && (
-            <Button size="sm" variant="outline" onClick={() => onRetryOperation(operation.id)}>
-              <RefreshCw className="size-3.5" />Retry
-            </Button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {operation.status === 'failed' && (
+              <Button size="sm" variant="outline" onClick={() => onRetryOperation(operation.id)}>
+                <RefreshCw className="size-3.5" />Retry
+              </Button>
+            )}
+            {!['completed', 'failed', 'cancelled'].includes(operation.status) && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busyAction === `cancel-operation-${operation.id}`}
+                onClick={() => onCancelOperation(operation.id)}
+              >
+                <Ban className="size-3.5" />
+                {busyAction === `cancel-operation-${operation.id}` ? 'Stopping…' : 'Stop'}
+              </Button>
+            )}
+          </div>
           {pendingCheckpoints.map(checkpoint => (
             <ResearchCheckpointReview
               key={checkpoint.id}

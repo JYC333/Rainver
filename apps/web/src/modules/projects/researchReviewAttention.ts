@@ -1,6 +1,10 @@
 import type { ProjectResearchCheckpoint } from '../../types/api'
 
-const HUMAN_REVIEW_CHECKPOINT_TYPES = new Set(['screening_gate', 'idea_review'])
+// Mirrors the server's checkpoint policy (researchCheckpointPolicy.ts):
+// `idea_review` is auto-waived and never asks a human; `screening_gate` asks
+// only when it pauses over the corpus budget (the row is then pending, which
+// is what this set is filtered against); `manuscript_gate` always asks.
+const HUMAN_REVIEW_CHECKPOINT_TYPES = new Set(['screening_gate', 'manuscript_gate'])
 
 export function isResearchHumanReviewCheckpoint(
   checkpoint: Pick<ProjectResearchCheckpoint, 'checkpoint_type'>,
@@ -9,7 +13,7 @@ export function isResearchHumanReviewCheckpoint(
 }
 
 export function researchCheckpointLabel(checkpoint: Pick<ProjectResearchCheckpoint, 'checkpoint_type'>): string {
-  return checkpoint.checkpoint_type === 'idea_review' ? 'Idea candidates' : 'Screening results'
+  return checkpoint.checkpoint_type === 'manuscript_gate' ? 'Manuscript review' : 'Screening results'
 }
 
 export function researchReviewToastId(projectId: string, checkpointId: string): string {

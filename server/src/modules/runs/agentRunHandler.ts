@@ -1,11 +1,9 @@
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
-import { RunMaterializationService } from "./materializationService";
-import { RunOrchestrationService } from "./orchestrationService";
+import type { RunMaterializationService } from "./materializationService";
+import type { RunOrchestrationService } from "./orchestrationService";
 import { PgRunRepository } from "./repository";
-import { sharedCliProcessRegistry } from "./processRegistry";
-import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
-import { PgVerificationEngine } from "./verification";
+import { buildRunOrchestration } from "./orchestrationFactory";
 import {
   JobDeferredError,
   type JobEnvelopeForHandler,
@@ -26,16 +24,7 @@ export function registerAgentRunHandler(
 ): void {
   if (!config.databaseUrl) return;
 
-  const repository = PgRunRepository.fromConfig(config);
-  const materializer = RunMaterializationService.fromConfig(config);
-  const orchestration = new RunOrchestrationService(config, repository, {
-    materializer,
-    workspaceManager: PgRunSandboxManager.fromConfig(config),
-    codePatchCollector: PgCodePatchCollector.fromConfig(config),
-    verificationEngine: PgVerificationEngine.fromConfig(config),
-    processRegistry: sharedCliProcessRegistry,
-    managedApi: { runtimeHostLogger },
-  });
+  const { repository, orchestration, materializer } = buildRunOrchestration(config, { runtimeHostLogger });
 
   registry.register("agent_run", async (job) =>
     handleAgentRun(job, orchestration, materializer, repository, config));

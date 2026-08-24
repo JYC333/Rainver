@@ -9,12 +9,10 @@ import { PgArtifactRepository } from "../artifacts/repository";
 import { PgProposalRepository } from "../proposals/repository";
 import { dbPool, page, sendRouteError } from "../routeUtils/common";
 import { PgRunRepository, type RunRecord } from "./repository";
-import { RunOrchestrationService } from "./orchestrationService";
+import type { RunOrchestrationService } from "./orchestrationService";
 import { enqueueAgentRunJob } from "./agentRunHandler";
 import { RunMaterializationService } from "./materializationService";
-import { sharedCliProcessRegistry } from "./processRegistry";
-import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
-import { PgVerificationEngine } from "./verification";
+import { buildRunOrchestration } from "./orchestrationFactory";
 import { InvocationSnapshotService } from "../runtimeContext";
 import {
   canonicalRunOutput,
@@ -136,18 +134,7 @@ async function resolveIdentity(
 /** Exported for the hosts module's dispatch endpoint (ADR 0016 P3), which executes a Run through the same orchestration wiring as every other Run entrypoint. */
 export function commandServices(context: ModuleContext): RunsCommandServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
-  const repository = PgRunRepository.fromConfig(context.config);
-  const materializer = RunMaterializationService.fromConfig(context.config);
-  return {
-    repository,
-    orchestration: new RunOrchestrationService(context.config, repository, {
-      materializer,
-      workspaceManager: PgRunSandboxManager.fromConfig(context.config),
-      codePatchCollector: PgCodePatchCollector.fromConfig(context.config),
-      verificationEngine: PgVerificationEngine.fromConfig(context.config),
-      processRegistry: sharedCliProcessRegistry,
-    }),
-  };
+  return buildRunOrchestration(context.config);
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {

@@ -56,7 +56,7 @@ function researchStageLabel(value: unknown): string {
     case 'screening': return 'Screening materials'
     case 'comparison': return 'Comparing new evidence'
     case 'synthesis': return 'Generating synthesis'
-    case 'idea_review': return 'Waiting for idea review'
+    case 'idea_review': return 'Recording idea candidates'
     case 'complete': return 'Research complete'
     case 'failed': return 'Research failed'
     default: return 'Preparing research'
@@ -240,6 +240,7 @@ export function researchOperationDetail(operation: ProjectOperation): string {
 }
 
 export function researchOperationNextStep(operation: ProjectOperation): string {
+  if (operation.status === 'cancelled') return 'Stopped. No further work will run for this operation; collected material and completed reports remain available.'
   if (isEmptySearchOperation(operation)) return 'Next: adjust the saved setup, then start the initial research search again. Screening and synthesis were skipped.'
   const outcome = noReportOutcome(operation)
   if (outcome) {
@@ -267,11 +268,12 @@ export function researchOperationNextStep(operation: ProjectOperation): string {
   }
   if (stage === 'backfill') return 'Next: finish the history import, then screen the collected materials in batches.'
   if (stage === 'screening' && numberValue(screening.total_items) === 0) return 'Next: revise the search query or date range, then rescan the empty windows. Synthesis is paused until materials are found.'
-  if (stage === 'screening' && screening.phase === 'ready_for_review') return 'Next: review the screening summary; approval will build the matrix and queue synthesis.'
-  if (stage === 'screening') return 'Next: finish all screening batches; the screening review opens automatically when every material is classified.'
+  if (stage === 'screening' && operation.status === 'waiting_review') return 'Next: the screening result needs a decision — approve the checkpoint to synthesize anyway, or cancel the operation.'
+  if (stage === 'screening' && screening.phase === 'ready_for_review') return 'Next: synthesis continues automatically over the screened corpus; the screening summary stays available for review.'
+  if (stage === 'screening') return 'Next: finish all screening batches; synthesis continues automatically once every material is classified.'
   if (stage === 'comparison') return 'Next: finish comparing newly screened materials against the current understanding; synthesis starts automatically once done.'
-  if (stage === 'synthesis') return 'Next: read the generated research report; its idea candidates will then enter review.'
-  if (stage === 'idea_review') return 'Next: review the idea batch; approval completes this run and activates monitoring.'
+  if (stage === 'synthesis') return 'Next: read the generated research report; its idea candidates are recorded for review as the run completes.'
+  if (stage === 'idea_review') return 'Next: the run completes and activates monitoring automatically; the idea batch stays available for review on the report.'
   if (stage === 'monitor_setup') return 'Next: finish monitor setup, then import the selected history range.'
   return 'The research workflow is progressing automatically.'
 }
@@ -289,7 +291,9 @@ export function researchOperationSteps(operation: ProjectOperation): Array<{ tit
       : persisted?.title ?? fallbackTitle
     return {
       title,
-      status: operation.status === 'failed' && index === currentIndex
+      status: operation.status === 'cancelled'
+        ? index < currentIndex ? 'done' : index === currentIndex ? 'cancelled' : 'skipped'
+        : operation.status === 'failed' && index === currentIndex
         ? 'failed'
         : persisted?.status ?? (
           index < currentIndex ? 'done'

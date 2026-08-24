@@ -72,6 +72,32 @@ describe('researchResultState', () => {
     expect(result.notices).toContain('1 research operation is still running.')
   })
 
+  it('presents a cancelled operation as stopped instead of completed', () => {
+    const result = state({
+      workflow: workflow({ monitoring: { active: false } }),
+      operations: [operation('cancelled', '2026-07-18T10:00:00Z')],
+      reports: [],
+    })
+    expect(result.kind).toBe('cancelled')
+    expect(result.eyebrow).toBe('Research stopped')
+    expect(result.conclusion).toContain('cancelled')
+    expect(result.operation?.status).toBe('cancelled')
+  })
+
+  it('does not show a pending checkpoint that belongs to a cancelled operation', () => {
+    const cancelled = operation('cancelled', '2026-07-18T10:00:00Z')
+    const pending = checkpoint()
+    pending.machine_result_json = { operation_id: cancelled.id }
+    const result = state({
+      workflow: workflow({ monitoring: { active: false } }),
+      operations: [cancelled],
+      checkpoints: [pending],
+      reports: [],
+    })
+    expect(result.kind).toBe('cancelled')
+    expect(result.checkpoint).toBeNull()
+  })
+
   it('shows the newer running operation, not a stale failed one for the same workflow', () => {
     // A retry (or an auto-created incremental scan) creates a fresh operation
     // for the same workflow rather than reusing the old one — the old one

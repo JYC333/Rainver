@@ -237,45 +237,6 @@ what it already produced.
 
 ## 6. Rooms And Research Control
 
-### R1.1 — Checkpoint reform: gates become notifications, shipped together with real cancel/pause
-
-User dogfooding verdict (2026-08-20): research checkpoints never change a
-decision — they are rubber-stamp accepted every time, so as blocking gates they
-only interrupt. Reform direction: checkpoints default to non-blocking — the
-workflow continues automatically, the checkpoint row becomes an informational
-record, and Room/UI receive a report instead of a permission request.
-
-- [ ] Run this item's own design review before implementing: decide per
-  checkpoint type (`screening_gate`, `idea_review`, `integrity_gate`,
-  `manuscript_gate`, `review_gate`, `other`) whether any keeps a real gate
-  (budget protection and academic manuscript flows are the candidates).
-- [ ] Build a real cancel (and decide whether pause is also wanted) for
-  in-flight research Operations. None exists today: no route or service sets
-  `cancelled` from a user-facing path; rejecting a pending checkpoint
-  (`decideCheckpoint` → `failOperation`) is the only stop lever.
-- [ ] Add the Room verbs for whatever controls survive (decide where still
-  gated, cancel/pause) to `ROOM_CONVERSATION_TOOL_ALLOWANCE` in the same
-  change, so Room notifications always have a matching in-Room action.
-- [ ] Wire the `research_workflow_terminal` continuation's `completed` and
-  `waiting_review` variants (registered but unreachable today — see
-  `.agent/architecture/SYSTEM_ACTIONS.md`, `research.start_acquisition`
-  section). Both require extending the `ports` abstractions of
-  `ProjectResearchScreeningCoordinator`/`SynthesisCoordinator`/
-  `MonitoringCoordinator` with a Room-notification capability, since those
-  are where an operation actually reaches `completed` or creates a
-  checkpoint (unlike `failed`, reachable from
-  `ProjectResearchOrchestrator.failOperation`, which already had
-  `this.config` in scope and shipped with `research.start_acquisition`).
-  Natural to do alongside this item anyway, since checkpoint reform touches
-  the same coordinators to add cancel/pause capability.
-
-Hard dependency: gate removal and cancel must land together — removing the
-gates deletes reject-at-checkpoint, and without an independent cancel the user
-has no control over an in-flight research Operation at all. Until this lands,
-a Room-started acquisition that reaches a checkpoint or completes does not
-notify the Room at all (only `failed` is wired) — the user acts from the web
-UI's Operation surface.
-
 ### R1.2 — Research start parameters should be auto-selected, not fixed defaults
 
 `research.start_acquisition` (`.agent/architecture/SYSTEM_ACTIONS.md`,

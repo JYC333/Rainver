@@ -5,6 +5,7 @@ import type { SystemActionExecutor } from "../systemActions/gateway";
 import type { RunRecord } from "../runs/repository";
 import { PgAgentGroupRepository } from "../agentGroups/repository";
 import { ResearchAcquisitionService } from "./pipeline/researchAcquisitionService";
+import { ResearchOperationCancelService } from "./researchOperationCancel";
 
 /**
  * `research.start_acquisition` (action authority consolidation plan, P1.3;
@@ -37,6 +38,21 @@ export function registerProjectResearchSystemActionExecutors(
     return {
       modelResult: { ok: true, tool: "research.start_acquisition", ...result },
       summary: { tool_name: "research.start_acquisition", ok: true, ...result },
+    };
+  });
+
+  executors.set("research.cancel_acquisition" as SystemActionId, async (input) => {
+    if (!run.project_id) throw new Error("research.cancel_acquisition requires a project-scoped run");
+    const body = input as { operation_id: string; reason?: string };
+    const result = await new ResearchOperationCancelService(db).cancelOperation(
+      identity,
+      run.project_id,
+      body.operation_id,
+      body.reason ?? null,
+    );
+    return {
+      modelResult: { ok: true, tool: "research.cancel_acquisition", ...result },
+      summary: { tool_name: "research.cancel_acquisition", ok: true, ...result },
     };
   });
 }
