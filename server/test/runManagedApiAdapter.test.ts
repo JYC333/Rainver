@@ -1414,10 +1414,14 @@ describe("executeManagedApiNoToolAdapter", () => {
       "retrieval.search",
       "retrieval.brief",
     ]);
+    // D6/D7: the gateway's own decision is the single enforcement point now
+    // — a disabled domain is an ordinary policy denial with the policy
+    // rule's own message (naming the tool and domain), not a hand-rolled
+    // retrieval-specific error code or message.
     expect(toolPayloadFromRequest(calls[1], "memory.retrieval.search")).toMatchObject({
       ok: false,
       tool: "memory.retrieval.search",
-      error: "Retrieval tool domain is not enabled for this run.",
+      error: "Retrieval tool 'memory.retrieval.search' is not enabled for domain 'memory' in this run.",
     });
     expect(pool.auditWrites).toHaveLength(1);
     expect(pool.auditWrites[0]?.[4]).toBe("memory.retrieval.search");
@@ -1428,9 +1432,8 @@ describe("executeManagedApiNoToolAdapter", () => {
         managed_tool_calls: [
           {
             tool_name: "memory.retrieval.search",
-            domain: "memory",
             ok: false,
-            error_code: "retrieval_tool_domain_not_enabled",
+            error_code: "system_action_policy_denied",
           },
         ],
       },
@@ -1479,6 +1482,11 @@ describe("executeManagedApiNoToolAdapter", () => {
       { executeRuntimeHost: executor },
     );
 
+    // D6/D7: input validation for retrieval still happens ahead of policy
+    // enforcement (its schema is per-binding dynamic, so it is not the
+    // registry's own input_schema), but now reports the same code the
+    // registry-validated actions use for an invalid call, not a generic
+    // retrieval-only fallback.
     expect(toolPayloadFromRequest(calls[1], "memory.retrieval.search")).toMatchObject({
       ok: false,
       tool: "memory.retrieval.search",
@@ -1491,7 +1499,7 @@ describe("executeManagedApiNoToolAdapter", () => {
           {
             tool_name: "memory.retrieval.search",
             ok: false,
-            error_code: "retrieval_tool_call_failed",
+            error_code: "system_action_invalid_input",
           },
         ],
       },

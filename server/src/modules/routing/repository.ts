@@ -538,7 +538,7 @@ export async function runtimeRequiredCapabilities(value: unknown): Promise<strin
   const systemActionIds = new Set<string>(systemActions.keys());
   // `runs.capabilities_json` currently carries both runtime capabilities and
   // server-owned System Action declarations. System Actions execute through
-  // the AgentToolGateway and are authorized by `permission_snapshot_json`;
+  // SystemActionDispatcher and are authorized by `permission_snapshot_json`;
   // they are not capabilities that a runtime profile must duplicate. Keeping
   // them in the runtime hard filter makes a Room's own tool allowance reject
   // every otherwise-valid candidate before the conversation can start.

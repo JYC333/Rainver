@@ -21,7 +21,7 @@ import { assembleRunInputEnvelope } from "./runInputEnvelope";
 import type { RunRecord } from "./repository";
 import type { ManagedApiRetrievalToolDeps } from "./managedRetrievalTools";
 import type { AgentDelegationToolDeps } from "./managedAgentDelegationTools";
-import { AgentToolGateway } from "../systemActions/agentToolGateway";
+import { ManagedAgentToolSurface } from "../systemActions/managedAgentToolSurface";
 import {
   redactEvidenceText,
   redactSecretPatterns,
@@ -153,7 +153,7 @@ export async function executeManagedApiNoToolAdapter(
     }
     return response;
   };
-  const response = await new AgentToolGateway(config).execute(input.run, request, execute, {
+  const response = await new ManagedAgentToolSurface(config).execute(input.run, request, execute, {
     ...deps,
     abortSignal: input.abort_signal,
   });

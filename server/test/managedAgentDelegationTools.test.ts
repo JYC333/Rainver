@@ -11,7 +11,7 @@ import {
   executeManagedToolLoop,
   mergeManagedToolContributions,
 } from "../src/modules/runs/managedToolLoop";
-import { AgentToolGateway } from "../src/modules/systemActions/agentToolGateway";
+import { ManagedAgentToolSurface } from "../src/modules/systemActions/managedAgentToolSurface";
 import type { RunRecord } from "../src/modules/runs/repository";
 import type {
   CanonicalToolCall,
@@ -201,6 +201,11 @@ describe("managed agent delegation tools", () => {
     expect(binding?.toolDefinitions[0].input_schema).toMatchObject({
       properties: {
         target_agent_id: { enum: ["agent-reviewer-a", "agent-reviewer-b"] },
+        // D8: agent.delegate's registry Zod (RuntimeDelegationOutputItemSchema)
+        // rejects an empty-string `reason` (`.min(1)`); the shown schema must
+        // say so too, or a model sending `reason: ""` gets rejected by the
+        // gateway's input validation for a constraint it was never told about.
+        reason: { minLength: 1 },
       },
     });
 
@@ -279,9 +284,11 @@ describe("managed agent delegation tools", () => {
       run_group_id: "group-1",
       prompt: "Answer 1+1.",
     });
+    const queriedRunIds: unknown[] = [];
     const pool = {
       async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
         if (sql.includes("FROM runs r") && sql.includes("WHERE r.space_id = $1 AND r.id = $2")) {
+          queriedRunIds.push(params[1]);
           const row = params[1] === "run-reviewer" ? dependencyRun : null;
           return { rows: row ? [row as Row] : [], rowCount: row ? 1 : 0 };
         }
@@ -317,6 +324,25 @@ describe("managed agent delegation tools", () => {
     );
     expect(binding).not.toBeNull();
     expect(binding?.toolDefinitions.map((tool) => tool.name)).toEqual(["agent.wait_for_results"]);
+    expect(binding?.toolDefinitions[0]?.input_schema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        scope: { enum: ["current_turn", "own_delegations", "run_ids"] },
+        run_ids: { type: "array", items: { type: "string" } },
+      },
+    });
+    const blankRunIds = await runAgentRoomToolCall({
+      id: "wait-call-blank",
+      name: "agent.wait_for_results",
+      arguments_json: JSON.stringify({ scope: "run_ids", run_ids: ["   ", ""] }),
+    }, binding!, managerRun, request());
+    expect(blankRunIds.summary).toMatchObject({
+      ok: false,
+      error_code: "agent_wait_for_results_tool_call_failed",
+      error_message: "run_ids is required when scope is run_ids.",
+    });
+    expect(queriedRunIds).toEqual([]);
 
     const hostRequests: RuntimeHostExecuteRequest[] = [];
     const execute: RuntimeHostExecutor = async (_config, hostRequest) => {
@@ -328,9 +354,10 @@ describe("managed agent delegation tools", () => {
             name: "agent.wait_for_results",
             arguments_json: JSON.stringify({
               scope: "run_ids",
-              run_ids: ["run-reviewer"],
-              reason: "Need reviewer result before summarizing.",
-              resume_instruction: "Summarize the reviewer result.",
+              run_ids: [" run-reviewer ", "run-reviewer", "   "],
+              target_agent_ids: [" agent-reviewer-a ", "agent-reviewer-a", ""],
+              reason: "  Need reviewer result before summarizing.  ",
+              resume_instruction: "  Summarize the reviewer result.  ",
             }),
           }],
         },
@@ -351,6 +378,8 @@ describe("managed agent delegation tools", () => {
         scope: "run_ids",
         depends_on_run_ids: ["run-reviewer"],
         pending_run_ids: ["run-reviewer"],
+        reason: "Need reviewer result before summarizing.",
+        resume_instruction: "Summarize the reviewer result.",
       },
       managed_tool_calls: [
         expect.objectContaining({
@@ -360,14 +389,15 @@ describe("managed agent delegation tools", () => {
         }),
       ],
     });
+    expect(queriedRunIds).toEqual(["run-reviewer"]);
     expect(result.output_text).toBe("");
   });
   it("routes a delegation-only run through the general tool loop and offers it the delegation tools", async () => {
     // Gate 5. A run with delegation and no retrieval-domain tool reaches the
     // general loop as a delegation contribution — no carrier binding is
     // fabricated for it, and none exists to fabricate. Driving
-    // `AgentToolGateway` rather than the loop directly is the point: it is the
-    // gateway's assembly that must offer the tools.
+    // `ManagedAgentToolSurface` rather than the loop directly is the point: it
+    // is the surface's assembly that must offer the tools.
     const managerRun = run({
       // The gateway offers only granted actions, so the grants are part of what
       // makes this case reachable at all.
@@ -380,14 +410,14 @@ describe("managed agent delegation tools", () => {
     } as Partial<RunRecord>);
     const offered: string[][] = [];
     const systemPrompts: string[] = [];
-    const gateway = new AgentToolGateway(
+    const surface = new ManagedAgentToolSurface(
       // No database URL: a delegation-only run reads no space retrieval
       // settings, and the model turn below produces no tool call, so policy and
       // dispatch are never reached.
       loadConfig({}),
     );
 
-    const result = await gateway.execute(
+    const result = await surface.execute(
       managerRun,
       request(),
       async (_config, hostRequest) => {

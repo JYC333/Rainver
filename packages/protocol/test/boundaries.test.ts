@@ -14,8 +14,12 @@ function tsFiles(dir: string): string[] {
 }
 
 /** Bare module specifiers allowed in the protocol package. Relative imports
- * (`./`, `../`) are always allowed; everything else must be on this list. */
-const ALLOWED_BARE = new Set(["zod"]);
+ * (`./`, `../`) are always allowed; everything else must be on this list.
+ * `zod-to-json-schema` derives the model-facing JSON Schema for a System
+ * Action's `input_schema` from the same Zod that validates it (action
+ * authority consolidation plan, D5) — it is a pure schema transform with no
+ * frontend/backend/db/runtime dependency of its own. */
+const ALLOWED_BARE = new Set(["zod", "zod-to-json-schema"]);
 
 const importRe = /\bfrom\s+["']([^"']+)["']/g;
 

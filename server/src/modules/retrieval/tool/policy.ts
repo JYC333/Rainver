@@ -37,20 +37,16 @@ export interface RetrievalToolPolicyInput {
   egressPolicyDenied?: boolean;
 }
 
-export class RetrievalToolPolicyDeniedError extends Error {
-  constructor(
-    message: string,
-    readonly policy_decision_record_id: string | null,
-  ) {
-    super(message);
-    this.name = "RetrievalToolPolicyDeniedError";
-  }
+export interface RetrievalToolPolicyDecision {
+  allowed: boolean;
+  policy_decision_record_id: string | null;
+  message?: string;
 }
 
 export async function enforceRetrievalToolCallPolicy(
   input: RetrievalToolPolicyInput,
-): Promise<{ policy_decision_record_id: string | null }> {
-  if (!input.databaseUrl) return { policy_decision_record_id: null };
+): Promise<RetrievalToolPolicyDecision> {
+  if (!input.databaseUrl) return { allowed: true, policy_decision_record_id: null };
   const registry = await loadActionRegistry();
   const actorId = input.actor.agentId ?? input.actor.runId ?? input.actor.instructedByUserId;
   const result = await enforce(
@@ -92,11 +88,9 @@ export async function enforceRetrievalToolCallPolicy(
       },
     },
   );
-  if (result.status !== "allow") {
-    throw new RetrievalToolPolicyDeniedError(
-      result.message ?? "Retrieval tool policy denied the call.",
-      result.policy_decision_record_id ?? null,
-    );
-  }
-  return { policy_decision_record_id: result.policy_decision_record_id ?? null };
+  return {
+    allowed: result.status === "allow",
+    policy_decision_record_id: result.policy_decision_record_id ?? null,
+    message: result.status === "allow" ? undefined : (result.message ?? "Retrieval tool policy denied the call."),
+  };
 }

@@ -1,5 +1,10 @@
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PolicyActionId } from "./policy.js";
+import {
+  AgentWaitForResultsInputSchema,
+  RuntimeDelegationOutputItemSchema,
+} from "./agentGroupRuns.js";
 
 export const SYSTEM_ACTION_VISIBILITY_VALUES = [
   "internal_only",
@@ -16,13 +21,62 @@ export type SystemActionActorType = (typeof SYSTEM_ACTION_ACTOR_VALUES)[number];
 export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "durable"] as const;
 export type SystemActionSideEffects = (typeof SYSTEM_ACTION_SIDE_EFFECT_VALUES)[number];
 
+export const SYSTEM_ACTION_AGENT_TOOL_SURFACE_VALUES = [
+  "generic",
+  "retrieval",
+  "delegation",
+  "research",
+] as const;
+export type SystemActionAgentToolSurface = (typeof SYSTEM_ACTION_AGENT_TOOL_SURFACE_VALUES)[number];
+
+export const SYSTEM_ACTION_POLICY_ADAPTER_VALUES = [
+  "declared_resource",
+  "retrieval",
+  "agent_delegate",
+] as const;
+export type SystemActionPolicyAdapter = (typeof SYSTEM_ACTION_POLICY_ADAPTER_VALUES)[number];
+
 export const SystemActionVisibilitySchema = z.enum(SYSTEM_ACTION_VISIBILITY_VALUES);
 export const SystemActionActorTypeSchema = z.enum(SYSTEM_ACTION_ACTOR_VALUES);
 export const SystemActionSideEffectsSchema = z.enum(SYSTEM_ACTION_SIDE_EFFECT_VALUES);
+export const SystemActionAgentToolSurfaceSchema = z.enum(SYSTEM_ACTION_AGENT_TOOL_SURFACE_VALUES);
+export const SystemActionPolicyAdapterSchema = z.enum(SYSTEM_ACTION_POLICY_ADAPTER_VALUES);
 const ZodSchemaValue = z.custom<z.ZodType>(
   (value) => typeof (value as { safeParse?: unknown } | null)?.safeParse === "function",
   "Expected a Zod schema",
 );
+
+/**
+ * Declarative resource resolution for the generic policy adapter (action
+ * authority consolidation plan, D4). An action carrying this needs no
+ * hand-written `if (definition.id === ...)` branch in
+ * `enforcePolicyForAction`: the generic adapter reads `resource_type` (or
+ * falls back to the action's own `owning_module`), reads `resource_id` from
+ * the named input field when present (or falls back per
+ * `resource_id_fallback`), and consults `ActionApprovalGrantService` only
+ * when `check_action_approval_grant` is true.
+ *
+ * `agent.delegate` and the retrieval actions have no `policy_resource` —
+ * their enforcement genuinely differs (group budget/lineage; domain
+ * enablement) and they keep an explicit custom adapter instead.
+ */
+export const SystemActionPolicyResourceSchema = z.object({
+  resource_type: z.string().min(1).optional(),
+  resource_id_input_field: z.string().min(1).optional(),
+  resource_id_fallback: z.enum(["run", "project_or_run"]),
+  check_action_approval_grant: z.boolean(),
+}).strict();
+
+export interface SystemActionPolicyResource {
+  /** Static resource_type. Omitted means "use the action's own owning_module". */
+  readonly resource_type?: string;
+  /** Input field supplying resource_id when the call's payload carries it. */
+  readonly resource_id_input_field?: string;
+  /** What resource_id falls back to with no input-derived value. */
+  readonly resource_id_fallback: "run" | "project_or_run";
+  /** Whether to consult ActionApprovalGrantService before enforcing policy. */
+  readonly check_action_approval_grant: boolean;
+}
 
 export const SystemActionDefinitionSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+$/),
@@ -48,7 +102,24 @@ export const SystemActionDefinitionSchema = z.object({
    * its absence is meaningful rather than an omission.
    */
   applies_to: z.array(z.string().min(1)).optional(),
-}).strict();
+  policy_resource: SystemActionPolicyResourceSchema.optional(),
+  agent_tool_surface: SystemActionAgentToolSurfaceSchema.optional(),
+  policy_adapter: SystemActionPolicyAdapterSchema.optional(),
+}).strict().superRefine((definition, context) => {
+  if (!definition.visibility.has("agent_tool")) return;
+  if (!definition.agent_tool_surface) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["agent_tool_surface"], message: "Agent-visible actions must declare an agent tool surface." });
+  }
+  if (!definition.policy_adapter) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["policy_adapter"], message: "Agent-visible actions must declare a policy adapter." });
+  }
+  if (definition.policy_adapter === "declared_resource" && !definition.policy_resource) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["policy_resource"], message: "Declared-resource actions must declare policy_resource metadata." });
+  }
+  if (definition.policy_adapter && definition.policy_adapter !== "declared_resource" && definition.policy_resource) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["policy_resource"], message: "Custom-adapter actions must not declare policy_resource metadata — the custom adapter would silently ignore it." });
+  }
+});
 
 export interface SystemActionDefinition {
   readonly id: string;
@@ -68,6 +139,12 @@ export interface SystemActionDefinition {
   readonly grantable: boolean;
   /** Ontology object types this action operates on, when it operates on one. */
   readonly applies_to?: readonly string[];
+  /** Declarative resource resolution for the generic policy adapter (D4). */
+  readonly policy_resource?: SystemActionPolicyResource;
+  /** Which managed Agent tool family contributes this action, if any. */
+  readonly agent_tool_surface?: SystemActionAgentToolSurface;
+  /** Which policy adapter enforces the action, if it is Agent-callable. */
+  readonly policy_adapter?: SystemActionPolicyAdapter;
 }
 
 const objectInput = z.record(z.string(), z.unknown());
@@ -77,7 +154,7 @@ const proposalInputs:Record<string,z.ZodType>={
   "authorization.request": z.object({
     policy_decision_record_id: z.string().min(1),
     reason: z.string().trim().min(1).max(1000),
-  }).strict(),
+  }).passthrough(),
   "task.plan.propose": z.object({
     task_id: z.string().min(1),
     plan_id: z.string().min(1).nullable().optional(),
@@ -86,8 +163,18 @@ const proposalInputs:Record<string,z.ZodType>={
     budget_cap: z.number().finite().nonnegative().nullable().optional(),
     budget_sources: z.array(z.record(z.string(), z.unknown())).optional(),
     planner_metadata: z.record(z.string(), z.unknown()).nullable().optional(),
-  }).strict(),
-  "source.channel.propose_activation":z.object({source_channel_id:z.string().min(1)}).passthrough(),
+  }).passthrough(),
+  // `SourceChannelService.proposeActivation` begins with `this.create(identity,
+  // { ...body, status: "paused" })` — the body is Source Channel *creation*
+  // parameters, not a reference to an already-existing channel. Only
+  // `provider_key` is required (`requiredString`); `name`, `query`, and
+  // `endpoint_url` all have service-side defaults.
+  "source.channel.propose_activation": z.object({
+    provider_key: z.string().min(1),
+    name: z.string().min(1).optional(),
+    query: z.record(z.string(), z.unknown()).nullable().optional(),
+    endpoint_url: z.string().min(1).optional(),
+  }).passthrough(),
   "project.source.propose_bind":z.object({source_channel_id:z.string().min(1)}).passthrough(),
   "source.backfill.propose_start":z.object({source_channel_id:z.string().min(1),source_backfill_plan_id:z.string().min(1)}).passthrough(),
   "project.propose_definition": z.object({
@@ -97,7 +184,7 @@ const proposalInputs:Record<string,z.ZodType>={
     success_definition: z.string().trim().min(1).optional(),
     constraints: z.string().trim().min(1).optional(),
     assumptions: z.string().trim().min(1).optional(),
-  }).strict(),
+  }).passthrough(),
   "inquiry.propose_thread": z.object({
     kind: z.enum(["question", "hypothesis"]).default("question"),
     statement: z.string().trim().min(1),
@@ -106,7 +193,7 @@ const proposalInputs:Record<string,z.ZodType>={
     proposed_claim: z.string().trim().min(1).optional(),
     predictions: z.string().trim().min(1).optional(),
     falsification_criteria: z.string().trim().min(1).optional(),
-  }).strict(),
+  }).passthrough(),
   "inquiry.record_conclusion": z.object({
     thread_id: z.string().min(1),
     change_summary: z.string().min(1),
@@ -140,17 +227,22 @@ const proposalInputs:Record<string,z.ZodType>={
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
-  agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable"),
-  action("retrieval.search", "Search knowledge", "retrieval", "RetrievalToolService.search", "retrieval.search"),
-  action("retrieval.brief", "Build knowledge brief", "retrieval", "RetrievalToolService.brief", "retrieval.brief"),
-  action("memory.retrieval.search", "Search memory", "memory", "RetrievalToolService.search", "memory.retrieval.search"),
-  action("memory.retrieval.brief", "Build memory brief", "memory", "RetrievalToolService.brief", "memory.retrieval.brief"),
-  action("project.summary.search", "Search project summaries", "projects", "RetrievalToolService.search", "project.summary.search"),
-  action("project.summary.brief", "Build project summary brief", "projects", "RetrievalToolService.brief", "project.summary.brief"),
-  action("source.retrieval.search", "Search source material", "sources", "RetrievalToolService.search", "source.retrieval.search"),
-  action("source.retrieval.brief", "Build source brief", "sources", "RetrievalToolService.brief", "source.retrieval.brief"),
-  action("agent.delegate", "Delegate to an agent", "agent_groups", "AgentGroupRunService.spawnChildRun", "run.spawn_child", "durable"),
-  action("agent.wait_for_results", "Wait for agent results", "agent_groups", "AgentGroupRunService.waitForResults", "runtime.execute"),
+  agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable", { resource_type: "authorization_request", resource_id_fallback: "run", check_action_approval_grant: false }),
+  action("retrieval.search", "Search knowledge", "retrieval", "RetrievalToolService.search", "retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("retrieval.brief", "Build knowledge brief", "retrieval", "RetrievalToolService.brief", "retrieval.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("memory.retrieval.search", "Search memory", "memory", "RetrievalToolService.search", "memory.retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("memory.retrieval.brief", "Build memory brief", "memory", "RetrievalToolService.brief", "memory.retrieval.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("project.summary.search", "Search project summaries", "projects", "RetrievalToolService.search", "project.summary.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("project.summary.brief", "Build project summary brief", "projects", "RetrievalToolService.brief", "project.summary.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("source.retrieval.search", "Search source material", "sources", "RetrievalToolService.search", "source.retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  action("source.retrieval.brief", "Build source brief", "sources", "RetrievalToolService.brief", "source.retrieval.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
+  // D8: the tool-call entry and the runtime-delegation-output entry (Path A
+  // and Path B, agentGroupRuns.ts/runtimeDelegationMaterializer.ts) draft the
+  // same thing — "this Agent decided another Agent should do work" — so they
+  // validate against the exact same strict schema rather than Path A
+  // accepting anything (`objectInput`) while Path B alone was strict.
+  action("agent.delegate", "Delegate to an agent", "agent_groups", "AgentGroupRunService.spawnChildRun", "run.spawn_child", "durable", { agentToolSurface: "delegation", policyAdapter: "agent_delegate", inputSchema: RuntimeDelegationOutputItemSchema }),
+  action("agent.wait_for_results", "Wait for agent results", "agent_groups", "AgentGroupRunService.waitForResults", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentWaitForResultsInputSchema }),
   httpAction("source.recipe.plan", "Plan a Source recipe", "sources", "SourceRecipeService.planSource", "source.recipe.create", "none"),
   httpAction("source.recipe.create", "Create a Source recipe draft", "sources", "SourceRecipeService.createSource", "source.recipe.create", "draft"),
   httpAction("source.recipe.dry_run", "Dry-run a Source recipe", "sources", "SourceRecipeService.dryRunRecipeVersion", "source.recipe.dry_run", "none"),
@@ -166,8 +258,8 @@ export const SYSTEM_ACTION_REGISTRY = [
   httpAction("project.operation.cancel", "Cancel a Project operation", "projects", "ProjectOperationService.cancel", "project.operation.manage", "durable"),
   httpAction("source.backfill.preview", "Preview Source history import", "sources", "SourceBackfillPlanningService.preview", "source.backfill.plan", "none"),
   httpAction("source.backfill.create_plan", "Create Source history import plan", "sources", "SourceBackfillPlanningService.create", "source.backfill.plan", "draft"),
-  proposalAction("source.backfill.propose_start", "Propose Source history import", "sources", "SourceBackfillPlanningService.proposeStart", "source.backfill.plan", "source_backfill_start"),
-  agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable"),
+  proposalAction("source.backfill.propose_start", "Propose Source history import", "sources", "SourceBackfillPlanningService.proposeStart", "source.backfill.plan", "source_backfill_start", { resource_type: "source_backfill_plan", resource_id_input_field: "source_backfill_plan_id", resource_id_fallback: "run" }),
+  agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
   internalAction("source.backfill.start", "Start approved Source history import", "sources", "SourceBackfillExecutionService.start", "source.backfill.start"),
   httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
   httpAction("source.backfill.resume", "Resume Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
@@ -191,7 +283,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   // acquisition on it is execution, not an agent-drafted structure/content
   // write. The human confirmation gate is replaced by hard idempotency
   // guards in the acquisition service.
-  agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable"),
+  agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
 ] as const satisfies readonly SystemActionDefinition[];
 
 export type SystemActionId = (typeof SYSTEM_ACTION_REGISTRY)[number]["id"];
@@ -203,6 +295,12 @@ function action<const Id extends string>(
   applicationService: string,
   policyAction: PolicyActionId,
   sideEffects: SystemActionSideEffects = "none",
+  options: {
+    policyResource?: SystemActionPolicyResource;
+    inputSchema?: z.ZodType;
+    agentToolSurface?: SystemActionAgentToolSurface;
+    policyAdapter?: SystemActionPolicyAdapter;
+  } = {},
 ): SystemActionDefinition & { readonly id: Id } {
   return {
     id,
@@ -211,7 +309,7 @@ function action<const Id extends string>(
     description: title,
     visibility: visibility("agent_tool"),
     allowed_actor_types: ["agent"],
-    input_schema: objectInput,
+    input_schema: options.inputSchema ?? objectInput,
     output_schema: objectOutput,
     owning_module: owningModule,
     application_service: applicationService,
@@ -220,6 +318,9 @@ function action<const Id extends string>(
     idempotency_required: sideEffects !== "none",
     proposal_type: sideEffects === "proposal" ? "agent_delegation" : null,
     grantable: sideEffects === "proposal",
+    agent_tool_surface: options.agentToolSurface ?? "generic",
+    policy_adapter: options.policyAdapter ?? "declared_resource",
+    ...(options.policyResource ? { policy_resource: options.policyResource } : {}),
   };
 }
 
@@ -288,18 +389,29 @@ function objectAction<const Id extends string>(
   };
 }
 
-function proposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string): SystemActionDefinition & { readonly id: Id } {
+/**
+ * Every `proposalAction` wants `ActionApprovalGrantService` consulted and,
+ * absent an override, resolves its resource against the Run's Project (or
+ * the Run itself outside a Project) — that is true for every current
+ * `proposalAction` call site but one (`source.backfill.propose_start`,
+ * which overrides both fields), so it is the builder's default rather than
+ * a per-call declaration repeated seven times.
+ */
+function proposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, policyResource: Partial<Pick<SystemActionPolicyResource, "resource_type" | "resource_id_input_field" | "resource_id_fallback">> = {}): SystemActionDefinition & { readonly id: Id } {
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool", "public_api"),
     allowed_actor_types: ["user", "agent"], input_schema: proposalInputs[id]??objectInput, output_schema: proposalOutput,
     owning_module: owningModule, application_service: applicationService, policy_action: policyAction,
-    side_effects: "proposal", idempotency_required: true, proposal_type: proposalType, grantable: true };
+    side_effects: "proposal", idempotency_required: true, proposal_type: proposalType, grantable: true,
+    agent_tool_surface: "generic", policy_adapter: "declared_resource",
+    policy_resource: { resource_id_fallback: "project_or_run", check_action_approval_grant: true, ...policyResource } };
 }
 
-function agentAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, sideEffects: SystemActionSideEffects): SystemActionDefinition & { readonly id: Id } {
+function agentAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, sideEffects: SystemActionSideEffects, policyResource: SystemActionPolicyResource, agentToolSurface: SystemActionAgentToolSurface = "generic"): SystemActionDefinition & { readonly id: Id } {
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool"), allowed_actor_types: ["agent"],
     input_schema: proposalInputs[id] ?? objectInput, output_schema: proposalOutput, owning_module: owningModule,
     application_service: applicationService, policy_action: policyAction, side_effects: sideEffects,
-    idempotency_required: true, proposal_type: null, grantable: false };
+    idempotency_required: true, proposal_type: null, grantable: false, policy_resource: policyResource,
+    agent_tool_surface: agentToolSurface, policy_adapter: "declared_resource" };
 }
 
 function internalAction<const Id extends string>(id:Id,title:string,owningModule:string,applicationService:string,policyAction:PolicyActionId):SystemActionDefinition&{readonly id:Id}{
@@ -329,3 +441,24 @@ export function systemActionsForObjectType(objectType: string): readonly SystemA
  */
 export type NoteSystemActionId = Extract<SystemActionId, `note.${string}`>;
 export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;
+
+/**
+ * The model-facing JSON Schema for an action's `input_schema`, derived from
+ * the same Zod that validates it. One source: MCP `tools/list`, the managed
+ * loop's tool assembly, and any future thin CLI all read this rather than a
+ * hand-maintained literal that can drift from what actually validates.
+ *
+ * `$schema` is stripped — a meta-schema pointer is Draft-7 tooling noise on a
+ * tool-call payload, and the hand-written schemas it replaces never carried
+ * one either.
+ */
+export function systemActionInputJsonSchema(
+  definition: Pick<SystemActionDefinition, "input_schema">,
+): Record<string, unknown> {
+  const schema = zodToJsonSchema(definition.input_schema, {
+    target: "jsonSchema7",
+    $refStrategy: "none",
+  }) as Record<string, unknown>;
+  const { $schema: _drop, ...rest } = schema;
+  return rest;
+}

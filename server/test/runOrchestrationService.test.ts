@@ -1105,7 +1105,7 @@ describe("RunOrchestrationService", () => {
       sandbox_cwd: "/tmp",
     })).resolves.toMatchObject({
       status: "waiting_for_review",
-      error_code: "cli_tool_approval_required",
+      error_code: "authorization_request_pending",
     });
     expect(repo.terminalUpdates).toEqual([]);
   });
@@ -1625,7 +1625,7 @@ describe("RunOrchestrationService", () => {
             // here alongside retrieval ones rather than under a second key.
             managed_tool_calls: [
               { tool_name: "retrieval.search", ok: true, result_count: 3 },
-              { tool_name: "memory.retrieval.search", ok: false, error_code: "retrieval_tool_domain_not_enabled" },
+              { tool_name: "memory.retrieval.search", ok: false, error_code: "system_action_policy_denied" },
               { tool_name: "agent.delegate", ok: false, error_code: "delegation_policy_denied" },
             ],
           },
@@ -1650,7 +1650,7 @@ describe("RunOrchestrationService", () => {
       metadata_json: {
         event_code: "managed_tool_degraded",
         tool_names: ["memory.retrieval.search", "agent.delegate"],
-        error_codes: ["retrieval_tool_domain_not_enabled", "delegation_policy_denied"],
+        error_codes: ["system_action_policy_denied", "delegation_policy_denied"],
       },
     });
   });

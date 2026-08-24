@@ -2,11 +2,13 @@ import { createHash, randomBytes } from "node:crypto";
 import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
-  RuntimeHostExecuteResponse,
   RunTriggerOrigin,
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
-import { AgentToolGateway, type AgentToolGatewayDeps } from "../systemActions/agentToolGateway";
+import {
+  SystemActionDispatcher,
+  type SystemActionDispatcherDeps,
+} from "../systemActions/systemActionDispatcher";
 import { assembleRunInputEnvelope } from "./runInputEnvelope";
 import type { RunRecord } from "./repository";
 
@@ -51,23 +53,13 @@ export const cliRunToolIdentities = new CliRunToolIdentityRegistry();
 export class CliAgentToolTransport {
   constructor(
     private readonly config: ServerConfig,
-    private readonly deps: AgentToolGatewayDeps = {},
+    private readonly deps: SystemActionDispatcherDeps = {},
   ) {}
 
   async list(run: RunRecord): Promise<CanonicalToolDefinition[]> {
     this.assertActive(run);
-    const granted = grantedActionIds(run);
-    let definitions: CanonicalToolDefinition[] = [];
-    await new AgentToolGateway(this.config).execute(
-      run,
-      transportRequest(run),
-      async (_config, request) => {
-        definitions = (request.tools ?? []).filter((tool) => granted.has(tool.name));
-        return terminalResponse();
-      },
-      this.deps,
-    );
-    return definitions;
+    const dispatcher = await SystemActionDispatcher.create(this.config, run, transportRequest(run), this.deps);
+    return dispatcher.listGrantedDefinitions();
   }
 
   async call(
@@ -75,69 +67,13 @@ export class CliAgentToolTransport {
     call: { id: string; name: string; arguments: unknown },
   ): Promise<unknown> {
     this.assertActive(run);
-    if (!grantedActionIds(run).has(call.name)) {
-      return { ok: false, tool: call.name, error_code: "cli_tool_not_granted" };
-    }
-    let turn = 0;
-    let result: unknown = { ok: false, error: "Tool result was not produced." };
-    const response = await new AgentToolGateway(this.config).execute(
-      run,
-      transportRequest(run),
-      async (_config, request) => {
-        turn += 1;
-        if (turn === 1) {
-          const offered = new Set((request.tools ?? []).map((tool) => tool.name));
-          if (!offered.has(call.name)) {
-            return {
-              ...terminalResponse(),
-              success: false,
-              error_code: "cli_tool_not_granted",
-              error_text: `Tool '${call.name}' is not granted to this Run.`,
-            };
-          }
-          return {
-            ...terminalResponse(),
-            output_json: {
-              tool_calls: [{
-                id: call.id,
-                name: call.name,
-                arguments_json: JSON.stringify(call.arguments ?? {}),
-              }],
-            },
-          };
-        }
-        const toolMessage = [...(request.messages ?? [])]
-          .reverse()
-          .find((message) => message.role === "tool" && message.tool_call_id === call.id);
-        if (toolMessage?.content) {
-          try {
-            result = JSON.parse(toolMessage.content);
-          } catch {
-            result = { ok: false, error: "Tool returned invalid JSON." };
-          }
-        }
-        return terminalResponse();
-      },
-      this.deps,
-    );
-    if (
-      response.error_code === "authorization_request_pending"
-      && result
-      && typeof result === "object"
-      && (result as { error?: unknown }).error === "Tool result was not produced."
-    ) {
-      result = {
-        ok: false,
-        tool: call.name,
-        error_code: response.error_code,
-        error: response.error_text,
-        authorization_request_id:
-          typeof response.output_json?.authorization_request_id === "string"
-            ? response.output_json.authorization_request_id
-            : null,
-      };
-    }
-    return result;
+    const dispatcher = await SystemActionDispatcher.create(this.config, run, transportRequest(run), this.deps);
+    const result = await dispatcher.dispatch({
+      id: call.id,
+      name: call.name,
+      arguments_json: JSON.stringify(call.arguments ?? {}),
+    });
+    return result.modelResult;
   }
 
   private assertActive(run: RunRecord): void {
@@ -170,30 +106,6 @@ function transportRequest(run: RunRecord): RuntimeHostExecuteRequest {
     output_format: null,
     tool_mode: "disabled",
     tool_bindings: [],
-  };
-}
-
-function grantedActionIds(run: RunRecord): Set<string> {
-  return new Set(assembleRunInputEnvelope(run).tool_grants.map((grant) => grant.action_id));
-}
-
-function terminalResponse(): RuntimeHostExecuteResponse {
-  return {
-    success: true,
-    stdout: "",
-    stderr: "",
-    output_text: "",
-    output_json: {},
-    exit_code: 0,
-    error_text: null,
-    error_code: null,
-    started_at: null,
-    completed_at: new Date().toISOString(),
-    model: null,
-    usage: null,
-    events: [],
-    adapter_metadata: {},
-    adapter_log_json: null,
   };
 }
 

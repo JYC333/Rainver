@@ -17,6 +17,10 @@ import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistr
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
 import type { ServerConfig } from "../src/config";
 import { HttpError } from "../src/modules/routeUtils/common";
+import { loadConfig } from "../src/config";
+import { PgRunRepository } from "../src/modules/runs/repository";
+import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher";
+import type { CanonicalToolCall, RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
 
 // Real-Postgres coverage for `inquiry.record_conclusion` (plan:
 // `.agent/plans/project-conversational-advancement-plan.md`, Phase A): an
@@ -86,6 +90,12 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'private','full',$7,$6)`,
     [RUN_ID, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OWNER, PROJECT],
   );
+  await pool.query(
+    `UPDATE runs
+        SET permission_snapshot_json = $2::jsonb
+      WHERE id = $1 AND space_id = $3`,
+    [RUN_ID, JSON.stringify({ tool_grants: [{ action_id: "project.propose_definition" }] }), SPACE],
+  );
 });
 
 const ownerIdentity = () => ({ spaceId: SPACE, userId: OWNER });
@@ -101,6 +111,54 @@ async function proposalRowToApplyProposal(proposalId: string): Promise<ApplyProp
 }
 
 describe("inquiry.propose_thread Proposal (real Postgres)", () => {
+  it("dispatches a declarative system action through the gateway and creates only a Proposal", async () => {
+    if (!available || !pool || !container) return;
+    const run = await new PgRunRepository(pool).getRun(SPACE, RUN_ID);
+    if (!run) throw new Error("Test Run was not created");
+    const config = loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() });
+    const dispatcher = await SystemActionDispatcher.create(
+      config,
+      run,
+      {} as RuntimeHostExecuteRequest,
+    );
+
+    // Project creation seeds one initial Brief version; the dispatch must not
+    // add another — accepting the Proposal is what publishes a new version.
+    const briefsBefore = await pool.query<{ id: string }>(
+      "SELECT id FROM project_brief_versions WHERE project_id = $1 ORDER BY id",
+      [PROJECT],
+    );
+
+    const call: CanonicalToolCall = {
+      id: "project-definition-call-1",
+      name: "project.propose_definition",
+      arguments_json: JSON.stringify({ goal: "Make the Project goal reviewable." }),
+    };
+    const result = await dispatcher.dispatch(call);
+
+    expect(result.modelResult).toMatchObject({ ok: true });
+    expect(result.summary).toMatchObject({
+      tool_name: "project.propose_definition",
+      ok: true,
+    });
+    const proposals = await pool.query<{ status: string; action_id: string; created_by_run_id: string }>(
+      `SELECT status, payload_json->>'action_id' AS action_id, created_by_run_id
+         FROM proposals
+        WHERE space_id = $1 AND project_id = $2 AND proposal_type = 'project_brief_publish'`,
+      [SPACE, PROJECT],
+    );
+    expect(proposals.rows).toEqual([{
+      status: "pending",
+      action_id: "project.propose_definition",
+      created_by_run_id: RUN_ID,
+    }]);
+    const briefsAfter = await pool.query<{ id: string }>(
+      "SELECT id FROM project_brief_versions WHERE project_id = $1 ORDER BY id",
+      [PROJECT],
+    );
+    expect(briefsAfter.rows).toEqual(briefsBefore.rows);
+  });
+
   it("keeps the draft reviewable, then creates the canonical Thread on acceptance", async () => {
     if (!available || !pool) return;
     const identity = ownerIdentity();

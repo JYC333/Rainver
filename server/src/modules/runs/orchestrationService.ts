@@ -1205,11 +1205,16 @@ export class RunOrchestrationService {
       }
       const adapterTerminalStatus = terminalStatusFromAdapter(adapterResult);
       const currentAfterAdapter = await this.repository.getRun(running.space_id, running.id);
+      // A tool call mid-run (e.g. `authorization.request`) can pause the Run
+      // to `waiting_for_review` transactionally, independent of the adapter's
+      // own terminal result. Report that pause instead of overwriting it with
+      // a terminal status — the domain, not this transport-generic check, is
+      // what set it.
       if (currentAfterAdapter?.status === "waiting_for_review") {
         return {
           run_id: running.id,
           status: "waiting_for_review",
-          error_code: "cli_tool_approval_required",
+          error_code: "authorization_request_pending",
         };
       }
       let verificationResults: VerificationResultRecord[] = [];

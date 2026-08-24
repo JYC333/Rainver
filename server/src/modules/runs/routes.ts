@@ -205,15 +205,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           name,
           arguments: recordValue(callParams.arguments),
         });
-        if (recordValue(result).error_code === "system_action_approval_required") {
-          await repository.markRunWaitingForReview({
-            run_id: run.id,
-            space_id: run.space_id,
-            approval_code: "cli_tool_approval_required",
-            message: `CLI tool '${name}' requires approval.`,
-            paused_at: new Date().toISOString(),
-          });
-        }
         return reply.send({
           jsonrpc: "2.0",
           id,

@@ -216,6 +216,17 @@ function nonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+/**
+ * Normalizes a Run's own `visibility` for a proposal produced on its
+ * behalf, defaulting to `private` for anything unrecognized rather than
+ * accidentally widening exposure. Shared by every System Action executor
+ * (inquiry, knowledge promotion, projects) that copies the instructing
+ * Run's visibility onto the proposal it drafts.
+ */
+export function runVisibility(value: unknown): "private" | "space_shared" | "selected_users" {
+  return value === "selected_users" || value === "space_shared" ? value : "private";
+}
+
 const FORBIDDEN_INPUT_KEYS = new Set([
   "api_key",
   "secret_ref",

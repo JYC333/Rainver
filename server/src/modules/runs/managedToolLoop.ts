@@ -4,8 +4,8 @@
  * Every managed tool family — Retrieval, Agent delegation, and the generic
  * SystemAction transports — reaches the model through here. The loop knows
  * nothing about any of them: it takes an assembled `ManagedToolSet`, drives
- * `ManagedAgentLoopPort`, and reports what the tools did. `AgentToolGateway`
- * owns the assembly, because it already owns exposure and dispatch.
+ * `ManagedAgentLoopPort`, and reports what the tools did. `ManagedAgentToolSurface`
+ * owns the assembly, driving `SystemActionDispatcher` for exposure and dispatch.
  *
  * This module must not import anything from `retrieval`. The loop used to live
  * inside the Retrieval domain, which meant a run carrying only delegation or a

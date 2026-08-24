@@ -412,6 +412,28 @@ changes. The server service process does not auto-migrate on startup.
 DB-persisted API-key storage remains disabled/deferred until the canonical
 schema adds that table.
 
+**B66** — A new Agent entry point (HTTP route, MCP transport, managed-loop
+surface, or any future host) is a thin adapter over `SystemActionDispatcher`
+(`server/src/modules/systemActions/systemActionDispatcher.ts`). It may
+translate transport-specific request/response shapes and assemble which
+actions to expose, but it must not itself decide grants, evaluate policy,
+mutate a domain table, or otherwise define action semantics — that belongs to
+the single `SystemActionGateway`/`SystemActionDispatcher` path
+(`CliAgentToolTransport`'s Run-scoped MCP transport and
+`ManagedAgentToolSurface`'s managed model loop both call it directly).
+Runtime delegation materialization
+(`AgentGroupRuntimeDelegationMaterializer`) is a documented exception, not a
+model to copy: it runs after the Run has already terminated and so cannot go
+through a run-scoped dispatch, but it still independently enforces the same
+grant rather than skipping the check. See
+`.agent/architecture/SYSTEM_ACTIONS.md`. A coding agent adding a new surface
+must reuse the Gateway/Dispatcher path rather than building a second tool
+system, and any surface that genuinely cannot call `SystemActionDispatcher`
+must still enforce the same grant and policy checks itself, not skip them.
+For Path B specifically, an ungranted delegation must leave a completed
+denial audit event; an admitted delegation must leave the normal invocation /
+completion pair.
+
 ---
 
 ## Deployment Boundaries

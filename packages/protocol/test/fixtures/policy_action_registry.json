@@ -1203,7 +1203,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/agentToolGateway.ts",
+    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
     "description": "Submit an Agent-generated execution Plan for a source Task.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1216,7 +1216,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/agentToolGateway.ts",
+    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
     "description": "Propose a formal Project goal or core problem for owner review.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1229,7 +1229,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/agentToolGateway.ts",
+    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
     "description": "Propose an Agent-drafted Inquiry Thread for human review.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1242,7 +1242,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/agentToolGateway.ts",
+    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
     "description": "Propose an Agent-drafted Inquiry Thread conclusion (Iteration) for review.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1255,7 +1255,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/agentToolGateway.ts",
+    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
     "description": "Propose promoting a concluded Inquiry round to a Knowledge Item.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"

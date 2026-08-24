@@ -300,6 +300,28 @@ export type RuntimeDelegationOutputItem = z.infer<
   typeof RuntimeDelegationOutputItemSchema
 >;
 
+const NormalizedAgentWaitIdListSchema = z.array(z.string()).transform((values) => [
+  ...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
+]);
+const NormalizedAgentWaitTextSchema = z.string().transform((value) => {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+});
+
+/** The shared input contract for the live `agent.wait_for_results` tool. */
+export const AgentWaitForResultsInputSchema = z
+  .object({
+    scope: z.enum(["current_turn", "own_delegations", "run_ids"]).optional(),
+    run_ids: NormalizedAgentWaitIdListSchema.optional(),
+    target_agent_ids: NormalizedAgentWaitIdListSchema.optional(),
+    reason: NormalizedAgentWaitTextSchema.optional(),
+    resume_instruction: NormalizedAgentWaitTextSchema.optional(),
+  })
+  .strict();
+export type AgentWaitForResultsInput = z.infer<
+  typeof AgentWaitForResultsInputSchema
+>;
+
 export const RuntimeDelegationsOutputSchema = z
   .object({
     delegations: z.array(RuntimeDelegationOutputItemSchema).default([]),

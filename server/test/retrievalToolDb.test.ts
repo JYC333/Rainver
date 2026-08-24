@@ -6,11 +6,18 @@ import { migrate } from "../src/db/migrator";
 import { RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
 import { RetrievalToolService } from "../src/modules/retrieval/tool/service";
+import { enforceRetrievalToolCallPolicy } from "../src/modules/retrieval/tool/policy";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 
 // W10 agent-space-controlled retrieval tool surface. A managed run calls retrieval
 // through RetrievalToolService, which forces the viewer to the run's INSTRUCTING
-// USER (the agent cannot widen its own access) and audits the call as the agent.
+// USER (the agent cannot widen its own access). Policy enforcement and the audit
+// write happen one layer up, at the SystemActionGateway dispatch step (action
+// authority consolidation plan, D6/D7) — RetrievalToolService itself performs no
+// enforcement of its own, matching every other domain service the gateway calls.
+// The audit-behavior tests below call enforceRetrievalToolCallPolicy directly,
+// mirroring that real two-step production order (gateway enforces, then the
+// executor runs), since RetrievalToolService no longer does both internally.
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -78,10 +85,7 @@ async function seed(doc: { id: string; title: string; content: string; visibilit
 }
 
 function toolService(): RetrievalToolService {
-  return new RetrievalToolService(new RetrievalSearchService(pool!, knowledgeRetrievalRegistry), {
-    databaseUrl: dbUrl,
-    surface: "managed_run",
-  });
+  return new RetrievalToolService(new RetrievalSearchService(pool!, knowledgeRetrievalRegistry));
 }
 
 describe("Retrieval tool surface (real Postgres)", () => {
@@ -106,10 +110,19 @@ describe("Retrieval tool surface (real Postgres)", () => {
     await seed({ id: "shared", title: "Widget plan", content: "Shared widget plan." });
     await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
-    await toolService().toolSearch(
-      { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN },
-      { query: "widget", mode: "lexical", maxResults: 10 },
-    );
+    const actor = { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN };
+    const params = { query: "widget", mode: "lexical" as const, maxResults: 10 };
+    await enforceRetrievalToolCallPolicy({
+      databaseUrl: dbUrl,
+      actor,
+      action: "retrieval.search",
+      domain: "knowledge",
+      domainEnabled: true,
+      mode: params.mode,
+      maxResults: params.maxResults,
+      surface: "managed_run",
+    });
+    await toolService().toolSearch(actor, params);
 
     const audit = await pool.query<{
       actor_type: string; actor_id: string; action: string; run_id: string | null; metadata_json: Record<string, unknown>;
@@ -134,10 +147,19 @@ describe("Retrieval tool surface (real Postgres)", () => {
     await seed({ id: "shared", title: "Widget plan", content: "Shared widget plan with sufficient content to not be thin enough here." });
     await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
-    const res = await toolService().toolBrief(
-      { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN },
-      { query: "widget", mode: "lexical", maxResults: 10 },
-    );
+    const actor = { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN };
+    const params = { query: "widget", mode: "lexical" as const, maxResults: 10 };
+    await enforceRetrievalToolCallPolicy({
+      databaseUrl: dbUrl,
+      actor,
+      action: "retrieval.brief",
+      domain: "knowledge",
+      domainEnabled: true,
+      mode: params.mode,
+      maxResults: params.maxResults,
+      surface: "managed_run",
+    });
+    const res = await toolService().toolBrief(actor, params);
     expect(res.brief.synthesized).toBe(false); // no synthesizer wired
     expect(res.items.map((i) => i.object_id)).toContain("shared");
 

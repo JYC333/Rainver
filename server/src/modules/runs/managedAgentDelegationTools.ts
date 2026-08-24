@@ -6,6 +6,7 @@ import type {
 } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { ServerConfig } from "../../config";
 import { getDbPool, type Pool } from "../../db/pool";
+import { loadProtocol } from "../providers/protocolRuntime";
 import {
   AgentGroupRunService,
   type AgentGroupIdentity,
@@ -51,13 +52,14 @@ export async function resolveAgentDelegationToolBinding(
   };
   const targets = deps.targets ?? await loadDelegationTargets(config, run, pool());
   const service = deps.service ?? new AgentGroupRunService(config, pool());
+  const protocol = await loadProtocol();
   return {
     targets,
     service,
     pool: sharedPool ?? null,
     toolDefinitions: [
       ...(targets.length > 0 ? [agentDelegateToolDefinition(targets)] : []),
-      agentWaitForResultsToolDefinition(targets),
+      agentWaitForResultsToolDefinition(targets, protocol),
     ],
     toolBindings: [
       ...(targets.length > 0 ? [{
@@ -114,6 +116,7 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
           },
           reason: {
             type: "string",
+            minLength: 1,
             description: "Short reason for this delegation.",
           },
           budget: {
@@ -131,7 +134,12 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
     };
 }
 
-function agentWaitForResultsToolDefinition(targets: readonly AgentDelegationTarget[]): CanonicalToolDefinition {
+function agentWaitForResultsToolDefinition(
+  targets: readonly AgentDelegationTarget[],
+  protocol: Awaited<ReturnType<typeof loadProtocol>>,
+): CanonicalToolDefinition {
+  const generatedInputSchema = protocol.systemActionInputJsonSchema({ input_schema: protocol.AgentWaitForResultsInputSchema });
+  const generatedProperties = (generatedInputSchema.properties ?? {}) as Record<string, Record<string, unknown>>;
   return {
     name: AGENT_WAIT_FOR_RESULTS_TOOL,
     description: [
@@ -143,32 +151,14 @@ function agentWaitForResultsToolDefinition(targets: readonly AgentDelegationTarg
       `Available room members and capabilities: ${targets.length ? targets.map(targetLabel).join("; ") : "no other active room members"}`,
     ].join(" "),
     input_schema: {
-      type: "object",
-      additionalProperties: false,
+      ...generatedInputSchema,
       properties: {
-        scope: {
-          type: "string",
-          enum: ["current_turn", "own_delegations", "run_ids"],
-          description: "Which room runs to wait for. Defaults to own_delegations.",
-        },
-        run_ids: {
-          type: "array",
-          items: { type: "string" },
-          description: "Explicit run ids to wait for when scope is run_ids.",
-        },
-        target_agent_ids: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional room agent ids used to filter current_turn dependencies.",
-        },
-        reason: {
-          type: "string",
-          description: "Short trace-safe reason for waiting.",
-        },
-        resume_instruction: {
-          type: "string",
-          description: "Instruction to follow when the dependency results are available.",
-        },
+        ...generatedProperties,
+        scope: { ...generatedProperties.scope, description: "Which room runs to wait for. Defaults to own_delegations." },
+        run_ids: { ...generatedProperties.run_ids, description: "Explicit run ids to wait for when scope is run_ids." },
+        target_agent_ids: { ...generatedProperties.target_agent_ids, description: "Optional room agent ids used to filter current_turn dependencies." },
+        reason: { ...generatedProperties.reason, description: "Short trace-safe reason for waiting." },
+        resume_instruction: { ...generatedProperties.resume_instruction, description: "Instruction to follow when the dependency results are available." },
       },
     },
   };
@@ -316,7 +306,7 @@ async function runAgentWaitForResultsToolCall(
 ): Promise<{ modelResult: unknown; summary: Record<string, unknown>; suspend?: RuntimeHostExecuteResponse }> {
   try {
     if (!binding.pool) throw new Error("agent.wait_for_results requires room database access.");
-    const params = parseAgentWaitArguments(call.arguments_json);
+    const params = await parseAgentWaitArguments(call.arguments_json);
     const groups = new PgAgentGroupRepository(binding.pool);
     const runs = new PgRunRepository(binding.pool);
     const dependencies = await dependencyRunsForWait({
@@ -443,34 +433,36 @@ function parseAgentDelegateArguments(
   };
 }
 
-function parseAgentWaitArguments(argumentsJson: string): {
+async function parseAgentWaitArguments(argumentsJson: string): Promise<{
   scope: "current_turn" | "own_delegations" | "run_ids";
   run_ids: string[];
   target_agent_ids: string[];
   reason: string | null;
   resume_instruction: string | null;
-} {
+}> {
   let raw: unknown;
   try {
     raw = JSON.parse(argumentsJson || "{}");
   } catch {
     throw new Error("Tool arguments must be valid JSON.");
   }
-  const record = recordValue(raw);
-  const rawScope = stringValue(record.scope);
+  const parsed = (await loadProtocol()).AgentWaitForResultsInputSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(parsed.error.message);
+  const record = parsed.data;
+  const rawScope = record.scope;
   const scope = rawScope === "current_turn" || rawScope === "run_ids"
     ? rawScope
     : "own_delegations";
-  const runIds = stringArrayValue(record.run_ids);
+  const runIds = record.run_ids ?? [];
   if (scope === "run_ids" && runIds.length === 0) {
     throw new Error("run_ids is required when scope is run_ids.");
   }
   return {
     scope,
     run_ids: runIds,
-    target_agent_ids: stringArrayValue(record.target_agent_ids),
-    reason: stringValue(record.reason),
-    resume_instruction: stringValue(record.resume_instruction),
+    target_agent_ids: record.target_agent_ids ?? [],
+    reason: record.reason ?? null,
+    resume_instruction: record.resume_instruction ?? null,
   };
 }
 

@@ -1,4 +1,4 @@
-# System Actions and Agent Tool Gateway
+# System Actions, Dispatcher, and Agent Tool Surfaces
 
 ## Purpose and source of truth
 
@@ -22,7 +22,10 @@ Every system action declares:
 - input/output Zod schemas;
 - owning module and application-service boundary;
 - policy action, side-effect class, idempotency requirement, proposal type,
-  and whether advance approval grants may apply.
+  and whether advance approval grants may apply;
+- Agent-tool surface (`generic`, `retrieval`, `delegation`, or `research`) and
+  policy adapter (`declared_resource`, `retrieval`, or `agent_delegate`) when
+  the action is Agent-callable.
 
 There are currently no public `external_mcp` actions. The private Run-scoped
 MCP transport is not a public registration surface and does not change action
@@ -30,24 +33,56 @@ visibility.
 
 ## Dispatch boundary
 
-`SystemActionGateway` performs registry lookup, actor and visibility checks,
-idempotency validation, input validation, policy enforcement, executor lookup,
-and output validation in that order. Unknown actions, missing executors,
-unsupported actor/visibility combinations, missing idempotency keys, invalid
-schemas, and denied policy decisions fail closed.
+Three layers, each owning exactly one concern (action authority consolidation
+plan):
 
-The gateway is actor-neutral. HTTP routes continue to call their owning
-application services and `PolicyGateway` enforcement points. Server jobs may
-use internal/system-job actions. Managed model runs use `AgentToolGateway`, the
-agent-specific adapter over `SystemActionGateway`.
+- **`SystemActionGateway`** (`systemActions/gateway.ts`) is the actor-neutral
+  core: registry lookup, actor and visibility checks, idempotency validation,
+  input validation, policy enforcement, executor lookup, and output
+  validation, in that order. Unknown actions, missing executors, unsupported
+  actor/visibility combinations, missing idempotency keys, invalid schemas,
+  and denied policy decisions fail closed. It knows nothing about Runs, grants,
+  or transports.
+- **`SystemActionDispatcher`** (`systemActions/systemActionDispatcher.ts`) is
+  the run-scoped layer every Agent-facing entry point actually calls. Given a
+  `RunRecord` and a request, it computes the Run's tool grants, builds the
+  gateway's executor map (via `registerModuleSystemActionExecutors` /
+  `executorRegistry.ts`, one registration function per owning module) and
+  policy enforcer, and normalizes gateway results/errors into one structured
+  tool-call shape. `dispatch()` and `listGrantedDefinitions()` are its call
+  surface; `ManagedAgentToolSurface` also reads its already-resolved
+  retrieval/delegation/generic/research bindings directly to assemble the
+  managed loop's tool set. The CLI MCP transport and the managed loop both
+  call `dispatch`/`listGrantedDefinitions` directly and neither recomputes
+  grants or re-runs policy itself. Runtime delegation
+  materialization (Path B, below) is the one deliberate exception: it runs
+  after the Run has already terminated, when a run-scoped in-flight dispatch
+  is no longer meaningful, so it does not call `SystemActionDispatcher` at
+  all — it independently checks the same grant snapshot and shares the
+  schema and audit-event shape, but its own code is the dispatch path for
+  that one case.
+- **`ManagedAgentToolSurface`** (`systemActions/managedAgentToolSurface.ts`)
+  is managed-loop-only: it constructs a `SystemActionDispatcher`, assembles
+  the retrieval/delegation/generic/research tool contributions it exposes,
+  and drives `executeManagedToolLoop`. It owns no dispatch or grant logic of
+  its own.
 
-Local CLI Runs use that same gateway through a Run-scoped MCP transport. The
-server issues an opaque, in-memory, short-lived identity only for the executing
-Run, exposes `initialize`, `tools/list`, and `tools/call`, and revokes the
-identity when the CLI exits. The transport reloads the Run in the identity's
-Space, requires it to remain `running`, and offers only the gateway's
-permission/capability intersection. It never gives the CLI database credentials
-or an internal service token.
+HTTP routes continue to call their owning application services and
+`PolicyGateway` enforcement points directly; they do not go through
+`SystemActionDispatcher`. Server jobs may use internal/system-job actions.
+
+Local CLI Runs reach `SystemActionDispatcher` through a Run-scoped MCP
+transport (`runs/cliToolTransport.ts`'s `CliAgentToolTransport`, mounted by
+the JSON-RPC route in `runs/routes.ts`). The server issues an opaque,
+in-memory, short-lived identity only for the executing Run, exposes
+`initialize`, `tools/list`, and `tools/call`, and revokes the identity when
+the CLI exits. The route (`runs/routes.ts`) reloads the Run and rejects
+unless it is `running`; the transport (`cliToolTransport.ts`'s
+`assertActive()`) repeats that same check before every `list`/`call`, then
+only builds a dispatcher and forwards to it — neither adapter computes tool
+permissions itself, that intersection is `SystemActionDispatcher`'s grant
+computation. It never gives the CLI database credentials or an internal
+service token.
 
 Run creation computes that intersection from the Run's declared
 `capabilities_json`, its immutable AgentVersion
@@ -69,10 +104,64 @@ canonical tool-call/idempotency key. Network-isolated one-shot Docker execution
 fails closed when a Run requests tools because it cannot reach the loopback
 broker.
 
+## Declarative policy resources and derived schemas
+
+Most actions need no hand-written `if (definition.id === ...)` branch in
+`SystemActionDispatcher`'s policy enforcer. A definition instead declares its
+`policy_adapter` and, for the generic adapter, carries an optional
+`policy_resource` (`SystemActionPolicyResource`,
+`packages/protocol/src/systemActions.ts`):
+`{resource_type?, resource_id_input_field?, resource_id_fallback: "run" |
+"project_or_run", check_action_approval_grant}`. The generic adapter
+(`enforceDeclaredResourcePolicy` / `resolveDeclaredResourceId`) reads
+`resource_type` (or falls back to the action's own `owning_module`), reads
+`resource_id` from the named input field when present or falls back per
+`resource_id_fallback`, and consults `ActionApprovalGrantService` only when
+`check_action_approval_grant` is true. This is the single place resource
+resolution and grant-checking happen; adding an action with ordinary
+resource-scoped policy is a data change to its definition, not a new code
+branch.
+
+Retrieval and `agent.delegate` are the declared custom adapters: they carry no
+`policy_resource` and keep explicit adapter metadata, because their
+enforcement genuinely differs (domain enablement; group budget and lineage)
+rather than fitting the resource_type/resource_id/grant shape. An action
+without either a `policy_resource` or a recognized custom adapter is denied.
+
+Every registry-validated input schema is derived from one Zod authority, never
+hand-maintained twice: `systemActionInputJsonSchema()`
+(`packages/protocol/src/systemActions.ts`) converts a definition's
+`input_schema` to Draft-7 JSON Schema (`zod-to-json-schema`, `$refStrategy:
+"none"`, `$schema` stripped) for a generic tool/binding, and this is what
+every ordinary generic action's model-visible schema comes from.
+`agent.wait_for_results` follows the same authority rule: its registry and
+dispatch schema is `AgentWaitForResultsInputSchema`, and
+`agentWaitForResultsToolDefinition()` derives the model-facing JSON Schema
+from it before adding descriptions and dynamic room context.
+
+Dynamic tool presentation has two bounded exceptions:
+
+- **Retrieval's eight actions** keep `objectInput` in the registry — a
+  permissive placeholder, not the real authority — because the real schema is
+  generated per binding at runtime from the binding's settings snapshot
+  (`runs/managedRetrievalTools.ts`'s `retrievalToolInputSchema`), so it
+  cannot be a static Zod at the definition at all.
+- **`agent.delegate`** does have a real static registry Zod
+  (`RuntimeDelegationOutputItemSchema`, shared with Path B's structured
+  output validation, D8), but its hand-written tool definition
+  (`agentDelegateToolDefinition()`, same file) exists because the
+  model-facing schema needs a `target_agent_id` enum populated from that
+  Run's live room roster — a per-request enrichment
+  `systemActionInputJsonSchema()` cannot express from a static definition.
+  `SystemActionGateway` still validates the actual call against the shared
+  Zod at dispatch time; only the tool-definition JSON Schema shown to the
+  model is hand-built.
+
 ## Managed-agent exposure
 
-`AgentToolGateway` composes retrieval, delegation, and enabled generic actions
-for a managed run. Exposure requires all of:
+`SystemActionDispatcher` composes retrieval, delegation, and enabled generic
+actions for a managed run; `ManagedAgentToolSurface` assembles those into the
+managed loop's tool set. Exposure requires all of:
 
 1. registry visibility includes `agent_tool` and actor type includes `agent`;
 2. the action is present in `runs.capabilities_json` **and** permitted by the
@@ -196,6 +285,12 @@ PolicyDecisionRecord id; failures use `action_completed` with `ok=false` and a
 safe error code. RunEvent persistence failure does not roll back or block an
 action. The fail-closed audit boundary is PolicyGateway decision-record
 persistence according to the policy action's `record_failure_mode`.
+
+Path B runtime delegation materialization follows the same audit contract. An
+admitted spawn emits the invocation/completion pair; a post-terminal grant
+refusal emits a completed `delegation_not_granted` denial event because there
+is no live tool-response channel. These events remain best-effort and never
+turn a missing audit row into permission to spawn.
 
 Side-effecting definitions require an idempotency key. Managed calls use the
 canonical tool-call id. Proposal-producing services additionally persist
@@ -378,3 +473,12 @@ Operation surface.
 - `external_mcp` remains empty until separately designed.
 - RunEvent/action audit metadata contains no prompts, credentials, raw source
   content, stdout, or stderr.
+- A new Agent entry point is a thin adapter over `SystemActionDispatcher`
+  (`.agent/BOUNDARIES.md` B66): it may translate transport shapes and choose
+  which actions to expose, but must not itself decide grants, evaluate
+  policy, or mutate a domain table.
+- Deterministic system projections stay outside this path. The shared
+  Run-terminal → Task-status projector
+  (`.agent/architecture/DATA_AUTHORITY_MATRIX.md`) is automatic domain
+  bookkeeping with a single owning projector, not an agent-authorized action;
+  it must not be reimplemented as, or routed through, a system action.

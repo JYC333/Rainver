@@ -25,10 +25,7 @@ import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
 import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
 import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
 import { RetrievalToolService } from "../retrieval/tool/service";
-import {
-  enforceRetrievalToolCallPolicy,
-  type RetrievalToolPolicyAction,
-} from "../retrieval/tool/policy";
+import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy";
 import type { RunRecord } from "./repository";
 import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort";
 import type { ManagedToolContribution } from "./managedToolLoop";
@@ -72,7 +69,6 @@ interface RetrievalToolDomainSpec {
   objectTypes: readonly RetrievalObjectType[];
   objectTypeLabel: string;
   requiredScopes: string[];
-  serviceSurface: string;
   artifactSurface: string;
   persistTrace: boolean;
 }
@@ -87,7 +83,6 @@ const KNOWLEDGE_TOOL_SPEC: RetrievalToolDomainSpec = {
   objectTypes: RETRIEVAL_TOOL_OBJECT_TYPES,
   objectTypeLabel: "knowledge_item, note, source, or claim",
   requiredScopes: ["knowledge.read"],
-  serviceSurface: "managed_run",
   artifactSurface: "managed_run_retrieval_tool",
   persistTrace: true,
 };
@@ -102,7 +97,6 @@ const MEMORY_TOOL_SPEC: RetrievalToolDomainSpec = {
   objectTypes: MEMORY_RETRIEVAL_TOOL_OBJECT_TYPES,
   objectTypeLabel: "memory_entry",
   requiredScopes: ["memory.read"],
-  serviceSurface: "managed_run_memory",
   artifactSurface: "managed_run_memory_retrieval_tool",
   persistTrace: false,
 };
@@ -117,7 +111,6 @@ const PROJECT_TOOL_SPEC: RetrievalToolDomainSpec = {
   objectTypes: PROJECT_RETRIEVAL_TOOL_OBJECT_TYPES,
   objectTypeLabel: "project_public_summary",
   requiredScopes: ["project_public_summary.read"],
-  serviceSurface: "managed_run_project_public_summary",
   artifactSurface: "managed_run_project_public_summary_retrieval_tool",
   persistTrace: false,
 };
@@ -132,7 +125,6 @@ const SOURCE_TOOL_SPEC: RetrievalToolDomainSpec = {
   objectTypes: SOURCE_RETRIEVAL_TOOL_OBJECT_TYPES,
   objectTypeLabel: "source_item or extracted_evidence",
   requiredScopes: ["source.read"],
-  serviceSurface: "managed_run_source",
   artifactSurface: "managed_run_source_retrieval_tool",
   persistTrace: false,
 };
@@ -199,16 +191,7 @@ export async function resolveRetrievalToolBinding(
           egressPolicy,
         }),
       });
-      return [
-        spec.domain,
-        new RetrievalToolService(search, {
-          databaseUrl: config.databaseUrl,
-          surface: spec.serviceSurface,
-          domain: spec.domain,
-          searchAction: spec.searchTool,
-          briefAction: spec.briefTool,
-        }),
-      ];
+      return [spec.domain, new RetrievalToolService(search)];
     }),
   ) as Partial<Record<RetrievalToolDomain, RetrievalToolService>>;
   const knowledgeService = services.knowledge;
@@ -252,7 +235,7 @@ export async function retrievalToolContribution(
   run: RunRecord,
   request: RuntimeHostExecuteRequest,
   baseMessages: readonly CanonicalMessage[],
-  dispatch?: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
+  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
 ): Promise<ManagedToolContribution> {
   if (!isRetrievalPreflightMode(binding.toolMode)) {
     return { definitions: binding.toolDefinitions, bindings: binding.toolBindings };
@@ -266,7 +249,7 @@ async function runRetrievalPreflight(
   run: RunRecord,
   request: RuntimeHostExecuteRequest,
   baseMessages: readonly CanonicalMessage[],
-  dispatch?: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
+  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
 ): Promise<{
   prefaceMessages: CanonicalMessage[];
   prefaceSummaries: Array<Record<string, unknown>>;
@@ -279,12 +262,6 @@ async function runRetrievalPreflight(
   if (request.invocation_audit_refs) return empty;
   const query = preflightQuery(request, baseMessages);
   if (!query) return empty;
-  const actor = {
-    spaceId: run.space_id,
-    instructedByUserId: run.instructed_by_user_id!,
-    agentId: run.agent_id,
-    runId: run.id,
-  };
   const mode = retrievalSearchModeFromSettings(binding.settingsSnapshot.default_search_mode) ?? "hybrid";
   const maxResults = numberFromSettings(binding.settingsSnapshot.max_results_default) ?? 10;
   const call: CanonicalToolCall = {
@@ -297,7 +274,7 @@ async function runRetrievalPreflight(
       include_trace: false,
     }),
   };
-  const result = dispatch ? await dispatch(call) : await runRetrievalToolCall(call, binding, actor, run);
+  const result = await dispatch(call);
   return {
     prefaceMessages: [{
       role: "user",
@@ -374,7 +351,6 @@ export async function runRetrievalToolCall(
     runId?: string | null;
   },
   run: RunRecord,
-  policyAlreadyEnforced = false,
 ): Promise<{
   modelResult: unknown;
   summary: Record<string, unknown>;
@@ -391,34 +367,23 @@ export async function runRetrievalToolCall(
     }
     const service = binding.services[spec.domain];
     if (!service) {
-      let policyDecisionRecordId: string | null = null;
-      try {
-        await enforceRetrievalToolCallPolicy({
-          databaseUrl: binding.policyDatabaseUrl,
-          actor,
-          action: call.name === spec.searchTool ? spec.searchTool : spec.briefTool,
-          domain: spec.domain,
-          domainEnabled: false,
-          surface: spec.serviceSurface,
-        });
-      } catch (error) {
-        policyDecisionRecordId = policyDecisionRecordIdFromError(error);
-        // The policy denial is expected here and has already been audited when
-        // audit persistence is available. Keep the model-facing error stable.
-      }
+      // Structurally unreachable today: `enforcePolicyForAction`'s own
+      // `domainEnabled` check (`systemActionDispatcher.ts`) derives the same
+      // domain from the same action id and denies before the gateway ever
+      // calls this executor, so a second policy decision here would only
+      // ever duplicate the one already recorded for that denial. Kept as a
+      // defensive guard for this exported function's contract, not as a
+      // second enforcement point — no policy call, no second audit row.
       return {
         modelResult: {
           ok: false,
           tool: call.name,
           error: "Retrieval tool domain is not enabled for this run.",
-          ...(policyDecisionRecordId ? { policy_decision_record_id: policyDecisionRecordId } : {}),
         },
         summary: {
           tool_name: call.name,
-          domain: spec.domain,
           ok: false,
           error_code: "retrieval_tool_domain_not_enabled",
-          ...(policyDecisionRecordId ? { policy_decision_record_id: policyDecisionRecordId } : {}),
         },
         artifact: null,
       };
@@ -429,7 +394,7 @@ export async function runRetrievalToolCall(
       objectTypes: params.objectTypes ?? (spec.domain === "knowledge" ? undefined : [...spec.objectTypes]),
     };
     if (call.name === spec.searchTool) {
-      const response = await service.toolSearch(actor, searchParams, policyAlreadyEnforced);
+      const response = await service.toolSearch(actor, searchParams);
       return {
         modelResult: modelResultForSearch(call.name, response),
         summary: {
@@ -438,13 +403,12 @@ export async function runRetrievalToolCall(
           ok: true,
           result_count: response.items.length,
           mode: params.mode ?? null,
-          policy_decision_record_id: consumePolicyDecisionRecordId(service),
         },
         artifact: null,
       };
     }
     if (call.name === spec.briefTool) {
-      const response = await service.toolBrief(actor, searchParams, policyAlreadyEnforced);
+      const response = await service.toolBrief(actor, searchParams);
       const artifact = buildRetrievalBriefArtifactSpec({
         spaceId: run.space_id,
         ownerUserId: actor.instructedByUserId,
@@ -471,7 +435,6 @@ export async function runRetrievalToolCall(
           result_count: response.items.length,
           synthesized: response.brief.synthesized,
           mode: params.mode ?? null,
-          policy_decision_record_id: consumePolicyDecisionRecordId(service),
         },
         artifact,
       };
@@ -507,13 +470,6 @@ export function validateRetrievalToolInput(actionId: string, input: unknown): vo
   const spec = toolSpecForName(actionId);
   if (!spec) throw new Error("Unknown retrieval tool.");
   parseRetrievalToolArguments(JSON.stringify(input), spec);
-}
-
-function consumePolicyDecisionRecordId(service: RetrievalToolService): string | null {
-  const candidate = service as RetrievalToolService & { consumePolicyDecisionRecordId?: () => string | null };
-  return typeof candidate.consumePolicyDecisionRecordId === "function"
-    ? candidate.consumePolicyDecisionRecordId()
-    : null;
 }
 
 function parseRetrievalToolArguments(
@@ -743,7 +699,7 @@ function isRetrievalToolMode(value: unknown): value is RetrievalToolMode {
   );
 }
 
-function isRetrievalPreflightMode(value: RetrievalToolMode): boolean {
+export function isRetrievalPreflightMode(value: RetrievalToolMode): boolean {
   return value === "preflight_search" || value === "preflight_brief";
 }
 

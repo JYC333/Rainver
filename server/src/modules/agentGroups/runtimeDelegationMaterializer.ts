@@ -6,7 +6,8 @@ import type {
 import type { ServerConfig } from "../../config";
 import { getDbPool } from "../../db/pool";
 import { loadProtocol } from "../providers/protocolRuntime";
-import type { RunRecord } from "../runs/repository";
+import { PgRunRepository, type RunRecord } from "../runs/repository";
+import { assembleRunInputEnvelope } from "../runs/runInputEnvelope";
 import { AgentGroupRunService } from "./service";
 
 export interface RuntimeDelegationMaterializationResult {
@@ -21,17 +22,36 @@ export interface RuntimeDelegationMaterializerPort {
   }): Promise<RuntimeDelegationMaterializationResult>;
 }
 
+/**
+ * Runtime delegation output ("Path B" — an Agent ending its turn with a
+ * structured `delegations` array) and the `agent.delegate` tool call
+ * ("Path A") both mean "this Agent decided another Agent should do work"
+ * (action authority consolidation plan, D8). Both now check the same grant
+ * — an Agent configured without `agent.delegate` cannot reach
+ * `spawnChildRun` from either path — and emit the same `action_invoked`/
+ * `action_completed` RunEvents once past that gate, so Agent configuration
+ * means the same thing regardless of which path a turn used. A post-terminal
+ * grant refusal cannot return a tool error to the model, so it emits an
+ * `action_completed` denial audit event instead. RunEvent persistence is
+ * best-effort here, matching the documented rule that RunEvent failure never
+ * blocks or rolls back an action already under way.
+ */
 export class AgentGroupRuntimeDelegationMaterializer
   implements RuntimeDelegationMaterializerPort
 {
-  constructor(private readonly service: Pick<AgentGroupRunService, "spawnChildRun">) {}
+  constructor(
+    private readonly service: Pick<AgentGroupRunService, "spawnChildRun">,
+    private readonly runEvents: Pick<PgRunRepository, "appendRunEvent">,
+  ) {}
 
   static fromConfig(config: ServerConfig): AgentGroupRuntimeDelegationMaterializer {
     if (!config.databaseUrl) {
       throw new Error("Agent group delegation materialization requires SERVER_DATABASE_URL");
     }
+    const pool = getDbPool(config.databaseUrl);
     return new AgentGroupRuntimeDelegationMaterializer(
-      new AgentGroupRunService(config, getDbPool(config.databaseUrl)),
+      new AgentGroupRunService(config, pool),
+      new PgRunRepository(pool),
     );
   }
 
@@ -67,10 +87,19 @@ export class AgentGroupRuntimeDelegationMaterializer
       return { items: [item], errors: [errorText(item)] };
     }
 
+    // The same grant snapshot `SystemActionDispatcher` checks for the
+    // `agent.delegate` tool call (D8) — an Agent deliberately configured
+    // without it is refused here exactly as it would be on that path,
+    // instead of this second transport silently bypassing the grant.
+    const granted = assembleRunInputEnvelope(input.run).tool_grants
+      .some((grant) => grant.action_id === "agent.delegate");
+
     const items: RunMaterializationItemSummary[] = [];
     const errors: string[] = [];
     for (const [index, entry] of parsed.data.delegations.entries()) {
-      const item = await this.materializeOne(input.run, entry, index);
+      const item = granted
+        ? await this.materializeOne(input.run, entry, index)
+        : await this.materializeNotGranted(input.run, entry, index);
       items.push(item);
       if (item.status === "failed") errors.push(errorText(item));
     }
@@ -82,6 +111,10 @@ export class AgentGroupRuntimeDelegationMaterializer
     entry: RuntimeDelegationOutputItem,
     index: number,
   ): Promise<RunMaterializationItemSummary> {
+    const toolCallId = runtimeOutputDelegationKey(run.id, entry, index);
+    await this.appendActionEventBestEffort(run, "action_invoked", toolCallId, {
+      tool_name: "agent.delegate",
+    });
     try {
       const result = await this.service.spawnChildRun(
         { spaceId: run.space_id, userId: run.instructed_by_user_id as string },
@@ -97,10 +130,20 @@ export class AgentGroupRuntimeDelegationMaterializer
           reason: entry.reason ?? "runtime_delegation_output",
           budget_json: objectValue(entry.budget),
           context_policy_json: objectValue(entry.context),
-          tool_call_id: runtimeOutputDelegationKey(run.id, entry, index),
+          tool_call_id: toolCallId,
         },
       );
       if (result.delegation.status === "policy_denied" || !result.child_run_id) {
+        await this.appendActionEventBestEffort(run, "action_completed", toolCallId, {
+          tool_name: "agent.delegate",
+          ok: false,
+          error_code: "delegation_policy_denied",
+          target_agent_id: entry.target_agent_id,
+          delegation_id: result.delegation.id,
+          child_run_id: result.child_run_id,
+          delegation_status: result.delegation.status,
+          policy_decision_record_id: result.policy_decision_record_id,
+        });
         return {
           kind: "delegation",
           status: "warning",
@@ -119,6 +162,15 @@ export class AgentGroupRuntimeDelegationMaterializer
           },
         };
       }
+      await this.appendActionEventBestEffort(run, "action_completed", toolCallId, {
+        tool_name: "agent.delegate",
+        ok: true,
+        target_agent_id: entry.target_agent_id,
+        delegation_id: result.delegation.id,
+        child_run_id: result.child_run_id,
+        delegation_status: result.delegation.status,
+        policy_decision_record_id: result.policy_decision_record_id,
+      });
       return {
         kind: "delegation",
         status: "succeeded",
@@ -135,6 +187,11 @@ export class AgentGroupRuntimeDelegationMaterializer
         },
       };
     } catch (error) {
+      await this.appendActionEventBestEffort(run, "action_completed", toolCallId, {
+        tool_name: "agent.delegate",
+        ok: false,
+        error_code: "output_delegation_materialization_error",
+      });
       return failedItem(
         "output_delegation_materialization_error",
         error instanceof Error ? error.message : "Runtime delegation materialization failed.",
@@ -142,6 +199,65 @@ export class AgentGroupRuntimeDelegationMaterializer
       );
     }
   }
+
+  private async materializeNotGranted(
+    run: RunRecord,
+    entry: RuntimeDelegationOutputItem,
+    index: number,
+  ): Promise<RunMaterializationItemSummary> {
+    const toolCallId = runtimeOutputDelegationKey(run.id, entry, index);
+    await this.appendActionEventBestEffort(run, "action_completed", toolCallId, {
+      tool_name: "agent.delegate",
+      ok: false,
+      error_code: "delegation_not_granted",
+      target_agent_id: entry.target_agent_id,
+    });
+    return notGrantedItem(entry, index, toolCallId);
+  }
+
+  private async appendActionEventBestEffort(
+    run: RunRecord,
+    eventType: "action_invoked" | "action_completed",
+    toolCallId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.runEvents.appendRunEvent({
+        run_id: run.id,
+        space_id: run.space_id,
+        event_type: eventType,
+        status: eventType === "action_invoked" ? "running" : (metadata.ok === false ? "failed" : "succeeded"),
+        actor_id: run.agent_id,
+        metadata_json: {
+          action_id: "agent.delegate",
+          action_version: 1,
+          tool_call_id: toolCallId,
+          instructed_by_user_id: run.instructed_by_user_id ?? null,
+          ...metadata,
+        },
+      });
+    } catch {
+      // RunEvent evidence follows the execution-model best-effort rule; see
+      // the class doc comment.
+    }
+  }
+}
+
+function notGrantedItem(entry: RuntimeDelegationOutputItem, index: number, toolCallId: string): RunMaterializationItemSummary {
+  return {
+    kind: "delegation",
+    status: "warning",
+    error_code: "delegation_not_granted",
+    error_message: "Agent is not granted agent.delegate.",
+    metadata_json: {
+      label: `output_delegation_${index}`,
+      operation: "run.spawn_child",
+      target_agent_id: entry.target_agent_id,
+      tool_call_id: toolCallId,
+      action_event_attempted: true,
+      service_event_written: false,
+    },
+  };
 }
 
 function runtimeOutputDelegationKey(
