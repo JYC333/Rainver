@@ -1,12 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
 import { PgSpaceRepository, type SpaceFailure, type SpaceResult } from "../src/modules/spaces/repository";
-
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -17,7 +13,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     repo = new PgSpaceRepository(pool);
     available = true;
   } catch (err) {

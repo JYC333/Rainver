@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { runRelationDiscoveryScan } from "../src/modules/knowledge/relationDiscovery";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 
@@ -10,7 +9,6 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 // the FakeDb unit tests cannot: the knowledge_items/space_objects join, the
 // readable visibility gate on both sources and targets, and alias resolution.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -23,7 +21,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -40,7 +37,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE artifacts, activity_records, source_connections, source_provider_connectors, source_providers, source_connectors, knowledge_items, space_objects, users, spaces CASCADE");
+  await resetTables(
+    pool,
+    ["artifacts", "activity_records", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "knowledge_items", "space_objects", "users", "spaces"],
+    { cascade: true },
+  );
   for (const id of [VIEWER, OTHER]) {
     await pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)

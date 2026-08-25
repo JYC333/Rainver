@@ -241,6 +241,11 @@ export async function advanceThreadQueue(
       prompt: next.prompt,
       resumeSessionId: freshThread.vendor_session_id,
       userId: next.created_by_user_id,
+      // Resolved and validated when the message was enqueued, not now: a host
+      // default edited while this message waited its turn must not change what
+      // it runs against.
+      modelProviderId: next.model_provider_id,
+      model: next.model,
       agent,
       contractSnapshot: {
         source: { kind: "task", id: next.task_id },
@@ -282,6 +287,8 @@ async function createAndQueueRun(db: Queryable, params: {
   prompt: string;
   resumeSessionId: string | null;
   userId: string;
+  modelProviderId: string | null;
+  model: string | null;
   agent: { id: string; current_version_id: string };
   contractSnapshot: Parameters<typeof createRunContractSnapshot>[0];
   timeoutMs: number | null;
@@ -293,11 +300,11 @@ async function createAndQueueRun(db: Queryable, params: {
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
        project_id, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id, adapter_type, required_sandbox_level, contract_snapshot_json,
-       prompt, owner_user_id, instructed_by_user_id, created_at, updated_at
+       prompt, owner_user_id, instructed_by_user_id, model_provider_id, model_override_json, created_at, updated_at
      ) VALUES (
        $1, $2, $3, $4, 'system', 'manual', 'queued', 'live',
        $5, $6, $7, $8, $9, $10, 'none', $11::jsonb,
-       $12, $13, $13, $14, $14
+       $12, $13, $13, $15, $16::jsonb, $14, $14
      )`,
     [
       runId,
@@ -314,6 +321,12 @@ async function createAndQueueRun(db: Queryable, params: {
       params.prompt,
       params.userId,
       now,
+      params.modelProviderId,
+      // `source: "request"` — this model came from the dispatch request or the
+      // host default it resolved to, not from a routing decision. Without it
+      // the Run read model normalizes to "none" and shows a chosen model with
+      // no provenance.
+      params.model ? JSON.stringify({ model: params.model, source: "request" }) : null,
     ],
   );
   // D4: the Run this thread just produced belongs to whichever Task its

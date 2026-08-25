@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { RetrievalProjectionService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
 import {
@@ -16,7 +15,6 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 // pgvector Postgres: the `vector` extension, the retrieval_chunks.embedding
 // column, async backfill, staleness, and the dim-mismatch guard.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 
 /** Deterministic embedder: a distinct unit-ish vector per input text. */
@@ -41,7 +39,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -60,9 +57,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              knowledge_items, space_objects, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "spaces"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)

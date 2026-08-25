@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { capabilitiesModule } from "../src/modules/capabilities";
 import { loadConfig } from "../src/config";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 import {
@@ -30,7 +31,7 @@ describe("skill local overlays", () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const repo = fakeOverlayRepository();
     __setCapabilitiesRepositoryFactoryForTests(() => repo);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule]);
 
     const before = await app.inject({
       method: "GET",
@@ -97,7 +98,7 @@ describe("skill local overlays", () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const repo = fakeOverlayRepository();
     __setCapabilitiesRepositoryFactoryForTests(() => repo);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule]);
 
     const res = await app.inject({
       method: "PUT",

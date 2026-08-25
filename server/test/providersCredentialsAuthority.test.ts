@@ -3,7 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { providersModule } from "../src/modules/providers";
 import { loadConfig } from "../src/config";
 import {
   __setProviderCommandStoreForTests,
@@ -171,7 +172,7 @@ describe("providers and credentials server authority", () => {
   it("serves provider commands with native identity response shape", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProviderCommandStoreForTests(fakeStore());
-    app = buildServer(await authorityConfig(), { logger: false });
+    app = buildModuleServer(await authorityConfig(), [providersModule]);
 
     const create = await app.inject({
       method: "POST",
@@ -218,7 +219,7 @@ describe("providers and credentials server authority", () => {
   it("serves the credential pool and task-policy surfaces", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProviderCommandStoreForTests(fakeStore());
-    app = buildServer(await authorityConfig(), { logger: false });
+    app = buildModuleServer(await authorityConfig(), [providersModule]);
 
     const pool = await app.inject({
       method: "GET",
@@ -272,7 +273,7 @@ describe("providers and credentials server authority", () => {
   it("owns CLI methods, status, and internal credential resolution", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProviderCommandStoreForTests(fakeStore());
-    app = buildServer(await authorityConfig(), { logger: false });
+    app = buildModuleServer(await authorityConfig(), [providersModule]);
 
     const methods = await app.inject({
       method: "GET",

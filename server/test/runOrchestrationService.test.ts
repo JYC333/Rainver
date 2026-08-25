@@ -638,6 +638,10 @@ describe("RunOrchestrationService", () => {
     expect(snapshotInputs).toEqual({
       cliCredentialProfileId: null,
       policyDecisionRecordIds: ["decision-runtime.execute", "decision-runtime.use_credential"],
+      // A server-host run's provider is decided here; only a remote run
+      // resolves its own at launch, so the preflight must not treat this
+      // run's provider as a prediction.
+      executesRemotely: false,
     });
     expect(adapterRequests[0]).toMatchObject({
       system_prompt: "System prompt for agent-from-setup",
@@ -1376,6 +1380,45 @@ describe("RunOrchestrationService", () => {
     // instead have failed on a missing vendor credential grant.
     expect(result).toMatchObject({ status: "failed" });
     expect(workspaceManager.calls).toEqual([]);
+  });
+
+  it("tells the execution preflight a managed-API run on a remote Location is not a remote run", async () => {
+    // Only a local_cli adapter is dispatched to a daemon. A model_api run
+    // inside a Folder whose preferred Location is remote still executes on
+    // the server, against exactly the provider it recorded — so telling the
+    // preflight otherwise strips that provider and fails the run.
+    //
+    // This asserts the value the orchestrator *computes*, which is what the
+    // corrected predicate lives in; the snapshot repository's own branch on
+    // the flag is covered separately.
+    const repo = new FakeRepo();
+    repo.run = run({
+      adapter_type: "model_api",
+      model_provider_id: "provider-1",
+      required_sandbox_level: "none",
+      project_folder_id: "remote-workspace-2",
+      prompt: "summarize",
+    });
+    let observed: { executesRemotely?: boolean } | null = null;
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      runtimeToolVersionResolver: async () => "test-version",
+      workspaceManager: new FakeWorkspaceManager(),
+      hostKindResolver: async () => ({ hostKind: "remote", hostId: "host-2", workspaceLocationId: "location-2" }),
+      executionControlSnapshotWriter: async (_run, inputs) => {
+        observed = inputs;
+        return { id: "control-1" } as ExecutionControlSnapshot;
+      },
+    });
+    await service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      job_id: "22222222-2222-4222-8222-222222222222",
+      command_source: "job",
+    });
+    expect(observed).not.toBeNull();
+    expect(observed!.executesRemotely).toBe(false);
   });
 
   it("writes materialization summaries and finalizes after terminal state", async () => {

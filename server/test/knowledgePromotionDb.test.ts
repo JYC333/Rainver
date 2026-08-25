@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { writeNote } from "../src/modules/knowledge/noteRevisionService";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService";
@@ -28,7 +27,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 //   - material changes create reviewable revalidation;
 //   - irrelevant edits produce a no-impact record without review noise.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -44,7 +42,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -59,11 +56,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE knowledge_revalidation_outcomes, knowledge_promotion_candidates, knowledge_promotion_review_packets, domain_change_outbox,
-       inquiry_thread_revisions, note_revisions, notes, note_collections, knowledge_items, space_objects,
-       proposals, experiment_interpretations, experiment_observations, experiment_runs, experiment_versions,
-       experiment_definitions, inquiry_threads, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["knowledge_revalidation_outcomes", "knowledge_promotion_candidates", "knowledge_promotion_review_packets", "domain_change_outbox", "inquiry_thread_revisions", "note_revisions", "notes", "note_collections", "knowledge_items", "space_objects", "proposals", "experiment_interpretations", "experiment_observations", "experiment_runs", "experiment_versions", "experiment_definitions", "inquiry_threads", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

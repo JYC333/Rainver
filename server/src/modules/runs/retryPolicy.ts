@@ -2,6 +2,11 @@ const RETRYABLE_RUN_ERROR_CODES = new Set([
   "adapter_timeout",
   "cli_adapter_timeout",
   "cli_stall_timeout",
+  // The remote path's twins of the two above. Their absence here meant a
+  // remote run that timed out or went quiet went straight to human review,
+  // while the identical server-host failure was retried automatically.
+  "runtime_timeout",
+  "runtime_stall_timeout",
   "adapter_runtime_error",
   "cli_runtime_provider_config_failed",
   "runtime_tool_version_unavailable",

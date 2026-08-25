@@ -1,9 +1,7 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import {
   InvocationSnapshotService,
   PgInvocationDeliveryAuthorizer,
@@ -17,8 +15,8 @@ import {
 } from "../src/modules/runtimeContext";
 import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "../src/modules/runtimeHost";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "30000000-0000-4000-8000-000000000001";
 const USER = "30000000-0000-4000-8000-000000000002";
 const AGENT = "30000000-0000-4000-8000-000000000003";
@@ -41,7 +39,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -56,7 +53,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE context_checkpoint_corrections, context_semantic_checkpoints, context_micro_checkpoints, context_capture_gaps, context_events, context_event_scopes, sealed_invocation_payload_access_audits, sealed_invocation_payloads, invocation_snapshots, invocation_deliveries, context_window_reconciliations, execution_control_snapshots, workspace_locations, users, spaces, hosts, machines CASCADE");
+  await resetTables(
+    pool,
+    ["context_checkpoint_corrections", "context_semantic_checkpoints", "context_micro_checkpoints", "context_capture_gaps", "context_events", "context_event_scopes", "sealed_invocation_payload_access_audits", "sealed_invocation_payloads", "invocation_snapshots", "invocation_deliveries", "context_window_reconciliations", "execution_control_snapshots", "workspace_locations", "users", "spaces", "hosts", "machines"],
+    { cascade: true },
+  );
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
   await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
   await pool.query(
@@ -567,11 +568,27 @@ describe("Context Event continuity and checkpoints", () => {
     });
     const first = continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
     const second = continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
-    while (releases.length < 2) await new Promise<void>((resolve) => setImmediate(resolve));
+    // If either run fails before reaching the extractor, say so instead of
+    // waiting on a second release that will never come.
+    let early: unknown;
+    for (const run of [first, second]) run.catch((err) => { early ??= err; });
+    await vi.waitUntil(() => {
+      if (early !== undefined && releases.length < 2) throw early;
+      return releases.length === 2;
+    }, { timeout: 20_000, interval: 5 });
+    // Which run reached the extractor first is a scheduling accident, so
+    // release them one at a time without assuming an order: whichever
+    // persists first wins and the other must be rejected as stale.
     releases[0]!();
-    await expect(first).resolves.toBeDefined();
+    await Promise.race([first, second].map((run) => run.then(() => undefined, () => undefined)));
     releases[1]!();
-    await expect(second).rejects.toMatchObject({ statusCode: 409 });
+    const outcomes = await Promise.allSettled([first, second]);
+    const won = outcomes.filter((outcome) => outcome.status === "fulfilled");
+    const lost = outcomes.filter((outcome) => outcome.status === "rejected");
+    expect(won).toHaveLength(1);
+    expect((won[0] as PromiseFulfilledResult<unknown>).value).toBeDefined();
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toMatchObject({ statusCode: 409 });
   });
 
   it("builds each Micro Checkpoint from the prior Micro event head", async () => {

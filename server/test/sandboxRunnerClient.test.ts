@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SandboxRunnerCliCommandExecutor, SandboxRunnerVerificationExecutor } from "../src/modules/sandboxRunner/client";
 import { LocalCliProcessRegistry } from "../src/modules/runs/localCliExecution";
 import { SandboxRunnerPtyFactory } from "../src/modules/sandboxRunner/ptyFactory";
@@ -156,8 +156,9 @@ describe("SandboxRunnerCliCommandExecutor", () => {
       cwd: join(root, "sandboxes", "run-1"), timeout_seconds: 30, env: {}, run_id: "run-1", stdin: null,
       process_registry: registry,
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(registry.terminate("run-1")).toBe(true);
+    // The run registers once the Runner answers `ready`; a terminate sent
+    // before that finds nothing to signal and the run would never end.
+    await vi.waitUntil(() => registry.terminate("run-1"), { timeout: 5_000 });
     await expect(executing).resolves.toMatchObject({ returncode: 143 });
     expect(terminated).toBe(true);
   });

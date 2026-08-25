@@ -37,7 +37,7 @@ describe('EvolutionInboxPage', () => {
   })
 
   it('surfaces ordinary pending proposals as bundle evidence', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
 
     await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
@@ -53,7 +53,7 @@ describe('EvolutionInboxPage', () => {
       created_at: '2026-07-12T00:00:00Z', created_by_run_id: null,
       bundle_id: 'bundle-1', bundle_member_status: 'released',
     }])
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
 
     await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
@@ -63,7 +63,7 @@ describe('EvolutionInboxPage', () => {
 
   it('approves an ordinary proposal through the canonical proposal boundary', async () => {
     proposalsApiMock.accept.mockResolvedValue({})
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
 
     await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
@@ -79,7 +79,7 @@ describe('EvolutionInboxPage', () => {
     }])
     proposalsApiMock.accept.mockResolvedValue({})
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
 
     await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
@@ -95,7 +95,7 @@ describe('EvolutionInboxPage', () => {
       grant_id: 'grant-1', required_approver_user_id: 'user-1', egress_approval_status: null,
     }])
     proposalsApiMock.approveEgressGrantingUserProposal.mockResolvedValue({})
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
 
     await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
@@ -126,7 +126,7 @@ describe('EvolutionInboxPage', () => {
         rollback_supported: false, rollback_blocker: 'Member proposal-1 has no supported promotion rollback adapter',
         proposal: { id: 'proposal-1', proposal_type: 'memory_create', status: 'accepted', risk_level: 'low', title: 'Unsupported', summary: null, created_at: '2026-07-12T00:00:00Z' } }],
     })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
 
     await user.click(await screen.findByRole('tab', { name: /Bundles/ }))

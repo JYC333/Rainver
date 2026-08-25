@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { policyModule } from "../src/modules/policy";
 import { loadConfig } from "../src/config";
 
 let app: FastifyInstance;
@@ -18,7 +19,7 @@ function policyConfig() {
 
 describe("policy internal routes", () => {
   it("registers proposal-apply route behind service token auth", async () => {
-    app = buildServer(policyConfig(), { logger: false });
+    app = buildModuleServer(policyConfig(), [policyModule]);
 
     const unauthorized = await app.inject({
       method: "POST",

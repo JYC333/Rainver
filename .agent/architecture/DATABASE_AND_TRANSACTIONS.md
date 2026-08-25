@@ -249,11 +249,17 @@ successful commit and never participate in the critical write outcome.
   `agent-space-dev-postgres`, `agent-space-test-postgres`, and `agent-space-prod-postgres`.
 - Schema authoring is owned by Drizzle definitions under `server/src/db/schema/`.
   `server/drizzle/` stores the empty-database generated snapshot, and
-  `server/migrations/` stores immutable SQL history applied by the server
-  migration runner. `0001_baseline.sql` is the pre-P1 bootstrap; subsequent
-  schema changes use numbered upgrade migrations. Do not rewrite an applied
-  migration; edit the Drizzle schema, generate the empty-database baseline,
-  and add a numbered upgrade migration with any required backfill.
+  `server/migrations/` stores the runtime schema applied by the server
+  migration runner — **a single `0001_baseline.sql`**, regenerated from the
+  Drizzle schema rather than extended by numbered upgrades. No deployment here
+  carries data predating it, so a change is folded in: edit the Drizzle schema,
+  `pnpm run schema:generate`, copy `drizzle/0000_baseline.sql` over
+  `migrations/0001_baseline.sql`, and recreate the database
+  (`ops/scripts/db/reset-postgres.sh`) — the runner refuses to reapply a file
+  whose checksum changed. `schema:check` enforces that the schema, the
+  generated baseline and the runtime baseline all agree. See
+  `server/migrations/README.md`, including when this rule should be retired in
+  favour of append-only migrations again.
   `ops/scripts/start.sh` also runs `pnpm run schema:generate` from `server/`
   before building the server image or applying migrations, so startup keeps the
   generated artifacts in sync with TypeScript schema files.
@@ -488,15 +494,16 @@ changes.
   git**: the snapshots are the state `generate` diffs against on every
   machine/CI run, not disposable build output.
 - `server/scripts/db/schema-baseline.mjs` keeps the committed empty-database
-  Drizzle snapshot/SQL in sync with `server/src/db/schema/`; numbered runtime
-  migrations remain separately owned and their version prefixes must be unique.
+  Drizzle snapshot/SQL in sync with `server/src/db/schema/`, and also checks
+  that `migrations/0001_baseline.sql` matches it — the copy is manual, so
+  nothing else would catch the two drifting.
 
 **Changing a table:**
 1. Edit the relevant file under `src/db/schema/`.
 2. `pnpm run schema:generate` (from `server/`) — runs `drizzle-kit generate`
-   for the empty-database baseline in `server/drizzle/`. Add a new numbered
-   runtime migration for upgrades; Drizzle's internal 0000 numbering is never
-   used directly by the runtime migrator.
+   for the empty-database baseline in `server/drizzle/`. Copy it over
+   `migrations/0001_baseline.sql`; the runtime schema is that one file, and
+   applying a changed one to an existing database means recreating it.
    `ops/scripts/start.sh` runs this automatically before image build and
    migration; run it manually when you want to review generated files before
    starting the stack.

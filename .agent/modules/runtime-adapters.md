@@ -130,7 +130,7 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    Claude Code may also receive a per-run Claude-compatible ModelProvider
    binding. When selected, the server resolves the provider's
    `claude_compatible_base_url` and model, creates a short-lived provider proxy
-   lease, then injects only the local proxy URL, lease token, and model
+   lease, then injects only the proxy URL, lease token, and model
    environment variables into the Claude subprocess. Codex CLI may also receive
    a per-run OpenAI Responses-compatible ModelProvider binding. When selected,
    the server resolves `openai_compatible_base_url`, creates a short-lived
@@ -138,9 +138,14 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    writes a run-scoped `config.toml` with `wire_api = "responses"` plus a
    generated model catalog. The Codex subprocess receives `CODEX_HOME` for both
    provider-backed and CLI-default runs, and the Codex config stores only the
-   local proxy URL and lease token, not the real provider key. The internal
-   provider proxy listener is started by the server process on an OS-assigned
-   loopback port and is not user-configurable through env or compose. Provider
+   proxy URL and lease token, not the real provider key. The internal
+   provider proxy listener is started by the server process bound `0.0.0.0`, on
+   `PROVIDER_PROXY_PORT` — a fixed port when set, else OS-assigned. The URL
+   handed to a run is not a loopback URL: its host comes from
+   `SANDBOX_RUNNER_SERVER_HOST` (default `server`, the Compose service name),
+   so lease traffic crosses the deployment network. A paired execution host
+   needs `PROVIDER_PROXY_EXTERNAL_BASE_URL` as well, since it cannot resolve a
+   Compose service name. Provider
    API keys are resolved only inside the server proxy and are not released to
    CLI subprocess env. When a provider is selected, upstream proxy/direct
    routing is taken from the Provider's NetworkProfile. No provider selected

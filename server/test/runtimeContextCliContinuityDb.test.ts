@@ -14,6 +14,7 @@ import {
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 const SPACE = "71000000-0000-4000-8000-000000000001";
 const USER = "71000000-0000-4000-8000-000000000002";
@@ -50,7 +51,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE policy_decision_records, users, spaces CASCADE");
+  await resetTables(pool, ["policy_decision_records", "users", "spaces"], { cascade: true });
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'CLI','personal',now(),now())`, [SPACE]);
   await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
   await pool.query(

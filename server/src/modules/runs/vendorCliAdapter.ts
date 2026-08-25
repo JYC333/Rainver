@@ -332,6 +332,11 @@ export async function executeVendorCliAdapter(
     // session/set_config_option — codex-acp does support model switching
     // over ACP even though its spec declares no argv override.
     model: runtimeBinding.model ?? input.model ?? null,
+    // The provider's own model name, not the runtime-shaped id above: for a
+    // bound OpenCode run those differ (`<provider>/<model>` versus `<model>`),
+    // and it is the server that decided which model this run uses — reading
+    // the runtime's echo back would report the runtime's spelling of it.
+    attributed_model: modelFromRun(input.run) ?? input.model ?? null,
     sandbox_mode: sandboxLevel === "read_only" ? "read-only" : "workspace-write",
     runtime_session_id: runtimeSessionId,
     before_next_prompt: input.invocation_delivery && input.invocation_attempts?.acknowledgeContext

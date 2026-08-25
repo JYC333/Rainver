@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
@@ -15,7 +14,6 @@ import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter
 // retrieval adapter feeding `retrieval_objects`, and the Inquiry/Combined
 // Project graph producers. See plan section 15-16.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -28,7 +26,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -48,8 +45,10 @@ const outsiderIdentity = () => ({ spaceId: SPACE, userId: OUTSIDER });
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE retrieval_objects, inquiry_signal_candidates, inquiry_evidence_signals, project_corpus_items, space_objects, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, projects, space_memberships, users, spaces CASCADE",
+  await resetTables(
+    pool,
+    ["retrieval_objects", "inquiry_signal_candidates", "inquiry_evidence_signals", "project_corpus_items", "space_objects", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);

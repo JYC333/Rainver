@@ -76,7 +76,7 @@ async function copyCodexCredential(sourcePath: string, codexDir: string): Promis
   await chmod(target, 0o600);
 }
 
-function renderCodexProviderToml(input: {
+export function renderCodexProviderToml(input: {
   providerName: string;
   proxyBaseUrl: string;
   leaseToken: string;
@@ -97,7 +97,7 @@ function renderCodexProviderToml(input: {
   ].join("\n");
 }
 
-function codexModelCatalog(
+export function codexModelCatalog(
   providerName: string,
   selectedModel: string,
   availableModels: string[],

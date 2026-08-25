@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { ProjectOperation, ProjectResearchReport, ProjectResearchCheckpoint, ProjectResearchInitialIntakeInput, ProjectResearchScanSummary, ProjectResearchWorkflow } from '../../types/api'
 import { researchFailurePresentation, researchResultState, savedSetupDiffersFromOperation } from './researchResultState'

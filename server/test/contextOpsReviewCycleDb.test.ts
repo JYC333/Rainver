@@ -1,16 +1,14 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import type { RetrievalBriefResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { migrate } from "../src/db/migrator";
 import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle";
 import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifacts/brief";
 import { RetrievalProjectionService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ALPHA_1 = "00000000-0000-4000-8000-000000000101";
@@ -29,7 +27,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -48,11 +45,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE content_access_logs, memory_entries, artifacts, proposals,
-              object_relations, claims, retrieval_objects, retrieval_aliases,
-              retrieval_chunks, retrieval_edges, knowledge_items, space_objects,
-              users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["content_access_logs", "memory_entries", "artifacts", "proposals", "object_relations", "claims", "retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "users", "spaces"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)

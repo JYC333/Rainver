@@ -1,5 +1,5 @@
 {
-  "id": "8d2fb60b-7335-4419-bb63-0b3b5c7fa251",
+  "id": "2bef43ff-aa18-489a-a749-41f666a7f7e1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -66948,6 +66948,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "daemon_server_url": {
+          "name": "daemon_server_url",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_proxy_base_url": {
+          "name": "provider_proxy_base_url",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "capabilities_json": {
           "name": "capabilities_json",
           "type": "jsonb",
@@ -67437,7 +67449,7 @@
       "checkConstraints": {
         "ck_host_thread_events_event_type": {
           "name": "ck_host_thread_events_event_type",
-          "value": "(event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text])"
+          "value": "(event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('assistant_thought'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text])"
         }
       },
       "isRLSEnabled": false
@@ -67476,6 +67488,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'queued'"
+        },
+        "model_provider_id": {
+          "name": "model_provider_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model": {
+          "name": "model",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
         },
         "run_id": {
           "name": "run_id",
@@ -67594,6 +67618,19 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "host_thread_messages_model_provider_id_fkey": {
+          "name": "host_thread_messages_model_provider_id_fkey",
+          "tableFrom": "host_thread_messages",
+          "tableTo": "model_providers",
+          "columnsFrom": [
+            "model_provider_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -67609,6 +67646,132 @@
           "value": "(status = 'dispatched') = (run_id IS NOT NULL)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.host_runtime_provider_bindings": {
+      "name": "host_runtime_provider_bindings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "host_id": {
+          "name": "host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "adapter_type": {
+          "name": "adapter_type",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_provider_id": {
+          "name": "model_provider_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_host_runtime_provider_bindings_provider": {
+          "name": "ix_host_runtime_provider_bindings_provider",
+          "columns": [
+            {
+              "expression": "model_provider_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "host_runtime_provider_bindings_host_id_fkey": {
+          "name": "host_runtime_provider_bindings_host_id_fkey",
+          "tableFrom": "host_runtime_provider_bindings",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_runtime_provider_bindings_model_provider_id_fkey": {
+          "name": "host_runtime_provider_bindings_model_provider_id_fkey",
+          "tableFrom": "host_runtime_provider_bindings",
+          "tableTo": "model_providers",
+          "columnsFrom": [
+            "model_provider_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_runtime_provider_bindings_created_by_user_id_fkey": {
+          "name": "host_runtime_provider_bindings_created_by_user_id_fkey",
+          "tableFrom": "host_runtime_provider_bindings",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_host_runtime_provider_bindings_host_adapter": {
+          "name": "uq_host_runtime_provider_bindings_host_adapter",
+          "nullsNotDistinct": false,
+          "columns": [
+            "host_id",
+            "adapter_type"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.project_folder_execution_configs": {

@@ -1,17 +1,18 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
-import { buildServer } from "../src/server";
+import { resetTables } from "./support/resetTables";
+import { buildModuleServer } from "./support/moduleServer";
+import { projectsModule } from "../src/modules/projects";
+import { projectFoldersModule } from "../src/modules/projectFolders";
+import { projectFolderExecutionConfigsModule } from "../src/modules/projectFolderExecutionConfigs";
 import { loadConfig } from "../src/config";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 
 // Real-Postgres coverage for the Project Folder Execution Config routes:
 // CRUD against the real table, Folder existence gating, and space isolation.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -30,9 +31,8 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
-    app = buildServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), { logger: false });
+    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [projectFolderExecutionConfigsModule, projectFoldersModule, projectsModule]);
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
     console.warn(`[project-folder-execution-configs-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
@@ -48,8 +48,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE project_folder_execution_configs, workspace_locations, project_folders, projects, users, spaces, hosts, machines CASCADE",
+  await resetTables(
+    pool,
+    ["project_folder_execution_configs", "workspace_locations", "project_folders", "projects", "users", "spaces", "hosts", "machines"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

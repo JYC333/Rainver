@@ -1000,6 +1000,11 @@ export class PgRunRepository {
     return this.withRunsUsage(result.rows);
   }
 
+  /** For read models that need their own query against this repository's connection. */
+  get queryable(): Queryable {
+    return this.db;
+  }
+
   async getModelProviderSummary(
     spaceId: string,
     providerId: string | null | undefined,

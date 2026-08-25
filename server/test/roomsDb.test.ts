@@ -42,6 +42,7 @@ import {
 import { loadAuthorizedCurrentContextMessage } from "../src/modules/runtimeContext/productionAcquisition";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 let database: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -176,7 +177,11 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query("TRUNCATE workspace_locations, spaces, users, hosts, machines CASCADE");
+  await resetTables(
+    pool,
+    ["workspace_locations", "spaces", "users", "hosts", "machines"],
+    { cascade: true },
+  );
   await syncBuiltinPrompts(pool, CATALOG_ROOT);
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

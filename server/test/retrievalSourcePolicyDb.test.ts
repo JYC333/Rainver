@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { ContextOpsService } from "../src/modules/contextOps";
 import { RetrievalMaintenanceService, RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
@@ -18,7 +17,6 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 // Both knowledge items are canonically space_shared, so ONLY the source policy
 // differentiates the restricted object — isolating the gate under test.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // source owner — allowed reader
 const READER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"; // space member — NOT an allowed reader
@@ -34,7 +32,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -53,10 +50,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              knowledge_items, space_object_profiles, space_objects, provenance_links, source_items,
-              source_connections, source_provider_connectors, source_providers, source_connectors, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_object_profiles", "space_objects", "provenance_links", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "users", "spaces"],
+    { cascade: true },
   );
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'SP', 'personal', now(), now())`, [SPACE]);
   for (const id of [OWNER, READER]) {

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { systemModule } from "../src/modules/system";
 import { loadConfig } from "../src/config";
 import {
   computeFeatures,
@@ -15,7 +16,7 @@ afterEach(async () => {
 
 describe("server-owned features route", () => {
   it("advertises the public server feature list", async () => {
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [systemModule]);
     const res = await app.inject({ method: "GET", url: "/api/v1/server/features" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { service: string; features: string[] };
@@ -34,7 +35,7 @@ describe("server-owned features route", () => {
   });
 
   it("exposes the product feature-list route used by the frontend", async () => {
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [systemModule]);
     const res = await app.inject({ method: "GET", url: "/api/v1/features" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as Array<{ id: string; name: string; enabled: boolean; always_on: boolean }>;

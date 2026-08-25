@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { runsModule } from "../src/modules/runs";
+import { streamingModule } from "../src/modules/streaming";
 import { loadConfig } from "../src/config";
 import {
   RUN_EVENT_APPENDED_TYPE,
@@ -120,7 +122,7 @@ describe("run-event SSE streaming edge", () => {
         };
       },
     }));
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [streamingModule, runsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -159,7 +161,7 @@ describe("run-event SSE streaming edge", () => {
         };
       },
     }));
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [streamingModule, runsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -187,7 +189,7 @@ describe("run-event SSE streaming edge", () => {
         throw new Error("should not be called");
       },
     }));
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [streamingModule, runsModule]);
 
     const res = await app.inject({
       method: "GET",

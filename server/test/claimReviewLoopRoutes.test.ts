@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { knowledgeModule } from "../src/modules/knowledge";
 import { loadConfig } from "../src/config";
 import {
   __setAuthRepositoryForTests,
@@ -178,7 +179,7 @@ describe("contradiction-scan route", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -202,7 +203,7 @@ describe("contradiction-scan route", () => {
       if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "guest" }], rowCount: 1 };
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -220,7 +221,7 @@ describe("contradiction-scan route", () => {
       if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "admin" }], rowCount: 1 };
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -249,7 +250,7 @@ describe("claims trajectory route", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -279,7 +280,7 @@ describe("relation discovery-scan route", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -305,7 +306,7 @@ describe("relation discovery-scan route", () => {
       if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "admin" }], rowCount: 1 };
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",

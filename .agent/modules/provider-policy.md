@@ -129,7 +129,7 @@ and `default_model` / `available_models` store model choices. The server creates
 a short-lived per-run provider proxy lease, materializes the run's temporary
 `CODEX_HOME` directory from the managed Codex profile, and writes a run-scoped
 `config.toml` plus `model-catalogs/agent-space-provider.json` there. The
-generated Codex config points at the local provider proxy with
+generated Codex config points at the provider proxy with
 `wire_api = "responses"` and stores only the lease token as
 `experimental_bearer_token`. If no provider is selected for Codex CLI, the
 server still sets `CODEX_HOME` to the run's temporary Codex profile path but

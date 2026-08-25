@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import {
   ConversationBackendError,
   PgConversationBackendRepository,
@@ -64,7 +65,7 @@ beforeEach(async () => {
   loggedInProfileIds.add("credential-user-1");
   loggedInProfileIds.add("credential-user-2");
   const now = new Date().toISOString();
-  await pool.query("TRUNCATE spaces, users CASCADE");
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES

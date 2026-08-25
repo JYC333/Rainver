@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { PgAuthRepository } from "../src/modules/auth/identity";
 
 const SCHEMA = `
@@ -150,8 +151,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE runtime_context_policy_audits, runtime_context_policy_bindings, runtime_context_policy_versions, note_collections, memory_entries, auth_accounts, user_sessions, space_memberships, spaces, users CASCADE",
+  await resetTables(
+    pool,
+    ["runtime_context_policy_audits", "runtime_context_policy_bindings", "runtime_context_policy_versions", "note_collections", "memory_entries", "auth_accounts", "user_sessions", "space_memberships", "spaces", "users"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users

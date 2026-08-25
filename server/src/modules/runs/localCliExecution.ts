@@ -6,6 +6,14 @@ export interface CliExecutionResult {
   stderr: string;
   timed_out: boolean;
   failure_code?: "timeout" | "stall_timeout" | "sandbox_runner_unavailable" | "sandbox_namespace_unavailable" | "output_limit_exceeded";
+  /**
+   * How long the runtime had been silent when the run was given up on. Set on
+   * a timeout or stall so the failure can say whether the runtime was working
+   * and slow or had stopped saying anything at all — the two are
+   * indistinguishable in the message otherwise, and telling them apart is
+   * most of diagnosing a stuck run.
+   */
+  idle_seconds?: number;
 }
 
 export interface ReadOnlyCliExecutionOptions {

@@ -283,3 +283,83 @@ describe("handleLaunch", () => {
     expect(output).toBe("unset");
   }, 10000);
 });
+
+describe("handleLaunch with a provider binding", () => {
+  // The end of the path that shipped inert once: the frame arrives, and the
+  // child either runs against the backend the control plane chose or against
+  // this machine's own login. Only the spawned environment can tell them apart.
+  it("runs the child against the injected backend and none of this machine's", async () => {
+    const { frames, send, complete } = collectSend();
+    process.env.ANTHROPIC_API_KEY = "sk-this-machine";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "machine-oauth";
+    try {
+      await handleLaunch(
+        {
+          run_id: "run-bound",
+          project_folder_id: "folder-1",
+          argv: ["sh", "-c", "printf '%s|%s|%s|%s\n' \"$ANTHROPIC_BASE_URL\" \"$ANTHROPIC_AUTH_TOKEN\" \"${ANTHROPIC_API_KEY:-none}\" \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; cat \"$CODEX_HOME/config.toml\""],
+          provider_binding: {
+            profile_key: "codex_cli/provider-1",
+            env: { ANTHROPIC_BASE_URL: "http://control-plane:8021/anthropic/l1", ANTHROPIC_AUTH_TOKEN: "lease-token" },
+            profile_env: { HOME: ".", CODEX_HOME: ".codex" },
+            files: [{ relative_path: ".codex/config.toml", contents: "catalog = \"{{AGENT_SPACE_RUN_PROFILE}}/x.json\"" }],
+          },
+        },
+        send,
+        () => {},
+      );
+      await complete();
+      const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+      expect(output).toContain("http://control-plane:8021/anthropic/l1|lease-token|none|none");
+      // The placeholder is resolved against the real profile directory, which
+      // is keyed by adapter and provider rather than by this run.
+      expect(output).toMatch(/catalog = ".*\/profiles\/codex_cli\/provider-1\/x\.json"/);
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    }
+  });
+
+  it("leaves the machine's own environment alone for an unbound run", async () => {
+    const { frames, send, complete } = collectSend();
+    process.env.ANTHROPIC_API_KEY = "sk-this-machine";
+    try {
+      await handleLaunch(
+        {
+          run_id: "run-unbound",
+          project_folder_id: "folder-1",
+          argv: ["sh", "-c", "printf '%s\n' \"${ANTHROPIC_API_KEY:-none}\""],
+        },
+        send,
+        () => {},
+      );
+      await complete();
+      const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+      expect(output).toContain("sk-this-machine");
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("fails the run rather than building a path out of a traversing profile key", async () => {
+    // The key becomes a directory on a machine the daemon runs unsandboxed on.
+    for (const profile_key of ["../../etc", "claude_code/../../etc", "one-segment", ".hidden/x", "a/b/c"]) {
+      const { frames, send, complete } = collectSend();
+      await handleLaunch(
+        {
+          run_id: `run-${profile_key.replace(/[^a-z]/gi, "")}`,
+          project_folder_id: "folder-1",
+          argv: ["sh", "-c", "echo should-not-run"],
+          provider_binding: { profile_key, env: {}, profile_env: { HOME: "." }, files: [] },
+        },
+        send,
+        () => {},
+      );
+      await complete();
+      const completion = frames.find((f) => f.type === "complete");
+      expect(completion?.exit_code, profile_key).toBe(1);
+      expect(String(completion?.error), profile_key).toContain("profile key");
+      expect(frames.some((f) => f.type === "output"), profile_key).toBe(false);
+    }
+  });
+});

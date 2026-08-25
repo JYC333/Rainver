@@ -1,12 +1,11 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { resolveNotebookNote } from "../src/modules/projectResearch/notebookNotes";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 // NA: the project research baseline used to be bound by title string, so
 // renaming a starter note silently removed it from the baseline and the
@@ -26,7 +25,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    await migrate(pool, join(process.cwd(), "migrations"));
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     available = true;
   } catch (error) {
@@ -43,7 +41,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(`TRUNCATE notes, space_objects, projects, space_memberships, users, spaces CASCADE`);
+  await resetTables(
+    pool,
+    ["notes", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
+  );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
   await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);

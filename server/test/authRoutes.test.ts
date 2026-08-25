@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { spacesModule } from "../src/modules/spaces";
+import { authModule } from "../src/modules/auth";
 import { loadConfig } from "../src/config";
 import {
   __setGoogleOAuthClientForTests,
@@ -210,12 +212,10 @@ function rankingConfig() {
 }
 
 function server(env: Record<string, string> = {}): FastifyInstance {
-  return buildServer(
+  return buildModuleServer(
     loadConfig({
       ...env,
-    }),
-    { logger: false },
-  );
+    }), [authModule, spacesModule], { logger: false },);
 }
 
 describe("native server auth routes", () => {

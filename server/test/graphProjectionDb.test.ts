@@ -1,20 +1,18 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import * as poolModule from "../src/db/pool";
-import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { graphModule } from "../src/modules/graph";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 import { GraphProjectionBuilder } from "../src/modules/graph/projectionBuilder";
 import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 import { loadProtocol } from "../src/modules/providers/protocolRuntime";
-
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -24,7 +22,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -43,9 +40,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE graph_view_states, object_relations, knowledge_items, notes,
-              sources, claims, space_objects, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["graph_view_states", "object_relations", "knowledge_items", "notes", "sources", "claims", "space_objects", "users", "spaces"],
+    { cascade: true },
   );
 });
 
@@ -268,7 +266,7 @@ describe("Graph routes", () => {
       spaceId: "11111111-1111-4111-8111-111111111111",
       userId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     });
-    const app = buildServer(loadConfig({}), { logger: false });
+    const app = buildModuleServer(loadConfig({}), [graphModule]);
     try {
       const response = await app.inject({
         method: "GET",
@@ -294,7 +292,7 @@ describe("Graph routes", () => {
     const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
     let app: FastifyInstance | undefined;
     try {
-      app = buildServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), { logger: false });
+      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [graphModule]);
       const projectionResponse = await app.inject({
         method: "GET",
         url: `/api/v1/graph/projection?mode=local&root_id=${ids.alpha}&depth=1&limit=10`,

@@ -9,7 +9,9 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { systemModule } from "../src/modules/system";
+import { catalogModule } from "../src/modules/catalog";
 import { loadConfig } from "../src/config";
 
 let fixtureRoot: string;
@@ -63,7 +65,7 @@ afterEach(async () => {
 });
 
 function buildApp(catalogRoot: string): FastifyInstance {
-  return buildServer(loadConfig({ SERVER_CATALOG_ROOT: catalogRoot }), {
+  return buildModuleServer(loadConfig({ SERVER_CATALOG_ROOT: catalogRoot }), [catalogModule, systemModule], {
     logger: false,
   });
 }

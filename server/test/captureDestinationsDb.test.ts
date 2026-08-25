@@ -1,12 +1,11 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { CaptureService } from "../src/modules/capture/service";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { blockIds } from "../src/modules/knowledge/noteBlockIds";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 /**
  * The four capture destinations behind one entry (D1/D2).
@@ -36,7 +35,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    await migrate(pool, join(process.cwd(), "migrations"));
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -51,10 +49,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE notes, note_collections, note_collection_items, note_links, note_revisions,
-              activity_records, space_objects, project_members, projects,
-              space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["notes", "note_collections", "note_collection_items", "note_links", "note_revisions", "activity_records", "space_objects", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(

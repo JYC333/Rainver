@@ -5660,6 +5660,8 @@ CREATE TABLE "hosts" (
 	"platform" varchar(64),
 	"arch" varchar(32),
 	"daemon_version" varchar(32),
+	"daemon_server_url" varchar(512),
+	"provider_proxy_base_url" varchar(512),
 	"capabilities_json" jsonb,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
@@ -5704,7 +5706,7 @@ CREATE TABLE "host_thread_events" (
 	"status" varchar(32),
 	"created_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_host_thread_events_thread_event_index" UNIQUE("host_task_thread_id","event_index"),
-	CONSTRAINT "ck_host_thread_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text]))
+	CONSTRAINT "ck_host_thread_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('assistant_thought'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text]))
 );
 --> statement-breakpoint
 CREATE TABLE "host_thread_messages" (
@@ -5713,12 +5715,26 @@ CREATE TABLE "host_thread_messages" (
 	"task_id" varchar(36) NOT NULL,
 	"prompt" text NOT NULL,
 	"status" varchar(16) DEFAULT 'queued' NOT NULL,
+	"model_provider_id" varchar(36),
+	"model" varchar(256),
 	"run_id" varchar(36),
 	"created_by_user_id" varchar(36) NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "ck_host_thread_messages_status" CHECK ((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('dispatched'::character varying)::text, ('withdrawn'::character varying)::text])),
 	CONSTRAINT "ck_host_thread_messages_run_id_consistency" CHECK ((status = 'dispatched') = (run_id IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE TABLE "host_runtime_provider_bindings" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"host_id" varchar(36) NOT NULL,
+	"adapter_type" varchar(64) NOT NULL,
+	"model_provider_id" varchar(36) NOT NULL,
+	"model" varchar(256),
+	"created_by_user_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_host_runtime_provider_bindings_host_adapter" UNIQUE("host_id","adapter_type")
 );
 --> statement-breakpoint
 CREATE TABLE "project_folder_execution_configs" (
@@ -6904,6 +6920,10 @@ ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_run_id_fkey"
 ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_runtime_provider_bindings" ADD CONSTRAINT "host_runtime_provider_bindings_host_id_fkey" FOREIGN KEY ("host_id") REFERENCES "public"."hosts"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_runtime_provider_bindings" ADD CONSTRAINT "host_runtime_provider_bindings_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_runtime_provider_bindings" ADD CONSTRAINT "host_runtime_provider_bindings_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_validation_recipe_id_fkey" FOREIGN KEY ("validation_recipe_id") REFERENCES "public"."validation_recipes"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project_folder_execution_configs" ADD CONSTRAINT "project_folder_execution_configs_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7923,6 +7943,7 @@ CREATE INDEX "ix_host_thread_events_project_id" ON "host_thread_events" USING bt
 CREATE INDEX "ix_host_thread_messages_thread_id" ON "host_thread_messages" USING btree ("host_task_thread_id","created_at");--> statement-breakpoint
 CREATE INDEX "ix_host_thread_messages_run_id" ON "host_thread_messages" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_host_thread_messages_task_id" ON "host_thread_messages" USING btree ("task_id");--> statement-breakpoint
+CREATE INDEX "ix_host_runtime_provider_bindings_provider" ON "host_runtime_provider_bindings" USING btree ("model_provider_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folder_execution_configs_space_id" ON "project_folder_execution_configs" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folder_execution_configs_project_folder_id" ON "project_folder_execution_configs" USING btree ("project_folder_id");--> statement-breakpoint
 CREATE INDEX "ix_project_folders_slug" ON "project_folders" USING btree ("slug");--> statement-breakpoint

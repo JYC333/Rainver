@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { ProjectResearchReport } from '../../types/api'
 import { researchReportViews } from './researchReports'

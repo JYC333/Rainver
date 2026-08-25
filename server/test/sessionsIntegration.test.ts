@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { PgSessionRepository } from "../src/modules/sessions/repository";
 
 // Real-PostgreSQL integration tests for the server sessions repository. The unit
@@ -50,7 +51,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE sessions, messages CASCADE");
+  await resetTables(pool, ["sessions", "messages"], { cascade: true });
 });
 
 const SPACE = "space-1";

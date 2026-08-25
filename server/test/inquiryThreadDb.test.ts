@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryGraphService } from "../src/modules/inquiry/graphService";
 import { buildSpaceObjectInsert } from "../src/db/spaceObjectWriter";
@@ -16,7 +15,6 @@ import { completeBackgroundStep } from "../src/modules/inquiry/stepService";
 // the Definition Revision command, and the work-management command's
 // boundary from both of those. See plan section 9 and ADR 0011.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const VIEWER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -29,7 +27,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -46,8 +43,10 @@ let PROJECT: string;
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE inquiry_thread_work_events, inquiry_iterations, inquiry_thread_statement_revisions, inquiry_thread_personal_focus, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, inquiry_project_settings, notes, space_objects, projects, project_members, space_memberships, users, spaces CASCADE",
+  await resetTables(
+    pool,
+    ["inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "notes", "space_objects", "projects", "project_members", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);

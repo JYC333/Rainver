@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { readerModule } from "../src/modules/reader";
 import { loadConfig } from "../src/config";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 import { type Queryable } from "../src/modules/routeUtils/common";
@@ -157,7 +158,7 @@ afterEach(async () => {
 
 describe("source reader routes — auth and input validation", () => {
   it("returns 401 to unauthenticated requests on the reader document endpoint", async () => {
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [readerModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -169,7 +170,7 @@ describe("source reader routes — auth and input validation", () => {
 
   it("returns 400 when project_id is missing from GET /reader/annotations", async () => {
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [readerModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -181,7 +182,7 @@ describe("source reader routes — auth and input validation", () => {
   });
 
   it("returns 401 to unauthenticated requests on POST /reader/annotations", async () => {
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [readerModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -718,7 +719,7 @@ describe("PgCommentRepository.listThreads — annotation visibility gate", () =>
 describe("POST /reader/annotations — anchor range validation", () => {
   it("returns 422 when text_range.start is negative", async () => {
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [readerModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -746,7 +747,7 @@ describe("POST /reader/annotations — anchor range validation", () => {
 
   it("returns 422 when text_range.end is not greater than start", async () => {
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [readerModule]);
 
     const res = await app.inject({
       method: "POST",

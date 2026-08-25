@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectKernelService } from "../src/modules/projects/kernelService";
 import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService";
@@ -19,7 +18,6 @@ import { PgRuntimeContextAcquisitionRepository } from "../src/modules/runtimeCon
 // creation, Brief versioning, Primary Mode transitions, Attention
 // aggregation, and Overview composition. See ADR 0011 and PROJECTS.md.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -34,7 +32,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -49,7 +46,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE project_operations, workspace_locations, projects, space_memberships, users, spaces, hosts, machines CASCADE");
+  await resetTables(
+    pool,
+    ["project_operations", "workspace_locations", "projects", "space_memberships", "users", "spaces", "hosts", "machines"],
+    { cascade: true },
+  );
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`,
@@ -609,8 +610,12 @@ describe("Project Kernel (real Postgres)", () => {
         `DELETE FROM project_members WHERE space_id=$1 AND project_id=$2 AND user_id=$3`,
         [SPACE, project.id, VIEWER],
       );
+      // Attach the expectation before the commit releases the lock: the
+      // rejection can land in the same event-loop turn as the commit's reply,
+      // and a rejection with no handler yet fails the whole run.
+      const publishingRejected = expect(publishing).rejects.toMatchObject({ statusCode: 403 });
       await revocation.query("COMMIT");
-      await expect(publishing).rejects.toMatchObject({ statusCode: 403 });
+      await publishingRejected;
       await expect(kernel.getActiveInstructionVersion(ownerIdentity, project.id as string)).resolves.toBeNull();
     } finally {
       await revocation.query("ROLLBACK").catch(() => undefined);
@@ -650,8 +655,12 @@ describe("Project Kernel (real Postgres)", () => {
         `DELETE FROM project_members WHERE space_id=$1 AND project_id=$2 AND user_id=$3`,
         [SPACE, project.id, VIEWER],
       );
+      // Attach the expectation before the commit releases the lock: the
+      // rejection can land in the same event-loop turn as the commit's reply,
+      // and a rejection with no handler yet fails the whole run.
+      const creatingRejected = expect(creating).rejects.toMatchObject({ statusCode: 403 });
       await revocation.query("COMMIT");
-      await expect(creating).rejects.toMatchObject({ statusCode: 403 });
+      await creatingRejected;
 
       await pool.query(
         `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
@@ -682,8 +691,12 @@ describe("Project Kernel (real Postgres)", () => {
         `DELETE FROM project_members WHERE space_id=$1 AND project_id=$2 AND user_id=$3`,
         [SPACE, project.id, VIEWER],
       );
+      // Attach the expectation before the commit releases the lock: the
+      // rejection can land in the same event-loop turn as the commit's reply,
+      // and a rejection with no handler yet fails the whole run.
+      const submittingRejected = expect(submitting).rejects.toMatchObject({ statusCode: 403 });
       await revocation.query("COMMIT");
-      await expect(submitting).rejects.toMatchObject({ statusCode: 403 });
+      await submittingRejected;
       await expect(kernel.listBriefVersions(ownerIdentity, project.id as string))
         .resolves.toContainEqual(expect.objectContaining({ id: draft.id, status: "draft" }));
     } finally {

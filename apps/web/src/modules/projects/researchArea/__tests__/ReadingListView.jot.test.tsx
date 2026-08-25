@@ -59,7 +59,7 @@ describe('ReadingListView jot a note', () => {
   it('creates the note and its link from the card in one step', async () => {
     jot.mockResolvedValue({ id: 'note-1' })
     renderView(readingList())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     await user.click(await screen.findByRole('button', { name: 'Jot a note' }))
     await user.type(screen.getByLabelText('Note about Attention Is All You Need'), 'Depth needs residuals.')
@@ -78,7 +78,7 @@ describe('ReadingListView jot a note', () => {
     linkingTo.mockResolvedValue([{ source_id: 'note-1', source_type: 'note' }])
     jot.mockResolvedValue({ id: 'note-1' })
     renderView(readingList())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     await user.click(await screen.findByRole('button', { name: 'Add to note' }))
     await user.type(screen.getByLabelText('Note about Attention Is All You Need'), 'Second thought.')

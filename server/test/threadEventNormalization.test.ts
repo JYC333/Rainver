@@ -144,4 +144,74 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     });
     expect(drafts).toEqual([{ event_type: "plan_updated", text: JSON.stringify(entries) }]);
   });
+
+  describe("reasoning", () => {
+    // Two runtimes, two conventions. Before this, the ACP channel was dropped
+    // by construction and inlined <think> was stored as the answer — a
+    // MiniMax turn showed its whole reasoning block above the reply.
+    it("keeps a runtime's own reasoning channel apart from its answer", () => {
+      const normalizer = createThreadEventNormalizer();
+      expect(normalizer.pushAcpThoughtDelta("weighing options\n")).toEqual([
+        { event_type: "assistant_thought", text: "weighing options" },
+      ]);
+      expect(normalizer.pushAcpTextDelta("the answer\n")).toEqual([
+        { event_type: "assistant_text", text: "the answer" },
+      ]);
+    });
+
+    it("splits inlined <think> out of the message text", () => {
+      const normalizer = createThreadEventNormalizer();
+      const drafts = [
+        ...normalizer.pushAcpTextDelta("<think>the user asks what model I am\n</think>我是 MiniMax-M3。\n"),
+        ...normalizer.finish(),
+      ];
+      expect(drafts).toEqual([
+        { event_type: "assistant_thought", text: "the user asks what model I am" },
+        { event_type: "assistant_text", text: "我是 MiniMax-M3。" },
+      ]);
+    });
+
+    it("handles a tag split across deltas, which is how it actually streams", () => {
+      const normalizer = createThreadEventNormalizer();
+      const drafts = [
+        ...normalizer.pushAcpTextDelta("<thi"),
+        ...normalizer.pushAcpTextDelta("nk>reasoning"),
+        ...normalizer.pushAcpTextDelta("</thin"),
+        ...normalizer.pushAcpTextDelta("k>answer"),
+        ...normalizer.finish(),
+      ];
+      // The partial tags are never emitted as text.
+      expect(drafts).toEqual([
+        { event_type: "assistant_thought", text: "reasoning" },
+        { event_type: "assistant_text", text: "answer" },
+      ]);
+    });
+
+    it("does not merge reasoning into the answer's first line when no newline separates them", () => {
+      const normalizer = createThreadEventNormalizer();
+      const drafts = [
+        ...normalizer.pushAcpTextDelta("<think>why</think>because\n"),
+        ...normalizer.finish(),
+      ];
+      expect(drafts).toEqual([
+        { event_type: "assistant_thought", text: "why" },
+        { event_type: "assistant_text", text: "because" },
+      ]);
+    });
+
+    it("emits an unterminated tag as the text it literally is", () => {
+      // A model writing about the tag, or a turn cut off mid-tag: losing the
+      // characters would be worse than showing them.
+      const normalizer = createThreadEventNormalizer();
+      const drafts = [...normalizer.pushAcpTextDelta("use <thi"), ...normalizer.finish()];
+      expect(drafts).toEqual([{ event_type: "assistant_text", text: "use <thi" }]);
+    });
+
+    it("leaves text with no reasoning in it completely untouched", () => {
+      const normalizer = createThreadEventNormalizer();
+      expect(normalizer.pushAcpTextDelta("a < b and c > d\n")).toEqual([
+        { event_type: "assistant_text", text: "a < b and c > d" },
+      ]);
+    });
+  });
 });

@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { evolutionModule } from "../src/modules/evolution";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 
 vi.mock("../src/db/pool", () => ({
@@ -38,9 +39,9 @@ describe("evolution run routes", () => {
       throw new Error(`Unexpected query: ${sql}`);
     });
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(loadConfig({
+    app = buildModuleServer(loadConfig({
       SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
-    }), { logger: false });
+    }), [evolutionModule]);
 
     const response = await app.inject({
       method: "POST",

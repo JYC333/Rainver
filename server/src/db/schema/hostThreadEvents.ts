@@ -15,9 +15,12 @@ import { projects } from "./projects";
  * since the read model is "everything said in this conversation", spanning
  * every run/turn dispatched into the thread.
  *
- * `thinking` is dropped at normalization time and never reaches this table
- * (C5) — there is no event_type for it, by design, not by filtering a wider
- * type down.
+ * Reasoning has its own `assistant_thought` type. It was originally dropped
+ * at normalization time with no event_type for it (C5), which held only while
+ * every runtime reported reasoning on a separate ACP channel: a model that
+ * inlines it in the message text instead (MiniMax and other `<think>`-tag
+ * models) had its reasoning stored and displayed as the answer. Dropping it
+ * now happens by choosing not to render, not by having nowhere to put it.
  */
 export const hostThreadEvents = pgTable("host_thread_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -32,7 +35,8 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	runId: varchar("run_id", { length: 36 }).notNull(),
 	eventIndex: integer("event_index").notNull(),
 	eventType: varchar("event_type", { length: 32 }).notNull(),
-	// assistant_text: the coalesced text segment. diagnostic: one stderr line.
+	// assistant_text: the coalesced text segment. assistant_thought: the same,
+	// for reasoning. diagnostic: one stderr line.
 	// plan_updated: a JSON-serialized ACP plan snapshot (appended, never
 	// mutated — readers take the thread's latest one).
 	text: text(),
@@ -74,5 +78,5 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 			foreignColumns: [runs.id],
 			name: "host_thread_events_run_id_fkey"
 		}).onDelete("cascade"),
-	check("ck_host_thread_events_event_type", sql`(event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text])`),
+	check("ck_host_thread_events_event_type", sql`(event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('assistant_thought'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text])`),
 ]);

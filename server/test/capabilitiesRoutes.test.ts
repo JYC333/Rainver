@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { catalogModule } from "../src/modules/catalog";
+import { capabilitiesModule } from "../src/modules/capabilities";
 import { loadConfig } from "../src/config";
 import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common";
 import {
@@ -33,7 +35,7 @@ describe("capabilities routes", () => {
   it("serves the built-in pack", async () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository());
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const packs = await app.inject({ method: "GET", url: "/api/v1/capability-packs" });
 
@@ -49,7 +51,7 @@ describe("capabilities routes", () => {
     __setCapabilitiesSkillFetcherForTests(async () => ({
       body: "---\nname: Preview Skill\ndescription: Preview only.\n---\n\nRead sources.",
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -91,7 +93,7 @@ describe("capabilities routes", () => {
         throw new Error(`unexpected fetch ${url}`);
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -118,7 +120,7 @@ describe("capabilities routes", () => {
     __setCapabilitiesSkillFetcherForTests(async () => ({
       body: "---\nname: Imported Skill\ndescription: Imported safely.\n---\n\nSummarize input.",
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const imported = await app.inject({
       method: "POST",
@@ -143,7 +145,7 @@ describe("capabilities routes", () => {
   it("creates conversion proposals for reviewed skill packages", async () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository({ skillStatus: "reviewed" }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const converted = await app.inject({
       method: "POST",
@@ -160,7 +162,7 @@ describe("capabilities routes", () => {
   it("rejects converting with direct enablement (proposal review required)", async () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository());
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -175,7 +177,7 @@ describe("capabilities routes", () => {
   it("creates enable and disable proposals for a capability", async () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setCapabilitiesRepositoryFactoryForTests(() => fakeRepository());
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [capabilitiesModule, catalogModule]);
 
     const enable = await app.inject({
       method: "POST",

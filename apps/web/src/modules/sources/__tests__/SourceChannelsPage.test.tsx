@@ -173,7 +173,7 @@ describe('Sources page', () => {
   })
 
   it('allows an explicit all-arXiv source without a user query', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(await screen.findByRole('button', { name: /add source/i }))
@@ -188,7 +188,7 @@ describe('Sources page', () => {
   })
 
   it('allows selecting multiple arXiv categories from the searchable taxonomy', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(await screen.findByRole('button', { name: /add source/i }))
@@ -210,7 +210,7 @@ describe('Sources page', () => {
   })
 
   it('creates a reusable source without binding it to a project', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const created = source({ id: 'channel-new', source_connection_id: 'connection-new' })
     vi.mocked(sourcesApi.createChannel).mockResolvedValueOnce(created)
     renderPage()

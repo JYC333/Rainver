@@ -4,15 +4,14 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository";
 import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox";
 import { PgHostRepository } from "../src/modules/hosts/repository";
 import type { RunRecord } from "../src/modules/runs/repository";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -29,7 +28,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -44,7 +42,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE workspace_locations, project_folders, projects, space_memberships, users, spaces, hosts, machines CASCADE");
+  await resetTables(
+    pool,
+    ["workspace_locations", "project_folders", "projects", "space_memberships", "users", "spaces", "hosts", "machines"],
+    { cascade: true },
+  );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now())`,

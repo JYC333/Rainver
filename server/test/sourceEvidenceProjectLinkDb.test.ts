@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import {
   linkEvidenceToBoundProjects,
   recomputeProjectSourceBindingLinks,
@@ -23,7 +22,6 @@ import { PgActivityRepository } from "../src/modules/activity/repository";
 // and the context evidence selector actually returns the auto-linked evidence
 // for a project-scoped selection. Skips when Docker is unavailable.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -40,7 +38,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -59,11 +56,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE evidence_links, extracted_evidence, source_snapshots, source_items, project_source_item_links,
-       project_source_bindings, source_channel_item_links, source_channel_user_subscriptions, source_channels,
-       source_connections, source_provider_connectors, source_providers, source_connectors, project_members, projects,
-       space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["evidence_links", "extracted_evidence", "source_snapshots", "source_items", "project_source_item_links", "project_source_bindings", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(

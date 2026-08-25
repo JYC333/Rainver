@@ -163,7 +163,7 @@ describe('NotesTree', () => {
   })
 
   it('hides destructive folder actions for protected system collections', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderTree({
       collections: [
         makeCollection({

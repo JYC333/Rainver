@@ -2,11 +2,16 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import HostsPanel from '../HostsPanel'
-import { hostsApi } from '../../../api/client'
+import { hostsApi, providersApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../api/client', () => ({
-  hostsApi: { list: vi.fn(), pairingCode: vi.fn(), revoke: vi.fn(), listRuntimeAdapters: vi.fn() },
+  hostsApi: {
+    list: vi.fn(), pairingCode: vi.fn(), revoke: vi.fn(), listRuntimeAdapters: vi.fn(),
+    // The per-host model-backend selector mounts inside each remote host card.
+    listProviderBindings: vi.fn(), setProviderBinding: vi.fn(), clearProviderBinding: vi.fn(),
+  },
+  providersApi: { list: vi.fn() },
 }))
 
 const SERVER_HOST = {
@@ -29,6 +34,8 @@ const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', comman
 beforeEach(() => {
   vi.mocked(hostsApi.list).mockResolvedValue({ items: [SERVER_HOST, REMOTE_HOST] })
   vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER] })
+  vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+  vi.mocked(providersApi.list).mockResolvedValue([])
 })
 
 describe('HostsPanel', () => {
@@ -91,5 +98,25 @@ describe('HostsPanel', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('says why a model backend cannot be chosen instead of hiding the control', async () => {
+    // A host with no reported runtime has nothing to bind, but someone looking
+    // for this control must be told that rather than shown a blank card.
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: null }] })
+    render(<HostsPanel />)
+    expect(await screen.findByText(/has not reported an installed runtime/)).toBeInTheDocument()
+  })
+
+  it("explains that the server host uses the machine's own logins", async () => {
+    render(<HostsPanel />)
+    expect(await screen.findByText(/A model backend is chosen per paired remote host/)).toBeInTheDocument()
+  })
+
+  it('names the runtimes a host has when none of them can be dispatched to', async () => {
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER] })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['git'] } }] })
+    render(<HostsPanel />)
+    expect(await screen.findByText(/runtimes \(git\) can be dispatched to remotely/)).toBeInTheDocument()
   })
 })

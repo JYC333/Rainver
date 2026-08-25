@@ -108,7 +108,7 @@ describe('RunDetailPage route decision panel', () => {
 
   it('renders the persisted decision when the route API returns one', async () => {
     runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1', trust_level: 'high' })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(screen.getByRole('tab', { name: 'Route' }))
@@ -119,7 +119,7 @@ describe('RunDetailPage route decision panel', () => {
 
   it('shows an explicit unavailable state instead of an empty JSON placeholder', async () => {
     runsApiMock.routeDecision.mockRejectedValue(new Error('route decision unavailable'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(screen.getByRole('tab', { name: 'Route' }))
@@ -133,7 +133,7 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.evaluations.mockRejectedValue(new Error('evaluation history unavailable'))
     runsApiMock.verifications.mockRejectedValue(new Error('verification history unavailable'))
     runsApiMock.finalizations.mockRejectedValue(new Error('finalization history unavailable'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(screen.getByRole('tab', { name: /Attempts/ }))
@@ -148,7 +148,7 @@ describe('RunDetailPage route decision panel', () => {
   it('invalidates a workflow preview when its inputs change', async () => {
     runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
     evolutionApiMock.previewWorkflowFromRun.mockResolvedValue({ display_name: 'Original preview' })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(screen.getByRole('button', { name: 'Save as workflow' }))
@@ -167,7 +167,7 @@ describe('RunDetailPage route decision panel', () => {
       resolvePreview = resolve
     }))
     runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(screen.getByRole('button', { name: 'Save as workflow' }))
@@ -188,7 +188,7 @@ describe('RunDetailPage route decision panel', () => {
       .mockResolvedValueOnce({ display_name: 'Initial preview' })
       .mockRejectedValueOnce(new Error('preview failed'))
     runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(screen.getByRole('button', { name: 'Save as workflow' }))
@@ -208,7 +208,7 @@ describe('RunDetailPage route decision panel', () => {
       loading: false,
       error: null,
     }))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPageWithSwitcher()
 
     await user.click(screen.getByRole('button', { name: 'Save as workflow' }))
@@ -242,7 +242,7 @@ describe('RunDetailPage route decision panel', () => {
       loading: false,
       error: null,
     }))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPageWithSwitcher()
 
     await user.click(screen.getByRole('button', { name: 'Switch run' }))
@@ -261,7 +261,7 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.resume.mockResolvedValue({ id: 'run-1', status: 'queued', resumed_at: '2026-07-12T00:00:00Z', resume_kind: 'new_attempt' })
     runsApiMock.abandon.mockResolvedValue({ id: 'run-1', status: 'cancelled', abandoned_at: '2026-07-12T00:00:00Z' })
     useRunMock.mockReturnValue({ run: waitingRun, loading: false, error: null })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()

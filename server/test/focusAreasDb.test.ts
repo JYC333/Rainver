@@ -1,8 +1,6 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { FocusAreaService } from "../src/modules/focusAreas/service";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -13,7 +11,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // the aggregation subtracts through the same read gate every other reader uses
 // rather than exposing what the classifier could see.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -29,7 +26,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     const now = new Date().toISOString();
     // A shared Space: in a personal one the project predicate short-circuits.
     for (const [id, name] of [[SPACE, "Team"], [OTHER_SPACE, "Other"]]) {

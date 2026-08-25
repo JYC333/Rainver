@@ -32,6 +32,8 @@ export interface HostRow {
   platform: string | null;
   arch: string | null;
   daemon_version: string | null;
+  daemon_server_url?: string | null;
+  provider_proxy_base_url?: string | null;
   capabilities_json: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
@@ -50,6 +52,10 @@ export interface HostOut {
   platform: string | null;
   arch: string | null;
   daemon_version: string | null;
+  /** The control-plane address this daemon reports it reaches. */
+  daemon_server_url: string | null;
+  /** Explicit per-host proxy address; null means it is derived. */
+  provider_proxy_base_url: string | null;
   capabilities_json: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
@@ -64,6 +70,8 @@ export interface DaemonHelloInfo {
   platform?: string | null;
   arch?: string | null;
   daemon_version?: string | null;
+  /** The control-plane address this daemon reaches; see `hosts.daemon_server_url`. */
+  server_url?: string | null;
   capabilities_json?: Record<string, unknown> | null;
   /**
    * D1: which execution environment this is, distinct from `platform`
@@ -125,6 +133,11 @@ function hostOut(row: HostRow): HostOut {
     platform: row.platform,
     arch: row.arch,
     daemon_version: row.daemon_version,
+    // Both surfaced so the Command Center can show which proxy address a host
+    // will actually be handed, rather than making the operator guess whether
+    // the derived one is in play.
+    daemon_server_url: row.daemon_server_url ?? null,
+    provider_proxy_base_url: row.provider_proxy_base_url ?? null,
     capabilities_json: row.capabilities_json,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -132,7 +145,8 @@ function hostOut(row: HostRow): HostOut {
 }
 
 const HOST_COLUMNS = `id, owner_user_id, machine_id, environment_kind, name, kind, status, token_hash, pairing_code_expires_at,
-  last_heartbeat_at, platform, arch, daemon_version, capabilities_json, created_at, updated_at`;
+  last_heartbeat_at, platform, arch, daemon_version, daemon_server_url, provider_proxy_base_url,
+  capabilities_json, created_at, updated_at`;
 
 export class PgHostRepository {
   constructor(private readonly pool: Queryable) {}
@@ -266,6 +280,10 @@ export class PgHostRepository {
               platform = COALESCE($2, platform), arch = COALESCE($3, arch),
               daemon_version = COALESCE($4, daemon_version),
               capabilities_json = COALESCE($5::jsonb, capabilities_json),
+              -- Refreshed on every heartbeat, not only at pairing: a daemon
+              -- pointed at a new control-plane address should not keep handing
+              -- out lease URLs derived from the old one.
+              daemon_server_url = COALESCE($6, daemon_server_url),
               updated_at = now()
         WHERE id = $1 AND status <> 'revoked'`,
       [
@@ -274,6 +292,7 @@ export class PgHostRepository {
         info.arch ?? null,
         info.daemon_version ?? null,
         info.capabilities_json ? JSON.stringify(info.capabilities_json) : null,
+        info.server_url ?? null,
       ],
     );
     if (info.workspace_reports) {

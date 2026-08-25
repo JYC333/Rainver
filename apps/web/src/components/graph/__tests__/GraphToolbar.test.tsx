@@ -5,7 +5,7 @@ import { GraphToolbar } from '../GraphToolbar'
 
 describe('GraphToolbar', () => {
   it('lets users choose layout and renderer options from the toolbar dropdowns', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const onLayoutChange = vi.fn()
     const onRendererChange = vi.fn()
 

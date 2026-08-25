@@ -1,10 +1,9 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import {
   ResearchOperationCancelService,
@@ -13,7 +12,9 @@ import {
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { researchModule } from "../src/modules/research";
+import { projectResearchModule } from "../src/modules/projectResearch";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 
 // Real-Postgres coverage for the research cancel: stopping a running
@@ -22,7 +23,6 @@ import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 // what it has to guarantee is that "stopped" means the Operation cannot start
 // another pass *and* that the request to kill in-flight work is durable.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -41,13 +41,12 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     __setAuthIdentityForTests(identity);
-    app = buildServer(loadConfig({
+    app = buildModuleServer(loadConfig({
       SERVER_DATABASE_URL: container.getConnectionUri(),
       SERVER_INTERNAL_TOKEN: "test-internal-token",
       AGENT_SPACE_HOME: "/tmp/agent-space-research-cancel-test",
-    }), { logger: false });
+    }), [projectResearchModule, researchModule]);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -64,9 +63,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE policy_decision_records, jobs, runs, project_operations, agent_versions, agents,
-       project_members, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["policy_decision_records", "jobs", "runs", "project_operations", "agent_versions", "agents", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

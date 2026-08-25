@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { contentDecisionFromDb } from "../src/modules/access/contentAccessQuery";
 import { decideContentAccess } from "../src/modules/access/contentAccessPolicy";
 import { contentResourceDefinition } from "../src/modules/access/contentAccessRegistry";
@@ -18,7 +17,6 @@ import { memorySensitivityReadSql } from "../src/modules/memory/memorySensitivit
 // grant × Space-oversight-mode matrix and asserts both implementations agree on
 // every case, so the two definitions cannot silently diverge.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "22222222-2222-4222-8222-222222222222";
 const OTHER_SPACE = "33333333-3333-4333-8333-333333333333";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -51,7 +49,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -69,8 +66,10 @@ afterAll(async () => {
 });
 
 async function seedSpace(oversightMode: OversightMode): Promise<void> {
-  await pool!.query(
-    `TRUNCATE content_access_grants, artifacts, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool!,
+    ["content_access_grants", "artifacts", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   for (const id of [...MEMBERSHIPS.map(([memberId]) => memberId), CROSS_SPACE]) {
     await pool!.query(

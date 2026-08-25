@@ -24,6 +24,26 @@ export function createCliConversationController(input: {
   runtime_session_id?: string | null;
   before_next_prompt?: (sessionId: string) => Promise<void>;
   on_text_delta?: (delta: string) => void;
+  /**
+   * Reasoning, on the channel a runtime uses when it keeps reasoning separate
+   * from its answer. Delivered apart from `on_text_delta` so the two never
+   * have to be told apart downstream by inspecting the text.
+   */
+  on_thought_delta?: (delta: string) => void;
+  /**
+   * What this run actually executes against, when the caller already knows —
+   * a bound run's provider model. Distinct from `model`, which is what to ask
+   * for over ACP: the two differ whenever the runtime's identifier space is
+   * not the provider's. Claude sets no ACP model at all yet runs on a model
+   * the server chose; OpenCode is asked for `<provider>/<model>` but runs on
+   * `<model>`.
+   *
+   * When present it is the authority, because it is the server's own decision
+   * — the environment and config it wrote are what the runtime obeys. Reading
+   * the runtime's echo instead would report an alias (`default`) or, on a
+   * resumed session, the previous turn's model.
+   */
+  attributed_model?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   /**
    * execution-topology-and-project-control-plane-plan.md P0.4/D7: fired once
@@ -66,7 +86,7 @@ export class AcpController implements CliStdioController {
   private text = "";
   private usage: CanonicalUsage | null = null;
   private modelUsage: CanonicalModelUsage[] = [];
-  private selectedModel: string | null = null;
+  private selectedModel: string | null;
   private subscriptionQuota: {
     status: string;
     rate_limit_type: string;
@@ -84,9 +104,31 @@ export class AcpController implements CliStdioController {
     runtime_session_id?: string | null;
     before_next_prompt?: (sessionId: string) => Promise<void>;
     on_text_delta?: (delta: string) => void;
+  /**
+   * Reasoning, on the channel a runtime uses when it keeps reasoning separate
+   * from its answer. Delivered apart from `on_text_delta` so the two never
+   * have to be told apart downstream by inspecting the text.
+   */
+  on_thought_delta?: (delta: string) => void;
+  /**
+   * What this run actually executes against, when the caller already knows —
+   * a bound run's provider model. Distinct from `model`, which is what to ask
+   * for over ACP: the two differ whenever the runtime's identifier space is
+   * not the provider's. Claude sets no ACP model at all yet runs on a model
+   * the server chose; OpenCode is asked for `<provider>/<model>` but runs on
+   * `<model>`.
+   *
+   * When present it is the authority, because it is the server's own decision
+   * — the environment and config it wrote are what the runtime obeys. Reading
+   * the runtime's echo instead would report an alias (`default`) or, on a
+   * resumed session, the previous turn's model.
+   */
+  attributed_model?: string | null;
     on_protocol_event?: (event: Record<string, unknown>) => void;
     on_permission_decision?: (record: PermissionDecisionRecord) => void;
-  }) {}
+  }) {
+    this.selectedModel = input.attributed_model ?? null;
+  }
 
   start(send: Send): void {
     send({
@@ -213,14 +255,25 @@ export class AcpController implements CliStdioController {
         this.input.adapter_type !== "claude_code"
         && appliedModel !== this.requestedAcpModel
       )) {
-        this.fail(`${this.label()} ACP did not apply the requested model`, closeStdin);
+        // Name both sides. Each runtime addresses models in its own identifier
+        // space — OpenCode as `<provider>/<model>`, Codex through the catalog
+        // the binding writes, Claude by bare name — so a rejection is nearly
+        // always a mismatch between spaces, and a message that reports neither
+        // one leaves nothing to compare.
+        this.fail(
+          `${this.label()} ACP did not apply the requested model `
+            + `(asked for '${this.requestedAcpModel ?? "?"}', `
+            + `runtime is on '${appliedModel ?? "none"}')`,
+          closeStdin,
+        );
         return;
       }
       // ACP model ids are often aliases ("sonnet", "opus", ...), while the
       // provider-facing run model may be a concrete id or a compatible-model
-      // name. The request was normalized against the session's option list;
-      // retain the run model for attribution when it was supplied.
-      this.selectedModel = this.input.model ?? appliedModel;
+      // name. The request was normalized against the session's option list, so
+      // prefer what the caller knows this run executes against, then what it
+      // asked for, and only then the runtime's echo.
+      this.selectedModel = this.input.attributed_model ?? this.input.model ?? appliedModel;
       this.phase = "prompt";
       this.prompt(send);
       return;
@@ -274,20 +327,34 @@ export class AcpController implements CliStdioController {
         return;
       }
       this.captureSubscriptionQuota(params, update);
-      if (update.sessionUpdate === "agent_message_chunk") {
+      if (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") {
+        const thought = update.sessionUpdate === "agent_thought_chunk";
         if (this.phase !== "prompt") {
-          this.fail(`${this.label()} ACP returned an out-of-order agent-message chunk`, closeStdin);
+          this.fail(
+            `${this.label()} ACP returned an out-of-order ${thought ? "agent-thought" : "agent-message"} chunk`,
+            closeStdin,
+          );
           return;
         }
         const content = record(update.content);
         const delta = content.type === "text" ? stringField(content, "text") : null;
         if (delta === null) {
-          this.fail(`${this.label()} ACP returned an invalid agent-message chunk`, closeStdin);
+          this.fail(
+            `${this.label()} ACP returned an invalid ${thought ? "agent-thought" : "agent-message"} chunk`,
+            closeStdin,
+          );
           return;
         }
         if (this.promptIndex === this.input.prompts.length - 1) {
-          this.text += delta;
-          this.input.on_text_delta?.(delta);
+          // Reasoning is deliberately kept out of `this.text`: that is the
+          // turn's answer, and it feeds output_text and the measurement
+          // fallback.
+          if (thought) {
+            this.input.on_thought_delta?.(delta);
+          } else {
+            this.text += delta;
+            this.input.on_text_delta?.(delta);
+          }
         }
       }
       if (this.phase !== "set_model" && this.phase !== "prompt") {
@@ -400,6 +467,11 @@ export class AcpController implements CliStdioController {
   }
 
   private captureSelectedModel(result: Record<string, unknown>): void {
+    // A caller that already knows the model has the better answer, and this
+    // must not overwrite it: the runtime's echo is an alias on a fresh session
+    // and the *previous* turn's model on a resumed one, while the server
+    // decided the real one when it wrote the environment.
+    if (this.input.attributed_model) return;
     const options = Array.isArray(result.configOptions) ? result.configOptions.map(record) : [];
     const modelOption = options.find((option) => option.id === "model");
     this.selectedModel = stringField(modelOption ?? {}, "currentValue") ?? this.input.model;

@@ -20,6 +20,13 @@ export interface ProviderProxyLeaseInput {
   project_id?: string | null;
   project_folder_id?: string | null;
   trigger_origin?: string | null;
+  /**
+   * The execution host this lease was issued for, when it is not the server.
+   * Recorded so revoking a host also revokes its live leases — otherwise a
+   * machine that was just cut off keeps spending the space's provider
+   * credential until every in-flight lease expires on its own.
+   */
+  host_id?: string | null;
   invocation_audit_refs?: InvocationAuditRefs | null;
   ttl_ms: number;
 }
@@ -35,6 +42,7 @@ export interface ProviderProxyLease {
   provider_type: string | null;
   provider_name_snapshot: string | null;
   network_profile_id: string | null;
+  host_id: string | null;
   route: ProviderProxyRoute;
   upstream_base_url: string;
   model: string | null;
@@ -60,6 +68,7 @@ export interface ResolvedProviderProxyLease {
   provider_type: string | null;
   provider_name_snapshot: string | null;
   network_profile_id: string | null;
+  host_id: string | null;
   route: ProviderProxyRoute;
   upstream_base_url: string;
   model: string | null;
@@ -86,16 +95,44 @@ function normalizeBaseUrl(value: string): string {
 }
 
 let processProviderProxyBaseUrl: string | null = null;
+/**
+ * How a *remote* execution host reaches the same proxy. Separate from the
+ * in-network URL above because that one names a Compose service, which a
+ * paired machine cannot resolve. Null means remote provider binding is not
+ * configured, and callers say so rather than handing out an unusable URL.
+ */
+let processProviderProxyExternalBaseUrl: string | null = null;
 
-export function setProviderProxyBaseUrlForProcess(baseUrl: string | null): void {
+export function setProviderProxyBaseUrlForProcess(
+  baseUrl: string | null,
+  externalBaseUrl: string | null = null,
+): void {
   processProviderProxyBaseUrl = baseUrl ? baseUrl.replace(/\/+$/, "") : null;
+  processProviderProxyExternalBaseUrl = externalBaseUrl ? externalBaseUrl.replace(/\/+$/, "") : null;
+}
+
+/**
+ * Where one lease lives under a proxy base URL. The shape is the proxy's own
+ * routing contract (`server.ts` splits the path back into route and lease id),
+ * so every caller that builds such a URL goes through here rather than
+ * repeating it — there were four copies, and a wire format spread across four
+ * expressions is one edit away from disagreeing.
+ */
+export function providerProxyLeaseUrl(baseUrl: string, route: ProviderProxyRoute, leaseId: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/${route}/${encodeURIComponent(leaseId)}`;
 }
 
 export function providerProxyLeaseBaseUrl(route: ProviderProxyRoute, leaseId: string): string {
   if (!processProviderProxyBaseUrl) {
     throw new Error("Provider proxy listener is not started.");
   }
-  return `${processProviderProxyBaseUrl}/${route}/${encodeURIComponent(leaseId)}`;
+  return providerProxyLeaseUrl(processProviderProxyBaseUrl, route, leaseId);
+}
+
+/** Null when this deployment has not published the proxy for remote hosts. */
+export function providerProxyExternalLeaseUrl(route: ProviderProxyRoute, leaseId: string): string | null {
+  if (!processProviderProxyExternalBaseUrl) return null;
+  return providerProxyLeaseUrl(processProviderProxyExternalBaseUrl, route, leaseId);
 }
 
 export class ProviderProxyLeaseRegistry {
@@ -111,6 +148,7 @@ export class ProviderProxyLeaseRegistry {
       space_id: input.space_id,
       provider_id: input.provider_id,
       provider_type: input.provider_type ?? null,
+      host_id: input.host_id ?? null,
       provider_name_snapshot: input.provider_name_snapshot ?? null,
       network_profile_id: input.network_profile_id ?? null,
       route: input.route ?? "anthropic",
@@ -137,6 +175,7 @@ export class ProviderProxyLeaseRegistry {
       space_id: record.space_id,
       provider_id: record.provider_id,
       provider_type: record.provider_type,
+      host_id: record.host_id,
       provider_name_snapshot: record.provider_name_snapshot,
       network_profile_id: record.network_profile_id,
       route: record.route,
@@ -181,6 +220,18 @@ export class ProviderProxyLeaseRegistry {
     for (const [id, lease] of this.leases) {
       if (lease.run_id === runId) this.leases.delete(id);
     }
+  }
+
+  /** Cuts off a revoked execution host's in-flight leases immediately. */
+  revokeHost(hostId: string): number {
+    let revoked = 0;
+    for (const [id, lease] of this.leases) {
+      if (lease.host_id === hostId) {
+        this.leases.delete(id);
+        revoked += 1;
+      }
+    }
+    return revoked;
   }
 
   size(): number {

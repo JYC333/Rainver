@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { ServerConfig } from "../src/config";
-import { migrate } from "../src/db/migrator";
 import { resolveProviderCommandStore } from "../src/modules/providers/commands/store";
 import {
   __setManagedSubscriptionFetchForTests,
@@ -19,7 +18,6 @@ import {
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "7b000000-0000-4000-8000-000000000001";
 const OWNER = "7b000000-0000-4000-8000-000000000002";
 const OTHER = "7b000000-0000-4000-8000-000000000003";
@@ -33,7 +31,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 5 });
-    await migrate(pool, MIGRATIONS_DIR);
     agentSpaceHome = await mkdtemp(join(tmpdir(), "aspace-managed-subscription-"));
     await pool.query(
       `INSERT INTO spaces (id,name,type,created_at,updated_at)

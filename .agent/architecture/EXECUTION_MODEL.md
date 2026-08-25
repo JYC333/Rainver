@@ -468,7 +468,7 @@ execution.
 Codex is not required to gain an equivalent control (decided 2026-08-13).
 Runtime-internal subagents widen no permission surface: they execute in the
 same worktree sandbox and the same freshly cleared `HOME`, reach providers only
-through the same loopback proxy, and spend the same Run cost cap, and
+through the same provider proxy, and spend the same Run cost cap, and
 file-scope conformance judges the resulting worktree diff whichever internal
 agent wrote it. What they do cost is attribution and cancellation certainty,
 and Codex is already priced for that — its `unknown` declaration fails the

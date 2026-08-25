@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { PromptRepository } from "../src/modules/prompts/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -16,7 +15,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // underlying scope/pin resolution matrix is already covered by
 // evolvableAssetDb.test.ts and is not re-tested here.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "31111111-1111-4111-8111-111111111111";
 const OWNER = "3aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUTSIDER = "3bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -30,7 +28,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -45,8 +42,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE evolvable_asset_pins, evolvable_asset_versions, evolvable_assets, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(

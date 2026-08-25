@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
 import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter";
 
@@ -11,7 +10,6 @@ import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/ev
 // what the queue guarantees about not paying twice, how failures terminate, and
 // the CHECK that stops a half-parsed annotation from looking usable.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "99999999-9999-4999-8999-999999999999";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -28,7 +26,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -43,10 +40,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE source_item_annotations, source_item_user_states, source_channel_item_links, source_channels,
-       source_items, source_connections, source_provider_connectors, source_providers, source_connectors,
-       space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["source_item_annotations", "source_item_user_states", "source_channel_item_links", "source_channels", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   for (const [id, name] of [[SPACE, "Main"], [OTHER_SPACE, "Other"]] as const) {

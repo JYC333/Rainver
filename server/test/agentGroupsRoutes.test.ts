@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { __setAgentGroupsServiceFactoryForTests, authorityWidening } from "../src/modules/agentGroups";
+import { __setAgentGroupsServiceFactoryForTests, authorityWidening, agentGroupsModule } from "../src/modules/agentGroups";
 
 let app: FastifyInstance | undefined;
 
@@ -80,7 +80,7 @@ describe("agent group routes", () => {
         throw new Error("not used");
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentGroupsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -135,7 +135,7 @@ describe("agent group routes", () => {
         throw new Error("not used");
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentGroupsModule]);
 
     const res = await app.inject({
       method: "PATCH",
@@ -163,7 +163,7 @@ describe("agent group routes", () => {
     __setAgentGroupsServiceFactoryForTests(() => {
       throw new Error("service should not be constructed");
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentGroupsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -231,7 +231,7 @@ describe("agent group routes", () => {
         throw new Error("not used");
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentGroupsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -265,7 +265,7 @@ describe("agent group routes", () => {
     __setAgentGroupsServiceFactoryForTests(() => {
       throw new Error("service should not be constructed");
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentGroupsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -315,7 +315,7 @@ describe("agent group routes", () => {
         return group({ status });
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentGroupsModule]);
 
     for (const action of ["pause", "resume", "cancel"]) {
       const res = await app.inject({

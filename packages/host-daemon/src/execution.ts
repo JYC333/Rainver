@@ -6,6 +6,7 @@ import { configDir, requireConfig } from "./config.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
+import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedProfiles } from "./providerBinding.js";
 
 export interface LaunchFrame {
   run_id: string;
@@ -23,6 +24,48 @@ export interface LaunchFrame {
    * `argv_template` run.
    */
   keep_stdin_open?: boolean;
+  /**
+   * Backend selection for this run, when the control plane chose one. Absent
+   * means the run uses whatever this machine is logged into, which is the
+   * default and the pre-existing behavior.
+   *
+   * The daemon never sees a provider API key: `lease_token` authorizes one
+   * short-lived lease at `lease_url`, and the server swaps in the real key
+   * inside its own process.
+   */
+  provider_binding?: ProviderBindingFrame;
+}
+
+export interface ProviderBindingFrame {
+  /**
+   * Which profile directory this run's runtime uses, as
+   * `<adapter_type>/<provider_id>`. Chosen by the control plane, validated
+   * here before it becomes a path.
+   *
+   * Not per-run: a CLI keeps its conversation state inside the profile, so a
+   * profile deleted with the run takes the session the next turn resumes with
+   * it. Shared per adapter and provider, a conversation survives for as long
+   * as its backend does not change.
+   */
+  profile_key: string;
+  /**
+   * Literal environment the runtime needs: the lease URL reachable from *this*
+   * machine, its token, model names. No provider API key is ever among them —
+   * the server swaps the real key in behind the proxy.
+   */
+  env: Record<string, string>;
+  /**
+   * Environment whose value is a path inside this run's profile directory,
+   * which only this machine knows. Key → path relative to the profile root;
+   * `"."` means the profile root itself.
+   */
+  profile_env: Record<string, string>;
+  /**
+   * Files to write under the profile root, paths relative to it. `contents`
+   * may contain the profile-root placeholder; `escape` says how to encode the
+   * substituted absolute path for that file's syntax.
+   */
+  files: Array<{ relative_path: string; contents: string; escape?: "toml_basic_string" }>;
 }
 
 export interface StdinFrame {
@@ -44,6 +87,7 @@ interface ActiveRun {
   cwd: string;
   timedOut: boolean;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
+  /** Removes this run's control-plane-provided profile, if it had one. */
 }
 
 /**
@@ -120,9 +164,40 @@ export function resolveCodexAcpEntrypoint(): string | null {
  * daemon process's lifetime.
  */
 const activeRuns = new Map<string, ActiveRun>();
+/** Runs whose launch frame has arrived but whose child is not registered yet. */
+const launchingRuns = new Set<string>();
+
+/**
+ * Removes run profiles left behind by a daemon that was killed mid-run. Each
+ * holds a live lease token, and nothing else would ever remove it — the same
+ * run id never comes back.
+ */
+export async function sweepStaleRunProfiles(): Promise<number> {
+  // `launchingRuns` as well as `activeRuns`: a reconnect can land between a
+  // launch frame arriving and its child being registered, and deleting that
+  // run's profile mid-launch is the exact silent-unbinding this phase exists
+  // to prevent.
+  return sweepOrphanedProfiles(
+    join(configDir(), "runs"),
+    new Set([...activeRuns.keys(), ...launchingRuns]),
+  );
+}
 
 function runOutputsDir(runId: string): string {
   return join(configDir(), "runs", runId, "outputs");
+}
+
+/**
+ * Where a bound run's runtime keeps its profile, including the conversation
+ * state it will resume next turn. Shared by every run with the same adapter
+ * and provider on this machine, which is why it is not under `runs/`.
+ */
+function providerProfileDir(profileKey: string): string {
+  const segments = profileKey.split("/");
+  if (segments.length !== 2 || segments.some((segment) => !/^[A-Za-z0-9._-]+$/.test(segment) || segment.startsWith("."))) {
+    throw new Error(`provider binding carried an unusable profile key: ${profileKey}`);
+  }
+  return join(configDir(), "profiles", ...segments);
 }
 
 /**
@@ -134,6 +209,19 @@ function runOutputsDir(runId: string): string {
  * still tracked and its artifacts still uploaded over plain HTTP.
  */
 export async function handleLaunch(
+  frame: LaunchFrame,
+  send: (frame: Record<string, unknown>) => void,
+  log: (line: string) => void,
+): Promise<void> {
+  launchingRuns.add(frame.run_id);
+  try {
+    await launchRun(frame, send, log);
+  } finally {
+    launchingRuns.delete(frame.run_id);
+  }
+}
+
+async function launchRun(
   frame: LaunchFrame,
   send: (frame: Record<string, unknown>) => void,
   log: (line: string) => void,
@@ -190,9 +278,35 @@ export async function handleLaunch(
   const outputsDir = runOutputsDir(frame.run_id);
   await mkdir(outputsDir, { recursive: true });
 
-  const child = spawn(command, spawnArgs, {
+  // B67: for a bound run the executing machine contributes nothing to which
+  // backend, credential, or upstream the runtime reaches — so the ambient
+  // environment is filtered rather than merged over, and the runtime is
+  // pointed at a control-plane-provided profile instead of this machine's.
+  // A run with no binding keeps the machine's own environment untouched.
+  let baseEnv: Record<string, string> = { ...process.env } as Record<string, string>;
+  let bindingEnv: Record<string, string> = {};
+  if (frame.provider_binding) {
+    try {
+      bindingEnv = await materializeProviderBinding(
+        frame.provider_binding,
+        providerProfileDir(frame.provider_binding.profile_key),
+      );
+      baseEnv = filterAmbientEnv(process.env);
+    } catch (error) {
+      send({
+        type: "complete",
+        run_id: frame.run_id,
+        exit_code: 1,
+        timed_out: false,
+        error: `Could not prepare the selected model backend: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+  }
+
+  const child: ChildProcess = spawn(command, spawnArgs, {
     cwd,
-    env: { ...process.env, AGENT_SPACE_OUTPUT_DIR: outputsDir, ...acpAdapterEnv },
+    env: { ...baseEnv, AGENT_SPACE_OUTPUT_DIR: outputsDir, ...acpAdapterEnv, ...bindingEnv },
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
   });

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { artifactsModule } from "../src/modules/artifacts";
 import { loadConfig } from "../src/config";
 import {
   __setArtifactIdentityForTests,
@@ -81,7 +82,7 @@ describe("artifact routes", () => {
         throw new Error("export should not run");
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [artifactsModule]);
 
     const list = await app.inject({
       method: "GET",
@@ -142,7 +143,7 @@ describe("artifact routes", () => {
         };
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [artifactsModule]);
 
     const res = await app.inject({
       method: "GET",

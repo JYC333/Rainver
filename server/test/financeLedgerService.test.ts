@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime";
 
 const {
@@ -29,7 +30,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool!.query("TRUNCATE TABLE finance_books CASCADE");
+  await resetTables(pool!, ["finance_books"], { cascade: true });
 });
 
 async function createBasicLedger() {

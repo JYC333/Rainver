@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { AcademicRepository } from "../src/modules/academic/repository";
 import { AcademicService } from "../src/modules/academic/service";
 import { RelationsRepository } from "../src/modules/relations/repository";
@@ -12,7 +11,6 @@ import { RelationsService } from "../src/modules/relations/service";
 // papers built on the existing `sources` extension (not a new space_objects
 // object_type), authored_by/cites object_relations edges, and space isolation.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -25,7 +23,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -40,8 +37,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE academic_papers, sources, relation_people, object_relations, space_objects, users, spaces CASCADE",
+  await resetTables(
+    pool,
+    ["academic_papers", "sources", "relation_people", "object_relations", "space_objects", "users", "spaces"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

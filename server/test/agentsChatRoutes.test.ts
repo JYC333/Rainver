@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { runsModule } from "../src/modules/runs";
+import { agentsModule } from "../src/modules/agents";
 import { loadConfig } from "../src/config";
 import {
   __setAgentChatIdentityForTests,
@@ -185,7 +187,7 @@ describe("agents asynchronous chat-turn route", () => {
         },
       }),
     );
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -231,7 +233,7 @@ describe("agents asynchronous chat-turn route", () => {
         },
       }),
     );
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -295,7 +297,7 @@ describe("agents asynchronous chat-turn route", () => {
       }
     };
     __setAgentChatServicesFactoryForTests(() => configured);
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -326,7 +328,7 @@ describe("agents asynchronous chat-turn route", () => {
         },
       }),
     );
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -344,7 +346,7 @@ describe("agents asynchronous chat-turn route", () => {
   it("rejects empty messages before creating durable work", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setAgentChatServicesFactoryForTests(() => services());
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -399,7 +401,7 @@ describe("agents asynchronous chat-turn route", () => {
         },
       }),
     );
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -476,7 +478,7 @@ describe("agents asynchronous chat-turn route", () => {
         },
       }),
     );
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -528,7 +530,7 @@ describe("agents asynchronous chat-turn route", () => {
         },
       }),
     );
-    app = buildServer(chatConfig(), { logger: false });
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
 
     await app.inject({
       method: "POST",

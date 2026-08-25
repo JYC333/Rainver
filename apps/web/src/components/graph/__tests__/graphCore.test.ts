@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { GraphProjection } from '@agent-space/protocol'
 import { createGraphTheme } from '../core/graphTheme'

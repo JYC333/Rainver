@@ -1,0 +1,11 @@
+{
+  "$comment": "Hard limits enforced by tools/vitest/budgetReporter.mjs on every run. Per-file and per-test limits sit at about twice the current worst case; suite totals may exceed the baseline by the tolerance. Totals are per-file sums (not wall clock) but still swing ~1.5x with machine load, so the gate is tuned to catch a doubling, not drift. Refresh the baseline here, in the same change, when the suite legitimately grows.",
+  "maxFileImportMs": 8000,
+  "maxTestMs": 15000,
+  "tolerance": 2.0,
+  "baseline": {
+    "files": 105,
+    "importMs": 45000,
+    "testMs": 120000
+  }
+}

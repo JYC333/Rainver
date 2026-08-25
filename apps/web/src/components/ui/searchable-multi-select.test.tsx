@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from './dialog'
 
 describe('SearchableMultiSelect', () => {
   it('keeps the menu open while selecting an option from the portal', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     function Harness() {
       const [value, setValue] = useState<string[]>([])
       return (

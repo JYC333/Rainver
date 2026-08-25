@@ -9,27 +9,32 @@ import { cleanup, configure } from '@testing-library/react'
 // 30s testTimeout still bounds a test that is genuinely stuck.
 configure({ asyncUtilTimeout: 15000 })
 
-if (!document.elementFromPoint) {
-  document.elementFromPoint = () => document.body
-}
+// Pure-logic test files opt out of jsdom with `@vitest-environment node`;
+// the DOM shims and the per-test DOM cleanup only apply where a DOM exists.
+if (typeof document !== 'undefined') {
+  if (!document.elementFromPoint) {
+    document.elementFromPoint = () => document.body
+  }
 
-if (!Range.prototype.getClientRects) {
-  Range.prototype.getClientRects = () => [] as unknown as DOMRectList
-}
+  if (!Range.prototype.getClientRects) {
+    Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+  }
 
-if (!Range.prototype.getBoundingClientRect) {
-  Range.prototype.getBoundingClientRect = () => new DOMRect()
-}
+  if (!Range.prototype.getBoundingClientRect) {
+    Range.prototype.getBoundingClientRect = () => new DOMRect()
+  }
 
-if (!HTMLElement.prototype.getClientRects) {
-  HTMLElement.prototype.getClientRects = () => [] as unknown as DOMRectList
-}
+  if (!HTMLElement.prototype.getClientRects) {
+    HTMLElement.prototype.getClientRects = () => [] as unknown as DOMRectList
+  }
 
-if (!HTMLElement.prototype.getBoundingClientRect) {
-  HTMLElement.prototype.getBoundingClientRect = () => new DOMRect()
+  if (!HTMLElement.prototype.getBoundingClientRect) {
+    HTMLElement.prototype.getBoundingClientRect = () => new DOMRect()
+  }
 }
 
 afterEach(() => {
+  if (typeof document === 'undefined') return
   cleanup()
   localStorage.clear()
 })

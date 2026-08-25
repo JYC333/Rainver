@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { deploymentModule } from "../src/modules/deployment";
 import { loadConfig } from "../src/config";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 
@@ -15,7 +16,7 @@ afterEach(async () => {
 describe("deployment trigger boundary", () => {
   it("keeps authenticated product deployment triggers fail-closed", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [deploymentModule]);
 
     const list = await app.inject({ method: "GET", url: "/api/v1/deployments/jobs" });
     expect(list.statusCode).toBe(200);

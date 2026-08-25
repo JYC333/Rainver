@@ -73,5 +73,6 @@ export * from "./hosts";
 export * from "./hostTaskThreads";
 export * from "./hostThreadEvents";
 export * from "./hostThreadMessages";
+export * from "./hostRuntimeProviderBindings";
 export * from "./projectFolders";
 export * from "./workspaceLocations";

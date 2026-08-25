@@ -1,8 +1,6 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { InformationDigestService } from "../src/modules/informationDigest/service";
 import { PgInformationDigestRepository } from "../src/modules/informationDigest/repository";
 import type { Queryable, QueryResult } from "../src/modules/routeUtils/common";
@@ -15,8 +13,8 @@ import { InterestProfileService } from "../src/modules/interestProfile/service";
 import { InterestStarterPackService } from "../src/modules/informationDigest/starterPacks";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -39,7 +37,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -54,12 +51,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE information_digest_items, information_digests, interest_topics, interest_profiles,
-       project_corpus_items, project_members, projects, source_item_annotations,
-       source_item_user_states, source_channel_user_subscriptions, source_channel_item_links,
-       source_channels, source_items, source_connections, source_provider_connectors,
-       source_providers, source_connectors, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["information_digest_items", "information_digests", "interest_topics", "interest_profiles", "project_corpus_items", "project_members", "projects", "source_item_annotations", "source_item_user_states", "source_channel_user_subscriptions", "source_channel_item_links", "source_channels", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = `${DATE}T08:00:00.000Z`;
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Team','team',$2,$2)`, [SPACE, now]);

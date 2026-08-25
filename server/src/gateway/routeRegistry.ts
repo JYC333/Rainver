@@ -84,13 +84,7 @@ import { plansModule } from "../modules/plans";
 import { routingModule } from "../modules/routing";
 // Plugin host — activates built-in official plugins after SERVER_MODULES.
 import type { PluginHost } from "../modules/plugins/host";
-import { registerErrorEnvelopeHandler } from "./errorEnvelope";
-import {
-  REQUEST_ID_HEADER,
-  SERVER_MARKER_HEADER,
-  SERVER_MARKER_VALUE,
-  resolveRequestId,
-} from "./requestContext";
+import { registerGatewayConventions, registerUnknownApiRoute } from "./appShell";
 
 /** Dependencies handed to every server-owned module at registration time. */
 export interface ModuleContext {
@@ -193,13 +187,7 @@ export function registerServerRoutes(
 ): void {
   const context: ModuleContext = { config, snapshot: createConfigSnapshot(config), pluginHost };
 
-  // Cross-cutting gateway conventions: the error envelope for server-owned route
-  // errors, and request-id continuity on every response.
-  registerErrorEnvelopeHandler(app);
-  app.addHook("onRequest", async (request, reply) => {
-    reply.header(REQUEST_ID_HEADER, resolveRequestId(request));
-    reply.header(SERVER_MARKER_HEADER, SERVER_MARKER_VALUE);
-  });
+  registerGatewayConventions(app);
 
   // 1. Server-owned modules (permanent).
   for (const module of SERVER_MODULES) {
@@ -212,7 +200,5 @@ export function registerServerRoutes(
   }
 
   // 3. Unknown API catch-all. Must stay last so explicitly owned server routes win.
-  app.all("/api/v1/*", async (_request, reply) =>
-    reply.code(404).send({ detail: "Route not found" }),
-  );
+  registerUnknownApiRoute(app);
 }

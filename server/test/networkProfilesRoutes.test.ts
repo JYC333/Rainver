@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { networkProfilesModule } from "../src/modules/networkProfiles";
 import { loadConfig } from "../src/config";
 import {
   __setAuthRepositoryForTests,
@@ -55,10 +56,8 @@ function authWithRole(role: string): AuthRepository {
 describe("network profile route authority", () => {
   it("denies non-admin space members before exposing space network settings", async () => {
     __setAuthRepositoryForTests(authWithRole("member"));
-    app = buildServer(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space" }),
-      { logger: false },
-    );
+    app = buildModuleServer(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space" }), [networkProfilesModule], { logger: false },);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/network-profiles" });
     expect(res.statusCode).toBe(403);

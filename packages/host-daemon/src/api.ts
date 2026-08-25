@@ -34,13 +34,21 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
-async function helloInfo(workspaces: Record<string, string> = {}): Promise<{
+async function helloInfo(workspaces: Record<string, string> = {}, serverUrl?: string): Promise<{
   platform: string;
   arch: string;
   daemon_version: string;
   environment_kind: string;
   capabilities_json: DaemonCapabilities;
   workspace_reports: WorkspaceStatusReport[];
+  /**
+   * The address this daemon actually reaches the control plane at. Reported so
+   * the server can work out an address for its provider proxy that this
+   * machine can resolve — a Compose service name cannot be guessed from the
+   * server side, and asking an operator to write one into a file is the wrong
+   * shape for something the daemon already knows.
+   */
+  server_url?: string;
 }> {
   const capabilities = await detectCapabilities();
   const currentPlatform = platform();
@@ -54,6 +62,7 @@ async function helloInfo(workspaces: Record<string, string> = {}): Promise<{
     environment_kind,
     capabilities_json: capabilities,
     workspace_reports: await collectWorkspaceStatus(workspaces),
+    ...(serverUrl ? { server_url: serverUrl } : {}),
   };
 }
 

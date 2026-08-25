@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { captureModule } from "../src/modules/capture";
 import { loadConfig } from "../src/config";
 import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth";
 import { __setCaptureServiceFactoryForTests } from "../src/modules/capture/routes";
@@ -48,10 +49,8 @@ const auth: AuthRepository = {
 
 function server(): FastifyInstance {
   __setAuthRepositoryForTests(auth);
-  return buildServer(
-    loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space" }),
-    { logger: false },
-  );
+  return buildModuleServer(
+    loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space" }), [captureModule], { logger: false },);
 }
 
 describe("POST /api/v1/captures", () => {

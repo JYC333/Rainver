@@ -40,14 +40,17 @@ SERVER_DATABASE_URL=postgresql://... pnpm run migrate:status
 SERVER_DATABASE_URL=postgresql://... pnpm run migrate
 
 # Schema changes: edit server/src/db/schema/, then generate SQL artifacts.
-# schema:generate refreshes only the empty-database baseline under
-# server/drizzle/0000_baseline.sql, with rollback protection. It never rewrites
-# numbered runtime migrations. Runtime upgrades are explicit append-only
-# server/migrations/0002_*.sql files; server/migrations/0001_baseline.sql is
-# immutable. schema:check is no-write and validates the baseline plus numbered
-# migration chain. start.sh runs schema:check before applying migrations.
-# Do not hand-edit server/migrations/*.sql for schema changes. No database is
-# needed for either command.
+# schema:generate refreshes the empty-database baseline under
+# server/drizzle/0000_baseline.sql, with rollback protection.
+# The runtime schema is ONE file, server/migrations/0001_baseline.sql: no
+# deployment carries data predating it, so a change is folded in rather than
+# appended as a numbered upgrade. After schema:generate, copy the Drizzle
+# baseline over it (see server/migrations/README.md). schema:check is no-write
+# and validates that the schema, the Drizzle baseline and the runtime baseline
+# all agree, plus the single-file rule; start.sh runs it before applying
+# migrations. No database is needed for either command.
+# Rewriting the baseline means recreating the database: the runner refuses a
+# changed already-applied file, so run ops/scripts/db/reset-postgres.sh first.
 pnpm run schema:generate
 pnpm run schema:check
 ```

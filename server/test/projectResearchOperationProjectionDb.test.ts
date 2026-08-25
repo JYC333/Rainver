@@ -1,14 +1,12 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { advanceOperation, type ResearchOperationState } from "../src/modules/projectResearch/operationProjection";
 import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -23,7 +21,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -72,7 +69,11 @@ function operationProjection(): ResearchOperationState {
 }
 
 async function seed(): Promise<void> {
-  await pool!.query(`TRUNCATE project_operations, project_research_workflows, projects, space_memberships, users, spaces CASCADE`);
+  await resetTables(
+    pool!,
+    ["project_operations", "project_research_workflows", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
+  );
   const now = new Date().toISOString();
   await pool!.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
   await pool!.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);

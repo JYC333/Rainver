@@ -242,14 +242,18 @@ ops/scripts/system/verify-restore.sh --mode dev
 During preflight, `restore.sh` reads the manifest **version metadata** (`backup_format`,
 `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, `pg_dump_version`),
 prints the recorded values, and **fails closed before any destructive operation** on a missing
-or unexpected `backup_format`, or a PostgreSQL **major-version** mismatch between the backup
-source and the live restore target. For controlled recovery you can override this check with
+or unexpected `backup_format`, a PostgreSQL **major-version** mismatch between the backup
+source and the live restore target, or a `schema_migration_checksum` that differs from this
+build's `server/migrations/0001_baseline.sql`. The last one means the archive predates a schema
+change: the runtime schema is a single regenerated baseline, so restoring it would produce a
+database the migration runner refuses to start against — prefer a build whose baseline matches
+the archive. For controlled recovery you can override this check with
 `--force-incompatible-backup`; `--force` (file overwrite) and `--force-running` (active
 services) do **not** imply it. The metadata is never silently ignored.
 
 For `test` or `prod`, use the matching compose project and file, for example `agent-space-test` with `ops/compose/docker-compose.test.yml` or `agent-space-prod` with `ops/compose/docker-compose.prod.yml`.
 
-`--force-running` bypasses the running-service refusal and should only be used for controlled recovery when you have independently stopped all writers. `--force-incompatible-backup` bypasses the backup-compatibility preflight (unexpected `backup_format` or PostgreSQL major-version mismatch) and should only be used when you have verified the archive is restorable on the target server.
+`--force-running` bypasses the running-service refusal and should only be used for controlled recovery when you have independently stopped all writers. `--force-incompatible-backup` bypasses the backup-compatibility preflight (unexpected `backup_format`, PostgreSQL major-version mismatch, or schema-checksum mismatch) and should only be used when you have verified the archive is restorable **and startable** on the target build.
 
 ### DB-only expert path
 

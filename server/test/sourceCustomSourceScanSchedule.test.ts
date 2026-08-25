@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { enqueueDueSourceChannelScans } from "../src/modules/sources/scanSchedule";
 import {
@@ -67,12 +68,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE jobs, retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects,
-              source_handler_runs, source_handler_versions, source_recipe_versions, source_channel_item_links,
-              source_channel_user_subscriptions, source_channels, source_connections, source_provider_connectors, source_providers, source_connectors,
-              scheduler_tasks, settings, artifacts, extraction_jobs, source_items,
-              source_snapshots, extracted_evidence, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   // The real schema enforces space_memberships -> spaces -> users. The
   // hand-maintained schema copy this suite used to load carried neither the

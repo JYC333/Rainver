@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry";
 import { AutonomyService } from "../src/modules/autonomy/service";
 import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = `${process.cwd()}/migrations`;
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
 const AGENT = "33333333-3333-4333-8333-333333333333";
@@ -26,7 +25,6 @@ const describeWithPostgres = describe.skipIf(
 beforeAll(async () => {
   database = await getTestPostgres(__filename);
   pool = new Pool({ connectionString: database.getConnectionUri(), max: 5 });
-  await migrate(pool, MIGRATIONS_DIR);
 }, 180_000);
 
 afterAll(async () => {
@@ -38,7 +36,7 @@ beforeEach(async () => {
   if (!pool) return;
   autonomyDiscovererRegistry.__resetForTests();
   registerPeriodicDigestAutonomyDiscoverer();
-  await pool.query("TRUNCATE spaces, users CASCADE");
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
   const now = NOW.toISOString();
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

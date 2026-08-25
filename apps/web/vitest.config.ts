@@ -15,18 +15,22 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     css: false,
     include: ['src/**/*.test.{ts,tsx}'],
-    // jsdom render tests are cheap alone but sit behind other work under
-    // parallel load; 15s was failing a rotating handful of files on contention
-    // rather than on anything being wrong, which made a green run a coin flip.
-    // Raising the timeout alone did not settle it — a file that fails at 30s
-    // under full fan-out passes in under a second by itself — so the run also
-    // leaves half the cores free rather than starting a jsdom environment on
-    // every one of them.
+    // Timeouts are generous because a file that passes in under a second on
+    // its own can sit behind other work under full fan-out. The worker cap
+    // that used to sit here was a workaround for the server suite hogging the
+    // machine at the same time; on its own this suite is fastest at full
+    // parallelism.
     testTimeout: 30000,
     hookTimeout: 60000,
-    poolOptions: {
-      threads: { maxThreads: 6 },
-      forks: { maxForks: 6 },
+    // Per-package cache path: the default resolves to the workspace-root
+    // node_modules, which the other packages' runs would share and race on.
+    experimental: {
+      fsModuleCache: true,
+      fsModuleCachePath: "node_modules/.vitest-cache",
+      // Hard gate on any one import's time; see tools/vitest/budgetReporter.mjs
+      // for why the suites are budgeted rather than documented.
+      importDurations: { failOnDanger: true, thresholds: { warn: 3_000, danger: 8_000 } },
     },
+    reporters: ['default', ['../../tools/vitest/budgetReporter.mjs', { budgetPath: 'src/test/perf-budget.json' }]],
   },
 })

@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import {
   ProjectResearchStandingComparisonService,
@@ -10,6 +8,7 @@ import {
   STANDING_COMPARISON_JOB_TYPE,
 } from "../src/modules/projectResearch/standingComparisonService";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService";
 import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService";
 import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository";
@@ -38,7 +37,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    await migrate(pool, join(process.cwd(), "migrations"));
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -53,13 +51,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE project_research_standing_advice,project_research_standing_batches,research_scan_summaries,
-       research_evidence_cards,project_corpus_item_sources,project_corpus_items,source_items,jobs,runs,
-       note_revisions,note_collection_items,note_collections,notes,space_objects,
-       project_source_item_links,project_source_bindings,source_channels,source_connections,
-       source_provider_connectors,source_providers,source_connectors,
-       agent_versions,agents,project_members,projects,space_memberships,users,spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["project_research_standing_advice", "project_research_standing_batches", "research_scan_summaries", "research_evidence_cards", "project_corpus_item_sources", "project_corpus_items", "source_items", "jobs", "runs", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_source_item_links", "project_source_bindings", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "agent_versions", "agents", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','team',$2,$2)`, [SPACE, now]);

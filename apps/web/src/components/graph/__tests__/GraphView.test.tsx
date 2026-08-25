@@ -272,7 +272,7 @@ describe('GraphView', () => {
   })
 
   it('supports viewport overlay controls and Obsidian-style keyboard navigation', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<GraphView projection={projection} />)
     await waitFor(() => expect(graphMock.instances).toHaveLength(1))
     const graph = graphMock.instances[0]!
@@ -364,7 +364,7 @@ describe('GraphView', () => {
   })
 
   it('releases force fixed positions when pinned nodes are reset', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     function Harness() {
       const [viewState, setViewState] = useState(() =>
         normalizeGraphViewState({ currentLayout: 'circular', layoutSource: 'user' }))
@@ -571,7 +571,7 @@ describe('GraphView', () => {
   })
 
   it('keeps toolbar layout selections while graph data is unavailable', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     function Harness() {
       const [viewState, setViewState] = useState(() => normalizeGraphViewState())
       return (

@@ -483,7 +483,7 @@ describe('Evolution module', () => {
     })
 
     renderPage()
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     expect(await screen.findAllByText('Capture Memory Extraction')).not.toHaveLength(0)
     expect(evolutionApi.targetSignals).toHaveBeenCalledWith('target-1', { limit: 50 })
@@ -538,7 +538,7 @@ describe('Evolution module', () => {
       }],
     })
     renderPage()
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     expect(await screen.findAllByText('Capture Memory Extraction')).not.toHaveLength(0)
     await user.click(screen.getByRole('button', { name: /复制目标/i }))

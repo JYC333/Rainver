@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import type { ExecutionControlSnapshot, InvocationSnapshotSafe } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import {
   RuntimeContextInvocationGateway,
@@ -69,7 +69,7 @@ function control(): ExecutionControlSnapshot {
 }
 
 function planning(
-  recorder: { recordPlan: ReturnType<typeof vi.fn>; reconcile: ReturnType<typeof vi.fn> },
+  recorder: { recordPlan: Mock<() => Promise<undefined>>; reconcile: Mock<() => Promise<undefined>> },
   extraItems: ReturnType<typeof normalizeContextItem>[] = [],
 ) {
   return new RuntimeContextPlanningService({

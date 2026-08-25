@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { knowledgeModule } from "../src/modules/knowledge";
 import { loadConfig } from "../src/config";
 import {
   __setAuthIdentityForTests,
@@ -129,7 +130,7 @@ function authWithRole(role: string): AuthRepository {
 describe("Knowledge retrieval routes", () => {
   it("rejects search bodies that do not match the protocol contract", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -147,7 +148,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("rejects an unknown search mode", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -162,7 +163,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("rejects a brief request with an empty query", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -177,7 +178,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("rejects an unknown brief search mode", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -192,7 +193,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("rejects create-safety max_results above the protocol limit", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -211,7 +212,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("rejects negative retrieval feedback signals", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -231,7 +232,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("requires owner or admin role for full-space retrieval reindex", async () => {
     __setAuthRepositoryForTests(authWithRole("member"));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -245,7 +246,7 @@ describe("Knowledge retrieval routes", () => {
   it("requires owner/admin or enabled member scan access for the maintenance scan", async () => {
     __setAuthRepositoryForTests(authWithRole("member"));
     vi.mocked(getDbPool).mockReturnValue(scanPermissionDb("member", "admins") as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -291,7 +292,7 @@ describe("Knowledge retrieval routes", () => {
         return client;
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -380,7 +381,7 @@ describe("Knowledge retrieval routes", () => {
         return client;
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -409,7 +410,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("requires owner or admin role for retrieval eval report persistence", async () => {
     __setAuthRepositoryForTests(authWithRole("member"));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -424,7 +425,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("requires owner or admin role for retrieval explain", async () => {
     __setAuthRepositoryForTests(authWithRole("member"));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -443,7 +444,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("rejects non-Knowledge object types for retrieval explain", async () => {
     __setAuthRepositoryForTests(authWithRole("admin"));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -462,7 +463,7 @@ describe("Knowledge retrieval routes", () => {
 
   it("validates maintenance scan persistence flags before scanning", async () => {
     __setAuthRepositoryForTests(authWithRole("admin"));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -578,7 +579,7 @@ describe("Knowledge retrieval routes", () => {
     "rejects eval reports that include %s",
     async (_label, payload) => {
       __setAuthRepositoryForTests(authWithRole("admin"));
-      app = buildServer(config(), { logger: false });
+      app = buildModuleServer(config(), [knowledgeModule]);
 
       const res = await app.inject({
         method: "POST",

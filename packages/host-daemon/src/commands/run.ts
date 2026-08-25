@@ -5,7 +5,9 @@ import {
   handleStdin,
   handleStdinClose,
   handleTerminate,
+  sweepStaleRunProfiles,
   type LaunchFrame,
+  type ProviderBindingFrame,
   type TerminateFrame,
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
@@ -26,6 +28,42 @@ function wsUrl(serverUrl: string): string {
  * until the process is killed, exactly like a systemd/launchd-managed
  * service is expected to.
  */
+export function parseProviderBinding(value: unknown): ProviderBindingFrame | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("launch frame carried a malformed provider_binding");
+  }
+  const record = value as Record<string, unknown>;
+  const files = Array.isArray(record.files) ? record.files : null;
+  if (!files || !isStringMap(record.env) || !isStringMap(record.profile_env)) {
+    throw new Error("launch frame carried a malformed provider_binding");
+  }
+  if (typeof record.profile_key !== "string" || !record.profile_key) {
+    throw new Error("launch frame carried a provider_binding with no profile key");
+  }
+  return {
+    profile_key: record.profile_key,
+    env: record.env as Record<string, string>,
+    profile_env: record.profile_env as Record<string, string>,
+    files: files.map((entry) => {
+      const file = entry as Record<string, unknown>;
+      if (typeof file?.relative_path !== "string" || typeof file?.contents !== "string") {
+        throw new Error("launch frame carried a malformed provider_binding file");
+      }
+      return {
+        relative_path: file.relative_path,
+        contents: file.contents,
+        ...(file.escape === "toml_basic_string" ? { escape: "toml_basic_string" as const } : {}),
+      };
+    }),
+  };
+}
+
+function isStringMap(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+    && Object.values(value as Record<string, unknown>).every((entry) => typeof entry === "string");
+}
+
 export async function runService(options: { log?: (line: string) => void } = {}): Promise<never> {
   const log = options.log ?? ((line: string) => console.log(`[agent-space-host] ${line}`));
   const config = await requireConfig();
@@ -71,7 +109,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     const currentWorkspaces = async () => (await loadConfig())?.workspaces ?? workspaces;
 
     socket.addEventListener("open", () => {
-      void currentWorkspaces().then(helloInfo).then((info) => {
+      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl)).then((info) => {
+        // Reclaims per-run profiles written by an older daemon, which no run
+        // will ever come back for. Profiles are shared per adapter and
+        // provider now, and are not swept.
+        void sweepStaleRunProfiles().then((removed) => {
+          if (removed > 0) log(`removed ${removed} profile(s) from a previous daemon layout`);
+        }).catch(() => {});
         socket.send(JSON.stringify({ type: "hello", token, ...info }));
       });
     });
@@ -88,7 +132,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         sink.bind(sendOnThisConnection);
         log(`connected as host ${String(frame.host_id)}`);
         heartbeatTimer = setInterval(() => {
-          void currentWorkspaces().then(helloInfo).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
+          void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl)).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
         }, HEARTBEAT_INTERVAL_MS);
         return;
       }
@@ -97,6 +141,23 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         return;
       }
       if (frame.type === "launch" && typeof frame.run_id === "string" && Array.isArray(frame.argv)) {
+        let providerBinding: ProviderBindingFrame | undefined;
+        try {
+          providerBinding = parseProviderBinding(frame.provider_binding);
+        } catch (error) {
+          // Throwing here would escape the WS listener and take the whole
+          // daemon down, losing the reporting channel for every other run.
+          // Fail this run instead, and say why.
+          log(`launch run ${String(frame.run_id)}: rejected: ${error instanceof Error ? error.message : String(error)}`);
+          sink.send({
+            type: "complete",
+            run_id: frame.run_id,
+            exit_code: 1,
+            timed_out: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
         const launchFrame: LaunchFrame = {
           run_id: frame.run_id,
           workspace_location_id: typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : undefined,
@@ -105,6 +166,11 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           stdin: typeof frame.stdin === "string" ? frame.stdin : null,
           timeout_seconds: typeof frame.timeout_seconds === "number" ? frame.timeout_seconds : null,
           keep_stdin_open: frame.keep_stdin_open === true,
+          // Dropping this silently is how a bound run ends up on the machine's
+          // own login while the control plane believes otherwise, so it is
+          // parsed strictly above: a malformed binding fails the run rather
+          // than degrading into an unbound one.
+          provider_binding: providerBinding,
         };
         log(`launch run ${launchFrame.run_id}`);
         // Always routed through `sink`, never `sendOnThisConnection`

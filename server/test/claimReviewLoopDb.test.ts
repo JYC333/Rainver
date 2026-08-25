@@ -1,15 +1,13 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { buildClaimTrajectory, scanClaimContradictions } from "../src/modules/knowledge/claimReviewLoop";
 
 // Real-PostgreSQL coverage for the Slice E claim review loop. FakeDb unit tests
 // can't catch SQL-facing bugs in CLAIM_COLUMNS/CLAIM_FROM joins or the readable
 // space-object visibility gate, so this exercises the real queries.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -23,7 +21,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -40,7 +37,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE claim_sources, source_connections, source_provider_connectors, source_providers, source_connectors, claims, space_objects, users, spaces CASCADE");
+  await resetTables(
+    pool,
+    ["claim_sources", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "claims", "space_objects", "users", "spaces"],
+    { cascade: true },
+  );
   for (const id of [VIEWER, OTHER]) {
     await pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)

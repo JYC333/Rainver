@@ -1,7 +1,5 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { CrossSpaceRetrievalService } from "../src/modules/crossSpaceRetrieval/service";
 import { RetrievalProjectionService } from "../src/modules/retrieval";
 import { personalAggregatedRetrievalRegistry } from "../src/modules/crossSpaceRetrieval/service";
@@ -11,8 +9,8 @@ import {
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PERSONAL = "11111111-1111-4111-8111-111111111111";
@@ -31,7 +29,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -46,11 +43,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE cross_space_retrieval_sessions, cross_space_egress_disclosures,
-              content_egress_records, space_member_notifications,
-              retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              artifacts, knowledge_items, space_objects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["cross_space_retrieval_sessions", "cross_space_egress_disclosures", "content_egress_records", "space_member_notifications", "retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "artifacts", "knowledge_items", "space_objects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

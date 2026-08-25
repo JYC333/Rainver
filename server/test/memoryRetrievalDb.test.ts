@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
   RetrievalSearchService,
@@ -19,7 +18,6 @@ import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter"
 // create-safety + read-trace against canonical memory_entries for real. Skips
 // gracefully when Docker is unavailable.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -33,7 +31,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -52,9 +49,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              content_access_logs, memory_entries, project_members, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "content_access_logs", "memory_entries", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   // A multi-member (household) space so project gating is meaningful; a personal
   // space would grant its sole member access to every project.

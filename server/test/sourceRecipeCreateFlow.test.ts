@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { getDbPool } from "../src/db/pool";
 import { PgSourcesRepository } from "../src/modules/sources/repository";
@@ -52,15 +53,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE evolution_bundle_members, evolution_bundles,
-              jobs, retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects,
-              policy_decision_records, proposal_approvals, proposals, runs, space_memberships,
-              source_handler_runs, source_handler_versions, source_recipe_versions, source_channel_item_links,
-              source_channel_user_subscriptions, source_channels, source_connections,
-              source_connectors, scheduler_tasks, settings, artifacts, extraction_jobs, source_items,
-              source_snapshots, extracted_evidence, credentials,
-              source_provider_connectors, source_providers, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["evolution_bundle_members", "evolution_bundles", "jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "policy_decision_records", "proposal_approvals", "proposals", "runs", "space_memberships", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "credentials", "source_provider_connectors", "source_providers", "users", "spaces"],
+    { cascade: true },
   );
   // The real schema enforces the connector/provider mapping and the
   // space/user chain that the hand-maintained schema copy this suite used to

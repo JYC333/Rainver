@@ -5,10 +5,10 @@ import type { FastifyInstance } from "fastify";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import * as poolModule from "../src/db/pool";
-import { migrate } from "../src/db/migrator";
 import { runBuiltInSeeds } from "../src/db/seeds";
 import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { evolutionModule } from "../src/modules/evolution";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 import {
   EVOLUTION_PLAN_REVIEW_SCHEMA,
@@ -16,7 +16,6 @@ import {
 import { EvolutionRepository } from "../src/modules/evolution/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 
 let container: TestPostgresDatabase | undefined;
@@ -27,7 +26,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     // Built-in evolution strategy assets (e.g. "repair.runtime_failure") are
     // seeded at runtime, not embedded in the migration — see
     // server/src/db/seeds.ts. Tests below select strategies by key and need
@@ -150,7 +148,7 @@ describe("EvolutionRepository core", () => {
     const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
     let app: FastifyInstance | undefined;
     try {
-      app = buildServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), { logger: false });
+      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [evolutionModule]);
       const response = await app.inject({
         method: "GET",
         url: "/api/v1/evolution/strategies?status=active&limit=100",
@@ -188,7 +186,7 @@ describe("EvolutionRepository core", () => {
     const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
     let app: FastifyInstance | undefined;
     try {
-      app = buildServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), {
+      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [evolutionModule], {
         logger: false,
       });
       const response = await app.inject({

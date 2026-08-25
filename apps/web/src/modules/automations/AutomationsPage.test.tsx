@@ -16,7 +16,7 @@ import AutomationsPage from './AutomationsPage'
 
 describe('AutomationsPage', () => {
   it('creates a pinned workflow automation with structured input', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     automationsApiMock.list.mockResolvedValue([])
     automationsApiMock.create.mockResolvedValue({
       id: 'automation-1',

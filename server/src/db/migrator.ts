@@ -2,13 +2,16 @@
  * server migration runner.
  *
  * Runtime PostgreSQL schema evolution is applied through explicit ops
- * commands. `server/migrations/0001_baseline.sql` is the immutable pre-P1
- * bootstrap baseline; later schema changes are numbered upgrade migrations.
- * Applied schema versions are immutable for any database that has recorded them.
+ * commands. The runtime schema is a single file,
+ * `server/migrations/0001_baseline.sql`, regenerated from
+ * `server/src/db/schema/` — no deployment carries data predating it, so a
+ * change is folded in rather than appended (see `server/migrations/README.md`).
  *
- * `pnpm run schema:generate` maintains the empty-database Drizzle baseline in
- * `server/drizzle/`; it does not rewrite numbered runtime migrations. This
- * runner only reads ordered `.sql` files from disk.
+ * This runner still refuses to reapply a file whose content changed after it
+ * was recorded: silently re-running a rewritten baseline over a live database
+ * would apply neither the old schema nor the new one. Rewriting the baseline
+ * therefore means recreating the database — `ops/scripts/db/reset-postgres.sh`
+ * — which is exactly the trade the single-file rule accepts.
  *
  * Design:
  * - Migrations are ordered `.sql` files named `NNNN_name.sql` under a directory;
@@ -136,8 +139,10 @@ export async function migrate(
         if (prev.checksum !== file.checksum) {
           throw new Error(
             `migration ${file.version}_${file.name} was already applied with different ` +
-              `content (checksum mismatch). Migrations are immutable once applied; ` +
-              `add a new migration instead of editing this one.`,
+              `content (checksum mismatch). This runner cannot reconcile a rewritten ` +
+              `file against a database that already has the old one. The runtime schema ` +
+              `is a single regenerated baseline, so the remedy is to recreate the ` +
+              `database (ops/scripts/db/reset-postgres.sh), not to add a migration.`,
           );
         }
         continue;

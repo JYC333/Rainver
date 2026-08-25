@@ -1,18 +1,18 @@
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config";
-import { migrate } from "../src/db/migrator";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { researchModule } from "../src/modules/research";
+import { projectResearchModule } from "../src/modules/projectResearch";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -56,7 +56,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     const now = new Date().toISOString();
     await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
     await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);
@@ -85,11 +84,11 @@ beforeAll(async () => {
     await syncBuiltinPrompts(pool, CATALOG_ROOT);
     __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
     __setQuestionRefineInvokerForTests(invoke);
-    app = buildServer(loadConfig({
+    app = buildModuleServer(loadConfig({
       SERVER_DATABASE_URL: container.getConnectionUri(),
       SERVER_INTERNAL_TOKEN: "test-internal-token",
       AGENT_SPACE_HOME: "/tmp/agent-space-question-refine-test",
-    }), { logger: false });
+    }), [projectResearchModule, researchModule]);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;

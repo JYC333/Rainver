@@ -119,6 +119,59 @@ tracked by the control plane only as an opaque `vendor_session_id` per task
 thread, pinned to one (host, workspace) pair — task threads, documented in
 [modules/hosts.md](../modules/hosts.md).
 
+#### Amended 2026-08-24 — an explicit ModelProvider binding may extend to a remote host
+
+Two sentences above are narrowed to their **login-state** half, which is
+unchanged: this section's opening enumeration (the one listing "provider-proxy
+leases" among what does not extend) and its blanket "a remote Run is a bare
+native CLI invocation using whatever the machine is already logged into". A remote Run MAY now carry an explicit ModelProvider binding
+chosen by the control plane, in which case the server-side provider proxy and
+its short-lived leases **do** serve that run.
+
+What changed and why: the original wording conflated two independent things
+under one exemption. Subscription/OAuth login state genuinely cannot be
+brokered to a remote machine — it is produced by a vendor login on that
+machine's disk, and the audit's finding about its server-locality stands. An
+API-provider binding is not like that: the credential never leaves the server
+either way, because what the CLI receives is a proxy URL and a lease token,
+never the key ([ADR 0008](0008-credential-channel-isolation.md)). Extending it
+therefore costs reachability, not a trust-model change — which is why the
+control plane could not previously answer "which model is this host's agent
+actually running against", the question this amendment exists to make
+answerable.
+
+What stays out, and is not weakened by this amendment:
+
+- **Login-state brokering, remote multi-account selection, and remote vendor
+  login remain out.** A remote run with no binding is bit-for-bit today's
+  behavior: the machine's own ambient login, no server injection.
+- **Subscription-egress allowlists and the credential broker's CLI HOME
+  continuity model remain server-host-only.** What extends is the
+  provider-proxy lease path. Materializing what a binding needs on the
+  executing host — its run-scoped provider config, and the profile directory
+  that keeps the runtime off the machine's ambient one (B67) — is a
+  consequence of that, and is not the brokered login-state HOME continuity
+  this bullet excludes. The distinction is what the directory is
+  for, not whether one exists: a control-plane-provided profile directory
+  carrying only binding material is in scope; copying a user's vendor login
+  state onto a remote machine is not.
+- **The two-tier trust model (§2, B62) is untouched.** A bound remote run is
+  still a native, unsandboxed process on a trusted machine; it merely points
+  its model traffic at the control plane's proxy.
+- **The hard rule in §2 (a host serves only its registered owner) is
+  untouched.** A binding resolves through an enabled active-space provider
+  grant, the same rule the server-host path enforces — checked at dispatch and
+  again when the remote binding is built — so a binding cannot widen who may
+  spend a credential. A Host is user-scoped and can back Locations in several
+  Spaces, so a Host default naming a provider that is not granted in the
+  dispatching Space simply does not apply there; the run uses that machine's
+  own login, as it did before bindings existed.
+
+One new invariant follows and is recorded as **B67**: a provider-bound remote
+run must not inherit ambient backend credentials from the executing machine,
+so that a selected provider cannot be shadowed by machine state and a
+subscription login cannot be silently converted into API billing.
+
 ### 5. What is explicitly deferred, and why that is a decision and not an oversight
 
 - Remote in-place execution means changes land on disk before any review —
@@ -232,6 +285,42 @@ further documents, amended in the same P0 phase for the same reason:
 
 Each amendment carries an inline pointer back to this ADR; no document is
 duplicated or superseded wholesale.
+
+The 2026-08-24 amendment inside §4 amends three further places, on the same
+terms:
+
+- [`.agent/BOUNDARIES.md`](../BOUNDARIES.md) — B62 qualified (a remote host
+  uses the machine's own login state *unless* the Run carries an explicit
+  ModelProvider binding), and **B67** added for the invariant that amendment
+  creates.
+- [`.agent/decisions/0008-credential-channel-isolation.md`](0008-credential-channel-isolation.md)
+  — "local provider-proxy URL" → "provider-proxy URL", with a dated amendment
+  recording why the locality was never the load-bearing property and what the
+  lease token's network exposure does and does not mean.
+- [`.agent/architecture/LOCAL_FIRST_COMPATIBILITY.md`](../architecture/LOCAL_FIRST_COMPATIBILITY.md)
+  §7 — "does not receive server-brokered credentials" narrowed to login state.
+  This sentence was already amended by this ADR's own P0 sweep in 2026-08-21;
+  it needed a second, narrower qualification rather than a rewrite.
+
+A wording sweep accompanies the amendment: "local"/"loopback" provider-proxy
+phrasing is corrected wherever it appears, pointing at ADR 0008 rather than at
+this ADR — the locality claim is that ADR's invariant, not this one's topology.
+The full set, verified by grep across `.agent/` rather than assumed — ADR 0008
+itself (listed above) plus:
+[`0007-multi-cli-mvp.md`](0007-multi-cli-mvp.md),
+[`architecture/CREDENTIAL_STORAGE.md`](../architecture/CREDENTIAL_STORAGE.md),
+[`modules/runtime-adapters.md`](../modules/runtime-adapters.md) (which
+additionally claimed a loopback bind — false: `providers/proxy/server.ts` binds
+`0.0.0.0`. Its "not configurable" claim was true of the listener at the time — the
+correction separated that from the URL's host, which
+`SANDBOX_RUNNER_SERVER_HOST` configures. Both were superseded when
+`PROVIDER_PROXY_PORT` made the listen port configurable, so a paired host can
+reach the proxy at a port that survives a restart),
+[`modules/provider-policy.md`](../modules/provider-policy.md),
+[`architecture/EXECUTION_MODEL.md`](../architecture/EXECUTION_MODEL.md), and
+[`tasks/deferred-register.md`](../tasks/deferred-register.md). In the last two
+the load-bearing word was "same", not the locality, so only the adjective
+changed.
 
 ## Consequences
 

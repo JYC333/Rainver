@@ -157,6 +157,254 @@ module, but their thread is always Location-bound.
   `runs.prompt` is redacted on read, so this is the only readable record of
   what was actually sent into a thread.
 
+Model-backend binding. Space-scoped
+via `introspectIdentity` because validating a ModelProvider needs the Space its
+grant lives in, but host **ownership** is still the gate (B63) and an unowned
+host id answers 404, not 403 — matching `revoke`:
+
+- `GET /api/v1/hosts/:hostId/runtime-provider-bindings` — this host's defaults.
+- `PUT /api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType` —
+  `{ model_provider_id, model? }`. Validates that the adapter is remote-eligible
+  and that the provider exposes the compatible base URL that adapter needs
+  (`adapterProviderRequirement` in `runs/runtimeProviderBinding.ts` is the one
+  place that mapping lives, shared with execution-time binding construction).
+- `DELETE /api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType` —
+  returns that host×adapter to the machine's own login state.
+
+`host_runtime_provider_bindings` is keyed `(host_id, adapter_type)` only. A
+provider is reachable through a Space grant, so a binding whose provider has no
+enabled grant in the *dispatching* Space fails at dispatch with a 422 rather
+than resolving differently per Space.
+
+Both dispatch routes accept per-dispatch `model_provider_id` / `model`
+overrides. Precedence is **override > the thread's own backend > host×adapter
+default > none**, and an explicit `model_provider_id: null` is a real choice
+("ambient login for this one dispatch"), so the override is read by key
+presence, not truthiness.
+
+A thread's own backend is the resolved provider and model of its newest message
+that will run or has run — queued counts, withdrawn does not
+(`currentBinding`). The Host × adapter default therefore decides a thread's
+*first* backend only. Without that step, resolution re-read the default at every
+dispatch, so changing it moved **every** existing thread on that host onto a new
+backend, and since a bound run's vendor session lives inside that provider's
+profile directory, each of them lost its conversation as well — a setting meant
+to pick a default for new work silently reset old work. Queued has to count: a
+binding is frozen at enqueue and the queue drains FIFO, so reading only
+dispatched rows lets a message sent while a run is active resolve against the
+older backend and land *after* an override, flipping the thread back
+mid-conversation. An override becomes what the thread inherits next, which is
+how a user changes a thread's backend.
+
+Resolution happens at **dispatch** time, and the result is snapshotted onto
+`host_thread_messages.model_provider_id` / `.model`: validation can then fail
+the request the sender is waiting on, and a message already queued does not
+change backend because someone edited the host default while it waited. The
+snapshot names a concrete model, not "whatever the provider defaults to" — a
+thread that inherited a null model would follow the provider's `default_model`
+if that were later edited, which is the same drift one level down.
+
+`advanceThreadQueue` copies that snapshot onto the Run it creates. At
+execution, a Run with no message — an Automation, Room root run, Plan or
+Workflow node, evolution run whose Folder prefers a remote Location — falls
+back to the Host × adapter default, so the per-host setting means what the
+Command Center says it means rather than applying only to dispatched threads.
+
+**Before execution, `runs.model_provider_id` is not evidence of a binding**:
+`PgRouteDecisionRepository.routeRun` stamps that column for any routed run
+before host kind is resolved, so a remote run created by another path can carry
+a provider it never used. Binding *resolution* therefore never reads it — it
+reads the message, else the Host default. Once the binding is resolved — before the run launches — the
+column becomes authoritative in the other direction: the remote adapter writes
+back what it bound and marks it `source = "host_binding"`, so a reader can tell
+a chosen provider from a predicted one. The write-back merges into
+`model_override_json` rather than replacing it — that column also carries
+`execution_mode`, `chat_turn` and `conversation_runtime`, and a Room turn on a
+remote-preferred Folder reaches this path.
+
+`route_decisions.selected_model_provider_id` is the router's own second copy of
+that value and means nothing for a thread-dispatched run: those runs are
+`run_type = 'system'`, which `routeRun` skips, so they have no route decision
+row at all. For a remote run created by any *other* path there is a row, and it
+records what the router selected — not what executed. Neither column is
+evidence of a binding.
+
+`runToOut`'s `resolved_model` reports `used_by_adapter` for a remote run only
+when the column carries the `host_binding` marker — otherwise Run detail would
+present the router's prediction as a fact about what ran. Remoteness itself
+comes from the Run's Location, **not** from `trust_mode`: only the
+thread-dispatch path writes that column, so an Automation, Room, Workflow or
+evolution run on a remote-preferred Folder has it null and still runs remotely.
+Every read path that renders a Run passes the answer in, resolved by
+`resolveRunRemoteness` (`runs/runRemoteness.ts`), which answers a whole page in
+one query and skips rows with nothing recorded to qualify. `trust_mode` is the
+floor for a caller that has not been given the answer.
+
+At execution, `remoteHostCliAdapter` reads the binding from the message,
+creates a provider-proxy lease bound to that Host, and carries a
+`provider_binding` frame in the launch message: the proxy URL the *host* can
+reach, a short-lived lease token, and the model. The provider's real key never
+leaves the server — the proxy substitutes it. The adapter owns the lease's
+lifetime, so it is revoked when the run reaches any terminal state rather than
+at its own TTL, and revoking a Host revokes its live leases immediately
+(`ProviderProxyLeaseRegistry.revokeHost`), since a lease is plain HTTP and a
+cut socket does not stop it.
+
+The address a host uses to reach the proxy is **derived, not configured**: the
+daemon reports the control-plane address it connects to
+(`hosts.daemon_server_url`, refreshed on every heartbeat), and the proxy's
+address follows from it plus `PROVIDER_PROXY_PORT`. The server cannot work this
+out alone — its own in-network hostname is a Compose service name no paired
+machine can resolve — which is why it is the daemon that answers.
+
+`hostProviderProxyBaseUrl` is the one place that resolves it: an explicit
+per-host override (`hosts.provider_proxy_base_url`, editable in the Command
+Center, for a reverse proxy in front of the API or a proxy published elsewhere)
+→ the derived address → the instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`.
+`GET /api/v1/hosts` returns the resolved answer as
+`provider_proxy_effective_url` so the UI shows what a dispatched run will
+actually get rather than deriving a second, possibly different one. With
+nothing to resolve, a bound remote run fails with a stated reason rather than
+receiving a URL it cannot resolve.
+
+`PROVIDER_PROXY_PORT` (listen port) and the published port binding stay
+deployment settings — one needs a socket rebind, the other is a container port
+mapping the app cannot change about itself. Compose binds the published port to loopback by default;
+widening that bind is the deliberate step that puts lease traffic on the local
+network, and it is plaintext until a TLS entry exists.
+
+The frame is runtime-agnostic on purpose:
+`{ profile_key, env, profile_env, files }`. The
+server generates every Codex-TOML and OpenCode-JSON decision using the **same**
+builders the server-host path uses (`renderCodexProviderToml`,
+`codexModelCatalog`, `applyOpenCodeProviderConfig`), and the daemon creates a
+directory, writes those bytes, and reports the paths back as environment. A
+second set of generators on the daemon is what would silently drift — a catalog
+Codex never reads, an OpenCode provider block missing the `npm` field that
+makes it loadable at all — so the daemon stays a byte writer, consistent with
+its rule against becoming a vendor protocol translator. `files[].contents` may
+carry `{{AGENT_SPACE_RUN_PROFILE}}`, which the daemon replaces with the
+absolute profile path; Codex's config has to name its own catalog absolutely
+and only the executing machine knows where that is. Paths that escape the
+profile are refused — the daemon runs unsandboxed on a machine the user owns.
+
+`profile_key` is `<adapter_type>/<provider_id>`, and the profile lives at
+`profiles/<adapter_type>/<provider_id>` under the daemon's config directory —
+shared by every run with that adapter and provider on that machine, never
+per-run. A CLI keeps its conversation state inside the profile (Claude Code's
+session transcripts live under `CLAUDE_CONFIG_DIR`), so a profile deleted when
+its run exits takes with it the session the next turn is about to resume: every
+turn after the first then fails with the runtime reporting no such
+conversation, and the thread is reset. Sharing per adapter and provider keeps a
+conversation resumable for as long as its backend does not change, and makes
+changing the backend start a fresh session rather than resume one whose context
+another vendor's model produced. The daemon validates the key before building a
+path from it — it runs unsandboxed on a machine the user owns.
+
+Two consequences of a profile that outlives its run: a written config keeps
+that run's lease token after the lease is revoked (a dead credential in a 0700
+directory; the provider's real key is never there), and two concurrent runs
+sharing an adapter and provider share the directory, so one can end up using a
+sibling run's lease — same upstream, but usage attributes to the sibling.
+
+**All three runtimes need a profile**, and all three keep conversation state
+inside one: Claude Code under `CLAUDE_CONFIG_DIR`, Codex under
+`CODEX_HOME/sessions/YYYY/MM/DD`, OpenCode under `HOME/.local/share/opencode`
+(reached through HOME, since `XDG_DATA_HOME` is not on the ambient allowlist).
+On the server host their isolation comes from the credential broker, which does
+not exist on a trusted host, so environment injection alone would leave the
+machine's own `~/.claude` or `~/.codex` in play.
+
+This granularity is the minimal extension of what ADR 0016 already decided for
+remote runs: session continuity is the vendor CLI's own state on that machine,
+addressed by the thread's opaque `vendor_session_id`, and machine-global when
+the run is unbound. A binding subdivides that state by provider and changes
+nothing else. The server-host conversation-home machinery
+(`prepareConversationHome(state_key)`) is deliberately *not* what this reuses —
+ADR 0016 records that server-brokered Runtime Context continuity has no meaning
+for a remote host.
+
+A remote run is given up on for two distinct reasons, and the failure says
+which: `runtime_timeout` when the whole run budget elapsed, and
+`runtime_stall_timeout` when the runtime produced no output for a third of that
+budget (capped at two minutes). Both carry how long the runtime had been silent.
+The server-host path has had this stall budget all along; the remote path
+accepted the option and never implemented it, so a runtime that went quiet —
+an OpenCode turn waiting on a free-tier model that never answered — burned the
+entire timeout and then reported only that it "timed out", which is equally
+true of a run that worked the whole time. Both codes are retryable, like their
+`cli_adapter_timeout`/`cli_stall_timeout` twins on the server host; listing
+only the local pair meant an identical failure was retried automatically there
+and sent straight to human review on a paired machine.
+
+A bound run tells its runtime which model over ACP
+(`session/set_config_option`), and the value is the binding's resolved model
+expressed in **that runtime's** identifier space — not the router's model,
+which can name something the bound provider does not serve. `boundAcpModelId`
+owns the translation, next to the config generation that defines each space:
+OpenCode addresses a model as `<providerId>/<model>` where the provider id is
+the one `applyOpenCodeProviderConfig` declares (`openCodeModelId` is the single
+constructor for it, so the config and the ACP value cannot drift); Codex
+resolves against the catalog the binding writes, keyed by the provider's own
+model name.
+
+**On this path Claude deliberately does not use this channel.** Its model is
+decided entirely by `ANTHROPIC_MODEL` and the three `ANTHROPIC_DEFAULT_*`
+variables the binding sets. ACP's model options are Claude's own alias space (`default`,
+`sonnet`, `opus`, …), in which a third-party provider's model name does not
+exist, so reconciling against it necessarily falls through to the session's
+current value — `default` on a fresh session, and on a **resumed** one the
+model the previous turn used. Sending that would re-assert the old model while
+`ANTHROPIC_MODEL`, `runs.model_provider_id` and the conversation all named the
+new one. Saying nothing leaves the environment in sole charge, which is where
+the answer already is.
+
+Sending a bare name to OpenCode names no provider it knows, against an endpoint
+that looks correctly configured — so a rejection names both the model asked for
+and the one the runtime is on.
+
+**Not yet observed on a real paired host.** Until this landed,
+`session/set_config_option` never fired on the remote path at all —
+`RunExecuteRequestSchema` carries no model, so the controller's model was
+always null there. It now fires for **every** bound Codex/OpenCode remote run,
+including host-default-bound Automation, Room, Workflow and evolution runs that
+never asked for a model, and the response is checked with exact string equality
+and no normalization (normalization is Claude-only). A runtime that does not
+echo `configOptions` on that response, or echoes a canonicalized form, therefore
+fails **every bound remote run on that host** — including ones that succeeded
+before. The server-host path has been sending these exact shapes and working,
+which lowers the risk materially, but it runs the server's own binaries rather
+than the host's and versions can differ. Read the first bound remote run after
+a host upgrade as a go/no-go on that host, not as a feature check.
+
+**Which model a run is recorded as having used is the server's own answer, not
+the runtime's echo of it.** The controller takes `attributed_model` separately
+from `model`: the first is what the run executes against, the second is what to
+ask for over ACP, and they differ whenever the runtime's identifier space is
+not the provider's — Claude is told no model at all yet runs on one the server
+chose, and OpenCode is asked for `<provider>/<model>` but runs on `<model>`.
+Reading the echo instead reports an alias (`default`) on a fresh session and
+the *previous* turn's model on a resumed one, which is precisely when the
+answer matters.
+
+The **server-host** path (`vendorCliAdapter.ts`) still sends a bound Claude
+run's provider model name over ACP, so the fall-through above can happen there:
+a resumed conversation whose model changed may re-assert the previous turn's
+model. Whether it actually does depends on whether claude-code-acp reports a
+concrete third-party model name as `currentValue` or only its own aliases — if
+only aliases, the send is a no-op, since all four environment variables name
+the same model. Left as-is rather than changed blind; see the deferred
+register.
+
+B67's remote enforcement point is that same spawn: for a bound run the daemon
+rebuilds the environment from an **allowlist** rather than filtering a denylist
+— B67 states the rule positively for a reason, and a denylist of vendor
+prefixes lets `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` (OpenCode's credential
+store) and `NODE_OPTIONS` (which injects code into the runtime process) through.
+The allowlist is the same shape the server host uses in `cliSubprocessEnv.ts`.
+A run with **no** binding keeps the machine's environment untouched, exactly as
+before.
+
 Space-scoped, not user-scoped like the rest of this module (P4, control
 center work stream):
 
@@ -355,9 +603,21 @@ lands.
 `assistant_text` (coalesced text segments), `tool_activity_started`/
 `tool_activity_finished` (paired by `tool_call_id`, never carrying tool
 result content), `status` (`run_started`/`run_succeeded`/`run_failed`/
-`run_timeout`), and `diagnostic` (one stderr line each). `thinking`/
-`thinking_delta` are dropped by construction — no event_type exists for them
-— not filtered from a wider vocabulary (C5). `event_index` is a monotonic
+`run_timeout`), `diagnostic` (one stderr line each), and `assistant_thought`
+(reasoning, coalesced the same way as `assistant_text`).
+
+Reasoning was originally dropped by construction, with no event_type for it
+(C5). That held only while every runtime reported reasoning on a channel of
+its own: a model that inlines it in the message text instead — MiniMax and
+other `<think>`-tag models, where no ACP channel separates it — had its
+reasoning stored and rendered as the answer. Both sources now become
+`assistant_thought`: `agent_thought_chunk` reaches the normalizer through
+`pushAcpThoughtDelta`, and inlined `<think>…</think>` is split out of the text
+stream (tags split across streamed deltas are held back rather than emitted as
+text; an unterminated tag at end of stream is emitted as the literal text it
+is). The turn's `output_text` stays reasoning-free — it is the answer. The
+conversation view renders reasoning as a collapsed disclosure, never as the
+reply. `event_index` is a monotonic
 cursor **per thread**, not per run, since the read model is the whole
 conversation across every run/turn dispatched into it; enforced by
 `uq_host_thread_events_thread_event_index`.

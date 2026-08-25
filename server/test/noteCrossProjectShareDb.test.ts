@@ -1,13 +1,12 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { withTransaction } from "../src/db/tx";
 import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders";
 import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 /**
  * S6 boundary set. `contentAccessSql` evaluates the Project scope as a hard AND
@@ -41,7 +40,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    await migrate(pool, join(process.cwd(), "migrations"));
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -61,7 +59,11 @@ let folderB = "";
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(`TRUNCATE notes, note_collections, note_collection_items, space_object_project_shares, space_objects, project_members, projects, space_memberships, users, spaces CASCADE`);
+  await resetTables(
+    pool,
+    ["notes", "note_collections", "note_collection_items", "space_object_project_shares", "space_objects", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
+  );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Team','team',$2,$2)`, [SPACE, now]);
   for (const [user, name] of [[ALPHA, "Alpha"], [BETA, "Beta"], [GAMMA, "Gamma"]] as const) {

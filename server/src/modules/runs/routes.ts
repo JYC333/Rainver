@@ -39,6 +39,7 @@ import {
   runToOut,
   verificationResultToOut,
 } from "./runReadModel";
+import { resolveRunRemoteness } from "./runRemoteness";
 
 interface RunsCommandServices {
   orchestration: Pick<RunOrchestrationService, "executeRun" | "cancelRun">;
@@ -244,7 +245,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!run) {
       return reply.code(404).send({ detail: "Run not found in this space" });
     }
-    return reply.send(runToOut(run));
+    return reply.send(runToOut(run, null, {
+      executes_remotely: (await resolveRunRemoteness(dbPool(context.config), [run])).has(run.id),
+    }));
   });
 
   // Service-authenticated internal execute for synchronous server callers
@@ -748,11 +751,14 @@ async function runToOutWithProvider(
   repository: PgRunRepository,
   run: RunRecord,
 ): Promise<Record<string, unknown>> {
-  const provider = await repository.getModelProviderSummary(
-    run.space_id,
-    run.model_provider_id,
-  );
-  return runToOut(run, provider);
+  const [provider, remote] = await Promise.all([
+    repository.getModelProviderSummary(run.space_id, run.model_provider_id),
+    // A remote run records a provider it never used, so the read model has to
+    // know where this run actually executes before it claims the adapter used
+    // one.
+    resolveRunRemoteness(repository.queryable, [run]),
+  ]);
+  return runToOut(run, provider, { executes_remotely: remote.has(run.id) });
 }
 
 function boundedInt(

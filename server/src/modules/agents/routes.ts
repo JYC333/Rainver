@@ -25,6 +25,7 @@ import {
   RunCreateValidationError,
 } from "../runs/repository";
 import { runToOut } from "../runs/runReadModel";
+import { resolveRunRemoteness } from "../runs/runRemoteness";
 import { RunBudgetExceededError, RunBudgetSourceReferenceError } from "../runs/budgetEnforcement";
 import { PgJobQueueRepository } from "../jobs/repository";
 import {
@@ -145,7 +146,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         limit: page.limit,
         offset: page.offset,
       });
-      return reply.send(runs.map((run) => runToOut(run)));
+      const remote = await resolveRunRemoteness(dbPool(context.config), runs);
+      return reply.send(runs.map((run) => runToOut(run, null, { executes_remotely: remote.has(run.id) })));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -163,7 +165,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!(await agentRepository().getVisible(identity.spaceId, identity.userId, run.agent_id))) {
         return reply.code(404).send({ detail: "Run not found in this space" });
       }
-      return reply.send(runToOut(run));
+      return reply.send(runToOut(run, null, {
+        executes_remotely: (await resolveRunRemoteness(dbPool(context.config), [run])).has(run.id),
+      }));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -192,7 +196,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         limit: page.limit,
         offset: page.offset,
       });
-      return reply.send(runs.map((run) => runToOut(run)));
+      const remote = await resolveRunRemoteness(dbPool(context.config), runs);
+      return reply.send(runs.map((run) => runToOut(run, null, { executes_remotely: remote.has(run.id) })));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -556,7 +561,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         workflow_version_id: null,
         visibility: creation.visibility,
       });
-      return reply.code(201).send(runToOut(run));
+      return reply.code(201).send(runToOut(run, null, {
+        executes_remotely: (await resolveRunRemoteness(dbPool(context.config), [run])).has(run.id),
+      }));
     } catch (error) {
       if (error instanceof RunCreateValidationError) {
         return reply.code(error.statusCode).send({ detail: error.message });

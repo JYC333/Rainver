@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import DispatchComposer from '../DispatchComposer'
-import { hostsApi, projectFoldersApi, projectsApi, tasksApi } from '../../../api/client'
+import { hostsApi, projectFoldersApi, projectsApi, providersApi, tasksApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../api/client', () => ({
@@ -10,6 +10,7 @@ vi.mock('../../../api/client', () => ({
   projectFoldersApi: { list: vi.fn(), locations: vi.fn() },
   projectsApi: { list: vi.fn(), create: vi.fn() },
   tasksApi: { createRunWithoutTask: vi.fn() },
+  providersApi: { list: vi.fn() },
 }))
 
 const REMOTE_HOST = {
@@ -44,6 +45,13 @@ beforeEach(() => {
   vi.mocked(projectFoldersApi.locations).mockResolvedValue([REMOTE_LOCATION] as never)
   vi.mocked(projectsApi.list).mockResolvedValue({ items: [{ id: 'project-1', name: 'Mapping' }], total: 1 } as never)
   vi.mocked(tasksApi.createRunWithoutTask).mockResolvedValue({ message_id: 'message-1', run_id: 'run-1', thread_id: 'thread-1', status: 'dispatched' } as never)
+  vi.mocked(providersApi.list).mockResolvedValue([
+    {
+      id: 'prov-1', name: 'MiniMax', enabled: true, default_model: 'MiniMax-M3',
+      available_models: ['MiniMax-M3', 'MiniMax-M2'],
+      claude_compatible_base_url: 'https://api.minimaxi.com/anthropic', openai_compatible_base_url: null,
+    },
+  ] as never)
 })
 
 describe('DispatchComposer — follow-up (fixed thread)', () => {
@@ -190,5 +198,120 @@ describe('DispatchComposer — new conversation', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('DispatchComposer — choosing a backend', () => {
+  /** The dispatch mock is shared across this file; only the newest call is ours. */
+  function lastDispatchBody(): Record<string, unknown> {
+    const calls = vi.mocked(tasksApi.createRunWithoutTask).mock.calls
+    return calls[calls.length - 1]![0] as Record<string, unknown>
+  }
+
+  /** The Select is a custom listbox, not a native <select>. */
+  async function choose(label: string, optionName: string) {
+    await userEvent.click(screen.getByRole('button', { name: label }))
+    await userEvent.click(screen.getByRole('option', { name: optionName }))
+  }
+
+  async function ready() {
+    render(
+      <DispatchComposer
+        initialProjectId="project-1"
+        fixedThreadId="thread-1"
+        fixedFolderId="folder-1"
+        fixedAdapterType="claude_code"
+        onDispatched={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(screen.getByText(/Laptop/)).toBeInTheDocument())
+    await userEvent.type(screen.getByPlaceholderText(/Describe what to do/), 'hello')
+  }
+
+  it('sends no backend keys by default, so the thread keeps the one it has', async () => {
+    // Sending `model_provider_id: null` here would silently move the thread
+    // onto the machine's own login; the key has to be absent, not null.
+    await ready()
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+    const body = lastDispatchBody()
+    expect('model_provider_id' in body).toBe(false)
+    expect('model' in body).toBe(false)
+  })
+
+  it('sends the chosen provider and model', async () => {
+    await ready()
+    await choose('Model backend', 'MiniMax')
+    await choose('Model', 'MiniMax-M2')
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+    expect(lastDispatchBody()).toMatchObject({ model_provider_id: 'prov-1', model: 'MiniMax-M2' })
+  })
+
+  it("sends an explicit null for the machine's own login", async () => {
+    // Distinct from omitting the key: this is a real choice to ignore the
+    // thread's backend for this dispatch.
+    await ready()
+    await choose('Model backend', "This machine's login")
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+    const body = lastDispatchBody()
+    expect('model_provider_id' in body).toBe(true)
+    expect(body.model_provider_id).toBeNull()
+  })
+
+  it('offers only providers that can back the thread\'s runtime', async () => {
+    // claude_code needs a Claude-compatible endpoint; an OpenAI-only provider
+    // would be rejected at dispatch, so it is not offered. The menu has to be
+    // open for this to mean anything — Select renders its options only while
+    // open, so asserting against a closed one passes no matter what the filter
+    // does.
+    vi.mocked(providersApi.list).mockResolvedValue([
+      { id: 'oa', name: 'OpenAI only', enabled: true, default_model: null, available_models: [], claude_compatible_base_url: null, openai_compatible_base_url: 'https://x/v1' },
+      { id: 'both', name: 'Claude capable', enabled: true, default_model: null, available_models: [], claude_compatible_base_url: 'https://y/anthropic', openai_compatible_base_url: 'https://y/v1' },
+    ] as never)
+    await ready()
+    await userEvent.click(screen.getByRole('button', { name: 'Model backend' }))
+    expect(screen.getByRole('option', { name: 'Claude capable' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'OpenAI only' })).not.toBeInTheDocument()
+  })
+
+  it('drops a backend choice that the newly selected runtime cannot use', async () => {
+    // A Claude-capable provider often cannot back codex or opencode. Keeping
+    // the selection would render a bare id and send a provider the server
+    // rejects, as a 422 that reads like a permissions problem.
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({
+      items: [
+        CLAUDE_ADAPTER,
+        { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true },
+      ],
+    })
+    vi.mocked(hostsApi.list).mockResolvedValue({
+      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'opencode'] } }],
+    })
+    render(<DispatchComposer initialProjectId="project-1" onDispatched={vi.fn()} />)
+    // The host appears both in the Host select's trigger and the readiness
+    // badge row, so wait on the Runtime select instead.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Runtime' })).toBeInTheDocument())
+
+    await choose('Runtime', 'Claude Code')
+    await choose('Model backend', 'MiniMax')
+    expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent('MiniMax')
+
+    await choose('Runtime', 'OpenCode')
+    expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent("This host's default")
+  })
+
+  it('does not offer a subscription-credentialed provider the server would reject', async () => {
+    // A CLI binding's provider is resolved with no user id, which excludes
+    // subscription credentials — they have no API key for the proxy to
+    // present. Offering one produced a dispatch rejected as "not available in
+    // this Space", which reads as a permissions problem instead.
+    vi.mocked(providersApi.list).mockResolvedValue([
+      { id: 'sub', name: 'Claude subscription', enabled: true, has_subscription: true, default_model: null, available_models: [], claude_compatible_base_url: 'https://api.anthropic.com', openai_compatible_base_url: null },
+    ] as never)
+    await ready()
+    await userEvent.click(screen.getByRole('button', { name: 'Model backend' }))
+    expect(screen.queryByRole('option', { name: 'Claude subscription' })).not.toBeInTheDocument()
   })
 })

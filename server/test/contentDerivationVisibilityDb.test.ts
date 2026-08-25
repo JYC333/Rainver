@@ -12,6 +12,7 @@ import {
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 const SPACE_ID = "content-derivation-space";
 const OWNER_ID = "content-derivation-owner";
@@ -47,7 +48,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query("TRUNCATE spaces, users CASCADE");
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', $4, $4),

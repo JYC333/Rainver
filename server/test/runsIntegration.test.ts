@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository";
@@ -46,9 +47,11 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query("TRUNCATE spaces, users CASCADE");
-  await pool.query(
-    "TRUNCATE content_access_grants, space_memberships, actors, agents, agent_versions, agent_runtime_profiles, agent_run_groups, agent_run_group_members, agent_run_messages, runs, run_delegations, run_steps, run_events, run_execution_locks, run_evaluations, verification_results, run_finalizations, jobs, job_events, artifacts, tasks, task_runs, task_evaluations CASCADE",
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
+  await resetTables(
+    pool,
+    ["content_access_grants", "space_memberships", "actors", "agents", "agent_versions", "agent_runtime_profiles", "agent_run_groups", "agent_run_group_members", "agent_run_messages", "runs", "run_delegations", "run_steps", "run_events", "run_execution_locks", "run_evaluations", "verification_results", "run_finalizations", "jobs", "job_events", "artifacts", "tasks", "task_runs", "task_evaluations"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

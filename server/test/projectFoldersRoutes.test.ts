@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { projectsModule } from "../src/modules/projects";
+import { projectFoldersModule } from "../src/modules/projectFolders";
 import { loadConfig } from "../src/config";
 import {
   __setProjectFolderIdentityForTests,
@@ -23,7 +25,7 @@ describe("project folder routes", () => {
     __setProjectFolderServicesFactoryForTests(() => ({
       repository: fakeRepository(),
     }));
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [projectFoldersModule, projectsModule]);
 
     await expectJson("GET", "/api/v1/projects/project-1/folders", {
       items: [{ id: "folder-1", name: "Folder" }],
@@ -53,7 +55,7 @@ describe("project folder routes", () => {
   });
 
   it("does not expose removed Workspace product routes", async () => {
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [projectFoldersModule, projectsModule]);
 
     for (const url of [
       "/api/v1/workspaces",

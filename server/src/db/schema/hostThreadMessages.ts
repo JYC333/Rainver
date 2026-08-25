@@ -1,6 +1,7 @@
 import { pgTable, index, check, foreignKey, varchar, text, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { hostTaskThreads } from "./hostTaskThreads";
+import { modelProviders } from "./providers";
 import { runs } from "./runs";
 import { tasks } from "./tasks";
 
@@ -31,6 +32,25 @@ export const hostThreadMessages = pgTable("host_thread_messages", {
 	taskId: varchar("task_id", { length: 36 }).notNull(),
 	prompt: text().notNull(),
 	status: varchar({ length: 16 }).notNull().default('queued'),
+	/**
+	 * The ModelProvider binding resolved for this message **at dispatch
+	 * time** (per-dispatch override,
+	 * else the Host×adapter default, else null for the machine's ambient
+	 * login). Snapshotted here rather than resolved when the queue advances,
+	 * for two reasons: validation can fail the dispatch request itself with a
+	 * 422 the sender sees, and a message already queued does not silently
+	 * change backend because someone edited the Host default in between.
+	 *
+	 * This row is the **provenance** record for a *dispatched* run.
+	 * `runs.model_provider_id` is not evidence of a binding before execution —
+	 * `PgRouteDecisionRepository.routeRun` stamps that column for any routed run
+	 * before host kind is even resolved, so a remote run created by some other
+	 * path can carry a provider it never used. A run with no row here is not
+	 * unbound: execution falls back to the Host default, then writes back what
+	 * it actually used.
+	 */
+	modelProviderId: varchar("model_provider_id", { length: 36 }),
+	model: varchar({ length: 256 }),
 	runId: varchar("run_id", { length: 36 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -53,6 +73,11 @@ export const hostThreadMessages = pgTable("host_thread_messages", {
 			columns: [table.taskId],
 			foreignColumns: [tasks.id],
 			name: "host_thread_messages_task_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.modelProviderId],
+			foreignColumns: [modelProviders.id],
+			name: "host_thread_messages_model_provider_id_fkey"
 		}),
 	check("ck_host_thread_messages_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('dispatched'::character varying)::text, ('withdrawn'::character varying)::text])`),
 	check("ck_host_thread_messages_run_id_consistency", sql`(status = 'dispatched') = (run_id IS NOT NULL)`),

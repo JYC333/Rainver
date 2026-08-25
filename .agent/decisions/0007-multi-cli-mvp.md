@@ -60,8 +60,11 @@ The default is `cli_default`.
 process, and local CLIs receive a run-scoped provider
 binding — Claude Code through injected proxy environment variables, Codex CLI through a
 run-scoped `CODEX_HOME/config.toml`, OpenCode through a run-scoped `opencode.json` — each
-carrying only the local provider-proxy URL and a short-lived lease token. The upstream key
-never leaves the server proxy boundary (ADR 0008).
+carrying only the provider-proxy URL and a short-lived lease token. The upstream key
+never leaves the server proxy boundary (ADR 0008). That URL is not loopback even today —
+it is built from `SANDBOX_RUNNER_SERVER_HOST` (default `server`, the Compose service
+name), so it already crosses the deployment's own network in plaintext; see ADR 0008's
+2026-08-24 amendment.
 
 ## RuntimeAdapterSpec And RuntimeAdapter
 

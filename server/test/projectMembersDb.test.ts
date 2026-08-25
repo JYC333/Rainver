@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 
 // Real-PostgreSQL tests for the project membership management API — the ACL that
@@ -10,7 +9,6 @@ import { PgProjectRepository } from "../src/modules/projects/repository";
 // add/remove authz (project owner or space owner/admin), the "target must be a
 // space member" rule, and the upsert. Skips when Docker is unavailable.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // project owner + space member
 const ADMIN = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"; // space admin
@@ -26,7 +24,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -45,7 +42,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE project_members, projects, space_memberships, users, spaces CASCADE");
+  await resetTables(
+    pool,
+    ["project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
+  );
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Team', 'household', now(), now())`,

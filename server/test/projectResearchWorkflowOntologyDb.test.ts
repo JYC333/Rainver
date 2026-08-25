@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
-import { migrate } from "../src/db/migrator";
 import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
@@ -14,8 +12,8 @@ import {
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { withQueryableTransaction } from "../src/modules/routeUtils/common";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT_MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -32,7 +30,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -47,7 +44,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE spaces, users CASCADE");
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO spaces (id,name,type,created_at,updated_at)

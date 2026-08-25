@@ -76,6 +76,8 @@ function sourcesConfig(): ServerConfig {
     backupRoot: "/tmp/backups",
     backupAcceptNoBackup: false,
     backupDatabaseUrl: null,
+    providerProxyPort: 0,
+    providerProxyExternalBaseUrl: null,
   };
 }
 

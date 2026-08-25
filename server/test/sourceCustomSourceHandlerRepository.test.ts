@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository";
 import { HttpError } from "../src/modules/routeUtils/common";
@@ -56,9 +57,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE source_handler_runs, source_handler_versions, source_connections,
-              settings, space_memberships, proposals`,
+  await resetTables(
+    pool,
+    ["source_handler_runs", "source_handler_versions", "source_connections", "settings", "space_memberships", "proposals"],
   );
 });
 

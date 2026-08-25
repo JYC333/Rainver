@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { memoryModule } from "../src/modules/memory";
 import { loadConfig } from "../src/config";
 import {
   __setMemoryIdentityForTests,
@@ -123,7 +124,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -153,7 +154,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
     const res = await app.inject({ method: "GET", url: "/api/v1/memory?limit=999" });
     expect(res.statusCode).toBe(422);
   });
@@ -173,7 +174,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
     const res = await app.inject({ method: "GET", url: "/api/v1/memory?project_id=p1" });
     expect(res.statusCode).toBe(422);
     expect(res.json().detail).toContain("not found in space");
@@ -194,7 +195,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
 
     expect((await app.inject({ method: "GET", url: "/api/v1/memory/ok" })).statusCode).toBe(200);
     const missing = await app.inject({ method: "GET", url: "/api/v1/memory/nope" });
@@ -223,7 +224,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
 
     // A hostile body tries to read another space as another user; both are ignored.
     const res = await app.inject({
@@ -239,7 +240,7 @@ describe("memory read routes", () => {
 
   it("rejects a memory retrieval brief for non-memory object types", async () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -283,7 +284,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -347,7 +348,7 @@ describe("memory read routes", () => {
         },
       } as unknown as MemoryServices["repository"],
     }));
-    app = buildServer(memoryConfig(), { logger: false });
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
 
     const patch = await app.inject({
       method: "PATCH",

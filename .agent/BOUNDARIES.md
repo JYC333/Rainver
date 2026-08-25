@@ -295,7 +295,9 @@ See [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-pla
 Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder. The
 server host keeps the existing strict isolation model (bubblewrap, PathPolicy,
 mount containment) unchanged; a remote (personal) host runs in trusted-host
-mode — native process spawn, no sandbox, the machine's own login state — and
+mode — native process spawn, no sandbox, the machine's own login state unless
+the Run carries an explicit ModelProvider binding (ADR 0016's 2026-08-24
+amendment; see B67) — and
 is not held to the server host's isolation invariants. Host liveness and
 Location `execution_ready` are separate facts. Do not weaken the server host's
 isolation to make the two hosts look uniform, and do not claim remote
@@ -316,6 +318,66 @@ be reintroduced.
 changes land, rollback semantics) is an open design question, not settled by
 default. Do not wire a remote diff into the code-patch proposal apply/rollback
 machinery without a new decision superseding this boundary.
+
+**B67** — For a Run bound to a ModelProvider, **backend selection comes only
+from what the control plane injects for that binding.** State the rule that
+way round: the executing machine contributes nothing to which backend,
+credential, or upstream the runtime reaches, and a denylist of forbidden
+variable names is not a sufficient reading of it. In scope are both halves of
+how a CLI runtime picks a backend:
+
+- **Environment** — vendor key and endpoint variables (`ANTHROPIC_*`,
+  `OPENAI_*`), alternate-backend selectors (`CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX` and their cloud credential/region companions), and
+  egress variables (`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`
+  and lowercase), which decide where the injected lease token actually
+  travels. These are examples of the rule, not its definition.
+- **Ambient config and auth state** — the runtime's own on-disk profile
+  (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, and a
+  runtime's settings file that can itself export environment). Pointing the
+  run at a control-plane-provided profile directory is part of the binding,
+  not an optional extra. On the server host the two config-file runtimes each
+  satisfy this by a different mechanism, and **neither mechanism travels**:
+  Codex's binding returns `CODEX_HOME` pointing inside the credential broker's
+  temp HOME (`writeCodexProviderConfig` refuses with
+  `codex_temp_home_required` without one, then materializes into it; that HOME
+  is run-scoped for a one-shot run and conversation-scoped and persistent for
+  a CLI conversation), while
+  OpenCode's returns `env: {}`
+  and writes `opencode.json` into the run's sandbox working directory
+  (refusing with `opencode_sandbox_required`), with its isolated `HOME`
+  supplied separately by the credential grant. Both targets — the broker's
+  temp HOME and the sandbox cwd — are server-side paths. So a binding's
+  profile isolation has to be re-established wherever the run actually
+  executes: forwarding either path to another machine satisfies nothing and
+  lands the run on that machine's ambient profile instead. Claude Code is the
+  third case and needs the most new work, not the least: its binding supplies
+  no profile pointer at all (`buildClaudeProviderBinding` returns env only),
+  so on the server host its isolation comes entirely from the credential
+  grant's `HOME` — and a remote host has no credential broker and no grant, so
+  a bound remote Claude Code run is given a control-plane-provided profile
+  directory the daemon materializes for it.
+
+Two failures this prevents, both silent: a selected provider shadowed by
+machine state, so the Run's recorded `model_provider_id` is a lie; and a
+subscription login converted into API billing by a leftover key. A Run with
+**no** binding is not affected — it keeps using the machine's own login state,
+which on a remote host is the default.
+
+Enforcement: on the server host the env allowlist
+(`server/src/modules/runs/cliSubprocessEnv.ts`) already implements the
+environment half — it builds from an empty object, so ambient `HOME` is not
+passed either, whether or not a CLI login profile supplied a run-private one.
+On a remote host the daemon's spawn env and
+profile-directory selection are the enforcement point, and they implement this:
+for a bound run the daemon rebuilds the environment from an allowlist and
+points the runtime at a control-plane-provided profile it materializes and then
+removes. A run with no binding still inherits the machine's environment, which
+is the pre-existing behavior and the default. Neither path may be loosened into a wholesale
+ambient inherit for a bound Run. See
+[ADR 0008](decisions/0008-credential-channel-isolation.md) for the channel
+isolation this protects and ADR 0016's 2026-08-24 amendment for the binding
+that makes it reachable remotely.
 
 ## Mobile Boundaries
 

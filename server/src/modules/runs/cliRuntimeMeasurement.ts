@@ -26,7 +26,7 @@ export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | n
     reasoning_tokens: value.thoughtTokens,
   }, ["input_tokens", "output_tokens", "total_tokens"]);
   if (!usage) return null;
-  const expectedTotal = (
+  const buckets = (
     usage.input_tokens ?? 0
   ) + (
     usage.output_tokens ?? 0
@@ -34,10 +34,22 @@ export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | n
     usage.cache_creation_input_tokens ?? 0
   ) + (
     usage.cache_read_input_tokens ?? 0
-  ) + (
-    usage.reasoning_tokens ?? 0
   );
-  return usage.total_tokens === expectedTotal ? usage : null;
+  // Two self-consistent conventions exist for where reasoning tokens are
+  // counted, and ACP does not say which a runtime uses. Claude and OpenCode
+  // report them as a bucket of their own; an OpenAI-shaped runtime (Codex)
+  // reports a total that already includes them inside `output`, so adding the
+  // bucket again overcounts by exactly that many. A real Codex turn:
+  // input 24620 (112428 raw − 87808 cached), cached 87808, output 1312,
+  // reasoning 946, total 113740 — buckets sum to 113740, and the old
+  // single-equation check expected 114686 and rejected the turn. Since the
+  // whole turn was then failed, every Codex run producing reasoning tokens
+  // (which GPT-5-class models essentially always do) was reported as a
+  // failure despite having answered.
+  const reasoning = usage.reasoning_tokens ?? 0;
+  return usage.total_tokens === buckets + reasoning || usage.total_tokens === buckets
+    ? usage
+    : null;
 }
 
 function strictUsage(

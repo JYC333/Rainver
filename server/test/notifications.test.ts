@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { notificationsModule } from "../src/modules/notifications";
 import { loadConfig } from "../src/config";
 import { startMockUpstream, type MockUpstream } from "./support/mockUpstream";
 
@@ -16,7 +17,7 @@ afterEach(async () => {
 
 describe("notification webhook egress", () => {
   it("exposes webhook egress policy state", async () => {
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [notificationsModule]);
     const res = await app.inject({
       method: "GET",
       url: "/api/v1/server/notifications/webhooks/policy",
@@ -31,7 +32,7 @@ describe("notification webhook egress", () => {
   });
 
   it("denies dispatch by default with a server error envelope", async () => {
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [notificationsModule]);
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/server/notifications/webhooks/dispatch",
@@ -56,13 +57,11 @@ describe("notification webhook egress", () => {
       res.end();
     });
     const targetUrl = `${target.baseUrl}/proposal`;
-    app = buildServer(
+    app = buildModuleServer(
       loadConfig({
         SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true",
         SERVER_NOTIFICATION_WEBHOOK_ALLOWLIST: targetUrl,
-      }),
-      { logger: false },
-    );
+      }), [notificationsModule], { logger: false },);
 
     const res = await app.inject({
       method: "POST",
@@ -97,14 +96,12 @@ describe("notification webhook egress", () => {
   });
 
   it("denies targets outside the allowlist without echoing the denied URL", async () => {
-    app = buildServer(
+    app = buildModuleServer(
       loadConfig({
         SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true",
         SERVER_NOTIFICATION_WEBHOOK_ALLOWLIST:
           "https://hooks.example.com/proposal",
-      }),
-      { logger: false },
-    );
+      }), [notificationsModule], { logger: false },);
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/server/notifications/webhooks/dispatch",

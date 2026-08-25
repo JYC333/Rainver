@@ -2285,6 +2285,14 @@ export interface TaskRunCreateBody {
   project_folder_id?: string | null
   adapter_type?: string
   thread_id?: string | null
+  /**
+   * Remote dispatch only. Absent means the thread's own backend (or the Host ×
+   * adapter default on its first message); an explicit `null` means the
+   * machine's own login for this dispatch. The two are read by key presence,
+   * not truthiness — omitting the field is not the same as sending null.
+   */
+  model_provider_id?: string | null
+  model?: string | null
   timeout_ms?: number | null
   task_title?: string | null
   prompt?: string | null
@@ -2306,7 +2314,7 @@ export interface RunResolvedModel {
   provider_name: string | null
   provider_type: string | null
   model: string | null
-  source: 'request' | 'runtime_profile' | 'agent_default' | 'runtime_default' | 'space_default' | 'none'
+  source: 'request' | 'runtime_profile' | 'agent_default' | 'runtime_default' | 'space_default' | 'host_binding' | 'none'
   used_by_adapter: boolean
   adapter_model_support: 'uses_model' | 'not_applicable' | 'unsupported' | 'unknown'
   disclosure_note?: string | null
@@ -3473,6 +3481,12 @@ export interface Host {
   platform: string | null
   arch: string | null
   daemon_version: string | null
+  /** The control-plane address this daemon reports it reaches. */
+  daemon_server_url?: string | null
+  /** Explicit proxy address for this host; null means it is derived. */
+  provider_proxy_base_url?: string | null
+  /** What a dispatched run will actually use, resolved server-side. */
+  provider_proxy_effective_url?: string | null
   capabilities_json: HostCapabilities | null
   created_at: string
   updated_at: string
@@ -3515,6 +3529,9 @@ export interface HostThreadMessage {
   task_id?: string
   prompt: string
   status: HostThreadMessageStatus
+  /** The backend this message resolved to. Null means the machine's own login. */
+  model_provider_id: string | null
+  model: string | null
   run_id: string | null
   created_by_user_id: string
   created_at: string
@@ -3523,6 +3540,7 @@ export interface HostThreadMessage {
 
 export type HostThreadEventType =
   | 'assistant_text'
+  | 'assistant_thought'
   | 'tool_activity_started'
   | 'tool_activity_finished'
   | 'status'
@@ -3555,6 +3573,20 @@ export interface HostRuntimeAdapterOption {
   /** ACP runtime replatform P3: the vendor binary a host's capability probe actually reports (may differ from `command`). */
   capability_probe: string
   remote_eligible: boolean
+}
+
+/**
+ * Which model backend a host's runtime adapter runs against by default. No
+ * binding for an (host, adapter) pair means runs use the machine's own login
+ * state, which stays the default.
+ */
+export interface HostRuntimeProviderBinding {
+  host_id: string
+  adapter_type: string
+  model_provider_id: string
+  /** null = the provider's own default model. */
+  model: string | null
+  updated_at: string
 }
 
 export interface HostDispatchResponse {

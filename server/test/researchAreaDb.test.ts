@@ -1,10 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { __setProviderHttpClientForTests } from "../src/modules/providers";
-import { migrate } from "../src/db/migrator";
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService";
 import { ProjectResearchMonitorComparisonService, parseMonitorComparisons } from "../src/modules/projectResearch/monitorComparisonService";
 import { ProjectResearchIntegrityMonitorService, enqueueDueResearchIntegrityChecks } from "../src/modules/projectResearch/integrityMonitorService";
@@ -13,6 +11,7 @@ import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { PgReaderRepository } from "../src/modules/reader/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 
 const SPACE = "11111111-1111-4111-8111-111111111111"; const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -28,7 +27,6 @@ beforeAll(async () => {
     return;
   }
   pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-  await migrate(pool, join(process.cwd(), "migrations"));
   config = loadConfig({
     ...process.env,
     SERVER_DATABASE_URL: database.getConnectionUri(),
@@ -40,7 +38,11 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => { await pool?.end(); await database?.stop(); });
 afterEach(() => { __setProviderHttpClientForTests(null); });
-beforeEach(async () => { if (!available || !pool) return; await pool.query(`TRUNCATE research_checklist_items,research_evidence_cards,note_revisions,note_collection_items,note_collections,notes,space_objects,project_corpus_items,source_items,projects,space_memberships,users,spaces,runs,agent_runtime_profiles,agent_versions,agents,model_provider_space_grants,model_providers CASCADE`); const now = new Date().toISOString(); await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]); await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
+beforeEach(async () => { if (!available || !pool) return; await resetTables(
+  pool,
+  ["research_checklist_items", "research_evidence_cards", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_corpus_items", "source_items", "projects", "space_memberships", "users", "spaces", "runs", "agent_runtime_profiles", "agent_versions", "agents", "model_provider_space_grants", "model_providers"],
+  { cascade: true },
+); const now = new Date().toISOString(); await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]); await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
   await pool.query(`INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at) VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`, [PROVIDER, SPACE, USER, now]);
   await pool.query(`INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at) VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`, [randomUUID(), PROVIDER, SPACE, USER, now]);
 });

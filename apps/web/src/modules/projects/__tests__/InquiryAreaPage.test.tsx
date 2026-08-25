@@ -292,7 +292,7 @@ describe('InquiryAreaPage', () => {
     vi.mocked(inquiryApi.updateWork).mockResolvedValue({ ...QUESTION, wip_limit_exceeded: false })
     renderPage()
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     await screen.findByText('Suggested next')
     await user.click(screen.getByRole('button', { name: 'Thread actions' }))
     await user.click(await screen.findByRole('menuitem', { name: 'Pause' }))
@@ -435,7 +435,7 @@ describe('InquiryAreaPage', () => {
     renderPage()
 
     await screen.findByText('Does caching help?')
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     await user.click(screen.getByRole('button', { name: 'Thread actions' }))
     await user.click(await screen.findByRole('menuitem', { name: /Close out round 1 early/ }))
     // A round records how the position moved, so the state has to move.
@@ -487,7 +487,7 @@ describe('InquiryAreaPage', () => {
   })
 
   it('routes a semantic redefinition to the assessment workspace rather than editing in place', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await screen.findByText('Does caching help?')
@@ -502,7 +502,7 @@ describe('InquiryAreaPage', () => {
       ...QUESTION, lifecycle_status: 'resolved', attention_state: 'resolved',
     })
     const promptSpy = vi.spyOn(window, 'prompt')
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await screen.findByText('Does caching help?')
@@ -605,7 +605,7 @@ describe('InquiryAreaPage', () => {
   })
 
   it('shows the structure map, and draws relations from the Inquiry graph projection', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     vi.mocked(inquiryApi.listCandidates).mockImplementation(async (_projectId, status = 'pending') =>
       (status === 'pending' ? [candidate()] : []))
     renderPage('/spaces/space-1/projects/project-1/inquiry?view=map')
@@ -730,7 +730,7 @@ describe('InquiryAreaPage', () => {
       id: 'relation-1', from_thread_id: 'thread-1', to_thread_id: 'thread-2',
       relation_kind: 'decomposes_into', created_at: '2026-07-23T00:00:00.000Z',
     })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await screen.findByRole('tab', { name: /Relations/ })

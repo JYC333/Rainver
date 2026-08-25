@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -15,7 +14,6 @@ import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 // (citation existence, claim evidence/gap, evidence visible in project
 // corpus, experiment-provenance placeholder).
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SAME_SPACE_MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -29,7 +27,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -44,11 +41,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE project_research_claim_links, project_research_reports, project_research_checkpoints,
-       project_research_workflows, experiment_definitions,
-       claim_sources, claims, academic_papers, sources,
-       space_objects, project_corpus_items, artifacts, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["project_research_claim_links", "project_research_reports", "project_research_checkpoints", "project_research_workflows", "experiment_definitions", "claim_sources", "claims", "academic_papers", "sources", "space_objects", "project_corpus_items", "artifacts", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

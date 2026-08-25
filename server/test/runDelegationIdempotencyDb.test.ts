@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository";
 
 // Real-Postgres coverage for the run_delegations idempotency guarantee added
@@ -41,8 +42,10 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query(
-    "TRUNCATE run_delegations, agent_run_groups, runs, agent_versions, agents, space_memberships, spaces, users CASCADE",
+  await resetTables(
+    pool,
+    ["run_delegations", "agent_run_groups", "runs", "agent_versions", "agents", "space_memberships", "spaces", "users"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', $2, $2)`,

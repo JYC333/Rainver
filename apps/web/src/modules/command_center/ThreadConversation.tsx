@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
-import { artifactsApi, hostsApi } from '../../api/client'
+import { artifactsApi, hostsApi, runsApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type { HostThreadEvent, HostThreadMessage, HostTaskThread, Run } from '../../types/api'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -9,6 +9,7 @@ import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 import { DiffViewer } from '../project_files/ProjectFilesParts'
 import { MarkdownMessage } from '../agent_groups/MarkdownMessage'
+import { backendLabel } from './backendChoice'
 
 const EVENT_POLL_INTERVAL_MS = 2_000
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'running'])
@@ -32,6 +33,7 @@ interface PlanEntry {
 
 type TurnBlock =
   | { kind: 'text'; key: string; text: string }
+  | { kind: 'thought'; key: string; text: string }
   | { kind: 'tool'; key: string; item: ToolActivityItem }
 
 interface TurnContent {
@@ -78,10 +80,16 @@ function buildTurnContent(events: HostThreadEvent[]): TurnContent {
   const diagnostics: string[] = []
   let plan: PlanEntry[] | null = null
   let textBuffer: string[] = []
+  let thoughtBuffer: string[] = []
   let textKeySeq = 0
 
   function flushText() {
-    if (textBuffer.length === 0) return
+    // Reasoning first: it is what led to the text that follows it.
+    if (thoughtBuffer.length > 0) {
+      blocks.push({ kind: 'thought', key: `thought-${textKeySeq}`, text: thoughtBuffer.join('\n') })
+      thoughtBuffer = []
+    }
+    if (textBuffer.length === 0) { textKeySeq++; return }
     blocks.push({ kind: 'text', key: `text-${textKeySeq++}`, text: textBuffer.join('\n') })
     textBuffer = []
   }
@@ -89,6 +97,8 @@ function buildTurnContent(events: HostThreadEvent[]): TurnContent {
   for (const e of events) {
     if (e.event_type === 'assistant_text' && e.text) {
       textBuffer.push(e.text)
+    } else if (e.event_type === 'assistant_thought' && e.text) {
+      thoughtBuffer.push(e.text)
     } else if (e.event_type === 'tool_activity_started') {
       flushText()
       const id = e.tool_call_id ?? e.id
@@ -121,9 +131,31 @@ function buildTurnContent(events: HostThreadEvent[]): TurnContent {
 }
 
 function renderBlock(block: TurnBlock) {
-  return block.kind === 'text'
-    ? <MarkdownMessage key={block.key} content={block.text} />
-    : <ToolActivityRow key={block.key} item={block.item} />
+  if (block.kind === 'text') return <MarkdownMessage key={block.key} content={block.text} />
+  if (block.kind === 'thought') return <ThoughtBlock key={block.key} text={block.text} />
+  return <ToolActivityRow key={block.key} item={block.item} />
+}
+
+/**
+ * The model's reasoning, collapsed. It is not the answer and must not read as
+ * one — a MiniMax turn's whole `<think>` block used to sit above the reply as
+ * ordinary assistant text.
+ */
+function ThoughtBlock({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-md border border-dashed border-border text-xs">
+      <button
+        type="button"
+        className="w-full flex items-center gap-2 p-2 text-left hover:bg-muted/40"
+        onClick={() => setOpen(o => !o)}
+      >
+        {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+        <span className="text-muted-foreground">Reasoning</span>
+      </button>
+      {open && <div className="px-2 pb-2 text-muted-foreground whitespace-pre-wrap">{text}</div>}
+    </div>
+  )
 }
 
 function fmt(dt: string | null | undefined) {
@@ -266,11 +298,43 @@ function RunDiff({ runId }: { runId: string }) {
   )
 }
 
-function TurnCard({ message, run, events }: { message: HostThreadMessage; run: Run | null; events: HostThreadEvent[] }) {
+function TurnCard({ message, run, events, providers, onRunChanged }: {
+  message: HostThreadMessage
+  run: Run | null
+  events: HostThreadEvent[]
+  providers: ModelProviderOut[] | null
+  onRunChanged: () => void
+}) {
   const [showDiff, setShowDiff] = useState(false)
+  const [recoveryBusy, setRecoveryBusy] = useState(false)
+  const [confirmAbandon, setConfirmAbandon] = useState(false)
   const content = useMemo(() => buildTurnContent(events), [events])
-  const canShowDiff = Boolean(run && (run.status === 'succeeded' || run.status === 'failed'))
+  // A held run has finished executing, so its diff is exactly what a reviewer
+  // needs to decide with.
+  const ended = Boolean(run && (run.status === 'succeeded' || run.status === 'failed' || run.status === 'waiting_for_review'))
+  const canShowDiff = ended
+  const held = run?.status === 'waiting_for_review'
   const isActive = Boolean(run && ACTIVE_RUN_STATUSES.has(run.status))
+
+  async function recover(action: 'resume' | 'abandon') {
+    if (!run) return
+    setRecoveryBusy(true)
+    try {
+      if (action === 'resume') {
+        await runsApi.resume(run.id)
+        toast.success('Run resumed and queued')
+      } else {
+        await runsApi.abandon(run.id)
+        toast.success('Run abandoned')
+      }
+      setConfirmAbandon(false)
+      onRunChanged()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setRecoveryBusy(false)
+    }
+  }
 
   // Once the run has actually finished with a trailing text block, that
   // block is the real answer — everything before it collapses into
@@ -287,7 +351,17 @@ function TurnCard({ message, run, events }: { message: HostThreadMessage; run: R
         <div className="max-w-[85%] rounded-lg bg-primary/10 border border-primary/20 px-3 py-2 text-sm whitespace-pre-wrap">
           {message.prompt}
           {message.status !== 'dispatched' && (
-            <div className="mt-1"><Badge variant={message.status === 'withdrawn' ? 'muted' : 'warning'}>{message.status}</Badge></div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <Badge variant={message.status === 'withdrawn' ? 'muted' : 'warning'}>{message.status}</Badge>
+              {/* A queued message already carries the backend it will run on.
+                  Without this, the window between sending and dispatch is the
+                  one place a backend change is invisible. */}
+              {message.status === 'queued' && backendLabel(providers, message.model_provider_id, message.model) && (
+                <span className="text-xs text-muted-foreground">
+                  {backendLabel(providers, message.model_provider_id, message.model)}
+                </span>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -298,20 +372,61 @@ function TurnCard({ message, run, events }: { message: HostThreadMessage; run: R
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge status={run.status} />
               <span className="text-xs text-muted-foreground">{fmt(run.created_at)}</span>
+              {/* Which backend actually answered. Read from the message, which
+                  carries what dispatch resolved, rather than re-deriving it
+                  from the host's current default — that default may have
+                  changed since this turn ran. */}
+              {backendLabel(providers, message.model_provider_id, message.model) && (
+                <span className="text-xs text-muted-foreground">
+                  · {backendLabel(providers, message.model_provider_id, message.model)}
+                </span>
+              )}
             </div>
             {content.plan && content.plan.length > 0 && <PlanChecklist entries={content.plan} />}
             {finalBlock ? (
               <>
-                {priorBlocks.length > 0 && <PriorStepsCollapsible blocks={priorBlocks} />}
+                {/* A reasoning block is already a disclosure of its own;
+                    wrapping it in "earlier steps" buries it a second time and
+                    calls it something it isn't. Only real steps get wrapped. */}
+                {priorBlocks.length > 0 && (
+                  priorBlocks.every(b => b.kind === 'thought')
+                    ? priorBlocks.map(renderBlock)
+                    : <PriorStepsCollapsible blocks={priorBlocks} />
+                )}
                 {renderBlock(finalBlock)}
               </>
             ) : (
               content.blocks.map(renderBlock)
             )}
             {isActive && <TypingIndicator />}
-            <DiagnosticsDrawer lines={content.diagnostics} autoOpen={run.status === 'failed'} />
-            {run.status === 'failed' && run.error_message && (
+            <DiagnosticsDrawer lines={content.diagnostics} autoOpen={run.status === 'failed' || held} />
+            {(run.status === 'failed' || held) && run.error_message && (
               <p className="text-xs text-destructive border border-destructive/20 rounded p-2 bg-destructive/5">{run.error_message}</p>
+            )}
+            {held && (
+              // A held run was only actionable from the Run detail page, so
+              // from here the thread simply stopped with no way to continue
+              // it — the state names a review that had nowhere to happen.
+              <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+                <span className="text-xs text-muted-foreground">Waiting for your review.</span>
+                <Button size="sm" onClick={() => void recover('resume')} disabled={recoveryBusy}>
+                  {recoveryBusy ? 'Working…' : 'Retry'}
+                </Button>
+                {confirmAbandon ? (
+                  <>
+                    <Button size="sm" variant="destructive" onClick={() => void recover('abandon')} disabled={recoveryBusy}>
+                      Confirm abandon
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmAbandon(false)} disabled={recoveryBusy}>
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => setConfirmAbandon(true)} disabled={recoveryBusy}>
+                    Abandon
+                  </Button>
+                )}
+              </div>
             )}
             {canShowDiff && (
               <div>
@@ -339,10 +454,15 @@ function TurnCard({ message, run, events }: { message: HostThreadMessage; run: R
 export default function ThreadConversation({
   thread,
   runs,
+  providers,
   onThreadChanged,
 }: {
   thread: HostTaskThread
   runs: Run[]
+  /** Named so a turn can say which backend answered it. Passed in rather than
+   *  fetched here: this screen mounts the composer alongside, and the same
+   *  list serves both. Null while it is still loading, or if it failed. */
+  providers: ModelProviderOut[] | null
   onThreadChanged: () => void
 }) {
   const [messages, setMessages] = useState<HostThreadMessage[]>([])
@@ -532,6 +652,8 @@ export default function ThreadConversation({
               message={message}
               run={message.run_id ? runsById.get(message.run_id) ?? null : null}
               events={message.run_id ? events.filter(e => e.run_id === message.run_id) : []}
+              providers={providers}
+              onRunChanged={onThreadChanged}
             />
             {message.status === 'queued' && (
               <div className="flex justify-end mt-1">

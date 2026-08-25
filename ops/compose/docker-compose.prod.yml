@@ -17,8 +17,9 @@ services:
     restart: unless-stopped
 
   # Official server — the default production API entrypoint. nginx
-  # proxies /api to this service (see apps/web/nginx.conf). Not published
-  # externally — nginx (:80) is the public face. Production migrations and
+  # proxies /api to this service (see apps/web/nginx.conf). The API itself is
+  # not published — nginx (:80) is the public face; the provider proxy below is
+  # published to loopback so a paired execution host can be pointed at it. Production migrations and
   # official plugin server artifacts are bundled in the server image; do not
   # bind-mount live migration or plugin source files.
   server:
@@ -37,6 +38,21 @@ services:
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-agent_space}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required for production}@postgres:5432/${POSTGRES_DB:-agent_space}}
       - SANDBOX_RUNNER_HOST=sandbox-runner
       - SANDBOX_RUNNER_SERVER_HOST=server
+      # Binding a paired execution host to a ModelProvider needs the provider
+      # proxy reachable from that machine, which needs a port that survives a
+      # restart. Fixed here so the published mapping below is stable; the
+      # in-network sandbox path is unaffected either way.
+      - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-8021}
+      # PROVIDER_PROXY_EXTERNAL_BASE_URL is deliberately NOT set here: an
+      # `environment:` entry overrides `env_file`, so declaring it would
+      # silently blank out whatever the deployment put in `.server.env`.
+      # Unset means remote binding is unavailable, and dispatch says so rather
+      # than handing a host a URL it cannot resolve.
+    ports:
+      # Loopback by default: reachable from this machine only. Widening this
+      # bind is the deliberate step that exposes lease traffic to the local
+      # network, and it is plaintext until a TLS entry exists.
+      - "${PROVIDER_PROXY_BIND:-127.0.0.1}:${PROVIDER_PROXY_PORT:-8021}:${PROVIDER_PROXY_PORT:-8021}"
     depends_on:
       postgres:
         condition: service_healthy

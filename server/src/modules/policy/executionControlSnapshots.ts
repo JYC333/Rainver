@@ -13,6 +13,8 @@ import { readSpaceRetrievalSettings } from "../retrieval/settings";
 export interface ExecutionControlSnapshotInputs {
   cliCredentialProfileId?: string | null;
   policyDecisionRecordIds?: readonly string[];
+  /** A remote run's provider is resolved at execution, not predicted here. */
+  executesRemotely?: boolean;
 }
 
 export interface EffectiveRunContextBindings {
@@ -38,7 +40,14 @@ export class ExecutionControlSnapshotRepository {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     const providerRequired = run.adapter_type === "model_api" || run.adapter_type === "ts_agent_host";
-    const providerId = run.model_provider_id;
+    // For a run that executes on a remote host, `runs.model_provider_id` at
+    // this point is the router's *prediction*: the remote path resolves its
+    // own binding later, from the dispatch message or the Host default, and
+    // writes back what it actually used. Treating the prediction as this
+    // run's destination would deny egress for, or fail preflight on, a
+    // provider the run never touches — and would record a destination that is
+    // not the one traffic went to.
+    const providerId = inputs.executesRemotely ? null : run.model_provider_id;
     const providerDestination = providerId !== null;
     const localCliDestination = !providerDestination
       && (run.adapter_type === "claude_code" || run.adapter_type === "codex_cli" || run.adapter_type === "opencode");

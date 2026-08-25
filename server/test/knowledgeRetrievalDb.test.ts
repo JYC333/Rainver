@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
   RetrievalSearchService,
@@ -17,7 +16,6 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 // Postgres and exercises projection writes + every search arm for real. Skips
 // gracefully when Docker is unavailable.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const ITEM_A = "33333333-3333-4333-8333-333333333333";
 const ITEM_B = "44444444-4444-4444-8444-444444444444";
@@ -32,7 +30,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -51,7 +48,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE retrieval_objects, retrieval_edges, knowledge_items, space_objects CASCADE");
+  await resetTables(
+    pool,
+    ["retrieval_objects", "retrieval_edges", "knowledge_items", "space_objects"],
+    { cascade: true },
+  );
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Test Space', 'personal', now(), now()) ON CONFLICT (id) DO NOTHING`,

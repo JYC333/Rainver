@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Copy } from 'lucide-react'
-import { hostsApi } from '../../api/client'
+import { hostsApi, providersApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type { Host, HostPairingCode, HostRuntimeAdapterOption } from '../../types/api'
 import { Card } from '../../components/ui/card'
@@ -11,6 +11,8 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
+import HostProviderBindings from './HostProviderBindings'
+import HostProxyAddress from './HostProxyAddress'
 
 const HOST_REFRESH_INTERVAL_MS = 3_000
 
@@ -32,6 +34,8 @@ export default function HostsPanel() {
   const [pairingName, setPairingName] = useState('')
   const [issuing, setIssuing] = useState(false)
   const [runtimeAdapters, setRuntimeAdapters] = useState<HostRuntimeAdapterOption[]>([])
+  // Fetched once for the whole panel; every host card offers the same providers.
+  const [providers, setProviders] = useState<ModelProviderOut[]>([])
   const machineGroups = useMemo(() => {
     const groups = new Map<string, Host[]>()
     for (const host of hosts) {
@@ -43,6 +47,7 @@ export default function HostsPanel() {
 
   useEffect(() => {
     hostsApi.listRuntimeAdapters().then(result => setRuntimeAdapters(result.items)).catch(error => toast.error(errMsg(error)))
+    providersApi.list().then(setProviders).catch(error => toast.error(errMsg(error)))
   }, [])
 
   const load = useCallback(async (showLoading = false) => {
@@ -168,6 +173,28 @@ export default function HostsPanel() {
               </div>
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <Button size="sm" variant="destructive" onClick={() => revoke(host.id)}>Revoke</Button>
+              )}
+              {host.kind === 'server' && (
+                // Only a run dispatched to a host daemon carries a provider
+                // binding, so this host has no backend to choose. Say so here:
+                // otherwise the card next to one that does have the control
+                // reads as the control being broken.
+                <p className="w-full border-t pt-2 text-xs text-muted-foreground">
+                  CLI runs here use the server machine's own logins. A model backend is chosen per paired remote host.
+                </p>
+              )}
+              {host.kind === 'remote' && host.status !== 'revoked' && (
+                <>
+                  <HostProviderBindings
+                    hostId={host.id}
+                    runtimeAdapters={runtimeAdapters}
+                    installedProbes={host.capabilities_json?.runtimes ?? []}
+                    providers={providers}
+                  />
+                  <div className="w-full">
+                    <HostProxyAddress host={host} onChanged={() => { void load() }} />
+                  </div>
+                </>
               )}
                 </Card>
               ))}

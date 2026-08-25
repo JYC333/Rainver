@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Every test here drops and reapplies the whole baseline, so each one costs
 // 5-10s alone and considerably more under parallel load. The global 30s ceiling
@@ -8,12 +8,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { loadMigrations, migrate } from "../src/db/migrator";
 
-// Empty-DB migration test. Applies the immutable pre-P1 baseline plus the
-// numbered execution-topology upgrade to a fresh Postgres via the server
-// migration runner and asserts the resulting schema applies cleanly and
-// idempotently.
+// Empty-DB migration test. Applies the single runtime baseline to a fresh
+// Postgres via the server migration runner and asserts the resulting schema
+// applies cleanly and idempotently.
 //
 // Verifies the runner creates representative server-owned tables from the
 // baseline. Skips gracefully without Docker.
@@ -60,7 +60,8 @@ let available = false;
 
 beforeAll(async () => {
   try {
-    container = await getTestPostgres(__filename);
+    // The tests below apply the baseline themselves; start from nothing.
+    container = await getTestPostgres(__filename, { empty: true });
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
     available = true;
   } catch (err) {
@@ -78,12 +79,16 @@ afterAll(async () => {
   await container?.stop();
 });
 
-beforeEach(async () => {
-  if (!available || !pool) return;
-  await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public; RESET search_path;");
-// Dropping and recreating the whole schema per test is slow under parallel
-// load; the old 30s ceiling was tight enough to fail on contention alone.
-}, 120_000);
+/**
+ * Only the tests that assert a from-scratch apply need an empty schema;
+ * dropping and re-creating ~300 tables is slow enough under parallel load
+ * that doing it before every test used to dominate this file's run time. The
+ * other tests rely on `migrate` being idempotent and clear their rows with
+ * `resetTables` instead.
+ */
+async function resetSchema(p: Pool): Promise<void> {
+  await p.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public; RESET search_path;");
+}
 
 async function baselineTableNames(p: Pool): Promise<string[]> {
   const res = await p.query<{ table_name: string }>(
@@ -115,17 +120,26 @@ function tableDefinition(sql: string, table: string): string {
 }
 
 describe("server runner applies the baseline schema", () => {
-  it("keeps 0001_baseline.sql immutable and chains the P1 upgrade", () => {
+  // Asserted literally so that adding a migration is a deliberate edit here,
+  // not a silent side effect of a schema change elsewhere. There is one file:
+  // no deployment carries data that predates it, so upgrades are folded into
+  // the baseline rather than chained behind it.
+  it("keeps the schema in a single baseline file", () => {
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter((name) => /^\d+_.+\.sql$/.test(name))
       .sort();
-    expect(migrationFiles).toEqual(["0001_baseline.sql", "0002_execution_topology.sql"]);
+    expect(migrationFiles).toEqual(["0001_baseline.sql"]);
   });
 
-  it("preserves legacy Project Folder IDs as Workspace Location IDs", () => {
-    const upgrade = readFileSync(join(MIGRATIONS_DIR, "0002_execution_topology.sql"), "utf8");
-    expect(upgrade).toMatch(/SELECT pf\.id, pf\.space_id, pf\.id, pf\.host_id, pf\.host_kind/);
-    expect(upgrade).toContain("-- One old Folder row maps to exactly one Location");
+  it("carries the execution topology the Folder/Location split needs", () => {
+    // What the retired upgrade file used to establish, now asserted against
+    // the baseline itself: a Location is the physical checkout, and a Folder
+    // no longer names a host or a path.
+    const baseline = baselineSql();
+    expect(baseline).toContain("CREATE TABLE public.workspace_locations");
+    expect(baseline).toContain("CREATE TABLE public.machines");
+    expect(baseline).toContain("execution_host_kind character varying(16) NOT NULL");
+    expect(tableDefinition(baseline, "project_folders")).not.toMatch(/\bhost_id\b|\bhost_kind\b|\broot_path\b/);
   });
 
   // B12D/B12E: domain lifecycle state belongs to the owning extension table,
@@ -330,12 +344,12 @@ describe("server runner applies the baseline schema", () => {
 
   it("applies the baseline and creates representative server-owned tables", async () => {
     if (!available || !pool) return;
+    await resetSchema(pool);
 
     const expectedVersions = loadMigrations(MIGRATIONS_DIR).map((f) => f.version);
     const result = await migrate(pool, MIGRATIONS_DIR);
     expect(result.all).toEqual(expectedVersions);
     expect(result.applied).toContain("0001");
-    expect(result.applied).toContain("0002");
 
     const recorded = await pool.query(
       `SELECT version FROM public.${RUNNER_TABLE} WHERE version = '0001'`,
@@ -348,7 +362,7 @@ describe("server runner applies the baseline schema", () => {
     }
   }, 120_000);
 
-  it("upgrades the immutable baseline into the P1 execution topology", async () => {
+  it("creates the Machine/Host/Location topology from the baseline alone", async () => {
     if (!available || !pool) return;
     await migrate(pool, MIGRATIONS_DIR);
     const topology = await pool.query<{ table_name: string }>(
@@ -375,14 +389,15 @@ describe("server runner applies the baseline schema", () => {
     ]));
     expect(columns.rows.some((row) => row.table_name === "project_folders" && ["host_id", "host_kind", "root_path", "display_path"].includes(row.column_name))).toBe(false);
     const applied = await pool.query<{ version: string }>(
-      `SELECT version FROM public.${RUNNER_TABLE} WHERE version IN ('0001', '0002') ORDER BY version`,
+      `SELECT version FROM public.${RUNNER_TABLE} ORDER BY version`,
     );
-    expect(applied.rows.map((row) => row.version)).toEqual(["0001", "0002"]);
+    expect(applied.rows.map((row) => row.version)).toEqual(["0001"]);
   }, 120_000);
 
   it("rejects unknown user states, and constrains object_type by format only", async () => {
     if (!available || !pool) return;
     await migrate(pool, MIGRATIONS_DIR);
+    await resetTables(pool, ["users", "spaces"], { cascade: true });
 
     await expect(pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
@@ -432,8 +447,8 @@ describe("server runner applies the baseline schema", () => {
 
   it("enforces object kind registry constraints in Postgres", async () => {
     if (!available || !pool) return;
-
     await migrate(pool, MIGRATIONS_DIR);
+    await resetTables(pool, ["users", "spaces"], { cascade: true });
     await pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('user-1', 'User', 'active', now(), now())`,
@@ -527,6 +542,7 @@ describe("server runner applies the baseline schema", () => {
 
   it("is idempotent on an already-migrated database", async () => {
     if (!available || !pool) return;
+    await resetSchema(pool);
     const first = await migrate(pool, MIGRATIONS_DIR);
     expect(first.applied).toContain("0001");
 

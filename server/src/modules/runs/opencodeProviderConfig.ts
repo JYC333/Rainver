@@ -46,14 +46,50 @@ export async function writeOpenCodeProviderConfig(input: {
     }
   }
   const document = originalText === null ? {} : await parseJsonObject(originalText);
-  const providerId = "agent_space_provider";
+  applyOpenCodeProviderConfig(document, input);
+  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+  await writeFile(configPath, JSON.stringify(document, null, 2), { encoding: "utf8", mode: 0o600 });
+  return {
+    model: openCodeModelId(input.model),
+    restore: async () => {
+      if (originalText === null) {
+        await rm(configPath, { force: true });
+        return;
+      }
+      await writeFile(configPath, originalText, { encoding: "utf8", mode: 0o600 });
+    },
+  };
+}
+
+/** Not exported: `openCodeModelId` is how the rest of the server names it. */
+const OPENCODE_PROVIDER_ID = "agent_space_provider";
+
+/**
+ * How OpenCode addresses a bound model: `<providerId>/<model>`, where the
+ * provider id is the one this module declares in the config. Every place that
+ * needs the identifier calls this, so the config OpenCode reads and the value
+ * ACP is told cannot drift apart.
+ */
+export function openCodeModelId(model: string): string {
+  return `${OPENCODE_PROVIDER_ID}/${model}`;
+}
+
+/**
+ * Merges the binding into an OpenCode config document, in place.
+ *
+ * Shared with the remote path so both produce the same provider block — the
+ * `npm` field in particular is what makes a non-registry provider loadable at
+ * all, and a second implementation is how that silently goes missing.
+ */
+export function applyOpenCodeProviderConfig(
+  document: Record<string, unknown>,
+  input: { providerName: string; proxyBaseUrl: string; leaseToken: string; model: string; availableModels: string[] },
+): void {
+  const providerId = OPENCODE_PROVIDER_ID;
   const provider = recordValue(document.provider);
   const models = { ...recordValue(provider.models) };
   for (const model of Array.from(new Set([input.model, ...input.availableModels].filter(Boolean)))) {
-    models[model] = {
-      ...recordValue(models[model]),
-      name: model,
-    };
+    models[model] = { ...recordValue(models[model]), name: model };
   }
   document.$schema = "https://opencode.ai/config.json";
   document.provider = {
@@ -68,18 +104,6 @@ export async function writeOpenCodeProviderConfig(input: {
         apiKey: input.leaseToken,
       },
       models,
-    },
-  };
-  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-  await writeFile(configPath, JSON.stringify(document, null, 2), { encoding: "utf8", mode: 0o600 });
-  return {
-    model: `${providerId}/${input.model}`,
-    restore: async () => {
-      if (originalText === null) {
-        await rm(configPath, { force: true });
-        return;
-      }
-      await writeFile(configPath, originalText, { encoding: "utf8", mode: 0o600 });
     },
   };
 }

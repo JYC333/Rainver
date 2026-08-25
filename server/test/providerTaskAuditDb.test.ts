@@ -1,13 +1,10 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { ServerConfig } from "../src/config";
-import { migrate } from "../src/db/migrator";
 import { resolveProviderCommandStore } from "../src/modules/providers/commands/store";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "72000000-0000-4000-8000-000000000001";
 const USER = "72000000-0000-4000-8000-000000000002";
 const PROVIDER = "72000000-0000-4000-8000-000000000003";
@@ -20,7 +17,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Provider task','personal',now(),now())`, [SPACE]);
     await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
     await pool.query(

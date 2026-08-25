@@ -8,6 +8,20 @@ import { createCliConversationController } from "./cliConversationProtocol";
 import { normalizeVendorEvents } from "./runtimeEventNormalization";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization";
+import { getDbPool } from "../../db/pool";
+import type { ServerConfig } from "../../config";
+import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease";
+import type { Queryable } from "../routeUtils/common";
+import {
+  boundAcpModelId,
+  buildRemoteProviderBinding,
+  recordRemoteRunBackend,
+  resolveRemoteRunBinding,
+  RemoteProviderBindingError,
+  type RemoteProviderBinding,
+  type RemoteProviderBindingFrame,
+  type ResolvedRemoteBinding,
+} from "./remoteProviderBinding";
 
 /**
  * ADR 0016 P3: the remote-host counterpart to `executeVendorCliAdapter` —
@@ -63,6 +77,24 @@ export interface RemoteHostCliAdapterInput {
   process_registry?: CliProcessRegistry;
 }
 
+/**
+ * How long a remote runtime may say nothing before the run is given up on.
+ *
+ * The server-host path has had this budget all along (`stallTimeoutSeconds`);
+ * the remote path accepted the same option and never implemented it, so a
+ * runtime that went quiet burned the entire run timeout before anyone found
+ * out.
+ *
+ * A third of the run budget, so a slow-but-working turn is never cut off and
+ * a run that configured a short timeout gets a proportionally short stall
+ * budget rather than one that can exceed its own deadline. Capped at two
+ * minutes: past that the wait costs more than the answer is worth, and a
+ * retry is cheap.
+ */
+export function remoteStallTimeoutSeconds(timeoutSeconds: number): number {
+  return Math.min(120, Math.max(5, Math.floor(timeoutSeconds / 3)));
+}
+
 function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds: number, maxSeconds: number): number {
   const requested = input.timeout_seconds && input.timeout_seconds > 0 ? Math.trunc(input.timeout_seconds) : defaultSeconds;
   const contract = input.run.contract_snapshot_json as Record<string, unknown> | null | undefined;
@@ -75,9 +107,67 @@ function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds:
 export interface RemoteHostCliAdapterDeps {
   executor?: CliCommandExecutor;
   connectionRegistry?: HostConnectionRegistry;
+  config?: ServerConfig;
+  /** Overridden in tests; production uses the process-wide registry. */
+  leaseRegistry?: ProviderProxyLeaseRegistry;
+  /** Overridden in tests; production derives it from `config`. */
+  db?: Queryable;
+  /**
+   * Which model backend this run uses, and where that fact is recorded. One
+   * port rather than two switches, because they are the same subsystem: a
+   * caller that can answer the first can record the second, and a caller that
+   * can do neither must not silently proceed — guessing "unbound" would run on
+   * the machine's own login while the control plane believed otherwise, which
+   * is the substitution B67 forbids.
+   *
+   * Production derives this from `config`. A caller that genuinely has no
+   * binding subsystem — a unit test of the protocol plumbing — says so by
+   * passing `NO_PROVIDER_BINDINGS`.
+   */
+  bindings?: RemoteBindingPort;
 }
 
+export interface RemoteBindingPort {
+  resolve(run: RunRecord, hostId: string, adapterType: string): Promise<ResolvedRemoteBinding | null>;
+  record(runId: string, used: { provider_id: string; model: string | null } | null, spaceId: string): Promise<void>;
+}
+
+/** For a caller with no bindings at all: every run is unbound, nothing recorded. */
+export const NO_PROVIDER_BINDINGS: RemoteBindingPort = {
+  async resolve() { return null; },
+  async record() {},
+};
+
+function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
+  if (!config.databaseUrl) return null;
+  const db = getDbPool(config.databaseUrl);
+  return {
+    resolve: (run, hostId, adapterType) => resolveRemoteRunBinding(db, run, hostId, adapterType),
+    record: (runId, used, spaceId) => recordRemoteRunBackend(db, runId, used, spaceId),
+  };
+}
+
+/**
+ * Runs a Run on a paired execution host, and owns the lifetime of whatever
+ * provider lease that run needed: whatever happens inside — success, failure,
+ * timeout, a thrown error — the token the host was handed stops working when
+ * this returns, rather than at its own TTL.
+ */
 export async function executeRemoteHostCliAdapter(
+  input: RemoteHostCliAdapterInput,
+  hostId: string,
+  workspaceLocationId: string,
+  deps: RemoteHostCliAdapterDeps = {},
+): Promise<RunAdapterResultEnvelope> {
+  const leases: Array<() => void> = [];
+  try {
+    return await runRemoteHostCliAdapter(input, hostId, workspaceLocationId, deps, leases);
+  } finally {
+    for (const revoke of leases) revoke();
+  }
+}
+
+async function runRemoteHostCliAdapter(
   input: RemoteHostCliAdapterInput,
   hostId: string,
   // execution-topology-and-project-control-plane-plan.md P1 / D2/D5: this is
@@ -85,7 +175,8 @@ export async function executeRemoteHostCliAdapter(
   // `workspace_location_id` field, and the daemon's local config maps that id
   // to the real directory on the owning machine.
   workspaceLocationId: string,
-  deps: RemoteHostCliAdapterDeps = {},
+  deps: RemoteHostCliAdapterDeps,
+  leases: Array<() => void>,
 ): Promise<RunAdapterResultEnvelope> {
   const startedAt = new Date().toISOString();
   const adapterType = input.run.adapter_type;
@@ -175,16 +266,139 @@ export async function executeRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
-  const executor = deps.executor ?? new RemoteWsCliCommandExecutor(hostId, workspaceLocationId, input.run.project_folder_id, registry);
   const threadEvents = createThreadEventNormalizer();
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
+
+  // The control plane's choice of model backend for this run, if it made one.
+  // Read from the thread message rather than `runs.model_provider_id` — see
+  // `remoteProviderBinding.ts` for why that column is not evidence.
+  let providerBinding: RemoteProviderBinding | null = null;
+  let unusableHostDefault: string | null = null;
+  const config = deps.config;
+  const bindings = deps.bindings ?? (config ? databaseBindingPort(config) : null);
+  {
+    try {
+      if (!bindings) {
+        throw new RemoteProviderBindingError(
+          "provider_binding_unavailable",
+          "Cannot determine this run's model backend: no binding port and no database connection.",
+        );
+      }
+      const bound = await bindings.resolve(input.run, hostId, spec.adapter_type);
+      if (bound) {
+        if (!config) {
+          throw new RemoteProviderBindingError(
+            "provider_binding_unavailable",
+            "This run is bound to a ModelProvider, but no server configuration was available to reach it.",
+          );
+        }
+        try {
+          providerBinding = await buildRemoteProviderBinding({
+            config,
+            run: input.run,
+            hostId,
+            adapterType: spec.adapter_type,
+            binding: bound,
+            // Outlive the run itself, the way the server-host path does, so a
+            // request in flight at the timeout boundary is not cut off.
+            ttlSeconds: timeoutSeconds + 300,
+            leaseRegistry: deps.leaseRegistry,
+            // Reads this host's reported control-plane address to derive a
+            // proxy URL it can actually reach. `config.databaseUrl` is proven
+            // by `databaseBindingPort` having resolved the binding at all;
+            // a test-supplied port must say which database it means.
+            db: deps.db ?? getDbPool(config.databaseUrl!),
+          });
+          leases.push(providerBinding.revoke);
+        } catch (error) {
+          // A Host default that cannot be used *here* is not this run's
+          // error: a Host is user-scoped and can back Locations in several
+          // Spaces, so its default may name a provider granted in a different
+          // one. Before this existed such a run used the machine's own login
+          // and succeeded; failing it now would be a regression nobody asked
+          // for. A binding the dispatch explicitly asked for still fails.
+          if (bound.origin !== "host_default") throw error;
+          unusableHostDefault = error instanceof Error ? error.message : String(error);
+          providerBinding = null;
+        }
+      }
+      if (unusableHostDefault) {
+        const text = "This host's default model backend is not usable for this run, "
+          + `so it ran on the machine's own login state instead: ${unusableHostDefault}`;
+        // Through `runtime_event_sink`, not the thread sink: the degradation
+        // only happens to a run with **no** thread — a thread always has a
+        // dispatched message, and a dispatched message always carries a
+        // resolved binding — so a thread-only diagnostic would be silent for
+        // this branch's entire real population.
+        void input.runtime_event_sink?.({
+          schema_version: "runtime_event.v1",
+          type: "warning",
+          occurred_at: new Date().toISOString(),
+          summary: text,
+          metadata_json: { reason: "host_default_binding_unusable" },
+        });
+        void input.thread_event_sink?.([{ event_type: "diagnostic", text }]);
+      }
+      // Make the Run row say what this run actually executes against — the
+      // router may have predicted a different provider at run start, and usage
+      // attributes to the one the lease names, not the one the row does.
+      await bindings.record(
+        input.run.id,
+        bound && providerBinding
+          ? { provider_id: bound.provider_id, model: providerBinding.used_model }
+          : null,
+        input.run.space_id,
+      );
+    } catch (error) {
+      // Fail the run rather than silently executing on the machine's own
+      // login: the user chose a backend and is owed the reason it could not
+      // be used (B67).
+      return remoteFailureWithEvent(
+        input,
+        spec.adapter_type,
+        error instanceof RemoteProviderBindingError ? error.code : "provider_binding_failed",
+        error instanceof Error ? error.message : "Could not prepare the selected model backend.",
+        startedAt,
+      );
+    }
+  }
+
+  const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
+    hostId,
+    workspaceLocationId,
+    input.run.project_folder_id,
+    registry,
+    providerBinding?.frame ?? null,
+  );
   let stdoutText = "";
   const stdioController = createCliConversationController({
     adapter_type: spec.adapter_type as VendorCliAdapterType,
     prompt,
     cwd: REMOTE_HOST_ACP_CWD_PLACEHOLDER,
-    model: input.model,
+    // The backend the binding actually resolved, in this runtime's identifier
+    // space — not `input.model`, which is the router's idea of a model and can
+    // name one the bound provider does not serve. Null for Claude, whose model
+    // is decided entirely by the environment the binding sets.
+    //
+    // A run with no binding keeps whatever the caller asked for. No production
+    // caller supplies one today — `RunExecuteRequestSchema` has no `model`
+    // field, so every host-thread dispatch arrives with null — but the input
+    // is part of this adapter's contract and dropping it would silently
+    // discard a model a future caller passes.
+    model: providerBinding
+      ? boundAcpModelId(spec.adapter_type as VendorCliAdapterType, providerBinding.used_model)
+      : input.model,
+    // What the run executes against, which the server decided and does not
+    // need to ask the host about. Without it, attribution reads the runtime's
+    // echo: an alias for Claude (which is told no model at all), and the
+    // `<provider>/<model>` form for OpenCode rather than the provider's own
+    // model name.
+    attributed_model: providerBinding?.used_model ?? null,
     runtime_session_id: input.resume_session_id,
+    on_thought_delta: (delta) => {
+      const drafts = threadEvents.pushAcpThoughtDelta(delta);
+      if (drafts.length > 0) void input.thread_event_sink?.(drafts);
+    },
     on_text_delta: (delta) => {
       const drafts = threadEvents.pushAcpTextDelta(delta);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
@@ -219,6 +433,7 @@ export async function executeRemoteHostCliAdapter(
     command: argv,
     cwd: null,
     timeout_seconds: timeoutSeconds,
+    stall_timeout_seconds: remoteStallTimeoutSeconds(timeoutSeconds),
     env: {},
     run_id: input.run.id,
     stdin: rendered.stdin,
@@ -269,8 +484,27 @@ export async function executeRemoteHostCliAdapter(
       }
     : { external_session_id: null, usage: null, model_usage: [], subscription_quota: null };
   if (result.timed_out) {
-    await input.thread_event_sink?.([{ event_type: "status", status: "run_timeout" }]);
-    return remoteFailure(spec.adapter_type, "runtime_timeout", "Remote Run timed out.", startedAt, completedAt);
+    const stalled = result.failure_code === "stall_timeout";
+    const idle = typeof result.idle_seconds === "number" ? result.idle_seconds : null;
+    // Say which kind of stuck this was. "Remote Run timed out" is true of a
+    // runtime that worked for the whole budget and of one that said nothing
+    // after the first second, and only the second is worth retrying quickly.
+    const detail = stalled
+      ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
+      : idle !== null && idle > 0
+        ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
+        : `Remote Run timed out after ${timeoutSeconds}s.`;
+    await input.thread_event_sink?.([
+      { event_type: "diagnostic", text: detail },
+      { event_type: "status", status: "run_timeout" },
+    ]);
+    return remoteFailure(
+      spec.adapter_type,
+      stalled ? "runtime_stall_timeout" : "runtime_timeout",
+      detail,
+      startedAt,
+      completedAt,
+    );
   }
   const success = result.returncode === 0 && (!protocolResult || (protocolResult.completed && !protocolResult.error));
   await input.thread_event_sink?.([{ event_type: "status", status: success ? "run_succeeded" : "run_failed" }]);
@@ -362,6 +596,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly workspaceLocationId: string,
     private readonly projectFolderId: string | null,
     private readonly registry: HostConnectionRegistry,
+    /** Null when this run uses the machine's own login state. */
+    private readonly providerBinding: RemoteProviderBindingFrame | null = null,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -380,7 +616,13 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       this.registry.sendStdinClose(this.hostId, input.run_id);
     };
     let protocolBuffer = "";
+    // Last sign of life from the runtime. A run whose ACP stream has gone
+    // quiet and one that is working look identical from here otherwise, and
+    // waiting out the whole run timeout to tell them apart is what made a
+    // stalled OpenCode turn cost five silent minutes.
+    let lastOutputAt = Date.now();
     const onOutput = (chunk: string) => {
+      lastOutputAt = Date.now();
       input.on_stdout_chunk?.(chunk);
       if (!controller) return;
       protocolBuffer += chunk;
@@ -429,6 +671,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         stdin: controller ? null : input.stdin,
         timeout_seconds: input.timeout_seconds,
         keep_stdin_open: Boolean(controller),
+        provider_binding: this.providerBinding ?? undefined,
       },
       onOutput,
       input.on_stderr_chunk,
@@ -442,21 +685,49 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     );
 
     const timeoutMs = input.timeout_seconds > 0 ? input.timeout_seconds * 1000 : null;
-    if (!timeoutMs) {
+    const stallMs = input.stall_timeout_seconds && input.stall_timeout_seconds > 0
+      ? input.stall_timeout_seconds * 1000
+      : null;
+    if (!timeoutMs && !stallMs) {
       const outcome = await completion;
       input.process_registry?.deregister(input.run_id);
       return toExecutionResult(outcome, controller);
     }
-    let timedOut = false;
-    const timeoutPromise = new Promise<null>((resolve) => {
-      const timer = setTimeout(() => { timedOut = true; resolve(null); }, timeoutMs);
-      timer.unref?.();
-    });
-    const outcome = await Promise.race([completion, timeoutPromise]);
+    let expiry: "timeout" | "stall_timeout" | null = null;
+    const deadlines: Array<Promise<null>> = [];
+    if (timeoutMs) {
+      deadlines.push(new Promise<null>((resolve) => {
+        const timer = setTimeout(() => { expiry ??= "timeout"; resolve(null); }, timeoutMs);
+        timer.unref?.();
+      }));
+    }
+    if (stallMs) {
+      deadlines.push(new Promise<null>((resolve) => {
+        // Re-armed rather than a single timer: the deadline is measured from
+        // the last output, not from launch, so a run producing events stays
+        // alive indefinitely under the run timeout alone.
+        const check = () => {
+          const idleMs = Date.now() - lastOutputAt;
+          if (idleMs >= stallMs) { expiry ??= "stall_timeout"; resolve(null); return; }
+          const timer = setTimeout(check, stallMs - idleMs);
+          timer.unref?.();
+        };
+        const timer = setTimeout(check, stallMs);
+        timer.unref?.();
+      }));
+    }
+    const outcome = await Promise.race([completion, ...deadlines]);
     input.process_registry?.deregister(input.run_id);
-    if (timedOut || !outcome) {
+    if (expiry || !outcome) {
       this.registry.sendTerminate(this.hostId, input.run_id, true);
-      return { returncode: 1, stdout: "", stderr: "", timed_out: true };
+      return {
+        returncode: 1,
+        stdout: "",
+        stderr: "",
+        timed_out: true,
+        failure_code: expiry ?? "timeout",
+        idle_seconds: Math.round((Date.now() - lastOutputAt) / 1000),
+      };
     }
     return toExecutionResult(outcome, controller);
   }

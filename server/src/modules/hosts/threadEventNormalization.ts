@@ -23,46 +23,111 @@ const MAX_TOOL_RESULT_SUMMARY_CHARS = 200;
  * consolidated message, which would duplicate the same text already seen
  * via deltas. Tool activity comes only from fully-formed lifecycle signals
  * (`tool_call`/`tool_call_update` — see `pushAcpProtocolEvent`) — never
- * from deltas. `thinking`/`thinking_delta`-equivalent content is matched by
- * neither path, so it is dropped by construction, not by an explicit
- * filter.
+ * from deltas.
+ *
+ * Reasoning arrives two ways and both become `assistant_thought`. A runtime
+ * that keeps it on its own ACP channel feeds `pushAcpThoughtDelta`; a model
+ * that inlines it in the message text as `<think>…</think>` — MiniMax and
+ * other reasoning models do this, and no ACP channel separates it — is split
+ * out of the text stream here. Without that split the reasoning was stored
+ * and displayed as the answer itself.
  */
 export function createThreadEventNormalizer(): {
   pushStderr(chunk: string): ThreadEventDraft[];
   pushAcpTextDelta(delta: string): ThreadEventDraft[];
+  pushAcpThoughtDelta(delta: string): ThreadEventDraft[];
   pushAcpProtocolEvent(event: Record<string, unknown>): ThreadEventDraft[];
   finish(): ThreadEventDraft[];
 } {
   let stderrBuffer = "";
   let textSegment = "";
+  let thoughtSegment = "";
+  // Whether the message stream is currently inside an inlined <think> block.
+  // Streamed deltas split the tags at arbitrary points, so this cannot be
+  // decided per chunk.
+  let insideInlineThink = false;
+  // A partial tag held back across chunks: "<thi" at the end of one delta is
+  // not text, it is the start of a tag whose rest has not arrived.
+  let pendingTag = "";
 
-  function flushTextSegment(): ThreadEventDraft[] {
-    if (!textSegment) return [];
-    const draft: ThreadEventDraft = { event_type: "assistant_text", text: textSegment };
-    textSegment = "";
-    return [draft];
+  const OPEN_TAG = "<think>";
+  const CLOSE_TAG = "</think>";
+
+  function flushSegment(kind: "assistant_text" | "assistant_thought"): ThreadEventDraft[] {
+    const buffered = kind === "assistant_text" ? textSegment : thoughtSegment;
+    if (!buffered) return [];
+    if (kind === "assistant_text") textSegment = "";
+    else thoughtSegment = "";
+    return [{ event_type: kind, text: buffered }];
   }
 
-  function appendTextDelta(text: string): ThreadEventDraft[] {
-    textSegment += text;
-    const newlineAt = textSegment.indexOf("\n");
-    if (newlineAt === -1) return [];
+  function flushTextSegment(): ThreadEventDraft[] {
+    return [...flushSegment("assistant_thought"), ...flushSegment("assistant_text")];
+  }
+
+  function appendDelta(
+    kind: "assistant_text" | "assistant_thought",
+    text: string,
+  ): ThreadEventDraft[] {
+    if (kind === "assistant_text") textSegment += text;
+    else thoughtSegment += text;
+    let rest = kind === "assistant_text" ? textSegment : thoughtSegment;
+    if (!rest.includes("\n")) return [];
     const drafts: ThreadEventDraft[] = [];
     // A chunk can carry more than one completed line.
-    let rest = textSegment;
     let at = rest.indexOf("\n");
     while (at !== -1) {
       const line = rest.slice(0, at);
-      if (line) drafts.push({ event_type: "assistant_text", text: line });
+      if (line) drafts.push({ event_type: kind, text: line });
       rest = rest.slice(at + 1);
       at = rest.indexOf("\n");
     }
-    textSegment = rest;
+    if (kind === "assistant_text") textSegment = rest;
+    else thoughtSegment = rest;
     return drafts;
   }
 
+  /**
+   * The longest suffix of `value` that could still grow into `tag`. Holding it
+   * back is what keeps a tag split across two deltas from being emitted as
+   * text one character at a time.
+   */
+  function partialTagSuffix(value: string, tag: string): number {
+    const max = Math.min(value.length, tag.length - 1);
+    for (let length = max; length > 0; length -= 1) {
+      if (tag.startsWith(value.slice(value.length - length))) return length;
+    }
+    return 0;
+  }
+
   function pushAcpTextDelta(delta: string): ThreadEventDraft[] {
-    return delta ? appendTextDelta(delta) : [];
+    if (!delta) return [];
+    const drafts: ThreadEventDraft[] = [];
+    let rest = pendingTag + delta;
+    pendingTag = "";
+    for (;;) {
+      const tag = insideInlineThink ? CLOSE_TAG : OPEN_TAG;
+      const at = rest.indexOf(tag);
+      if (at === -1) break;
+      const before = rest.slice(0, at);
+      if (before) drafts.push(...appendDelta(insideInlineThink ? "assistant_thought" : "assistant_text", before));
+      // Whatever was buffered belongs to the side being left, and must not be
+      // merged into the first line of the side being entered.
+      drafts.push(...flushSegment(insideInlineThink ? "assistant_thought" : "assistant_text"));
+      insideInlineThink = !insideInlineThink;
+      rest = rest.slice(at + tag.length);
+    }
+    const held = partialTagSuffix(rest, insideInlineThink ? CLOSE_TAG : OPEN_TAG);
+    if (held > 0) {
+      pendingTag = rest.slice(rest.length - held);
+      rest = rest.slice(0, rest.length - held);
+    }
+    if (rest) drafts.push(...appendDelta(insideInlineThink ? "assistant_thought" : "assistant_text", rest));
+    return drafts;
+  }
+
+  function pushAcpThoughtDelta(delta: string): ThreadEventDraft[] {
+    return delta ? appendDelta("assistant_thought", delta) : [];
   }
 
   function pushAcpProtocolEvent(event: Record<string, unknown>): ThreadEventDraft[] {
@@ -124,13 +189,20 @@ export function createThreadEventNormalizer(): {
 
   function finish(): ThreadEventDraft[] {
     const drafts: ThreadEventDraft[] = [];
+    // An unterminated tag at end of stream is text the model actually sent,
+    // not framing: emitting it is better than losing the last few characters
+    // of a turn to a tag that never closed.
+    if (pendingTag) {
+      drafts.push(...appendDelta(insideInlineThink ? "assistant_thought" : "assistant_text", pendingTag));
+      pendingTag = "";
+    }
     drafts.push(...flushTextSegment());
     if (stderrBuffer.trim()) drafts.push({ event_type: "diagnostic", text: stderrBuffer.trim() });
     stderrBuffer = "";
     return drafts;
   }
 
-  return { pushStderr, pushAcpTextDelta, pushAcpProtocolEvent, finish };
+  return { pushStderr, pushAcpTextDelta, pushAcpThoughtDelta, pushAcpProtocolEvent, finish };
 }
 
 /**

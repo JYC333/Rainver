@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import {
   ProjectResearchScreeningCoordinator,
   type ProjectResearchScreeningPorts,
@@ -20,7 +19,6 @@ import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 // unattended. Uses a real database because the reform's whole effect is on a
 // persisted checkpoint row's status.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -35,7 +33,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -50,9 +47,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE project_research_checkpoints, project_research_workflows, project_operations,
-       project_members, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
@@ -96,10 +94,10 @@ function ports(): SpyPorts {
       });
   return {
     createCheckpoint,
-    setState: vi.fn(),
-    resumeAfterCheckpoint: vi.fn(),
-    notifyRoom: vi.fn(),
-    failOperation: vi.fn(),
+    setState: vi.fn(async () => {}),
+    resumeAfterCheckpoint: vi.fn(async () => {}),
+    notifyRoom: vi.fn(async () => {}),
+    failOperation: vi.fn(async () => {}),
   };
 }
 

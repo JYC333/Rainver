@@ -18,5 +18,15 @@ export default defineConfig({
     // suite is green" a coin flip and hid real breakage in the noise.
     testTimeout: 30_000,
     hookTimeout: 180_000,
+    // Per-package cache path: the default resolves to the workspace-root
+    // node_modules, which the other packages' runs would share and race on.
+    experimental: {
+      fsModuleCache: true,
+      fsModuleCachePath: "node_modules/.vitest-cache",
+      // Hard gate on any one import's time; see tools/vitest/budgetReporter.mjs
+      // for why the suites are budgeted rather than documented.
+      importDurations: { failOnDanger: true, thresholds: { warn: 8_000, danger: 25_000 } },
+    },
+    reporters: ["default", ["../tools/vitest/budgetReporter.mjs", { budgetPath: "test/perf-budget.json" }]],
   },
 });

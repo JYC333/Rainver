@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { crossSpaceRetrievalModule } from "../src/modules/crossSpaceRetrieval";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 import { __setCrossSpaceRetrievalServiceFactoryForTests } from "../src/modules/crossSpaceRetrieval/routes";
 import {
@@ -34,7 +35,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   __setAuthIdentityForTests({ spaceId: SPACE_A, userId: USER });
   __setCrossSpaceRetrievalServiceFactoryForTests(() => fake);
-  app = buildServer(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db/agent_space" }), { logger: false });
+  app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db/agent_space" }), [crossSpaceRetrievalModule]);
 });
 
 afterEach(async () => {

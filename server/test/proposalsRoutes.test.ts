@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { proposalsModule } from "../src/modules/proposals";
 import { loadConfig } from "../src/config";
 import {
   __setProposalIdentityForTests,
@@ -100,7 +101,7 @@ describe("proposal review routes", () => {
         },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -142,7 +143,7 @@ describe("proposal review routes", () => {
         },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -200,7 +201,7 @@ describe("proposal review routes", () => {
         },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
 
     const accept = await app.inject({
       method: "POST",
@@ -248,7 +249,7 @@ describe("proposal review routes", () => {
         async rollback() { throw new Error("rollback should not run"); },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -275,7 +276,7 @@ describe("proposal review routes", () => {
         async rollback() { throw new Error("should not run"); },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
     const res = await app.inject({ method: "POST", url: "/api/v1/proposals/proposal-1/accept" });
     expect(res.statusCode).toBe(422);
     expect(res.json()).toMatchObject({ detail: expect.stringContaining("code_patch") });
@@ -297,7 +298,7 @@ describe("proposal review routes", () => {
         async rollback() { throw new Error("should not run"); },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
     const res = await app.inject({ method: "POST", url: "/api/v1/proposals/proposal-1/accept" });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toMatchObject({ detail: { code: "policy_denied" } });
@@ -323,7 +324,7 @@ describe("proposal review routes", () => {
         async rollback() { throw new Error("should not run"); },
       },
     }));
-    app = buildServer(proposalsConfig(), { logger: false });
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
 
     const res = await app.inject({ method: "POST", url: "/api/v1/proposals/proposal-1/accept" });
 

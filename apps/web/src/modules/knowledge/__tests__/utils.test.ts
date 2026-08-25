@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { KNOWLEDGE_ITEM_KINDS, KNOWLEDGE_LINK_TYPES } from '../utils'
 

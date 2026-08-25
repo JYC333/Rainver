@@ -3,6 +3,7 @@ import type { CredentialGrant } from "../providers/cli/credentialBroker";
 import { resolveProvidersDbPort } from "../providers/dbReader";
 import {
   providerProxyLeaseBaseUrl,
+  providerProxyLeaseUrl,
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
   type ProviderProxyRoute,
@@ -54,6 +55,66 @@ export class RuntimeProviderBindingError extends Error {
     super(message);
     this.name = "RuntimeProviderBindingError";
   }
+}
+
+export interface AdapterProviderRequirement {
+  /** The `ModelProvider` field the adapter's binding reads for its upstream. */
+  base_url_field: "claude_compatible_base_url" | "openai_compatible_base_url";
+  missing_base_url_code: string;
+/** Article included: "a Claude-compatible" / "an OpenAI-compatible". */
+  base_url_label: string;
+  route: ProviderProxyRoute;
+}
+
+/**
+ * What makes a `ModelProvider` usable by a runtime adapter. Single source of
+ * truth on purpose: dispatch-time validation
+ * (`hosts/runtimeProviderBindingResolution.ts`) and the execution-time binding
+ * construction below must agree, or a dispatch validates and then fails at run
+ * time with an error nobody is waiting on.
+ */
+export function adapterProviderRequirement(adapterType: string): AdapterProviderRequirement | null {
+  switch (adapterType) {
+    case "claude_code":
+      return {
+        base_url_field: "claude_compatible_base_url",
+        missing_base_url_code: "claude_compatible_base_url_required",
+        base_url_label: "a Claude-compatible",
+        route: "anthropic",
+      };
+    case "codex_cli":
+    case "opencode":
+      return {
+        base_url_field: "openai_compatible_base_url",
+        missing_base_url_code: "openai_compatible_base_url_required",
+        base_url_label: "an OpenAI-compatible",
+        route: "openai",
+      };
+    default:
+      return null;
+  }
+}
+
+function requireProviderBaseUrl(
+  adapterType: string,
+  providerId: string,
+  provider: Record<string, unknown>,
+): string {
+  const requirement = adapterProviderRequirement(adapterType);
+  if (!requirement) {
+    throw new RuntimeProviderBindingError(
+      "adapter_provider_binding_unsupported",
+      `Runtime adapter '${adapterType}' does not support a ModelProvider binding.`,
+    );
+  }
+  const baseUrl = stringValue(provider[requirement.base_url_field]);
+  if (!baseUrl) {
+    throw new RuntimeProviderBindingError(
+      requirement.missing_base_url_code,
+      `ModelProvider '${providerId}' is not configured with ${requirement.base_url_label} URL.`,
+    );
+  }
+  return baseUrl;
 }
 
 export async function buildRuntimeProviderBinding(
@@ -145,13 +206,7 @@ function buildClaudeProviderBinding(
     ttlSeconds: number;
   },
 ): RuntimeProviderBinding {
-  const baseUrl = stringValue(provider.claude_compatible_base_url);
-  if (!baseUrl) {
-    throw new RuntimeProviderBindingError(
-      "claude_compatible_base_url_required",
-      `ModelProvider '${providerId}' is not configured with a Claude-compatible URL.`,
-    );
-  }
+  const baseUrl = requireProviderBaseUrl("claude_code", providerId, provider);
 
   const model =
     input.model ??
@@ -213,13 +268,7 @@ async function buildCodexProviderBinding(
     ttlSeconds: number;
   },
 ): Promise<RuntimeProviderBinding> {
-  const baseUrl = stringValue(provider.openai_compatible_base_url);
-  if (!baseUrl) {
-    throw new RuntimeProviderBindingError(
-      "openai_compatible_base_url_required",
-      `ModelProvider '${providerId}' is not configured with an OpenAI-compatible URL.`,
-    );
-  }
+  const baseUrl = requireProviderBaseUrl("codex_cli", providerId, provider);
   const model =
     input.model ??
     modelFromRun(input.run) ??
@@ -295,13 +344,7 @@ async function buildOpenCodeProviderBinding(
     ttlSeconds: number;
   },
 ): Promise<RuntimeProviderBinding> {
-  const baseUrl = stringValue(provider.openai_compatible_base_url);
-  if (!baseUrl) {
-    throw new RuntimeProviderBindingError(
-      "openai_compatible_base_url_required",
-      `ModelProvider '${providerId}' is not configured with an OpenAI-compatible URL.`,
-    );
-  }
+  const baseUrl = requireProviderBaseUrl("opencode", providerId, provider);
   const model =
     input.model ??
     modelFromRun(input.run) ??
@@ -396,7 +439,7 @@ function runtimeProviderProxyUrl(
   proxyBaseUrl?: string,
 ): string {
   if (proxyBaseUrl) {
-    return `${proxyBaseUrl.replace(/\/+$/, "")}/${route}/${encodeURIComponent(leaseId)}`;
+    return providerProxyLeaseUrl(proxyBaseUrl, route, leaseId);
   }
   return providerProxyLeaseBaseUrl(route, leaseId);
 }

@@ -1,9 +1,7 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config";
-import { migrate } from "../src/db/migrator";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
 import { ProjectResearchExecutionProfileService } from "../src/modules/projectResearch/executionProfileService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -17,7 +15,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // self-heal an existing agent's capabilities in place, not just set them
 // correctly for a brand-new one.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROVIDER = "99999999-9999-4999-8999-999999999999";
@@ -31,7 +28,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     const now = new Date().toISOString();
     await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
     await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);

@@ -1,14 +1,13 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService";
 import { withNoteWrites } from "../src/modules/knowledge/noteWriter";
 import { blockIds } from "../src/modules/knowledge/noteBlockIds";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 /**
  * The shared note writer, asserted through the three things that were wrong
@@ -35,7 +34,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    await migrate(pool, join(process.cwd(), "migrations"));
     __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
     available = true;
   } catch (error) {
@@ -52,9 +50,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE retrieval_objects, note_collection_items, note_collections, note_revisions,
-              notes, space_objects, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["retrieval_objects", "note_collection_items", "note_collections", "note_revisions", "notes", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','team',$2,$2)`, [SPACE, now]);

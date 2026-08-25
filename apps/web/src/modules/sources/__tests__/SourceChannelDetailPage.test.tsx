@@ -89,7 +89,7 @@ describe('Source detail', () => {
   })
 
   it('opens monitor configuration without changing the source origin', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPage()
 
     await user.click(await screen.findByRole('button', { name: /add monitor/i }))

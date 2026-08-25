@@ -1,10 +1,9 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
@@ -19,7 +18,6 @@ import { __setAuthIdentityForTests } from "../src/modules/auth";
  * This suite proves the self-service activation path an ordinary Space
  * member (not owner/admin) actually reaches end to end.
  */
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const MEMBER = "22222222-2222-4222-8222-222222222222";
 const OTHER_MEMBER = "33333333-3333-4333-8333-333333333333";
@@ -36,7 +34,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
     app = buildServer(loadConfig({ SERVER_DATABASE_URL: database.getConnectionUri() }), { logger: false });
   } catch (err) {
@@ -54,7 +51,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE spaces, users CASCADE");
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Member One', 'active', $3, $3), ($2, 'Member Two', 'active', $3, $3)`,

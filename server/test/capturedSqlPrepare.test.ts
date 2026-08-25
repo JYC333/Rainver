@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
 
 // The runtime half of the SQL guard. `staticSqlPrepare.test.ts` covers SQL
 // written as a complete literal; this covers SQL assembled at runtime from
@@ -19,7 +18,6 @@ import { migrate } from "../src/db/migrator";
 // Without a capture directory there is nothing to check and the test no-ops,
 // so a normal `vitest run` is unaffected.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const STATEMENT_START = /^(SELECT|INSERT|UPDATE|DELETE|WITH)\b/i;
 
 interface CapturedStatement {
@@ -63,7 +61,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
-    await migrate(pool, MIGRATIONS_DIR);
     // Optional plugins own their tables and ship their own migrations, so a
     // core-only schema reports every finance_/diary_ statement as a missing
     // relation. Their SQL is server code too — give it the same check.

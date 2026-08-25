@@ -1,10 +1,9 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import * as poolModule from "../src/db/pool";
-import { migrate } from "../src/db/migrator";
 import { loadConfig } from "../src/config";
 import { JobHandlerRegistry, type JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry";
 import { registerResearchOperationCancelHandler } from "../src/modules/projectResearch/pipeline/researchOperationCancelJob";
@@ -17,7 +16,6 @@ import { RESEARCH_OPERATION_CANCEL_JOB } from "../src/modules/projectResearch/re
 // the property that matters is that it stops all of them and that re-running
 // it can never undo work that legitimately finished first.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -34,7 +32,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -53,11 +50,10 @@ afterEach(() => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE source_backfill_plans, project_research_checkpoints, project_research_workflows,
-       source_channels, source_connections, source_provider_connectors, source_providers, source_connectors,
-       workflow_executions, jobs, runs, project_operations, agent_versions, agents,
-       project_members, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["source_backfill_plans", "project_research_checkpoints", "project_research_workflows", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "workflow_executions", "jobs", "runs", "project_operations", "agent_versions", "agents", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

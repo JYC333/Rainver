@@ -6,7 +6,8 @@ import {
   __setAuthRepositoryForTests,
   type AuthRepository,
 } from "../src/modules/auth";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { knowledgeModule } from "../src/modules/knowledge";
 import { registerKnowledgeProposalAppliers } from "../src/modules/knowledge/proposalApplier";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService";
@@ -368,7 +369,7 @@ describe("object kind proposal routes", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -400,7 +401,7 @@ describe("object kind proposal routes", () => {
       if (/INSERT INTO proposals/.test(sql)) inserts += 1;
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -426,7 +427,7 @@ describe("object kind proposal routes", () => {
       if (/INSERT INTO proposals/.test(sql)) inserts += 1;
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -466,7 +467,7 @@ describe("object kind proposal routes", () => {
       if (/INSERT INTO proposals/.test(sql)) inserts += 1;
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -510,7 +511,7 @@ describe("object kind proposal routes", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "PATCH",
@@ -541,7 +542,7 @@ describe("object kind proposal routes", () => {
       if (/INSERT INTO proposals/.test(sql)) inserts += 1;
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -588,7 +589,7 @@ describe("object kind proposal routes", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/knowledge/object-schema/export" });
 
@@ -633,7 +634,7 @@ describe("object kind proposal routes", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/knowledge/object-schema/profiles" });
 
@@ -666,7 +667,7 @@ describe("object kind proposal routes", () => {
       }
       return undefined;
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -703,7 +704,7 @@ describe("object kind proposal routes", () => {
   it("rejects object kind proposal creation for non-admin members", async () => {
     __setAuthRepositoryForTests(auth("member"));
     mockPool(() => undefined);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",

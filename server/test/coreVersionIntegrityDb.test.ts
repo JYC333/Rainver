@@ -1,16 +1,14 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config";
-import { migrate } from "../src/db/migrator";
 import { withTransaction } from "../src/db/tx";
 import { PgAgentRepository } from "../src/modules/agents/repository";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
 import { refreshSourcePostProcessingAgentPrompt } from "../src/modules/sources/postProcessing/service";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "version-integrity-space";
 const USER = "version-integrity-user";
 const AGENT = "version-integrity-agent";
@@ -26,7 +24,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -45,11 +42,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE capability_versions, runs, workflow_executions, plan_versions,
-              evolvable_asset_versions, evolvable_assets, agent_versions,
-              agents, model_provider_space_grants, model_providers,
-              space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["capability_versions", "runs", "workflow_executions", "plan_versions", "evolvable_asset_versions", "evolvable_assets", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(

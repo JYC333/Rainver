@@ -84,7 +84,7 @@ model they already pay for.
 
 Anthropic is permitted on all applicable channels, and the isolation invariant applies equally:
 a provider API key must never enter a CLI subprocess environment. When a CLI runs against a
-configured ModelProvider it receives only a local provider-proxy URL and a short-lived lease
+configured ModelProvider it receives only a provider-proxy URL and a short-lived lease
 token; the upstream key is resolved inside the server proxy boundary.
 
 CLI credentials remain user-owned. A conversation backed by CLI subscription capacity
@@ -123,3 +123,45 @@ made the wording go stale when the library did.
 Managed subscription OAuth, added after this ADR, follows the same rule: the
 refresh token is DB-encrypted, the access token is decrypted in process and
 passed as a parameter, and it never reaches a subprocess environment.
+
+## Amended — 2026-08-24
+
+"a **local** provider-proxy URL" above is now "a provider-proxy URL". The
+proxy may be reached from an execution host other than the server
+([ADR 0016](0016-control-plane-execution-hosts.md)'s 2026-08-24 amendment), so
+its locality was never the property doing the work — the invariant is
+that the subprocess holds a lease token and the upstream key is resolved inside
+the server proxy boundary, which is unchanged and now covers remote hosts
+identically. Recorded rather than silently reworded for the reason the
+2026-08-14 amendment gives: naming an incidental implementation detail inside
+an invariant is what makes the wording go stale.
+
+"Local" was in any case never loopback. The proxy binds `0.0.0.0` and the URL
+handed to a run is built from `SANDBOX_RUNNER_SERVER_HOST` (default `server`,
+the Compose service name), so a server-host run's lease traffic already crosses
+the deployment's own network as plaintext HTTP. Reaching it from a paired
+execution host widens which network that is; it does not introduce plaintext
+transport where none existed.
+
+The reachability change does move the lease token onto the network between an
+execution host and the server. State its real scope rather than a flattering
+summary, because this paragraph is the security basis the remote binding work
+is reviewed against. A lease pins the upstream **base URL**, the route family
+(`anthropic` / `openai`), and the attribution metadata recorded for each
+request. It does **not** pin the model (`lease.model` is attribution only;
+`handleProviderProxyRequest` forwards the request body verbatim), nor the path
+under that base URL (the caller's trailing path is concatenated onto the base
+URL), nor request count or spend (the proxy records usage; it enforces no
+budget). Its TTL is the run timeout plus 300s, and every CLI spec's
+`max_timeout_seconds` is 3600 — so a worst-case lease is valid for roughly 65
+minutes, not a few. A holder of a live token can therefore spend the space's
+provider credential against any model and any endpoint at that upstream until
+the run ends or the lease is revoked.
+
+What remains true, and is the actual channel-isolation claim: no API key and
+no OAuth token becomes network-reachable, because the upstream key is resolved
+inside the server proxy boundary and substituted there. Transport protection
+for the token is a deployment property (see the deferred register's TLS rows),
+not a channel-isolation property. **B67** additionally forbids a bound Run from
+inheriting ambient backend selection — environment or on-disk profile — which
+is the execution-host-side counterpart to this invariant.

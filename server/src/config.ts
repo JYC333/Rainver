@@ -48,6 +48,19 @@ export interface ServerConfig {
   sandboxRunnerPort: number;
   /** Compose-network hostname advertised to isolated Runner namespaces. */
   sandboxRunnerServerHost: string;
+  /**
+   * Fixed listen port for the provider proxy. `0` keeps the historical
+   * OS-assigned port, which is reachable only inside the deployment network —
+   * a paired execution host needs a published, therefore fixed, port.
+   */
+  providerProxyPort: number;
+  /**
+   * Base URL a *remote* execution host should use to reach the provider proxy,
+   * when that differs from the in-network one. Unset means remote runs cannot
+   * be provider-bound, and dispatch says so rather than handing out a URL the
+   * host cannot resolve.
+   */
+  providerProxyExternalBaseUrl: string | null;
   /** Root for registered workspace directories. */
   workspaceRoot: string;
   /** Root for short-lived run sandboxes (worktrees, ephemeral working dirs). */
@@ -447,6 +460,31 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerServerHost)) {
     throw new ConfigError("SANDBOX_RUNNER_SERVER_HOST must be a hostname", "invalid_sandbox_runner_server_host");
   }
+  const providerProxyPort = parseBoundedInt(
+    env.PROVIDER_PROXY_PORT,
+    0,
+    "PROVIDER_PROXY_PORT",
+    0,
+    65_535,
+  );
+  const rawProviderProxyExternalBaseUrl = env.PROVIDER_PROXY_EXTERNAL_BASE_URL?.trim();
+  const providerProxyExternalBaseUrl = rawProviderProxyExternalBaseUrl
+    ? validateHttpBaseUrl(rawProviderProxyExternalBaseUrl, "PROVIDER_PROXY_EXTERNAL_BASE_URL")
+    : null;
+  if (providerProxyExternalBaseUrl) {
+    // The external URL names a port that has to stay the same across restarts
+    // for a daemon to keep reaching it, and an OS-assigned one does not.
+    if (providerProxyPort === 0) {
+      throw new ConfigError(
+        "PROVIDER_PROXY_EXTERNAL_BASE_URL requires a fixed PROVIDER_PROXY_PORT",
+        "provider_proxy_external_requires_fixed_port",
+      );
+    }
+    // Deliberately not required to name the same port: a container port is
+    // routinely remapped on the host (`18021:8021`), and that address is
+    // perfectly reachable. What cannot work is an OS-assigned listen port,
+    // which the check above catches.
+  }
   const workspaceRoot = resolve(
     env.WORKSPACE_ROOT?.trim() || resolve(agentSpaceHome, "workspaces"),
   );
@@ -664,6 +702,8 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     sandboxRunnerHost,
     sandboxRunnerPort,
     sandboxRunnerServerHost,
+    providerProxyPort,
+    providerProxyExternalBaseUrl,
     workspaceRoot,
     sandboxRoot,
     artifactStorageRoot,

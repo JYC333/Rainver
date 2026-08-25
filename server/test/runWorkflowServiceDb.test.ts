@@ -2,12 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { RunWorkflowService } from "../src/modules/evolution/runWorkflowService";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
 
-const MIGRATIONS_DIR = `${process.cwd()}/migrations`;
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -23,7 +22,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -38,7 +36,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE evolvable_asset_pins, evolvable_asset_versions, evolvable_assets, spaces, users CASCADE");
+  await resetTables(
+    pool,
+    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "spaces", "users"],
+    { cascade: true },
+  );
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

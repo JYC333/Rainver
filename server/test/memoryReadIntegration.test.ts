@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/modules/memory/repository";
 
 // Real-PostgreSQL integration tests for the server memory read model. The
@@ -86,8 +87,9 @@ async function insertMemory(over: Record<string, unknown>): Promise<void> {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects, extracted_evidence, source_snapshots, source_items, provenance_links, content_access_logs, content_access_grants, memory_entries, project_folders, projects, project_members, space_memberships, spaces",
+  await resetTables(
+    pool,
+    ["retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "provenance_links", "content_access_logs", "content_access_grants", "memory_entries", "project_folders", "projects", "project_members", "space_memberships", "spaces"],
   );
   await pool.query("INSERT INTO spaces (id, type) VALUES ($1, 'household')", [SPACE]);
   for (const userId of [USER, "other"]) {

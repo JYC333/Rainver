@@ -84,7 +84,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('renders a split framework and conversation and updates the framework from a turn', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     vi.spyOn(projectResearchApi, 'refineQuestion').mockResolvedValue(result())
     render(
       <QuestionRefinementPanel
@@ -120,7 +120,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('shows durable repair progress while the assessment request is still running', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     let finishRefinement!: (value: ProjectResearchQuestionRefinementResponse) => void
     vi.spyOn(projectResearchApi, 'refineQuestion').mockImplementation(() => new Promise(resolve => {
       finishRefinement = resolve
@@ -228,7 +228,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('keeps the conversation continuous from the server-returned session', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     vi.spyOn(projectResearchApi, 'refineQuestion')
       .mockResolvedValueOnce(result())
       .mockResolvedValueOnce(result({
@@ -271,7 +271,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('sends selected clarification answers together with main composer context', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     vi.spyOn(projectResearchApi, 'refineQuestion').mockResolvedValue(result())
     render(
       <QuestionRefinementPanel
@@ -310,7 +310,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('uses each reassessment result as the baseline for later framework changes', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     const changed = result({
@@ -433,7 +433,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('hides stale clarifying questions while waiting and only shows questions from the new response', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     let resolveResponse!: (value: ProjectResearchQuestionRefinementResponse) => void
@@ -481,7 +481,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('keeps edited wording temporary until reassessment and persists it only on confirm', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     vi.spyOn(projectResearchApi, 'refineQuestion').mockResolvedValue(result({
@@ -516,7 +516,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('confirms the framework wording back to the Inquiry Thread', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     vi.spyOn(projectResearchApi, 'refineQuestion').mockResolvedValue(result())
     vi.spyOn(inquiryApi, 'reviseDefinition').mockResolvedValue({} as never)
     const onChanged = vi.fn().mockResolvedValue(undefined)
@@ -556,7 +556,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('edits, deletes, and adds framework items inline before confirming them as a manual adjustment', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     vi.spyOn(inquiryApi, 'reviseDefinition').mockResolvedValue({} as never)
@@ -600,7 +600,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('clears the manual-change state when framework edits return to the assessed content', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     render(
@@ -630,7 +630,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('disables an unchanged confirmed snapshot and re-enables confirmation only for a net change', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     render(
@@ -689,7 +689,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('keeps a successful confirmation when the later workflow save fails and reports the failing stage', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     vi.mocked(projectResearchApi.saveInitialIntakeDraft).mockRejectedValueOnce(new Error('save unavailable'))
@@ -714,7 +714,7 @@ describe('QuestionRefinementPanel', () => {
   })
 
   it('shows confirmed framework and wording history without overwriting the working draft', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const persisted = result()
     const { assessment_session: _ignored, ...latestRefinement } = persisted
     vi.spyOn(projectResearchApi, 'questionAssessmentConfirmations').mockResolvedValue([{

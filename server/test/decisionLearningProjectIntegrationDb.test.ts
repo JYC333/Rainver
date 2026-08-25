@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectOverviewService } from "../src/modules/projects/overviewService";
 import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService";
@@ -20,7 +19,6 @@ import { registerLearningProjectIntegration } from "../src/modules/learning/proj
 // (ADR 0011 decision 5), not the "no Overview adapter yet" fallback —
 // the invariant that each Mode has a real progress model.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "44444444-4444-4444-8444-444444444444";
 const OWNER = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
@@ -32,7 +30,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -52,10 +49,10 @@ afterEach(() => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE learning_item_mastery, learning_items, learning_objectives, decision_option_scores, decision_commitments,
-       decision_criteria, decision_options, decision_cases, knowledge_items, space_objects,
-       projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["learning_item_mastery", "learning_items", "learning_objectives", "decision_option_scores", "decision_commitments", "decision_criteria", "decision_options", "decision_cases", "knowledge_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);

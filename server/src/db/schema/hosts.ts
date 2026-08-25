@@ -31,6 +31,19 @@ export const hosts = pgTable("hosts", {
 	platform: varchar({ length: 64 }),
 	arch: varchar({ length: 32 }),
 	daemonVersion: varchar("daemon_version", { length: 32 }),
+	/**
+	 * The control-plane address this daemon actually reaches, as it reports it.
+	 * The server cannot guess it — its own in-network hostname is a Compose
+	 * service name no paired machine can resolve — and it is what lets a
+	 * provider-proxy address be derived instead of configured.
+	 */
+	daemonServerUrl: varchar("daemon_server_url", { length: 512 }),
+	/**
+	 * Explicit provider-proxy base URL for this host, when the derived one is
+	 * wrong: a reverse proxy in front of the API, or a proxy port published
+	 * somewhere other than the API's host. Null means derive.
+	 */
+	providerProxyBaseUrl: varchar("provider_proxy_base_url", { length: 512 }),
 	capabilitiesJson: jsonb("capabilities_json"),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),

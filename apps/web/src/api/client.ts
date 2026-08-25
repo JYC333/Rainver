@@ -129,6 +129,7 @@ import type {
   HostPairingCode,
   HostRecentThread,
   HostRuntimeAdapterOption,
+  HostRuntimeProviderBinding,
   HostTaskThread,
   HostThreadEvent,
   HostThreadMessage,
@@ -1847,6 +1848,22 @@ export const hostsApi = {
   listRecentThreads: (limit = 20) =>
     get<{ items: HostRecentThread[] }>(`/hosts/threads/recent?limit=${limit}`),
   listRuntimeAdapters: () => get<{ items: HostRuntimeAdapterOption[] }>('/hosts/runtime-adapters'),
+  listProviderBindings: (hostId: string) =>
+    get<{ items: HostRuntimeProviderBinding[] }>(`/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings`),
+  setProviderBinding: (hostId: string, adapterType: string, modelProviderId: string, model: string | null = null) =>
+    put<HostRuntimeProviderBinding>(
+      `/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings/${encodeURIComponent(adapterType)}`,
+      { model_provider_id: modelProviderId, model },
+    ),
+  /** Clearing returns that host×adapter to the machine's own login state. */
+  clearProviderBinding: (hostId: string, adapterType: string) =>
+    del<null>(`/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings/${encodeURIComponent(adapterType)}`),
+  /** Empty string clears the override and returns this host to the derived address. */
+  setProviderProxyUrl: (hostId: string, baseUrl: string) =>
+    put<{ host_id: string; provider_proxy_base_url: string | null }>(
+      `/hosts/${encodeURIComponent(hostId)}/provider-proxy-url`,
+      { base_url: baseUrl },
+    ),
   listMessages: (threadId: string) =>
     get<{ items: HostThreadMessage[] }>(`/hosts/threads/${encodeURIComponent(threadId)}/messages`),
   listEvents: (threadId: string, after: number) =>

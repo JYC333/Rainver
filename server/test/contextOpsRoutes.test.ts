@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { contextOpsModule } from "../src/modules/contextOps";
 import { loadConfig } from "../src/config";
 import {
   __setAuthRepositoryForTests,
@@ -227,7 +228,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth());
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -254,7 +255,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth());
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -270,7 +271,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth("member"));
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -287,7 +288,7 @@ describe("Context Ops routes", () => {
     const db = new EmptyContextOpsDb();
     db.contextOpsReviewMode = "members";
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -309,7 +310,7 @@ describe("Context Ops routes", () => {
     const db = new EmptyContextOpsDb();
     db.contextOpsScanMode = "members";
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -327,7 +328,7 @@ describe("Context Ops routes", () => {
     const reviewerDb = new EmptyContextOpsDb();
     reviewerDb.contextOpsReviewMode = "members";
     vi.mocked(getDbPool).mockReturnValue(reviewerDb as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const reviewerRes = await app.inject({
       method: "GET",
@@ -341,7 +342,7 @@ describe("Context Ops routes", () => {
     const guestDb = new EmptyContextOpsDb();
     guestDb.contextOpsReviewMode = "members";
     vi.mocked(getDbPool).mockReturnValue(guestDb as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const guestRes = await app.inject({
       method: "GET",
@@ -354,7 +355,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth("admin"));
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -375,7 +376,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth("admin"));
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -397,7 +398,7 @@ describe("Context Ops routes", () => {
     const db = new EmptyContextOpsDb();
     reviewCycleMock.mockResolvedValue(reviewCycleResponse());
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -427,7 +428,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth("admin"));
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -443,7 +444,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth("admin"));
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -458,7 +459,7 @@ describe("Context Ops routes", () => {
     __setAuthRepositoryForTests(auth("member"));
     const db = new EmptyContextOpsDb();
     vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -473,7 +474,7 @@ describe("Context Ops routes", () => {
     const adminDb = new EmptyContextOpsDb();
     adminDb.contextOpsReviewMode = "admins";
     vi.mocked(getDbPool).mockReturnValue(adminDb as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const adminRes = await app.inject({
       method: "GET",
@@ -487,7 +488,7 @@ describe("Context Ops routes", () => {
     const memberDb = new EmptyContextOpsDb();
     memberDb.contextOpsReviewMode = "admins";
     vi.mocked(getDbPool).mockReturnValue(memberDb as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [contextOpsModule]);
 
     const memberRes = await app.inject({
       method: "GET",

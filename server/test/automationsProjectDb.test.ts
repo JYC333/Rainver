@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import type { ServerConfig } from "../src/config";
 
 // Real-PostgreSQL tests for automation × project binding: automations.project_id
@@ -49,7 +48,6 @@ import type { RunRecord } from "../src/modules/runs/runRepositoryTypes";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // space owner + project owner
@@ -76,7 +74,6 @@ const describeWithPostgres = describe.skipIf(
 beforeAll(async () => {
   container = await getTestPostgres(__filename);
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-  await migrate(pool, MIGRATIONS_DIR);
   dbPoolMock.current = pool;
   available = true;
 }, 180_000);
@@ -88,12 +85,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE evolvable_asset_pins, evolvable_asset_versions, evolvable_assets,
-       automation_runs, automation_credential_grants, automations, scheduler_tasks,
-       jobs, runs, agent_runtime_profiles, agent_versions, agents,
-       source_items, project_source_item_links, project_source_bindings, source_connections, source_connectors,
-       project_folders, project_members, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "automation_runs", "automation_credential_grants", "automations", "scheduler_tasks", "jobs", "runs", "agent_runtime_profiles", "agent_versions", "agents", "source_items", "project_source_item_links", "project_source_bindings", "source_connections", "source_connectors", "project_folders", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   for (const [spaceId, name] of [[SPACE, "Main"], [OTHER_SPACE, "Other"]] as const) {

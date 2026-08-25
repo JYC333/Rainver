@@ -1,226 +1,192 @@
 # Testing Strategy
 
-Date: 2026-06-17
+How the test suites are organized, what they protect, and the rules that keep
+them fast. Commands are in [`../COMMANDS.md`](../COMMANDS.md).
 
-This document defines the current backend testing architecture. The suite is organized by product confidence layer, not by implementation package.
+## Scope
 
-## Test Layers
+Four Vitest suites, one per package, each run from its package root:
 
-Canonical backend tests live under:
+| Package | Tests | Notes |
+|---|---|---|
+| `server/` | `test/**/*.test.ts` | Real PostgreSQL for anything durable; shared helpers in `test/support/` |
+| `packages/protocol/` | `test/**/*.test.ts` | Schema parsing and frozen registry fixtures |
+| `packages/host-daemon/` | `test/**/*.test.ts` | Pure node |
+| `apps/web/` | `src/**/*.test.{ts,tsx}` | jsdom by default; pure-logic files opt out |
 
-```text
-server/test/
-packages/protocol/test/
-```
-
-Server unit-style tests contain deterministic rule and boundary checks. Use them for policy decisions, path decisions, state transitions, parser behavior, serialization contracts, and small pure functions. Unit tests must not require the database, network, real runtime execution, or real provider calls.
-
-Route and integration tests contain public boundary checks. Use them for API response shapes, status codes, request validation, adapter/provider protocol contracts, schema checks, storage/path contracts, and observable side effects across a public boundary.
-
-Invariant-style tests contain cross-cutting product rules that must hold even when internals change. Use them for space isolation, approval gates, run auditability, artifact path boundaries, terminal run state, Project Folder path enforcement, memory mutation boundaries, proposal application boundaries, and runtime/provider separation.
-
-Workflow-style tests contain multi-step product flows from request to durable result. Use them for activity-to-memory, run execution, run output materialization, produced artifact paths, proposal approval, home summary behavior, Project Folder code proposal flows, and runtime failure handling. Workflow tests assert final observable state and audit trail.
-
-Test support files contain shared factories, fixtures, fake runtimes, fake providers, and assertion helpers. Support code should make valid product states easy to create and invalid states explicit at the call site.
+Tests are unit-style (deterministic rules, parsers, state transitions, no
+database or network), route-style (status codes, response shapes, validation,
+side effects across a public boundary), or workflow-style (a multi-step product
+flow asserted on its durable result and audit trail). Pick by what the test
+protects, not by which file it happens to exercise.
 
 ## What To Test
 
-Protect product behavior:
+Protect product behavior that must survive refactors:
 
 - API contracts and public response shapes.
-- Durable database state.
-- Artifacts, proposals, activity records, memories, runs, and audit records.
-- Authorization, space isolation, Project Folder path boundaries, and proposal gates.
-- Runtime failure behavior and absence of partial side effects.
+- Durable database state: artifacts, proposals, activity records, memories,
+  runs, audit records.
+- Authorization, space isolation, Project Folder path boundaries, proposal gates.
+- Runtime failure behavior and the absence of partial side effects.
 - Run output materialization from structured runtime output.
 
-Assert observable outcomes. A useful test should still be meaningful if the implementation moves behind the same public behavior.
+A useful test stays meaningful when the implementation moves behind the same
+public behavior. Do not test removed routes, private call chains, mock call
+order, implementation-specific module boundaries, vendor internals behind
+runtime/provider adapters, or styling from backend tests; do not add
+coverage-only tests with no product assertion.
 
-## What Not To Test
+## Fixtures And Fakes
 
-Do not add tests for:
+Search `server/test/support/` first, then a neighbouring test in the same
+domain, before writing setup; promote setup that appears a second time into
+`support/` instead of copying it (reuse obligation:
+[`REUSE_AND_DEPENDENCY_POLICY.md`](REUSE_AND_DEPENDENCY_POLICY.md) §7).
 
-- Removed routes.
-- Retired API surfaces.
-- Private service call chains.
-- Mock call order.
-- Coverage-only execution with no product assertion.
-- Implementation-specific module boundaries.
-- Vendor internals behind runtime/provider adapters.
-- CSS classes or frontend styling details in backend tests.
+- Factories create valid minimal objects; ownership fields (`space_id`,
+  `created_by_user_id`, `project_folder_id`, actor ids) are visible at the call
+  site when the rule under test depends on them.
+- Invalid states are explicit in the test body or the factory name.
+- A factory creates proposals, memories, artifacts, or approval events only if
+  its name says so; assertion helpers never create data.
+- Cross-space and cross-user variants stay easy to create.
 
-## Fixtures And Factories
+Runtime and provider execution are external boundaries: use deterministic fakes
+(fixed `output_text`/`output_json`/errors/`produced_artifact_paths`, fixed model
+responses and structured failures), never live providers, CLIs, or sandboxes in
+the canonical suite. Workflow tests may fake that boundary but use real services
+and database state around it. Runtime adapter behavior and model provider
+behavior stay separate, in tests as in production.
 
-Before building test setup, search for what already exists: `server/test/support/`
-first, then a neighbouring test file for the same domain. Shared PostgreSQL access,
-captured-SQL assertions, provider HTTP fakes, and domain fixtures all live there
-already, and the reuse obligation for them is
-[`REUSE_AND_DEPENDENCY_POLICY.md`](REUSE_AND_DEPENDENCY_POLICY.md) §7. When the same
-setup appears a second or third time, promote it into `server/test/support/` rather
-than copying it again.
+## Shared PostgreSQL
 
-Factories must create valid minimal objects by default. Required ownership fields such as `space_id`, `created_by_user_id`, `project_folder_id`, and related actor IDs should be visible at call sites when the rule under test depends on them.
+Durable behavior is tested against real PostgreSQL, never a fake database: a
+fake validates SQL shape while missing constraints, transactions, locks, JSON
+queries, triggers, and cross-table invariants. Database fakes are allowed only
+in narrowly scoped unit tests whose stated purpose is SQL/parameter shape or a
+pure adapter boundary.
 
-Rules:
+**One container, one database per file.** Global setup
+(`server/test/setupOfficialPlugins.ts`) starts one `pgvector/pgvector:pg18`
+Testcontainers instance and applies the baseline once to a template database
+named by the migrations' content hash. Each test file calls
+`getTestPostgres(__filename)` from `test/support/sharedPostgres.ts` and gets its
+own clone of that template; the file owns and closes its `Pool`, and the
+handle's `stop()` drops only that database. Do not start a second container or
+create ad-hoc databases. A clone already carries the baseline, so never call
+`migrate()` on it; tests of the migration runner, plugin migrations, or a
+hand-authored schema request `{ empty: true }` and migrate themselves.
 
-- Prefer real database rows over deep mocks for contracts, invariants, and workflows.
-- Keep invalid states explicit in the test body or factory name.
-- Do not hide durable mutations behind generic factory names.
-- Do not create proposals, memories, artifacts, or approval events as side effects unless the factory name states that behavior.
-- Keep cross-space and cross-user variants easy to create.
-- Assertion helpers must inspect observable state and must not create data silently.
+**Unavailable is narrow.** If the container cannot start or the connection
+fails (`isTestPostgresUnavailableError`), a file skips through the established
+`available = false` path and says so. Migration, schema, seed, and service
+construction errors are rethrown so they fail the suite.
 
-## Fake Runtime And Provider Rules
+**Clearing rows between tests.** Use `resetTables(pool, tables, { cascade })`
+from `test/support/resetTables.ts`, never `TRUNCATE`. `cascade: true` follows
+foreign keys exactly as `TRUNCATE ... CASCADE` would, so the call site still
+names the tables it cares about; the implementation deletes only from tables
+that ever held rows, in one round trip with FK triggers off. Sequences are not
+reset; tests must not depend on sequence values.
 
-Runtime and provider execution are external boundaries. Tests should use deterministic fakes instead of live providers, CLIs, or sandboxes unless a specifically named external integration check is being run outside the canonical suite.
+**Container settings.** The container is test-only: tmpfs, `fsync=off`,
+`synchronous_commit=off`, `full_page_writes=off`, `autovacuum=off`, `jit=off`,
+`wal_level=minimal`, a one-hour checkpoint horizon, and the PostgreSQL 18 tmpfs
+mount at `/var/lib/postgresql`. Local runs reuse the container and its migrated
+template across invocations; `TESTCONTAINERS_REUSE_ENABLE=false` disables reuse
+and tears down on exit. Per-file databases are always recreated, and setup
+reclaims databases left by runs killed before teardown once they are older than
+two hours (younger ones may belong to a concurrent run).
 
-Rules:
+## Route Tests Build Only Their Module
 
-- Fake runtimes return deterministic `output_text`, `output_json`, errors, and `produced_artifact_paths`.
-- Fake providers return deterministic model responses and structured failures.
-- Invariant and workflow tests may mock runtime/provider execution, but should use real services and database state around that boundary.
-- Runtime adapter behavior and model provider behavior must remain separate in tests and production code.
+Route tests build the app with `buildModuleServer(config, [xModule, ...])` from
+`server/test/support/moduleServer.ts`, listing the modules whose routes they
+exercise. It composes the real app shell (`src/gateway/appShell.ts`: body
+handling, error envelope, request-id headers, unknown-API catch-all), so status
+codes and envelopes match production; routes from unlisted modules answer 404.
+Requests go through `app.inject()`, so setup rows must be committed before the
+request and re-queried after it.
 
-## API And TestClient Commit Rules
+`buildServer` loads every module — several seconds of import per file — and is
+reserved for tests about the gateway or the registry as a whole: gateway
+conventions, health, registry ownership, and modules whose `onReady` validates
+cross-module registrations (automation targets).
 
-`TestClient` requests run through the application boundary and must see committed setup state.
+## Runtime
 
-Rules:
+Vitest 4 with `experimental.fsModuleCache` on, cached per package under
+`node_modules/.vitest-cache`; the first run after a dependency change
+repopulates it. Module import is the largest cost of the server suite, so keep
+the cache on.
 
-- Commit database rows before issuing a `TestClient` request that depends on them.
-- Commit factory-created setup rows when the API request must load them through a new request/session path.
-- After the request, refresh or re-query rows before asserting changed durable state.
-- Do not rely on uncommitted ORM identity-map state for API contract assertions.
-- Rollback-only setup is acceptable only for tests that never cross the API boundary.
+The web suite runs at full parallelism and starts a jsdom environment per file.
+Test files that touch no DOM declare `// @vitest-environment node` on their
+first line; `src/test/setup.ts` installs its DOM shims and per-test cleanup only
+where a DOM exists. `asyncUtilTimeout` is 15s there because `findBy*` used to
+give up while a lazy chunk was still transforming under load.
 
-## Shared PostgreSQL Test Infrastructure
+Two Vitest 4 behaviors to write for: a `vi.fn()` used as a class needs a
+`function` implementation (arrow functions are not constructible), and
+`vi.spyOn` on an already-spied method reuses that spy with its call log, so
+files that spy on the same method in several tests restore mocks in
+`afterEach`.
 
-Real-PostgreSQL server tests share one `pgvector/pgvector:pg18` Testcontainers
-instance per Vitest project. Global setup applies the committed server baseline
-once to a template database. Each test file receives its own database cloned
-from that template, so files remain isolated while avoiding one container and
-one migration run per file.
+## Time Budgets Are Enforced
 
-Tests that specifically exercise the migration runner, plugin migrations, or a
-hand-authored minimal schema must request an empty database from the shared
-helper. Test files still own and close their `Pool`; calling the helper handle's
-`stop()` drops only that file's database, not the shared container.
+The suites blew up twice without anyone writing a slow test: the cost of old,
+reasonable tests grew with the schema (`TRUNCATE ... CASCADE` across 300 tables)
+and with the module graph (building the whole server to test one module). Rules
+cannot catch a cost that appears retroactively, so every run is measured and
+fails on a doubling:
 
-The shared container is test-only and uses tmpfs plus `fsync=off`,
-`synchronous_commit=off`, and `full_page_writes=off`. PostgreSQL 18 requires the
-tmpfs mount at `/var/lib/postgresql`, not the pre-18
-`/var/lib/postgresql/data` path.
+1. Vitest's `experimental.importDurations` with `failOnDanger` fails a run when
+   any one import exceeds the danger threshold.
+2. `tools/vitest/budgetReporter.mjs` fails a run when a file's import time or a
+   test's duration exceeds the package budget, or when the suite's total import
+   or test time exceeds the committed baseline by more than the tolerance.
+   Budgets: `server/test/perf-budget.json`, `apps/web/src/test/perf-budget.json`.
+   Totals are per-file sums, not wall clock, but still swing with machine load,
+   so the tolerance is 2x: the gate catches doublings and the ten slowest files
+   it prints every run make drift visible. Raising a limit is an edit to the
+   budget file, reviewed with the change that needed it.
+3. `testHygiene.test.ts` in each suite fails on the patterns behind past
+   blow-ups (the rules in the two sections above, plus real-time sleeps and
+   bare `userEvent.setup()`), with exemptions listed per file.
 
-Local runs reuse the container across Vitest invocations. Set
-`TESTCONTAINERS_REUSE_ENABLE=false` to disable reuse (for example in a CI job
-that requires teardown); global teardown then stops the container. Reuse never
-reuses per-file databases or the migrated template: those are recreated for
-each Vitest run.
+## Product Rules Tests Protect
 
-### No Fake Database For Durable Behavior
+- `/api/v1/proposals` is the only product API for proposal review and
+  application; acceptance is explicit, proposals are never auto-applied.
+- Runs stay auditable through durable state and activity/output records;
+  `output_text` alone never creates a proposal; structured output creates
+  artifacts and proposals only through current materialization rules.
+- Auth required; cross-space denied as 404, not 403; same-space private content
+  denied to non-owners as 404; owner allowed.
+- A failed mutation leaves the database unchanged; a failed consolidation
+  creates no proposals.
+- Secrets never appear in API responses; path traversal is blocked.
+- Intentional cross-space exceptions are preserved: personal memory egress
+  approval, `/me` routes, personal-memory-grants; targeted publications remain
+  snapshot-only transfer.
 
-Tests that claim a database-backed product behavior must run against the
-shared real PostgreSQL infrastructure. Reuse an existing domain test file
-and call `getTestPostgres(__filename)` from
-`server/test/support/sharedPostgres.ts`; do not start a second Testcontainers
-instance, create an ad-hoc database, or replace the database with a fake
-`Queryable`.
-
-This applies to contracts, invariants, workflows, plans, run dispatch and
-budget enforcement, routing persistence, verification persistence, and any
-assertion about durable state or transaction behavior. If the shared
-PostgreSQL fixture is unavailable, the test must use the repository's
-established skip path and report the unavailable runtime. It must never fall
-back to a fake database, because that can validate SQL shape while missing
-constraints, transactions, locks, JSON queries, triggers, and cross-table
-invariants.
-
-The unavailable-runtime path is limited to an explicitly unavailable shared
-container or a PostgreSQL connection error. Migration, schema, seed, service
-construction, and other setup errors must be rethrown so they fail the suite;
-they must never be converted into `available = false`.
-
-Database fakes are allowed only for narrowly scoped, database-free unit tests
-whose stated purpose is SQL/parameter shape or a pure adapter boundary. Such
-tests must not be used to prove product behavior or to duplicate coverage
-that belongs in a real-PostgreSQL workflow test.
-
-## Proposal And Run Rules
-
-- `/api/v1/proposals` is the only product API for proposal review and application.
-- Proposal acceptance is explicit; proposals are never auto-applied.
-- Runs must remain auditable through durable state and activity/output records.
-- `output_text` alone does not create a proposal.
-- Structured run output may create artifacts and proposals only through current materialization rules.
-
-## Security Boundary Test Naming
-
-Security boundary tests should be named after the **product invariant they protect**, not
-after the history of how a bug was found or fixed.
-
-**Good names:**
-- `test_session_messages_require_authenticated_owner`
-- `test_private_task_subresources_are_hidden_from_non_owner`
-- `test_activity_consolidation_requires_visible_activity`
-- `test_capability_reload_requires_authentication`
-- `test_cross_space_run_returns_404`
-
-**Avoid:**
-- `test_gap_s1_fixed`
-- `test_previous_bug_regression`
-- `test_foundation_patch`
-- `test_post_audit_case`
-- `test_cross_space_bug_123`
-- `test_high_gap_verification`
-
-Tests should protect these durable behaviors:
-
-- auth required
-- cross-space denied (404, not 403)
-- same-space private denied for non-owner and ungranted selected-user content denied (404)
-- owner allowed
-- failed mutation leaves DB unchanged
-- failed consolidation creates no proposals
-- secrets not exposed in API responses
-- path traversal blocked
-- intentional cross-space exceptions preserved (personal memory egress approval, `/me`
-  routes, personal-memory-grants); targeted publications remain snapshot-only transfer
-
-## Canonical Command
-
-Use the server and protocol suites from their package roots:
-
-```bash
-cd server
-pnpm exec tsc --noEmit
-pnpm exec vitest run
-
-cd ../packages/protocol
-pnpm exec vitest run
-```
-
-Do not point tests at a real mode data tree. Integration tests that need
-Postgres must use explicit test fixtures or the Docker-native ops helpers,
-never a live dev/prod instance directory.
+Name security tests after the invariant they protect, e.g.
+`it("hides private task subresources from non-owners")` or
+`it("returns 404 for a run in another space")` — never after the bug's history
+(`"gap S1 fixed"`, `"regression after audit"`).
 
 ## Flake Attribution
 
 A rotating handful of failures across different files each run is a contention
-signal, not a regression. Diagnose it by re-running the failing file alone and
-by stashing the change: a file that fails at 30s under full fan-out and passes
-in under a second by itself is not testing what its failure claims.
-
-The web suite carries two settings for this, each with its reason in the file:
-`apps/web/vitest.config.ts` caps the pool at 6 workers rather than starting a
-jsdom environment on every core, and `apps/web/src/test/setup.ts` sets
-testing-library's `asyncUtilTimeout` to 15s because the real cause was
-`findBy*` giving up while a lazy chunk was still transforming, not vitest's own
-test timeout. Do not lower either to "speed the suite up" without re-running
-the full suite several times — the first attempt at this raised the wrong
-timeout and did not settle it.
+signal, not a regression. Re-run the failing file alone and stash the change: a
+file that fails at 30s under full fan-out and passes in under a second by itself
+is not testing what its failure claims. Two patterns have produced such flakes
+here: assuming the order in which concurrent fakes are reached, and attaching a
+rejection handler one event-loop turn after the commit that triggers the
+rejection (Vitest 4 counts that as an unhandled error).
 
 Hand-written subset schemas under `server/test/fixtures/*.sql` are a known
-drift source: they are copies of the real schema and nothing regenerates them,
-so a column renamed in `server/migrations/0001_baseline.sql` stays stale there
-until a test happens to touch it. Grep them when a schema change renames or
-drops a column.
+drift source: nothing regenerates them, so a column renamed in
+`server/migrations/0001_baseline.sql` stays stale there until a test touches
+it. Grep them when a schema change renames or drops a column.

@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
@@ -17,7 +16,6 @@ import type { ServerConfig } from "../src/config";
 // call itself is injected, so these assert the durable contract around it:
 // what is stored, when it goes stale, and that advice never becomes a write.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
@@ -29,7 +27,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -97,8 +94,10 @@ async function registerProvider(): Promise<void> {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    "TRUNCATE inquiry_thread_advice, jobs, prompt_deployment_refs, evolvable_asset_versions, evolvable_assets, model_provider_space_grants, model_providers, inquiry_evidence_signals, inquiry_iterations, inquiry_thread_statement_revisions, inquiry_question_states, inquiry_hypothesis_states, inquiry_threads, inquiry_project_settings, projects, space_memberships, users, spaces CASCADE",
+  await resetTables(
+    pool,
+    ["inquiry_thread_advice", "jobs", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "model_provider_space_grants", "model_providers", "inquiry_evidence_signals", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);

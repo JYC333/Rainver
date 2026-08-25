@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit";
 import { ContentDemotionService } from "../src/modules/contentAccess/demotion";
 import { ContentAccessService } from "../src/modules/contentAccess/service";
@@ -11,8 +9,8 @@ import {
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const VIEWER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -33,7 +31,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -48,10 +45,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE content_demotion_disclosures, content_access_logs,
-              invocation_snapshots, invocation_deliveries, execution_control_snapshots, artifacts, runs,
-              agent_versions, agents, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["content_demotion_disclosures", "content_access_logs", "invocation_snapshots", "invocation_deliveries", "execution_control_snapshots", "artifacts", "runs", "agent_versions", "agents", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   for (const [id, name] of [[OWNER, "Owner"], [VIEWER, "Viewer"]]) {
     await pool.query(

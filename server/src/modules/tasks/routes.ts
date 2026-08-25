@@ -12,6 +12,7 @@ import {
   sendRouteError,
 } from "../routeUtils/common";
 import { PgTaskRepository } from "./repository";
+import { resolveProvidersDbPort } from "../providers/dbReader";
 import { PgPlanRepository } from "../plans/repository.js";
 import {
   applyContentCreationContext,
@@ -19,7 +20,8 @@ import {
 } from "../access/creationContext";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  const repository = () => new PgTaskRepository(dbPool(context.config));
+  const repository = () =>
+    new PgTaskRepository(dbPool(context.config), resolveProvidersDbPort(context.config));
 
   app.get("/api/v1/boards", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

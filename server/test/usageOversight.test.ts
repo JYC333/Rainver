@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
 import { PgUsageRepository } from "../src/modules/usage/repository";
 import type { OversightMode } from "../src/modules/access/contentAccessTypes";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "77777777-7777-4777-8777-777777777777";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -23,7 +21,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -41,8 +38,10 @@ afterAll(async () => {
 });
 
 async function seed(mode: OversightMode): Promise<PgUsageRepository> {
-  await pool!.query(
-    "TRUNCATE content_access_grants, token_usage_events, space_memberships, users, spaces CASCADE",
+  await resetTables(
+    pool!,
+    ["content_access_grants", "token_usage_events", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   for (const id of [OWNER, MEMBER, ADMIN]) {
     await pool!.query(

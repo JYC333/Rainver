@@ -12,6 +12,7 @@ import {
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 let database: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
@@ -42,7 +43,7 @@ describe("content creation context against real PostgreSQL", () => {
     const teamSpaceId = randomUUID();
     const projectId = randomUUID();
     const now = new Date().toISOString();
-    await pool.query("TRUNCATE spaces, users CASCADE");
+    await resetTables(pool, ["spaces", "users"], { cascade: true });
     await pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'Creator', 'active', $3, $3),

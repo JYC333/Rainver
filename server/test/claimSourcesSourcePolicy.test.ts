@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getDbPool } from "../src/db/pool";
 import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { knowledgeModule } from "../src/modules/knowledge";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import type { Queryable } from "../src/modules/routeUtils/common";
@@ -139,7 +140,7 @@ describe("claim sources source policy gate (G2)", () => {
   it("applies the same source gate through the claim sources HTTP route", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: VIEWER });
     vi.mocked(getDbPool).mockReturnValue(new ClaimSourcesFakeDb() as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "GET",

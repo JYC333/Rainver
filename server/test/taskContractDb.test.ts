@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { PgTaskRepository } from "../src/modules/tasks/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
@@ -20,7 +18,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -35,7 +32,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE tasks, space_memberships, users, spaces CASCADE");
+  await resetTables(pool, ["tasks", "space_memberships", "users", "spaces"], { cascade: true });
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

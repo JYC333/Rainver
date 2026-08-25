@@ -2,6 +2,7 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach } from "vitest";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { Pool } from "pg";
 import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime";
 
 const {
@@ -73,7 +74,7 @@ beforeEach(async () => {
   guardState.enabled = true;
   guardState.spaceId = SPACE_A;
   guardState.userId = USER_1;
-  await pool!.query("TRUNCATE TABLE finance_books CASCADE");
+  await resetTables(pool!, ["finance_books"], { cascade: true });
 });
 
 function identity() {

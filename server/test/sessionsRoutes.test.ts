@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { sessionsModule } from "../src/modules/sessions";
 import { loadConfig } from "../src/config";
 import {
   __setSessionIdentityForTests,
@@ -111,7 +112,7 @@ describe("session read routes", () => {
         } satisfies SessionPage;
       },
     });
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -134,7 +135,7 @@ describe("session read routes", () => {
         return sessionId === "session-1" ? session({ id: sessionId }) : null;
       },
     });
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const ok = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1" });
     const missing = await app.inject({ method: "GET", url: "/api/v1/sessions/other" });
@@ -153,7 +154,7 @@ describe("session read routes", () => {
           : null;
       },
     });
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const ok = await app.inject({
       method: "GET",
@@ -172,7 +173,7 @@ describe("session read routes", () => {
   it("rejects an out-of-range limit with 422", async () => {
     __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     withRepo({});
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/sessions?limit=999" });
 
@@ -188,7 +189,7 @@ describe("session write routes", () => {
         return session({ title: input.title ?? null, project_folder_id: input.projectFolderId ?? null });
       },
     });
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -211,7 +212,7 @@ describe("session write routes", () => {
       throw new HttpError(403, "Project creation requires an active writer role");
     });
     withRepo({});
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -232,7 +233,7 @@ describe("session write routes", () => {
           : null;
       },
     });
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const ok = await app.inject({
       method: "POST",
@@ -253,7 +254,7 @@ describe("session write routes", () => {
   it("rejects missing content and client-owned role or metadata (422)", async () => {
     __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     withRepo({});
-    app = buildServer(sessionsConfig(), { logger: false });
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
 
     const noContent = await app.inject({
       method: "POST",

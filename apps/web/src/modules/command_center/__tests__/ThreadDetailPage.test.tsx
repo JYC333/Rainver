@@ -19,6 +19,7 @@ vi.mock('../../../api/client', () => ({
   projectFoldersApi: { list: vi.fn(), get: vi.fn() },
   runsApi: { list: vi.fn() },
   artifactsApi: { list: vi.fn(), get: vi.fn() },
+  providersApi: { list: vi.fn().mockResolvedValue([]) },
 }))
 
 const HOST = {
@@ -50,7 +51,7 @@ const RUN = {
 }
 const MESSAGE = {
   id: 'message-1', host_task_thread_id: 'thread-1', prompt: 'fix the bug', status: 'dispatched' as const,
-  run_id: 'run-1', created_by_user_id: 'user-1', created_at: '2026-08-21T00:00:00.000Z', updated_at: '2026-08-21T00:00:00.000Z',
+  model_provider_id: null, model: null, run_id: 'run-1', created_by_user_id: 'user-1', created_at: '2026-08-21T00:00:00.000Z', updated_at: '2026-08-21T00:00:00.000Z',
 }
 const EVENT = {
   id: 'event-1', host_task_thread_id: 'thread-1', run_id: 'run-1', event_index: 0, event_type: 'assistant_text' as const,
@@ -80,6 +81,31 @@ beforeEach(() => {
 })
 
 describe('ThreadDetailPage', () => {
+  it('names the session after the runtime the thread is actually pinned to', async () => {
+    // This page said "Remote Claude session" over a Codex thread: the vendor
+    // was written into the label while `thread.adapter_type` sat one line
+    // away. The name now comes from the adapter catalog.
+    vi.mocked(hostsApi.listThreads).mockResolvedValue({ items: [{ ...THREAD, adapter_type: 'codex_cli' }] })
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({
+      items: [
+        { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true },
+        { adapter_type: 'codex_cli', display_name: 'Codex CLI', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true },
+      ],
+    })
+
+    renderPage()
+    expect(await screen.findByText(/Codex CLI session/)).toBeInTheDocument()
+    expect(screen.queryByText(/Claude/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the raw adapter type rather than naming some other vendor', async () => {
+    vi.mocked(hostsApi.listThreads).mockResolvedValue({ items: [{ ...THREAD, adapter_type: 'something_new' }] })
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [] })
+
+    renderPage()
+    expect(await screen.findByText(/something_new session/)).toBeInTheDocument()
+  })
+
   it('renders the conversation with the host, workspace, user turn, and assistant reply', async () => {
     renderPage()
     expect(await screen.findByText('Laptop')).toBeInTheDocument()

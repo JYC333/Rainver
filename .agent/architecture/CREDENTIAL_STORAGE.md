@@ -98,10 +98,21 @@ to pi-ai's Anthropic Messages or OpenAI Codex Responses transport. Subscription
 credentials never enter API-key pools or subprocess environments.
 
 Claude-compatible CLI provider bindings use the same invariant. The Claude
-subprocess receives only a short-lived local provider-proxy lease token through
+subprocess receives only a short-lived provider-proxy lease token through
 `ANTHROPIC_AUTH_TOKEN`; the proxy resolves the real ModelProvider API key
 inside the server process and replaces the lease token before forwarding the
-request upstream.
+request upstream. The proxy URL is not loopback — its host comes from
+`SANDBOX_RUNNER_SERVER_HOST` (default `server`, the Compose service name), so
+it is reachable within the deployment's own network. Reaching it from a paired
+execution host additionally requires `PROVIDER_PROXY_PORT` (a fixed port, since
+an OS-assigned one moves on restart) and `PROVIDER_PROXY_EXTERNAL_BASE_URL`
+(the address that host should use); without both, a bound remote run fails with
+a stated reason rather than receiving a URL it cannot resolve. A remote run's
+lease carries the Host it was issued for, so revoking that Host revokes the
+lease rather than leaving it live until its TTL;
+[ADR 0008](../decisions/0008-credential-channel-isolation.md)'s 2026-08-24
+amendment records why that is a transport change rather than a
+channel-isolation change.
 
 Codex OpenAI-compatible CLI provider bindings follow the same invariant. For a
 selected Codex provider, the server writes only a run-scoped temporary

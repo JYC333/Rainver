@@ -6,7 +6,9 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { systemModule } from "../src/modules/system";
+import { providersModule } from "../src/modules/providers";
 import { loadConfig } from "../src/config";
 import {
   __setProvidersDbPortForTests,
@@ -100,7 +102,7 @@ describe("providers read authority", () => {
     __setProvidersDbPortForTests(
       fakeDb({ "space-1": [provider("mp-2"), provider("mp-1")] }),
     );
-    app = buildServer(providerRoutesConfig(), { logger: false });
+    app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
 
     const list = await app.inject({
       method: "GET",
@@ -121,7 +123,7 @@ describe("providers read authority", () => {
   it("returns the public 404 detail for a missing provider", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(fakeDb({ "space-1": [] }));
-    app = buildServer(providerRoutesConfig(), { logger: false });
+    app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/providers/mp-missing" });
     expect(res.statusCode).toBe(404);
@@ -131,7 +133,7 @@ describe("providers read authority", () => {
   it("passes native identity denials through unchanged", async () => {
     __setAuthRepositoryForTests(denyingAuth());
     __setProvidersDbPortForTests(fakeDb({ "space-1": [provider("mp-1")] }));
-    app = buildServer(providerRoutesConfig(), { logger: false });
+    app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/providers" });
     expect(res.statusCode).toBe(401);
@@ -141,7 +143,7 @@ describe("providers read authority", () => {
   it("serves the vendor registry, and no longer serves the retired catalog routes", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(fakeDb({}));
-    app = buildServer(providerRoutesConfig(), { logger: false });
+    app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
 
     const vendors = await app.inject({ method: "GET", url: "/api/v1/providers/vendors" });
     expect(vendors.statusCode).toBe(200);
@@ -195,7 +197,7 @@ describe("providers read authority", () => {
         return null;
       },
     });
-    app = buildServer(providerRoutesConfig(), { logger: false });
+    app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/providers" });
     expect(res.statusCode).toBe(503);
@@ -206,7 +208,7 @@ describe("providers read authority", () => {
   it("advertises the provider read authority feature", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(fakeDb({}));
-    app = buildServer(providerRoutesConfig(), { logger: false });
+    app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/server/features" });
     const features = res.json().features as string[];

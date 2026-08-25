@@ -7,7 +7,7 @@ import TaskContractEditor from './TaskContractEditor'
 
 describe('TaskContractEditor', () => {
   it('creates a source Task from natural language without exposing generated JSON or parent ids', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     render(<TaskCreateForm boards={[]} agents={[]} submitLabel="Create task" onSubmit={onSubmit} />)
 

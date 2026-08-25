@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { __setRoomServiceFactoryForTests } from "../src/modules/rooms";
+import { __setRoomServiceFactoryForTests, roomsModule } from "../src/modules/rooms";
 
 let app: FastifyInstance | undefined;
 
@@ -70,7 +70,7 @@ describe("Room routes", () => {
         };
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [roomsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -138,7 +138,7 @@ describe("Room routes", () => {
         };
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [roomsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -192,7 +192,7 @@ describe("Room routes", () => {
         };
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [roomsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -263,7 +263,7 @@ describe("Room routes", () => {
         };
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [roomsModule]);
 
     const response = await app.inject({
       method: "GET",
@@ -295,7 +295,7 @@ describe("Room routes", () => {
         return { room: {}, user_members: [], agent_members: [] };
       },
     }));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [roomsModule]);
 
     const candidates = await app.inject({
       method: "GET",

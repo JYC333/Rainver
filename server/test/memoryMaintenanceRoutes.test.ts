@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
 import { loadConfig } from "../src/config";
-import { __setMemoryIdentityForTests } from "../src/modules/memory";
+import { __setMemoryIdentityForTests, memoryModule } from "../src/modules/memory";
 import type { MemoryRow } from "../src/modules/memory/repository";
 
 vi.mock("../src/db/pool", () => ({
@@ -159,7 +159,7 @@ describe("Memory maintenance routes", () => {
     vi.mocked(getDbPool).mockReturnValue({
       query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const response = await app.inject({
       method: "GET",
@@ -177,7 +177,7 @@ describe("Memory maintenance routes", () => {
       row({ id: "memory-3", title: "Different" }),
     ]);
     vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -243,7 +243,7 @@ describe("Memory maintenance routes", () => {
 
   it("rejects create_packet without persisted report", async () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -261,7 +261,7 @@ describe("Memory maintenance routes", () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const db = fakePool([row()], { role: "member", contextOpsScanMode: "admins" });
     vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -278,7 +278,7 @@ describe("Memory maintenance routes", () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const db = fakePool([row()], { role: "member", contextOpsScanMode: "members" });
     vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -296,7 +296,7 @@ describe("Memory maintenance routes", () => {
     const projectId = "11111111-1111-4111-8111-111111111111";
     const db = fakePool([row({ project_id: projectId })]);
     vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -321,7 +321,7 @@ describe("Memory maintenance routes", () => {
       { failOnProposalInsert: true },
     );
     vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [memoryModule]);
 
     const res = await app.inject({
       method: "POST",

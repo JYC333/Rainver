@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
@@ -12,6 +12,14 @@ import type { Pool } from "../../db/pool";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry";
 import { PgHostTaskThreadRepository } from "./taskThreadRepository";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository";
+import {
+  PgHostRuntimeProviderBindingRepository,
+  type HostRuntimeProviderBinding,
+} from "./runtimeProviderBindingRepository";
+import { assertProviderUsable } from "./runtimeProviderBindingResolution";
+import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress";
+import { resolveProvidersDbPort } from "../providers/dbReader";
+import { providerProxyLeases } from "../providers/proxy/lease";
 import { advanceThreadQueue, HOST_THREAD_QUEUE_LOCK_PREFIX } from "./queueAdvance";
 import { assertProjectWriter, assertProjectReadable } from "../projects/access";
 import { getDbPool } from "../../db/pool";
@@ -27,6 +35,73 @@ function isFailure(value: unknown): value is AuthFailure | HostFailure {
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
+}
+
+function bindingToOut(binding: HostRuntimeProviderBinding) {
+  return {
+    host_id: binding.host_id,
+    adapter_type: binding.adapter_type,
+    model_provider_id: binding.model_provider_id,
+    model: binding.model,
+    updated_at: binding.updated_at,
+  };
+}
+
+function remoteEligibleAdapterTypes(): string[] {
+  return listRuntimeAdapterSpecs()
+    .filter((spec) =>
+      spec.runtime_kind === "local_cli"
+      && spec.implementation_status === "implemented"
+      && spec.invocation?.protocol === "acp")
+    .map((spec) => spec.adapter_type);
+}
+
+/**
+ * Space-scoped identity plus proof the caller owns this host. Ownership is the
+ * write gate for a binding because a host only ever serves its owner (B63);
+ * the Space is what a ModelProvider grant is scoped to.
+ *
+ * Returns null after having already answered the request.
+ */
+async function resolveOwnedHost(
+  context: ModuleContext,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<{ pool: Pool; hostId: string; spaceId: string; userId: string } | null> {
+  const requestId = resolveRequestId(request);
+  reply.header(REQUEST_ID_HEADER, requestId);
+  if (!context.config.databaseUrl) {
+    await sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
+    return null;
+  }
+  const identity = await introspectIdentity(context.config, request);
+  if (!identity.ok) {
+    if (identity.reason === "denied") {
+      reply.code(identity.statusCode);
+      reply.header("content-type", "application/json");
+      await reply.send(identity.body);
+      return null;
+    }
+    await sendErrorEnvelope(reply, 502, errorEnvelope("identity_unavailable", "Identity introspection failed", requestId));
+    return null;
+  }
+  const hostId = params(request).hostId;
+  if (!hostId) {
+    await reply.code(400).send({ detail: "hostId is required" });
+    return null;
+  }
+  const pool = getDbPool(context.config.databaseUrl);
+  const owned = await pool.query(
+    `SELECT 1 FROM hosts WHERE id = $1 AND owner_user_id = $2 AND kind = 'remote' AND status <> 'revoked' LIMIT 1`,
+    [hostId, identity.userId],
+  );
+  if (owned.rowCount === 0) {
+    // Not 403: an unowned host id should not be distinguishable from a
+    // nonexistent one, matching `revoke`'s own 404-on-not-yours behavior.
+    await reply.code(404).send({ detail: "Host not found" });
+    return null;
+  }
+  return { pool, hostId, spaceId: identity.spaceId, userId: identity.userId };
 }
 
 function body<T extends object>(request: FastifyRequest): Partial<T> {
@@ -77,6 +152,17 @@ async function requireThreadProjectWriter(
   return { spaceId: found.space_id, projectId: found.project_id };
 }
 
+/**
+ * The whole of what a daemon's hello/heartbeat frame contributes, validated
+ * field by field because the frame is untrusted input.
+ *
+ * Every field of `DaemonHelloInfo` is optional, so a field the daemon sends
+ * and this function forgets compiles cleanly and is dropped in silence —
+ * that is exactly how `server_url` went missing, and it surfaced only as
+ * every provider-bound run on the host failing dispatch. A field added to the
+ * daemon's `helloInfo()` has to be added here, with coverage that a frame
+ * carrying it reaches the host row.
+ */
 function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
   const workspaceReports = Array.isArray(payload.workspace_reports)
     ? payload.workspace_reports.flatMap((value) => {
@@ -96,6 +182,7 @@ function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
     platform: typeof payload.platform === "string" ? payload.platform : null,
     arch: typeof payload.arch === "string" ? payload.arch : null,
     daemon_version: typeof payload.daemon_version === "string" ? payload.daemon_version : null,
+    server_url: typeof payload.server_url === "string" ? payload.server_url : null,
     capabilities_json:
       payload.capabilities_json && typeof payload.capabilities_json === "object" && !Array.isArray(payload.capabilities_json)
         ? (payload.capabilities_json as Record<string, unknown>)
@@ -152,7 +239,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
-    return reply.send({ items: await hosts.listVisibleTo(user.id) });
+    const items = await hosts.listVisibleTo(user.id);
+    return reply.send({
+      // The address each host will actually be handed, resolved by the same
+      // function a dispatched run uses — so the Command Center cannot show one
+      // answer while runs get another.
+      items: items.map((host) => ({
+        ...host,
+        provider_proxy_effective_url: host.kind === "remote"
+          ? hostProviderProxyBaseUrl(host, context.config.providerProxyPort)
+          : null,
+      })),
+    });
   });
 
   // Read side for the control center's work stream (grouped by thread, not
@@ -247,6 +345,99 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send({ items });
   });
 
+  // Which model backend a host's runtime adapter runs against.
+  // Space-scoped rather than
+  // user-scoped like this module's other host endpoints, because validating a
+  // ModelProvider needs the Space its grant lives in — but host **ownership**
+  // is still the write gate (B63: a host serves only its owner).
+  app.get("/api/v1/hosts/:hostId/runtime-provider-bindings", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const bindings = await new PgHostRuntimeProviderBindingRepository(resolved.pool).listForHost(resolved.hostId);
+    return reply.send({ items: bindings.map(bindingToOut) });
+  });
+
+  app.put("/api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const adapterType = params(request).adapterType;
+    if (!adapterType) return reply.code(400).send({ detail: "adapterType is required" });
+    const payload = body<{ model_provider_id?: string; model?: string | null }>(request);
+    const providerId = typeof payload.model_provider_id === "string" ? payload.model_provider_id.trim() : "";
+    if (!providerId) return reply.code(422).send({ detail: "model_provider_id is required" });
+    const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : null;
+
+    if (!remoteEligibleAdapterTypes().includes(adapterType)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
+    }
+    try {
+      // Usable *from this Space*. Dispatch re-validates against whichever
+      // Space actually dispatches, which is the authoritative check; this one
+      // stops the UI saving a binding that could never work.
+      await assertProviderUsable({
+        providers: resolveProvidersDbPort(context.config),
+        spaceId: resolved.spaceId,
+        adapterType,
+        providerId,
+        // This route *is* the host default. Without saying so, the failure
+        // tells the operator to choose another backend "for this message"
+        // while they are sitting in the host's settings, where no message
+        // exists.
+        provenance: "host_default",
+      });
+    } catch (error) {
+      if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
+      throw error;
+    }
+    const binding = await new PgHostRuntimeProviderBindingRepository(resolved.pool).upsert({
+      hostId: resolved.hostId,
+      adapterType,
+      modelProviderId: providerId,
+      model,
+      createdByUserId: resolved.userId,
+    });
+    return reply.send(bindingToOut(binding));
+  });
+
+  app.delete("/api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const adapterType = params(request).adapterType;
+    if (!adapterType) return reply.code(400).send({ detail: "adapterType is required" });
+    const cleared = await new PgHostRuntimeProviderBindingRepository(resolved.pool).clear(resolved.hostId, adapterType);
+    if (!cleared) return reply.code(404).send({ detail: "Binding not found" });
+    return reply.code(204).send();
+  });
+
+  // The address this host should use to reach the provider proxy. Normally
+  // derived from what the daemon reports, so this is only for a deployment the
+  // derivation cannot see: a reverse proxy in front of the API, or the proxy
+  // published somewhere other than the API's host.
+  app.put("/api/v1/hosts/:hostId/provider-proxy-url", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const payload = body<{ base_url?: string | null }>(request);
+    const raw = typeof payload.base_url === "string" ? payload.base_url.trim() : "";
+    let baseUrl: string | null = null;
+    if (raw) {
+      let parsed: URL;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        return reply.code(422).send({ detail: "base_url must be an absolute http(s) URL" });
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return reply.code(422).send({ detail: "base_url must be http or https" });
+      }
+      baseUrl = raw.replace(/\/+$/, "");
+    }
+    await resolved.pool.query(
+      `UPDATE hosts SET provider_proxy_base_url = $2, updated_at = now() WHERE id = $1`,
+      [resolved.hostId, baseUrl],
+    );
+    return reply.send({ host_id: resolved.hostId, provider_proxy_base_url: baseUrl });
+  });
+
   app.post("/api/v1/hosts/:hostId/revoke", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
@@ -265,6 +456,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // otherwise keep executing dispatched runs and heartbeating on its live
     // socket indefinitely — only a future reconnect would be blocked.
     sharedHostConnectionRegistry.closeConnection(hostId, 1008, "host_revoked");
+    // Cutting the socket stops new work, but an in-flight provider lease is
+    // reachable over plain HTTP and would keep spending this space's provider
+    // credential from a machine that was just cut off.
+    providerProxyLeases.revokeHost(hostId);
     return reply.code(204).send();
   });
 

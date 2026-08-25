@@ -1,12 +1,10 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { ContextWindowReconciliationRepository } from "../src/modules/runtimeContext";
 import { revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE_ID = "10000000-0000-4000-8000-000000000001";
 const INVOCATION_ID = "10000000-0000-4000-8000-000000000002";
 const PROVIDER_SPACE_ID = "10000000-0000-4000-8000-000000000003";
@@ -22,7 +20,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -37,7 +34,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE context_window_reconciliations, spaces CASCADE");
+  await resetTables(pool, ["context_window_reconciliations", "spaces"], { cascade: true });
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Runtime Context', 'personal', now(), now())`,

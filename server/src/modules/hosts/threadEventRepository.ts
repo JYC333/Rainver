@@ -13,6 +13,8 @@ const LOCK_PREFIX = "host_thread_events:";
  */
 export type HostThreadEventType =
   | "assistant_text"
+  /** Reasoning, kept apart from the answer rather than shown as one. */
+  | "assistant_thought"
   | "tool_activity_started"
   | "tool_activity_finished"
   | "status"

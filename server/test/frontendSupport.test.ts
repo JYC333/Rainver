@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { frontendSupportModule } from "../src/modules/frontendSupport";
 import { loadConfig } from "../src/config";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 import { __setFrontendSupportServiceFactoryForTests } from "../src/modules/frontendSupport/routes";
@@ -76,7 +77,7 @@ describe("frontend-support read models", () => {
         ];
       },
     }));
-    app = buildServer(loadConfig({}), { logger: false });
+    app = buildModuleServer(loadConfig({}), [frontendSupportModule]);
 
     const home = await app.inject({
       method: "GET",

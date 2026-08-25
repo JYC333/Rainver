@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import type { CustomSourceHandlerOutput, CustomSourcePolicyEnvelope } from "@agent-space/protocol" with {
   "resolution-mode": "import",
 };
@@ -104,11 +105,10 @@ beforeEach(async () => {
   sandboxFilesRoot = await mkdtemp(join(tmpdir(), "custom-source-materializer-sandbox-"));
   await writeFile(join(sandboxFilesRoot, "article-1.html"), "<html>hi</html>", "utf8");
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE jobs, retrieval_edges, retrieval_chunks, retrieval_aliases, retrieval_objects,
-      extracted_evidence, source_snapshots, source_items, artifacts, source_handler_runs,
-      source_handler_versions, source_connections, source_provider_connectors, source_providers,
-      source_connectors, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "artifacts", "source_handler_runs", "source_handler_versions", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   // The real schema enforces the space/user chain and the connector/provider
   // mapping behind every source_connections row.

@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
-import { __setAgentChatIdentityForTests } from "../src/modules/agents";
+import { buildModuleServer } from "./support/moduleServer";
+import { agentTemplatesModule } from "../src/modules/agentTemplates";
+import { __setAgentChatIdentityForTests, agentsModule } from "../src/modules/agents";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
 
@@ -43,7 +44,7 @@ describe("agents CRUD routes", () => {
   it("lists agents with the public response shape", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -133,7 +134,7 @@ describe("agents CRUD routes", () => {
       query: vi.fn(),
     };
     vi.mocked(getDbPool).mockReturnValue(pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -299,7 +300,7 @@ describe("agents CRUD routes", () => {
       }),
     };
     vi.mocked(getDbPool).mockReturnValue(pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -366,7 +367,7 @@ describe("agents CRUD routes", () => {
       return { rows: [], rowCount: 0 };
     });
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -394,7 +395,7 @@ describe("agents CRUD routes", () => {
   it("rejects user credentials on shared Agent runtime profiles", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -538,7 +539,7 @@ describe("agents CRUD routes", () => {
       }),
     };
     vi.mocked(getDbPool).mockReturnValue(pool as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
 
     const res = await app.inject({
       method: "POST",

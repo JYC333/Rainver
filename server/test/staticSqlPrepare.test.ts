@@ -3,7 +3,6 @@ import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
 
 // Every static SQL string in server/src is PREPAREd against a migrated
 // database. PREPARE parses, resolves names, and deduces parameter types
@@ -20,7 +19,6 @@ import { migrate } from "../src/db/migrator";
 // cannot be typed in isolation.
 
 const SRC_DIR = join(process.cwd(), "src");
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const STATEMENT_START = /^(SELECT|INSERT|UPDATE|DELETE|WITH)\b/i;
 
 interface StaticStatement {
@@ -126,7 +124,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;

@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { MemoryMaintenanceService } from "../src/modules/memory/maintenance";
 import {
   createMemoryMaintenanceProposalPacket,
@@ -18,7 +17,6 @@ import { withDbTransaction } from "../src/modules/routeUtils/common";
 // gates, stricter maintenance exclusions, artifact/proposal FKs, access logs,
 // and transaction rollback.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -31,7 +29,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -50,9 +47,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE content_access_logs, memory_entries, artifacts, proposals,
-              project_members, projects, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["content_access_logs", "memory_entries", "artifacts", "proposals", "project_members", "projects", "users", "spaces"],
+    { cascade: true },
   );
   for (const id of [VIEWER, OTHER]) {
     await pool.query(

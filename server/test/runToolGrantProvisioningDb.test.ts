@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope";
 import { AuthorizationRequestService } from "../src/modules/policy/authorizationRequestService";
@@ -48,8 +49,10 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!available || !pool) return;
   const now = new Date().toISOString();
-  await pool.query(
-    "TRUNCATE runs, agent_versions, agents, space_memberships, spaces, users CASCADE",
+  await resetTables(
+    pool,
+    ["runs", "agent_versions", "agents", "space_memberships", "spaces", "users"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', $2, $2)`,
@@ -408,8 +411,10 @@ describe("run tool grant provisioning", () => {
     expect(deferred.rows[0]).toMatchObject({ status: "pending", attempts: 0 });
     expect(deferred.rows[0]!.scheduled_at.getTime()).toBeGreaterThan(Date.now());
     await pool.query(`DELETE FROM run_execution_locks WHERE run_id = $1`, [created.id]);
+    // Clearly in the past: the claim compares against a millisecond JS clock,
+    // and a same-millisecond now() with microseconds would still be "later".
     await pool.query(
-      "UPDATE jobs SET scheduled_at = now() WHERE id = $1",
+      "UPDATE jobs SET scheduled_at = now() - interval '1 second' WHERE id = $1",
       [reconcileJob.rows[0]!.id],
     );
     await expect(worker.processOne()).resolves.toMatchObject({

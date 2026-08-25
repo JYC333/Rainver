@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
 import { PgUsageRepository } from "../src/modules/usage/repository";
@@ -14,7 +13,6 @@ import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
 // Provider-reported usage must remain visible in the review UI through the
 // canonical ledger, regardless of the run lifecycle row.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -33,7 +31,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -48,10 +45,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE token_usage_events, instance_identity, runs, agent_versions, agents,
-       project_research_checkpoints, project_research_workflows, project_operations,
-       projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["token_usage_events", "instance_identity", "runs", "agent_versions", "agents", "project_research_checkpoints", "project_research_workflows", "project_operations", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(

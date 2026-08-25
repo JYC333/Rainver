@@ -344,7 +344,7 @@ describe('Knowledge routing', () => {
   })
 
   it('removes a folder optimistically without reloading the tree', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderAt('/spaces/personal-1/knowledge/notes')
     const tree = await screen.findByLabelText('Notes organization')
     expect(within(tree).getByText('Client Research')).toBeInTheDocument()
@@ -749,7 +749,7 @@ describe('Knowledge routing', () => {
    * search still spanned every Project, would be the wrong half of the feature.
    */
   it('narrows the tree and the note search to the hoisted subtree', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const nested = {
       id: 'col-nested',
       space_id: 'personal-1',
@@ -796,7 +796,7 @@ describe('Knowledge routing', () => {
   })
 
   it('leaves the hoisted subtree when focus is exited', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderAt('/spaces/personal-1/knowledge/notes')
     const tree = await screen.findByLabelText('Notes organization')
 

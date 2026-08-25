@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import type { ServerConfig } from "../src/config";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository";
@@ -18,7 +17,6 @@ import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modul
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -32,7 +30,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -47,10 +44,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE evaluation_cases, evolvable_asset_evaluation_runs, evolvable_asset_pins,
-       evolvable_asset_versions, evolvable_assets, evolution_experiences,
-       proposals, jobs, job_events, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["evaluation_cases", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "evolution_experiences", "proposals", "jobs", "job_events", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Eval Space', 'team', $2, $2)`, [SPACE, now]);

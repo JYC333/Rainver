@@ -3,7 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { publicationsModule } from "../src/modules/publications";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 
 vi.mock("../src/db/pool", () => ({
@@ -126,7 +127,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -158,7 +159,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({
       method: "POST",
@@ -196,7 +197,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({
       method: "GET",
@@ -239,7 +240,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({ method: "POST", url: "/api/v1/publications/publication-1/import" });
 
@@ -269,7 +270,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({ method: "POST", url: "/api/v1/publications/publication-1/import" });
 
@@ -313,7 +314,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({ method: "POST", url: "/api/v1/publications/publication-1/import" });
 
@@ -348,7 +349,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({ method: "POST", url: "/api/v1/publications/publication-1/import" });
 
@@ -382,7 +383,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({
       method: "GET",
@@ -416,7 +417,7 @@ describe("publication routes", () => {
       throw new Error(`Unexpected query: ${normalized}`);
     });
     vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [publicationsModule]);
 
     const response = await app.inject({ method: "POST", url: "/api/v1/publications/publication-1/revoke" });
 

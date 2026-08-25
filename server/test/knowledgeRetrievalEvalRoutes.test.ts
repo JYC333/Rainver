@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { knowledgeModule } from "../src/modules/knowledge";
 import { loadConfig } from "../src/config";
 import {
   __setAuthRepositoryForTests,
@@ -101,7 +102,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 1 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -170,7 +171,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 1 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -237,7 +238,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 0 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -269,7 +270,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 0 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -301,7 +302,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 0 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -384,7 +385,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 1 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -481,7 +482,7 @@ describe("Knowledge retrieval eval report route", () => {
         return client;
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -520,7 +521,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 0 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -559,7 +560,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 0 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -582,7 +583,7 @@ describe("Knowledge retrieval eval report route", () => {
         return { rows: [], rowCount: 0 };
       },
     } as never);
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
       method: "POST",

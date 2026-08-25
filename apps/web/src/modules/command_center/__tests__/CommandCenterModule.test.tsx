@@ -13,6 +13,7 @@ vi.mock('../../../api/client', () => ({
   projectFoldersApi: { list: vi.fn() },
   projectsApi: { list: vi.fn() },
   runsApi: { list: vi.fn() },
+  providersApi: { list: vi.fn().mockResolvedValue([]) },
 }))
 
 beforeEach(() => {

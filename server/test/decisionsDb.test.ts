@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { DecisionCaseService } from "../src/modules/decisions/caseService";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -13,7 +12,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // reference (never copying them), Options/Criteria/Trade-offs, the decide()
 // checkpoint, Commitment, and the explicit Decision -> Delivery Task action.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "66666666-6666-4666-8666-666666666666";
@@ -27,7 +25,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -42,10 +39,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE decision_option_scores, decision_commitments, decision_criteria, decision_options,
-       decision_cases, tasks, inquiry_threads, projects, space_memberships,
-       users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["decision_option_scores", "decision_commitments", "decision_criteria", "decision_options", "decision_cases", "tasks", "inquiry_threads", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

@@ -39,6 +39,7 @@ checked against the code; verify before scheduling.
 | External agent interop | None | A2A / official MCP SDK | Deferred | External interop demand exists | Not started |
 | Frontend event wire | Persisted Run events | AG-UI (POC only; never replaces persisted events) | Deferred | — | Not started |
 | Live plugin composition | ADR 0009 PluginHost | Cordis-style runtime composition | Deferred | No trigger observed | Not started |
+| LLM protocol translation | None needed — every target provider exposes an Anthropic/OpenAI-compatible endpoint; the provider proxy is pass-through by design | Portkey Gateway sidecar (TS, MIT, stateless data plane — caller supplies keys per request, fitting the server-holds-keys model; note the pending Palo Alto acquisition) downstream of the provider proxy, or embedded `@musistudio/llms`; verify streaming/tool-call fidelity on the Anthropic-ingress→non-Anthropic path before adopting | Conditional | A required provider lacks an Anthropic/OpenAI-compatible endpoint | Not started |
 
 ## Reference implementations (not dependencies)
 

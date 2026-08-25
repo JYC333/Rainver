@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { runsModule } from "../src/modules/runs";
 import { loadConfig } from "../src/config";
 import {
   __setRunsCommandServicesFactoryForTests,
@@ -73,7 +74,7 @@ describe("runs command routes", () => {
         },
       },
     }));
-    app = buildServer(runsConfig(), { logger: false });
+    app = buildModuleServer(runsConfig(), [runsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -120,7 +121,7 @@ describe("runs command routes", () => {
         },
       },
     }));
-    app = buildServer(runsConfig(), { logger: false });
+    app = buildModuleServer(runsConfig(), [runsModule]);
 
     const unauthorized = await app.inject({
       method: "POST",
@@ -170,7 +171,7 @@ describe("runs command routes", () => {
         },
       },
     }));
-    app = buildServer(runsConfig(), { logger: false });
+    app = buildModuleServer(runsConfig(), [runsModule]);
 
     const res = await app.inject({
       method: "PATCH",

@@ -15,9 +15,13 @@
 # database is rebuilt logically with pg_restore. The script starts PostgreSQL if
 # needed and stops it afterward only when it started it.
 #
-# Backup-compatibility preflight fails closed: a missing/unexpected backup_format
-# or a PostgreSQL major-version mismatch aborts before any destructive operation.
-# Use --force-incompatible-backup to override that check for controlled recovery.
+# Backup-compatibility preflight fails closed, before any destructive operation:
+# a missing/unexpected backup_format, a PostgreSQL major-version mismatch, or a
+# schema checksum that differs from this build's migrations/0001_baseline.sql.
+# The last one means the archive predates a schema change: restoring it would
+# leave a database the migration runner refuses to start against, so prefer a
+# build whose baseline matches. --force-incompatible-backup overrides any of
+# the three for controlled recovery.
 # --force (file overwrite) and --force-running (active services) do NOT imply it.
 #
 # Usage:
@@ -162,8 +166,9 @@ fi
 
 # ── Manifest version metadata (read + validate; fail closed on mismatch) ───────
 # Manifest fields are never silently ignored: each is reported, and an incompatible
-# backup_format or PostgreSQL major-version mismatch aborts before any destructive
-# operation. --force-incompatible-backup overrides the check for controlled recovery.
+# backup_format, a PostgreSQL major-version mismatch, or a schema checksum that
+# differs from this build's baseline aborts before any destructive operation.
+# --force-incompatible-backup overrides the check for controlled recovery.
 # PostgreSQL is the server database.
 read_manifest_field() {
   python3 -c 'import json,sys
@@ -214,6 +219,20 @@ BK_PG_MAJOR="${BK_PG_SERVER%%.*}"
 LIVE_PG_MAJOR="${LIVE_PG_SERVER%%.*}"
 if [[ -n "$BK_PG_MAJOR" && -n "$LIVE_PG_MAJOR" && "$BK_PG_MAJOR" != "$LIVE_PG_MAJOR" ]]; then
   incompatible_backup "backup PostgreSQL major ($BK_PG_MAJOR) != live server major ($LIVE_PG_MAJOR); restoring a custom-format dump across major versions can fail or misbehave."
+fi
+
+# The runtime schema is a single regenerated baseline (server/migrations/README.md),
+# so its checksum changes whenever the schema does. A backup taken before that
+# rewrite restores a database whose recorded checksum no longer matches the
+# file on disk, and the migration runner refuses to reapply it — leaving a
+# restored-but-unstartable stack. Say so here, where the operator can still
+# choose a different archive, rather than at the next `start.sh`.
+BASELINE_FILE="$SCRIPT_DIR/../../../server/migrations/0001_baseline.sql"
+if [[ -n "$BK_SCHEMA_MIGRATION_CHECKSUM" && -f "$BASELINE_FILE" ]]; then
+  LIVE_SCHEMA_CHECKSUM="$(sha256sum "$BASELINE_FILE" | cut -d' ' -f1)"
+  if [[ "$BK_SCHEMA_MIGRATION_CHECKSUM" != "$LIVE_SCHEMA_CHECKSUM" ]]; then
+    incompatible_backup "backup schema checksum (${BK_SCHEMA_MIGRATION_CHECKSUM:0:12}...) != this build's baseline (${LIVE_SCHEMA_CHECKSUM:0:12}...); the migration runner will refuse to start against the restored database. Restore into a build whose baseline matches, or accept that this data cannot be carried across the schema change."
+  fi
 fi
 
 echo "[restore] preflight complete; no destructive DB operation has started."

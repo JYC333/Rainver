@@ -1,11 +1,10 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
 // NC/N7: notes and evidence connect both ways. The "jot a note" affordance on
 // an evidence or material card has to create the note *and* the link in one
@@ -25,7 +24,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    await migrate(pool, join(process.cwd(), "migrations"));
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     available = true;
   } catch (error) {
@@ -61,7 +59,11 @@ async function seedSource(title: string, opts?: { visibility?: string; ownerUser
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(`TRUNCATE note_links, notes, sources, space_objects, projects, space_memberships, users, spaces CASCADE`);
+  await resetTables(
+    pool,
+    ["note_links", "notes", "sources", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
+  );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
   for (const [id, name] of [[USER, "Owner"], [OTHER, "Other"]] as const) {

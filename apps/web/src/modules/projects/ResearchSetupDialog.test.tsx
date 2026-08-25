@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
 import { toast } from 'sonner'
 import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/client'
@@ -48,6 +48,12 @@ const providerVendors = [
 ] satisfies ProviderVendorOut[]
 
 describe('ResearchSetupDialog', () => {
+  // Several tests spy on the same api method; a re-spy keeps the earlier
+  // spy's call log unless it was restored.
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     vi.spyOn(sourcesApi, 'customSourceCredentials').mockReturnValue(new Promise(() => {}))
@@ -55,7 +61,7 @@ describe('ResearchSetupDialog', () => {
   })
 
   it('locks discovery and start until the question passes refinement, with a link back to Inquiry to fix it', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(
       <ResearchSetupDialog
         open
@@ -100,7 +106,7 @@ describe('ResearchSetupDialog', () => {
       />,
     )
 
-    await userEvent.setup().click(screen.getByRole('button', { name: /Execution/ }))
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: /Execution/ }))
     expect(await screen.findByText('Default provider (default)')).toBeInTheDocument()
     expect(await screen.findByDisplayValue('MiniMax-M3')).toBeInTheDocument()
   })
@@ -130,13 +136,13 @@ describe('ResearchSetupDialog', () => {
       />,
     )
 
-    await userEvent.setup().click(screen.getByRole('button', { name: /Execution/ }))
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: /Execution/ }))
     expect(await screen.findByText('Codex subscription (default)')).toBeInTheDocument()
     expect(await screen.findByDisplayValue('gpt-5.6-sol')).toBeInTheDocument()
   })
 
   it('saves the draft with a visible confirmation when stepping forward', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(
       <ResearchSetupDialog
         open
@@ -160,7 +166,7 @@ describe('ResearchSetupDialog', () => {
   })
 
   it('reuses the same draft Workflow for every autosave in one session instead of creating a new one each time', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     let nextWorkflowId = 0
     vi.spyOn(projectResearchApi, 'saveInitialIntakeDraft').mockImplementation(async () => {
       nextWorkflowId += 1
@@ -194,7 +200,7 @@ describe('ResearchSetupDialog', () => {
   })
 
   it('renders adaptive provider attempts and materializes selected queries', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     vi.spyOn(researchDiscoveryApi, 'evaluate').mockResolvedValue({ strategy: {
       id: '22222222-2222-4222-8222-222222222222', project_id: 'project-1', research_context_version_id: '11111111-1111-4111-8111-111111111111', question_snapshot: initialDraft.research_question, status: 'selected',
       version: 1, parent_strategy_id: null, adaptation_direction: null,

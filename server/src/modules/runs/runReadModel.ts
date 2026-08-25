@@ -1,4 +1,5 @@
 import { getRuntimeAdapterSpec } from "../runtimeAdapters";
+import { HOST_BINDING_MODEL_SOURCE } from "./remoteProviderBinding";
 import type {
   ArtifactSummaryRecord,
   ModelProviderSummaryRecord,
@@ -14,6 +15,7 @@ import type { VerificationResultRecord } from "./verification";
 export function runToOut(
   run: RunRecord,
   provider: ModelProviderSummaryRecord | null = null,
+  options: { executes_remotely?: boolean } = {},
 ): Record<string, unknown> {
   return {
     id: run.id,
@@ -57,7 +59,7 @@ export function runToOut(
     capability_id: run.capability_id ?? null,
     capabilities_json: Array.isArray(run.capabilities_json) ? run.capabilities_json : [],
     selected_model_provider_id: run.model_provider_id ?? null,
-    resolved_model: buildResolvedModel(run, provider),
+    resolved_model: buildResolvedModel(run, provider, options),
     required_sandbox_level: run.required_sandbox_level,
     owner_user_id: run.owner_user_id ?? null,
     visibility: run.visibility ?? "space_shared",
@@ -263,6 +265,7 @@ export function runLineageToOut(run: RunRecord): Record<string, unknown> {
 function buildResolvedModel(
   run: RunRecord,
   provider: ModelProviderSummaryRecord | null,
+  options: { executes_remotely?: boolean } = {},
 ): Record<string, unknown> {
   const override = recordValue(run.model_override_json);
   const source = normalizeSource(stringValue(override.source));
@@ -270,7 +273,26 @@ function buildResolvedModel(
   const hasRecordedModel = Boolean(run.model_provider_id || model);
   const spec = getRuntimeAdapterSpec(run.adapter_type);
   const behavior = spec?.model.model_config_behavior ?? "unknown";
-  const usedByAdapter = behavior === "uses_model" && hasRecordedModel;
+  // For a remote run, a recorded provider means one of two very different
+  // things. The router stamps one at run start for any routed run — a
+  // prediction the remote path does not honor. The remote adapter then
+  // overwrites it with what it actually bound (or clears it, for a run on the
+  // machine's own login), marking that with `source: "host_binding"`. Only the
+  // second is evidence the adapter used it, which is what this field claims.
+  //
+  // Remoteness means a remote Location **and** a `local_cli` adapter — only
+  // those are dispatched to a daemon; a `model_api` run on a remote-preferred
+  // Folder executes on the server against the provider it recorded. It is
+  // decided there rather than from `trust_mode`, which only the
+  // thread-dispatch path writes, so an Automation, Room, Workflow or evolution
+  // run has it null and still runs remotely. Resolving a Location needs a query, so every
+  // read path that renders a Run passes `executes_remotely` — use
+  // `resolveRunRemoteness` for that, which answers a whole page in one query
+  // and skips runs with nothing recorded to qualify. `trust_mode` is only a
+  // floor for a caller that has not been given the answer.
+  const executesRemotely = options.executes_remotely ?? run.trust_mode === "trusted_host";
+  const consumedByRuntime = !executesRemotely || source === HOST_BINDING_MODEL_SOURCE;
+  const usedByAdapter = behavior === "uses_model" && hasRecordedModel && consumedByRuntime;
   return {
     provider_id: run.model_provider_id ?? null,
     provider_name: provider?.name ?? null,
@@ -280,9 +302,11 @@ function buildResolvedModel(
     used_by_adapter: usedByAdapter,
     adapter_model_support: behavior,
     disclosure_note:
-      hasRecordedModel && !usedByAdapter
-        ? "Recorded model configuration is not used by this runtime adapter."
-        : null,
+      !hasRecordedModel || usedByAdapter
+        ? null
+        : consumedByRuntime
+          ? "Recorded model configuration is not used by this runtime adapter."
+          : "Recorded before this run executed. A run on a remote execution host resolves its own backend at launch, so this is what was chosen, not yet what ran.",
   };
 }
 
@@ -297,7 +321,8 @@ function computeExpired(
 }
 
 function normalizeSource(value: string | null): string {
-  return value === "request" ||
+  return value === HOST_BINDING_MODEL_SOURCE ||
+    value === "request" ||
     value === "runtime_profile" ||
     value === "agent_default" ||
     value === "runtime_default" ||

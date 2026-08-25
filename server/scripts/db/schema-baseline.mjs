@@ -97,12 +97,20 @@ function assertSingleBaseline(root) {
   }
 }
 
+/**
+ * The runtime schema is one file. No deployment carries data that predates it,
+ * so a schema change is folded into the baseline rather than chained behind it
+ * — which keeps the baseline and the TypeScript schema the same thing, instead
+ * of a starting point plus a history nobody replays.
+ */
 function assertMigrationChain() {
   const files = readdirSync(migrationDir)
     .filter((name) => /^\d+_.+\.sql$/.test(name))
     .sort();
-  if (!files.includes("0001_baseline.sql")) {
-    throw new Error("server/migrations must retain immutable 0001_baseline.sql");
+  if (files.length !== 1 || files[0] !== "0001_baseline.sql") {
+    throw new Error(
+      `server/migrations must contain exactly 0001_baseline.sql, found: ${files.join(", ") || "nothing"}`,
+    );
   }
 }
 
@@ -116,7 +124,10 @@ function generate() {
     preserveUnchangedMetadata(previous, drizzleDir);
     assertMigrationChain();
     rmSync(previous, { recursive: true, force: true });
-    console.log("schema-baseline: rebuilt drizzle/0000_baseline.sql; numbered migrations remain immutable");
+    console.log(
+      "schema-baseline: rebuilt drizzle/0000_baseline.sql — copy it over migrations/0001_baseline.sql "
+      + "(see server/migrations/README.md); schema:check enforces that they match",
+    );
   } catch (error) {
     rmSync(drizzleDir, { recursive: true, force: true });
     if (existsSync(previous)) renameSync(previous, drizzleDir);
@@ -144,7 +155,19 @@ function check() {
     if (expectedSql !== normalizedSql(join(drizzleDir, generatedSqlName))) {
       throw new Error("Committed Drizzle SQL does not match server/src/db/schema");
     }
-    console.log("schema-baseline: schema and Drizzle baseline are in sync; numbered migrations are immutable");
+    // The runtime schema is a single file that is *copied* from the generated
+    // baseline, so nothing structural stops the two drifting. Under the old
+    // append-only regime that drift was impossible by construction; this check
+    // is what replaces that guarantee. Without it, a schema change committed
+    // without the copy passes every check here and fails at the first query
+    // against the missing column.
+    if (normalizedSql(firstMigration) !== normalizedSql(join(drizzleDir, generatedSqlName))) {
+      throw new Error(
+        "server/migrations/0001_baseline.sql does not match the generated baseline; "
+        + "copy drizzle/0000_baseline.sql over it (see server/migrations/README.md)",
+      );
+    }
+    console.log("schema-baseline: schema, Drizzle baseline and the runtime baseline are in sync");
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }

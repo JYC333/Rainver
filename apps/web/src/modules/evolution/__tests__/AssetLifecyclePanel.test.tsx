@@ -30,7 +30,7 @@ const asset = {
 
 describe('AssetLifecyclePanel', () => {
   it('creates a draft candidate from the version lifecycle UI', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const onReload = vi.fn().mockResolvedValue(undefined)
     evolutionApiMock.evaluationCases.mockResolvedValue([])
     evolutionApiMock.createAssetVersion.mockResolvedValue({})

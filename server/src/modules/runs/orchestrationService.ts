@@ -26,6 +26,7 @@ import { serializeCalls } from "../routeUtils/common";
 import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector";
 import type { CliProcessRegistry } from "./localCliExecution";
 import { PgRunRepository } from "./repository";
+import { dispatchesToHostDaemon } from "./runRemoteness";
 import type {
   RunEventInput,
   RunRecord,
@@ -238,6 +239,7 @@ export interface RunExecutionAdapterDeps {
     inputs: {
       cliCredentialProfileId: string | null;
       policyDecisionRecordIds: string[];
+      executesRemotely?: boolean;
     },
     effectiveBindings?: EffectiveRunContextBindings,
   ) => Promise<ExecutionControlSnapshot>;
@@ -887,6 +889,10 @@ export class RunOrchestrationService {
               ? stringConfigValue(resolved.adapter_config.credential_profile_id)
               : null,
             policyDecisionRecordIds: resolved.policy_decision_record_ids,
+            // Only a run handed to a daemon resolves its provider at launch
+            // rather than here; anything else executes in-process against the
+            // provider this run already records.
+            executesRemotely: dispatchesToHostDaemon(effectiveRun.adapter_type, executionPort.hostKind),
           }, effectiveBindings)
         : null;
       // Persist the resolved level so the run read model / trace reflects what
@@ -2418,7 +2424,7 @@ export class RunOrchestrationService {
         `Runtime adapter '${run.adapter_type ?? "unknown"}' is not registered.`,
       );
     }
-    if (spec.executor_family === "local_cli" && input.execution_port?.hostKind === "remote") {
+    if (input.execution_port && dispatchesToHostDaemon(run.adapter_type, input.execution_port.hostKind)) {
       const threadId = run.host_task_thread_id;
       const threadEvents = threadId && this.config.databaseUrl
         ? new PgHostThreadEventRepository(getDbPool(this.config.databaseUrl))
@@ -2443,6 +2449,10 @@ export class RunOrchestrationService {
         },
         input.execution_port.hostId!,
         input.execution_port.workspaceLocationId!,
+        // The remote adapter resolves this run's model backend itself: the
+        // Runtime Context gateway is skipped for a remote run, so nothing
+        // upstream has done it.
+        { config: this.config },
       );
     }
     return RUNTIME_EXECUTORS[spec.executor_family](this.config, run, input, this.adapters);

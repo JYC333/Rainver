@@ -1,15 +1,13 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { RuntimeContextPolicyRepository } from "../src/modules/policy/runtimeContextPolicyRepository";
 import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots";
 import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings";
 import type { RunRecord } from "../src/modules/runs/repository";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ADMIN = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -33,7 +31,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -48,9 +45,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(`TRUNCATE runtime_context_policy_audits, runtime_context_policy_bindings,
-    runtime_context_policy_versions, agents, workspace_locations, project_folders, project_members, projects,
-    policy_decision_records, space_memberships, users, spaces, hosts, machines CASCADE`);
+  await resetTables(
+    pool,
+    ["runtime_context_policy_audits", "runtime_context_policy_bindings", "runtime_context_policy_versions", "agents", "workspace_locations", "project_folders", "project_members", "projects", "policy_decision_records", "space_memberships", "users", "spaces", "hosts", "machines"],
+    { cascade: true },
+  );
   await pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Team', 'household', now(), now())`,

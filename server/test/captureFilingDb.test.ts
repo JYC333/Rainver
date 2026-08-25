@@ -1,7 +1,5 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { CaptureFilingService } from "../src/modules/captureFiling/service";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit";
 import { PgActivityRepository } from "../src/modules/activity/repository";
@@ -11,8 +9,8 @@ import {
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
 } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const STRANGER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PERSONAL = "11111111-1111-4111-8111-111111111111";
@@ -28,7 +26,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -43,9 +40,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE content_access_logs, activity_records, notes, space_objects,
-              projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["content_access_logs", "activity_records", "notes", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

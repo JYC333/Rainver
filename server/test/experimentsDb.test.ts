@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
 import { ExperimentRunService } from "../src/modules/experiments/runService";
 import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService";
@@ -18,7 +17,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // is one executor_type here, not a second Experiment concept (see
 // projectResearchIntegrityDb.test.ts for the retargeted integrity check).
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
@@ -36,7 +34,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -51,10 +48,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE experiment_interpretations, experiment_observations, experiment_runs, experiment_versions, experiment_definitions,
-       inquiry_evidence_signals, inquiry_signal_candidates, inquiry_threads, workspace_locations, project_folders, projects,
-       space_memberships, users, spaces, hosts, machines CASCADE`,
+  await resetTables(
+    pool,
+    ["experiment_interpretations", "experiment_observations", "experiment_runs", "experiment_versions", "experiment_definitions", "inquiry_evidence_signals", "inquiry_signal_candidates", "inquiry_threads", "workspace_locations", "project_folders", "projects", "space_memberships", "users", "spaces", "hosts", "machines"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

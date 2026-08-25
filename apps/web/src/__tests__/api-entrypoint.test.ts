@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import clientSource from '../api/client.ts?raw'
 import viteConfigSource from '../../vite.config.ts?raw'

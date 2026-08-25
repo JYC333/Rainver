@@ -1961,6 +1961,73 @@ describe("vendor structured event normalization", () => {
     });
   });
 
+  it("accepts a Codex turn whose total counts reasoning inside output", () => {
+    // Real numbers from a Codex run on a paired host: OpenAI's total already
+    // includes reasoning in `output`, so adding the bucket again overcounts by
+    // 946 and the turn was failed despite having answered.
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const send = () => {};
+    const close = () => {};
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, close);
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 24620,
+          cachedReadTokens: 87808,
+          outputTokens: 1312,
+          thoughtTokens: 946,
+          totalTokens: 113740,
+        },
+      },
+    }, send, close);
+
+    const result = controller.result();
+    expect(result.error).toBeNull();
+    expect(result.completed).toBe(true);
+    expect(result.usage).toMatchObject({
+      input_tokens: 24620,
+      output_tokens: 1312,
+      reasoning_tokens: 946,
+      total_tokens: 113740,
+    });
+  });
+
+  it("still rejects a total that matches neither reasoning convention", () => {
+    // Guards the widened check: it admits exactly two self-consistent shapes,
+    // not any total at all.
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+    })!;
+    const send = () => {};
+    const close = () => {};
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, close);
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        stopReason: "end_turn",
+        usage: { inputTokens: 10, outputTokens: 5, thoughtTokens: 2, totalTokens: 99 },
+      },
+    }, send, close);
+
+    expect(controller.result().error).toBe("Codex ACP returned invalid token usage");
+  });
+
   it("rejects invalid optional OpenCode ACP usage buckets", () => {
     const controller = createCliConversationController({
       adapter_type: "opencode",
@@ -2035,9 +2102,12 @@ describe("vendor structured event normalization", () => {
     );
 
     expect(closed).toBe(true);
-    expect(controller.result().error).toBe(
-      "OpenCode ACP did not apply the requested model",
-    );
+    // Both sides named: a rejection is nearly always a mismatch between the
+    // runtime's identifier space and ours, and reporting neither leaves
+    // nothing to compare.
+    expect(controller.result().error).toContain("OpenCode ACP did not apply the requested model");
+    expect(controller.result().error).toContain("asked for 'provider/model'");
+    expect(controller.result().error).toContain("runtime is on 'different/model'");
   });
 
   it("rejects malformed OpenCode ACP protocol envelopes", () => {

@@ -1,10 +1,8 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../src/db/migrator";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { resetTables } from "./support/resetTables";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const USER = "tenant-integrity-user";
 const SPACE_A = "tenant-integrity-space-a";
 const SPACE_B = "tenant-integrity-space-b";
@@ -28,7 +26,6 @@ beforeAll(async () => {
   try {
     database = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -47,7 +44,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(`TRUNCATE spaces, users CASCADE`);
+  await resetTables(pool, ["spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)

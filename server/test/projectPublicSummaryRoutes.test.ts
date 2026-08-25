@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { projectsModule } from "../src/modules/projects";
 import { loadConfig } from "../src/config";
 import {
   __setAuthIdentityForTests,
@@ -53,7 +54,7 @@ function denyingAuth(): AuthRepository {
 describe("Project public summary routes", () => {
   it("rejects an upsert body missing summary_text", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [projectsModule]);
 
     const res = await app.inject({
       method: "PUT",
@@ -68,7 +69,7 @@ describe("Project public summary routes", () => {
 
   it("rejects a draft request with a non-numeric max_tokens", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [projectsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -83,7 +84,7 @@ describe("Project public summary routes", () => {
 
   it("rejects a public-summary search for any other object type", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [projectsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -98,7 +99,7 @@ describe("Project public summary routes", () => {
 
   it("rejects a project retrieval brief for any other object type", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [projectsModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -113,7 +114,7 @@ describe("Project public summary routes", () => {
 
   it("requires authentication for the draft route", async () => {
     __setAuthRepositoryForTests(denyingAuth());
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [projectsModule]);
 
     const res = await app.inject({
       method: "POST",

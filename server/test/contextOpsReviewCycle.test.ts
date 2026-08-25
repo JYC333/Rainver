@@ -17,9 +17,11 @@ const createMemoryMaintenancePacketMock = vi.hoisted(() => vi.fn());
 const createClaimCandidatePacketMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/modules/contextOps/service", () => ({
-  ContextOpsService: vi.fn().mockImplementation(() => ({
-    getSummary: summaryMock,
-  })),
+  ContextOpsService: vi.fn(function () {
+    return {
+      getSummary: summaryMock,
+    };
+  }),
 }));
 
 vi.mock("../src/modules/retrieval/settings", () => ({
@@ -30,9 +32,11 @@ vi.mock("../src/modules/retrieval", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/modules/retrieval")>();
   return {
     ...actual,
-    RetrievalMaintenanceService: vi.fn().mockImplementation(() => ({
-      scan: retrievalScanMock,
-    })),
+    RetrievalMaintenanceService: vi.fn(function () {
+      return {
+        scan: retrievalScanMock,
+      };
+    }),
     persistRetrievalMaintenanceReportArtifact: persistRetrievalMaintenanceMock,
     createRetrievalMaintenanceProposalPacket: createRetrievalMaintenancePacketMock,
     buildRetrievalEvalDiagnosticsReport: buildDiagnosticsMock,
@@ -42,9 +46,11 @@ vi.mock("../src/modules/retrieval", async (importOriginal) => {
 });
 
 vi.mock("../src/modules/memory/maintenance", () => ({
-  MemoryMaintenanceService: vi.fn().mockImplementation(() => ({
-    scan: memoryScanMock,
-  })),
+  MemoryMaintenanceService: vi.fn(function () {
+    return {
+      scan: memoryScanMock,
+    };
+  }),
 }));
 
 vi.mock("../src/modules/memory/maintenanceArtifacts", () => ({
@@ -53,9 +59,11 @@ vi.mock("../src/modules/memory/maintenanceArtifacts", () => ({
 }));
 
 vi.mock("../src/modules/memory/repository", () => ({
-  PgMemoryReadRepository: vi.fn().mockImplementation(() => ({
-    recordMaintenanceReads: memoryReadsMock,
-  })),
+  PgMemoryReadRepository: vi.fn(function () {
+    return {
+      recordMaintenanceReads: memoryReadsMock,
+    };
+  }),
 }));
 
 vi.mock("../src/modules/knowledge/claimCandidatePackets", () => ({

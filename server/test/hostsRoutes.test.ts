@@ -1,10 +1,10 @@
-import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
-import { buildServer } from "../src/server";
+import { resetTables } from "./support/resetTables";
+import { buildModuleServer } from "./support/moduleServer";
+import { hostsModule } from "../src/modules/hosts";
 import { loadConfig } from "../src/config";
 import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth";
 import type { CurrentUser } from "../src/modules/auth/identity";
@@ -17,7 +17,6 @@ import type { CurrentUser } from "../src/modules/auth/identity";
 // Space-scoped, resource) — hosts persistence itself stays on the real
 // test-Postgres container, per this repo's real-DB testing policy.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OWNER_TOKEN = "owner-session-token";
@@ -80,9 +79,8 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
-    app = buildServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), { logger: false });
+    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [hostsModule]);
     await app.listen({ port: 0, host: "127.0.0.1" });
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -103,7 +101,11 @@ afterEach(() => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE runs, agent_versions, agents, hosts, projects, spaces, users CASCADE");
+  await resetTables(
+    pool,
+    ["runs", "agent_versions", "agents", "hosts", "projects", "spaces", "users"],
+    { cascade: true },
+  );
   await pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now()), ($2, 'Other', 'active', now(), now())`,
@@ -461,6 +463,52 @@ describe("hosts routes", () => {
       payload: { diff: "diff --git a/x b/x\n" },
     });
     expect(noAuth.statusCode).toBe(401);
+  });
+
+  it("keeps the control-plane address the daemon reports, so a proxy address can be derived", async (ctx) => {
+    // The daemon sends `server_url` because the server cannot guess an address
+    // a paired machine can resolve. Dropping it at this wire boundary is
+    // silent: every provider-bound run on the host then fails dispatch with
+    // provider_proxy_not_reachable, and nothing upstream looks broken.
+    if (!available || !app || !pool) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    const issue = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/pairing-codes",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+      payload: { name: "Reporting Box" },
+    });
+    const { host_id: hostId, pairing_code: pairingCode } = issue.json();
+    const register = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/register",
+      payload: { pairing_code: pairingCode, platform: "linux", arch: "x64" },
+    });
+    const { token } = register.json();
+
+    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify({
+          type: "hello",
+          token,
+          platform: "linux",
+          arch: "x64",
+          daemon_version: "0.1.0",
+          server_url: "http://laptop.local:3000",
+        }));
+      });
+      socket.addEventListener("message", () => resolve(), { once: true });
+      socket.addEventListener("error", (event) => reject(event));
+      setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
+    });
+
+    const row = await pool.query("SELECT daemon_server_url FROM hosts WHERE id = $1", [hostId]);
+    expect(row.rows[0]?.daemon_server_url).toBe("http://laptop.local:3000");
+
+    const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
+    socket.close();
+    await closed;
   });
 
   it("authenticates a real WebSocket hello and records a heartbeat (phase 1 wire contract)", async (ctx) => {

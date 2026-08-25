@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
 import { RetrievalToolService } from "../src/modules/retrieval/tool/service";
@@ -19,7 +18,6 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 // mirroring that real two-step production order (gateway enforces, then the
 // executor runs), since RetrievalToolService no longer does both internally.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const USER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -36,7 +34,6 @@ beforeAll(async () => {
     container = await getTestPostgres(__filename);
     dbUrl = container.getConnectionUri();
     pool = new Pool({ connectionString: dbUrl, max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -55,9 +52,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE retrieval_objects, retrieval_aliases, retrieval_chunks, retrieval_edges,
-              knowledge_items, space_objects, policy_decision_records, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "policy_decision_records", "users", "spaces"],
+    { cascade: true },
   );
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Tool', 'team', now(), now())`, [SPACE]);
   for (const id of [USER_A, USER_B]) {

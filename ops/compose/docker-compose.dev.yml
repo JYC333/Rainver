@@ -45,6 +45,19 @@ services:
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-agent_space}:${POSTGRES_PASSWORD:-agent_space_dev_password}@postgres:5432/${POSTGRES_DB:-agent_space}}
       - SANDBOX_RUNNER_HOST=sandbox-runner
       - SANDBOX_RUNNER_SERVER_HOST=server
+      # Binding a paired execution host to a ModelProvider needs the provider
+      # proxy reachable from that machine. Fixed here so the published mapping
+      # below is stable; PROVIDER_PROXY_EXTERNAL_BASE_URL is deliberately not
+      # declared, because an `environment:` entry would override `.server.env`
+      # — set it there (e.g. http://<this-machine>:8021) to enable remote
+      # binding. Unset, dispatch says so rather than handing out a URL the
+      # host cannot resolve.
+      - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-8021}
+    ports:
+      # Loopback by default, like prod. A daemon on another machine needs
+      # PROVIDER_PROXY_BIND=0.0.0.0 — that is the deliberate step that puts
+      # lease traffic on the local network, and it is plaintext until TLS.
+      - "${PROVIDER_PROXY_BIND:-127.0.0.1}:${PROVIDER_PROXY_PORT:-8021}:${PROVIDER_PROXY_PORT:-8021}"
     depends_on:
       postgres:
         condition: service_healthy

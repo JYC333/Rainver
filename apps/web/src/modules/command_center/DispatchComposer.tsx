@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { Plus, Check, X } from 'lucide-react'
-import { hostsApi, projectsApi, tasksApi } from '../../api/client'
+import { hostsApi, projectsApi, providersApi, tasksApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type { Host, HostRuntimeAdapterOption } from '../../types/api'
 import { ProjectSelector } from '../../components/ProjectFolderSelectors'
@@ -13,6 +13,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Badge } from '../../components/ui/badge'
 import { Card } from '../../components/ui/card'
 import { useRemoteWorkspaces, lastUsedWorkspaceId, rememberWorkspaceId } from './useRemoteWorkspaces'
+import { AMBIENT_BACKEND, INHERIT_BACKEND, eligibleProviders, providerModels } from './backendChoice'
 
 const HOST_LIST_REFRESH_INTERVAL_MS = 3_000
 
@@ -26,6 +27,9 @@ export interface DispatchComposerProps {
   /** A follow-up composer resumes the thread's already-pinned runtime; no runtime selector is shown. */
   fixedAdapterType?: string
   initialPrompt?: string
+  /** Supplied when the surrounding screen already fetched the list; the
+   *  composer fetches its own only when mounted standalone. */
+  providers?: ModelProviderOut[]
   onDispatched: (result: { run_id: string | null; thread_id: string }) => void
   onProjectChange?: (projectId: string) => void
 }
@@ -88,6 +92,7 @@ export default function DispatchComposer({
   fixedFolderId,
   fixedAdapterType,
   initialPrompt = '',
+  providers: providedProviders,
   onDispatched,
   onProjectChange,
 }: DispatchComposerProps) {
@@ -99,6 +104,12 @@ export default function DispatchComposer({
   const [prompt, setPrompt] = useState(initialPrompt)
   const [hosts, setHosts] = useState<Host[]>([])
   const [runtimeAdapters, setRuntimeAdapters] = useState<HostRuntimeAdapterOption[]>([])
+  const [fetchedProviders, setFetchedProviders] = useState<ModelProviderOut[]>([])
+  const providers = providedProviders ?? fetchedProviders
+  // Defaults to inheriting, so sending a message never silently changes the
+  // backend the conversation is already on.
+  const [backend, setBackend] = useState(INHERIT_BACKEND)
+  const [model, setModel] = useState('')
   const [busy, setBusy] = useState(false)
   // ProjectSelector fetches its own project list once on mount and never
   // refetches — remounting it (via `key`) after an inline create is the
@@ -106,6 +117,17 @@ export default function DispatchComposer({
   // falling back to rendering the raw id (discovery review, P3).
   const [projectListKey, setProjectListKey] = useState(0)
   const { workspaces, loading: workspacesLoading } = useRemoteWorkspaces(projectId)
+
+  useEffect(() => {
+    if (providedProviders) return
+    let cancelled = false
+    providersApi.list()
+      .then(items => { if (!cancelled) setFetchedProviders(items) })
+      // Losing the list costs the ability to override, not the ability to
+      // send: the dispatch simply inherits, which is the default anyway.
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [providedProviders])
 
   useEffect(() => { onProjectChange?.(projectId) }, [projectId, onProjectChange])
 
@@ -191,8 +213,25 @@ export default function DispatchComposer({
     })),
   ]
 
+  const effectiveAdapterType = fixedAdapterType ?? adapterType
+  const backendOptions = useMemo(
+    () => eligibleProviders(providers, effectiveAdapterType),
+    [providers, effectiveAdapterType],
+  )
+  // A provider that can back claude_code often cannot back codex or opencode,
+  // so a selection made before switching runtimes would render as a bare id
+  // and be sent anyway, failing as a 422 the user cannot read as "your earlier
+  // pick no longer applies".
+  useEffect(() => {
+    setBackend(INHERIT_BACKEND)
+    setModel('')
+  }, [effectiveAdapterType])
+  const modelOptions = useMemo(
+    () => providerModels(backendOptions.find(p => p.id === backend)),
+    [backendOptions, backend],
+  )
+
   async function dispatch() {
-    const effectiveAdapterType = fixedAdapterType ?? adapterType
     if (!selected || !effectiveAdapterType || !prompt.trim()) return
     setBusy(true)
     try {
@@ -203,9 +242,24 @@ export default function DispatchComposer({
         adapter_type: effectiveAdapterType,
         prompt: prompt.trim(),
         thread_id: fixedThreadId ?? null,
+        // Presence, not truthiness: omitting the key means "whatever this
+        // thread already runs on" (or the host default on a first message),
+        // while an explicit null means the machine's own login. Sending null
+        // for "inherit" would silently unbind the thread.
+        ...(backend === INHERIT_BACKEND
+          ? {}
+          : {
+              model_provider_id: backend === AMBIENT_BACKEND ? null : backend,
+              ...(model ? { model } : {}),
+            }),
       })
       if (!fixedFolderId) rememberWorkspaceId(projectId, selected.location.id)
       setPrompt('')
+      // The choice applied to this message; the thread now inherits it, so
+      // leaving it selected would misrepresent the next one as another
+      // override.
+      setBackend(INHERIT_BACKEND)
+      setModel('')
       if ('thread_id' in result && result.thread_id) onDispatched(result)
     } catch (error) {
       toast.error(errMsg(error))
@@ -246,6 +300,7 @@ export default function DispatchComposer({
             <div>
               <Label>Runtime</Label>
               <Select
+                ariaLabel="Runtime"
                 value={adapterType}
                 onChange={setAdapterType}
                 options={[{ value: '', label: 'Select a runtime' }, ...eligibleAdapters.map(a => ({ value: a.adapter_type, label: a.display_name }))]}
@@ -277,6 +332,41 @@ export default function DispatchComposer({
           <span className="text-muted-foreground truncate">
             {selected.location.branch ?? 'no branch'} · {selected.location.dirty ? 'dirty' : 'clean'} · {selected.location.execution_ready ? 'ready' : 'not ready'}
           </span>
+        </div>
+      )}
+
+      {selected && (fixedAdapterType ?? adapterType) && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <Label>Model backend</Label>
+            <Select
+              ariaLabel="Model backend"
+              value={backend}
+              onChange={value => { setBackend(value); setModel('') }}
+              options={[
+                {
+                  value: INHERIT_BACKEND,
+                  label: fixedThreadId ? "Keep this conversation's backend" : "This host's default",
+                },
+                { value: AMBIENT_BACKEND, label: "This machine's login" },
+                ...backendOptions.map(p => ({ value: p.id, label: p.name })),
+              ]}
+            />
+          </div>
+          {modelOptions.length > 0 && (
+            <div>
+              <Label>Model</Label>
+              <Select
+                ariaLabel="Model"
+                value={model}
+                onChange={setModel}
+                options={[
+                  { value: '', label: "Provider's default" },
+                  ...modelOptions.map(m => ({ value: m, label: m })),
+                ]}
+              />
+            </div>
+          )}
         </div>
       )}
 

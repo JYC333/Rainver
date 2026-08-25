@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
@@ -11,7 +10,6 @@ import { EvolutionBundleRepository } from "../src/modules/evolution/bundleReposi
 import { PgProposalApplyService } from "../src/modules/proposals/applyService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -47,7 +45,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 10 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -62,12 +59,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE evolution_bundle_members, evolution_bundles, evolution_experiences,
-       evolution_signals, evolution_targets,
-       evolvable_asset_pins, evolvable_asset_evaluation_runs, prompt_deployment_refs,
-       evolvable_asset_versions, evolvable_assets, proposals, space_memberships,
-       users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["evolution_bundle_members", "evolution_bundles", "evolution_experiences", "evolution_signals", "evolution_targets", "evolvable_asset_pins", "evolvable_asset_evaluation_runs", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "proposals", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(

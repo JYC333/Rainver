@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { LearningService } from "../src/modules/learning/service";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
@@ -12,7 +11,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // per-user mastery kept separate from the shared Item content, and both a
 // Project-contextual and a global (cross-Project) listing surface.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "33333333-3333-4333-8333-333333333333";
 const OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const OTHER_USER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -28,7 +26,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -43,9 +40,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE learning_item_mastery, learning_items, learning_objectives, knowledge_items, space_objects,
-       project_members, projects, space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["learning_item_mastery", "learning_items", "learning_objectives", "knowledge_items", "space_objects", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

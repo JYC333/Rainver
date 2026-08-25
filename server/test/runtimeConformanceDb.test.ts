@@ -1,15 +1,13 @@
-import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import {
   CONFORMANCE_CHECKS,
   RuntimeConformanceService,
   type ConformanceCheck,
 } from "../src/modules/runtimeConformance";
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 let container: TestPostgresDatabase | undefined;
 let pool: Pool | undefined;
 let available = false;
@@ -18,7 +16,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (error) {
     if (!isTestPostgresUnavailableError(error)) throw error;
@@ -33,7 +30,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query("TRUNCATE runtime_conformance_results");
+  await resetTables(pool, ["runtime_conformance_results"]);
 });
 
 function allChecks(passed: boolean) {

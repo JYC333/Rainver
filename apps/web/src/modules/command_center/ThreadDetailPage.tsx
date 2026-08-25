@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { hostsApi, projectFoldersApi, runsApi } from '../../api/client'
+import { hostsApi, projectFoldersApi, providersApi, runsApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostTaskThread, ProjectFolder, Run } from '../../types/api'
+import type { Host, HostRuntimeAdapterOption, HostTaskThread, ProjectFolder, Run } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Card } from '../../components/ui/card'
 import { Skeleton } from '../../components/ui/skeleton'
@@ -21,7 +21,23 @@ export default function ThreadDetailPage() {
   const [host, setHost] = useState<Host | null>(null)
   const [folder, setFolder] = useState<ProjectFolder | null>(null)
   const [runs, setRuns] = useState<Run[]>([])
+  const [runtimeAdapters, setRuntimeAdapters] = useState<HostRuntimeAdapterOption[]>([])
+  // Fetched here and handed to both children: the conversation names each
+  // turn's backend and the composer offers them, and two mounts of the same
+  // screen fetching the same list independently is what this avoids.
+  const [providers, setProviders] = useState<ModelProviderOut[] | null>(null)
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    providersApi.list()
+      // A failure costs a provider *name* and the ability to override, not the
+      // conversation; toasting it would put an error in front of someone
+      // reading their messages.
+      .then(items => { if (!cancelled) setProviders(items) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   const load = useCallback(async () => {
     if (!threadId || !projectId) {
@@ -29,16 +45,22 @@ export default function ThreadDetailPage() {
       return
     }
     try {
-      const [threadsResult, hostsResult, folderResult, runList] = await Promise.all([
+      const [threadsResult, hostsResult, folderResult, runList, adapterResult] = await Promise.all([
         hostsApi.listThreads(projectId),
         hostsApi.list(),
         folderId ? projectFoldersApi.get(projectId, folderId) : Promise.resolve(null),
         runsApi.list({ project_id: projectId, limit: 200 }),
+        // The runtime's display name comes from the adapter catalog rather
+        // than a label written here: a thread is pinned to one adapter, and
+        // naming it in the page is how "Remote Claude session" ended up
+        // showing over a Codex thread.
+        hostsApi.listRuntimeAdapters(),
       ])
       const found = threadsResult.items.find(t => t.id === threadId) ?? null
       setThread(found)
       setHost(found ? hostsResult.items.find(h => h.id === found.host_id) ?? null : null)
       setFolder(folderResult)
+      setRuntimeAdapters(adapterResult.items)
       setRuns(
         runList
           .filter(run => run.host_task_thread_id === threadId)
@@ -52,6 +74,12 @@ export default function ThreadDetailPage() {
   }, [threadId, projectId, folderId])
 
   useEffect(() => { void load() }, [load])
+
+  // Falls back to the raw adapter_type rather than a guess: an adapter the
+  // catalog has not heard of should read as itself, not as some other vendor.
+  const runtimeName = thread
+    ? runtimeAdapters.find(a => a.adapter_type === thread.adapter_type)?.display_name ?? thread.adapter_type
+    : ''
 
   if (loading) {
     return (
@@ -83,17 +111,18 @@ export default function ThreadDetailPage() {
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={host?.status === 'online' ? 'success' : 'muted'}>{host?.name ?? 'Unknown host'}</Badge>
             <span className="text-sm text-muted-foreground">{folder?.name ?? thread.project_folder_id}</span>
+            <Badge variant="outline">{runtimeName}</Badge>
             {thread.status === 'session_reset' && <Badge variant="warning">session reset</Badge>}
           </div>
           {thread.vendor_session_id && (
             <p className="text-xs text-muted-foreground">
-              Remote Claude session: <span className="font-mono select-all text-foreground">{thread.vendor_session_id}</span>
+              {runtimeName} session: <span className="font-mono select-all text-foreground">{thread.vendor_session_id}</span>
             </p>
           )}
         </div>
 
         <div className="flex-1 min-h-0">
-          <ThreadConversation thread={thread} runs={runs} onThreadChanged={load} />
+          <ThreadConversation thread={thread} runs={runs} providers={providers} onThreadChanged={load} />
         </div>
 
         <div className="shrink-0 border-t border-border p-3">
@@ -102,6 +131,7 @@ export default function ThreadDetailPage() {
             fixedThreadId={thread.id}
             fixedFolderId={thread.project_folder_id}
             fixedAdapterType={thread.adapter_type}
+            providers={providers ?? undefined}
             onDispatched={() => { void load() }}
           />
         </div>

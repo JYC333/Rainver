@@ -1,9 +1,8 @@
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { migrate } from "../src/db/migrator";
+import { resetTables } from "./support/resetTables";
 import { ProjectCorpusRepository, syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository";
 import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -14,7 +13,6 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 // (triage_confirmed_by_user), and project corpus read state never touches
 // the personal Library read state on the same source item.
 
-const MIGRATIONS_DIR = join(process.cwd(), "migrations");
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SAME_SPACE_MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -32,7 +30,6 @@ beforeAll(async () => {
   try {
     container = await getTestPostgres(__filename);
     pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await migrate(pool, MIGRATIONS_DIR);
     available = true;
   } catch (err) {
     if (!isTestPostgresUnavailableError(err)) throw err;
@@ -47,12 +44,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!available || !pool) return;
-  await pool.query(
-    `TRUNCATE academic_papers, sources, space_objects, project_corpus_items, source_item_user_states,
-       source_post_processing_item_decisions, source_post_processing_runs, agents, project_source_item_links,
-       project_source_bindings, source_channel_item_links, source_channel_user_subscriptions, source_channels,
-       source_items, source_connections, source_provider_connectors, source_providers, source_connectors, project_members, projects,
-       space_memberships, users, spaces CASCADE`,
+  await resetTables(
+    pool,
+    ["academic_papers", "sources", "space_objects", "project_corpus_items", "source_item_user_states", "source_post_processing_item_decisions", "source_post_processing_runs", "agents", "project_source_item_links", "project_source_bindings", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "project_members", "projects", "space_memberships", "users", "spaces"],
+    { cascade: true },
   );
   const now = new Date().toISOString();
   await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);

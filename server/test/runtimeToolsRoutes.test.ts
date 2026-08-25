@@ -5,7 +5,8 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import { getDbPool } from "../src/db/pool";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { runtimeToolsModule } from "../src/modules/runtimeTools";
 import { __setAuthIdentityForTests } from "../src/modules/auth";
 
 vi.mock("../src/db/pool", () => ({
@@ -44,7 +45,7 @@ describe("runtime tool routes", () => {
   it("serves space policy routes before runtime parameter routes", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(await config(), { logger: false });
+    app = buildModuleServer(await config(), [runtimeToolsModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -70,7 +71,7 @@ describe("runtime tool routes", () => {
       rowCount: 1,
     }));
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildServer(await config({ INSTANCE_ADMIN_EMAIL: "admin@example.test" }), {
+    app = buildModuleServer(await config({ INSTANCE_ADMIN_EMAIL: "admin@example.test" }), [runtimeToolsModule], {
       logger: false,
     });
 
@@ -137,7 +138,7 @@ describe("runtime tool routes", () => {
       query,
       connect: async () => ({ query, release: () => {} }),
     } as never);
-    app = buildServer(await config(), { logger: false });
+    app = buildModuleServer(await config(), [runtimeToolsModule]);
 
     const res = await app.inject({
       method: "PUT",

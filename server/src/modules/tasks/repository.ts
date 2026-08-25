@@ -19,6 +19,7 @@ import { PgJobQueueRepository } from "../jobs/repository";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
 import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot";
 import { runToOut } from "../runs/runReadModel";
+import { resolveRunRemoteness } from "../runs/runRemoteness";
 import { PgUsageRepository } from "../usage/repository";
 import { contentReadSql } from "../access/contentAccessSql";
 import { recordDetailRead } from "../contentAccess/audit";
@@ -29,6 +30,10 @@ import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocati
 import { PgHostTaskThreadRepository } from "../hosts/taskThreadRepository";
 import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository";
 import { advanceThreadQueue } from "../hosts/queueAdvance";
+import {
+  resolveHostProviderBinding,
+  type ProviderLookupPort,
+} from "../hosts/runtimeProviderBindingResolution";
 import {
   lockTaskQueueForTerminalMutation,
   withdrawQueuedTaskMessages,
@@ -67,7 +72,15 @@ import {
 } from "./taskRepositoryRows";
 
 export class PgTaskRepository {
-  constructor(private readonly pool: Pool) {}
+  /**
+   * `providers` is only consulted when a remote dispatch actually resolves a
+   * ModelProvider binding, so callers that never dispatch remotely (Decision
+   * cases, for one) may leave it unset.
+   */
+  constructor(
+    private readonly pool: Pool,
+    private readonly providers: ProviderLookupPort | null = null,
+  ) {}
 
   async listBoards(identity: SpaceUserIdentity, filters: { projectFolderId: string | null; projectId: string | null; status: string | null; limit: number; offset: number }) {
     const params: unknown[] = [identity.spaceId];
@@ -578,6 +591,15 @@ export class PgTaskRepository {
       if (target && !target.execution_ready) {
         throw new HttpError(409, "Workspace Location is not execution-ready");
       }
+      // A host×adapter binding is a remote-host concept: a server-host run
+      // picks its provider through routing. Accepting either override here and
+      // ignoring it would run on a backend the caller did not ask for, which
+      // is the substitution this whole path exists to prevent.
+      for (const key of ["model_provider_id", "model"]) {
+        if (Object.hasOwn(body, key)) {
+          throw new HttpError(422, `${key} applies only to a remote Workspace Location`);
+        }
+      }
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
       await assertRunnableAgent(client, identity.spaceId, agentId);
@@ -632,7 +654,12 @@ export class PgTaskRepository {
       if (body.set_task_in_progress !== false) {
         await client.query(`UPDATE tasks SET status = 'in_progress', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, taskId, now]);
       }
-      return { kind: "server" as const, run: runToOut(run) };
+      return {
+        kind: "server" as const,
+        run: runToOut(run, null, {
+          executes_remotely: (await resolveRunRemoteness(client, [run])).has(run.id),
+        }),
+      };
     };
     return transactionClient ? execute(transactionClient) : withDbTransaction(this.pool, execute);
   }
@@ -718,7 +745,52 @@ export class PgTaskRepository {
     }
 
     const messages = new PgHostThreadMessageRepository(client);
-    const message = await messages.enqueue(thread.id, task.id, prompt, identity.userId);
+    // A thread keeps the backend it last ran against. Without this, resolution
+    // re-reads the Host × adapter default every dispatch, so changing that
+    // default moves every existing thread on the host onto a new backend —
+    // and since the vendor session lives inside the new provider's profile,
+    // each of them silently loses its conversation too. The Host default
+    // decides a thread's first backend; after that the thread is explicit.
+    //
+    // An explicit override still wins and becomes what the thread inherits
+    // next time, which is how a user changes a thread's backend.
+    const inherited = Object.hasOwn(body, "model_provider_id")
+      ? null
+      : await messages.currentBinding(thread.id);
+
+    // Resolve and validate the model backend before the message is queued, so
+    // an unusable provider fails this request rather than a run on someone's
+    // laptop minutes later.
+    const binding = await resolveHostProviderBinding({
+      db: client,
+      providers: this.providers,
+      spaceId: identity.spaceId,
+      hostId: target.host_id,
+      adapterType,
+      override: inherited
+        ? {
+            model_provider_id: inherited.provider_id,
+            // Key presence again, for the same reason it governs the provider:
+            // `{ model: null }` is "drop the pinned model and let the endpoint
+            // choose", and coalescing it into the inherited value would make
+            // that request unexpressible.
+            model: Object.hasOwn(body, "model") ? optionalString(body.model) : inherited.model,
+            provenance: "thread",
+          }
+        : {
+            // Raw, not `optionalString`: that maps an empty or malformed value
+            // to null, which resolution must be able to tell apart from the
+            // explicit null that means "ambient login for this dispatch".
+            model_provider_id: body.model_provider_id,
+            model: optionalString(body.model),
+          },
+      overrideProvided: Object.hasOwn(body, "model_provider_id") || inherited !== null,
+      // Only read on the non-override branch, which inheritance never takes;
+      // the inherited model travels in `override.model` above.
+      modelOverrideProvided: Object.hasOwn(body, "model"),
+    });
+
+    const message = await messages.enqueue(thread.id, task.id, prompt, identity.userId, binding);
     if (body.set_task_in_progress !== false) {
       await client.query(
         `UPDATE tasks SET status = 'in_progress', updated_at = now() WHERE space_id = $1 AND id = $2`,
@@ -812,7 +884,9 @@ export class PgTaskRepository {
         project_folder_id: task.project_folder_id,
         payload: { run_id: run.id, task_id: task.id, planning: true },
       });
-      return runToOut(run);
+      return runToOut(run, null, {
+        executes_remotely: (await resolveRunRemoteness(this.pool, [run])).has(run.id),
+      });
     });
   }
 
@@ -845,14 +919,21 @@ export class PgTaskRepository {
         LIMIT $4 OFFSET $5`,
       [identity.spaceId, taskId, identity.userId, limit, offset],
     );
-    const usageByRun = await new PgUsageRepository(this.pool).summarizeRunUsageByRunIds(
-      identity.spaceId,
-      rows.rows.map((row) => row.id),
-    );
+    const [usageByRun, remoteRuns] = await Promise.all([
+      new PgUsageRepository(this.pool).summarizeRunUsageByRunIds(
+        identity.spaceId,
+        rows.rows.map((row) => row.id),
+      ),
+      // One query for the page, and only for rows that recorded a provider or
+      // model — for anything else remoteness cannot change how it renders.
+      resolveRunRemoteness(this.pool, rows.rows),
+    ]);
     return page(
       rows.rows.map((row) => ({
         link: taskRunOutFromList(row),
-        run: runToOut({ ...row, usage: usageByRun.get(row.id) ?? null }),
+        run: runToOut({ ...row, usage: usageByRun.get(row.id) ?? null }, null, {
+          executes_remotely: remoteRuns.has(row.id),
+        }),
       })),
       countFromRow(total.rows[0]),
       limit,

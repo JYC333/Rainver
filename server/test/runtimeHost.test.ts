@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
+import { buildModuleServer } from "./support/moduleServer";
+import { systemModule } from "../src/modules/system";
 import { loadConfig } from "../src/config";
 import {
   __setNetworkRetryDelayForTests,
@@ -9,7 +10,7 @@ import {
   type ProviderCommandStore,
   type ProviderHttpClient,
 } from "../src/modules/providers";
-import { __setRuntimeHostDeliveryAuthorizerForTests, executeRuntimeHost } from "../src/modules/runtimeHost";
+import { __setRuntimeHostDeliveryAuthorizerForTests, executeRuntimeHost, runtimeHostModule } from "../src/modules/runtimeHost";
 import type { UsageObservation } from "../src/modules/usage";
 import { resolveTestUsageAttribution } from "./support/usageAttribution";
 import { openAiChatResponse, piAiHttpClient } from "./support/piAiHttp";
@@ -561,7 +562,7 @@ describe("runtime host internal route", () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -577,7 +578,7 @@ describe("runtime host internal route", () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -595,7 +596,7 @@ describe("runtime host internal route", () => {
     const usageObservations: UsageObservation[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls, "openai", usageObservations));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -690,7 +691,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -733,7 +734,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -767,7 +768,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -880,7 +881,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -925,7 +926,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -971,7 +972,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1010,7 +1011,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1045,7 +1046,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1079,7 +1080,7 @@ describe("runtime host internal route", () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls, "cohere"));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1114,7 +1115,7 @@ describe("runtime host internal route", () => {
         throw error;
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1156,7 +1157,7 @@ describe("runtime host internal route", () => {
         throw error;
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1200,7 +1201,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1234,7 +1235,7 @@ describe("runtime host internal route", () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1290,7 +1291,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1404,7 +1405,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1479,7 +1480,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1560,7 +1561,7 @@ describe("runtime host internal route", () => {
         throw new Error("unsupported provider should not receive tool request");
       },
     });
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({
       method: "POST",
@@ -1641,7 +1642,7 @@ describe("runtime host internal route", () => {
   });
 
   it("advertises the runtime host only with server credential authority", async () => {
-    app = buildServer(config(), { logger: false });
+    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/server/features" });
 
